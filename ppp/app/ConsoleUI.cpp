@@ -37,64 +37,6 @@
 
 namespace ppp::app {
 
-namespace {
-    static bool HandleTelemetryHotkey(char ch) noexcept {
-        auto emit_state = []() noexcept {
-            ppp::string msg = "Telemetry filter: ";
-            msg += ppp::telemetry::IsConsoleLogEnabled() ? "log=on " : "log=off ";
-            msg += ppp::telemetry::IsConsoleMetricEnabled() ? "metric=on " : "metric=off ";
-            msg += ppp::telemetry::IsConsoleSpanEnabled() ? "span=on " : "span=off ";
-            msg += "level=" + std::to_string(ppp::telemetry::GetMinLevel());
-            ConsoleUI::GetInstance().AppendLine(msg);
-        };
-
-        switch (ch) {
-            case 'l':
-            case 'L':
-                ppp::telemetry::SetConsoleLogEnabled(!ppp::telemetry::IsConsoleLogEnabled());
-                emit_state();
-                return true;
-            case 'm':
-            case 'M':
-                ppp::telemetry::SetConsoleMetricEnabled(!ppp::telemetry::IsConsoleMetricEnabled());
-                emit_state();
-                return true;
-            case 's':
-            case 'S':
-                ppp::telemetry::SetConsoleSpanEnabled(!ppp::telemetry::IsConsoleSpanEnabled());
-                emit_state();
-                return true;
-            case '0':
-            case '1':
-            case '2':
-            case '3':
-                ppp::telemetry::SetMinLevel(ch - '0');
-                emit_state();
-                return true;
-            case 'a':
-            case 'A':
-                ppp::telemetry::SetConsoleLogEnabled(true);
-                ppp::telemetry::SetConsoleMetricEnabled(true);
-                ppp::telemetry::SetConsoleSpanEnabled(true);
-                emit_state();
-                return true;
-            case 'q':
-            case 'Q':
-                ppp::telemetry::SetConsoleLogEnabled(false);
-                ppp::telemetry::SetConsoleMetricEnabled(false);
-                ppp::telemetry::SetConsoleSpanEnabled(false);
-                emit_state();
-                return true;
-            case '?':
-                ConsoleUI::GetInstance().AppendLine("Telemetry hotkeys: l=toggle log, m=toggle metric, s=toggle span, 0/1/2/3=set level, a=all, q=quiet, ?=help");
-                emit_state();
-                return true;
-            default:
-                return false;
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // UTF-8 box-drawing character constants (each is 3 bytes, 1 display column)
 // ---------------------------------------------------------------------------
@@ -1364,7 +1306,7 @@ void ConsoleUI::RenderFrame() noexcept {
             status_text += ppp::telemetry::IsConsoleSpanEnabled() ? "S" : "-";
             status_text += " @";
             status_text += std::to_string(ppp::telemetry::GetMinLevel());
-            status_text += " [?]";
+            status_text += " (openppp2 telemetry help)";
         }
 
         // Build right panel: "VPN: state  ↑ tx  ↓ rx"
@@ -1712,13 +1654,16 @@ void ConsoleUI::ExecuteCommand(const ppp::string& command_line) noexcept {
     if (!openppp2_sub.empty()) {
         if ("help" == openppp2_sub) {
             AppendLine("Available openppp2 commands:");
-            AppendLine("  openppp2 help    - Show this help information");
-            AppendLine("  openppp2 restart - Restart the application");
-            AppendLine("  openppp2 reload  - Reload configuration (restart)");
-            AppendLine("  openppp2 exit    - Exit the application");
-            AppendLine("  openppp2 info    - Print full runtime environment snapshot");
-            AppendLine("  openppp2 clear   - Clear command output section");
-            AppendLine("  <shell command>  - Execute a system shell command");
+            AppendLine("  openppp2 help             - Show this help information");
+            AppendLine("  openppp2 restart          - Restart the application");
+            AppendLine("  openppp2 reload           - Reload configuration (restart)");
+            AppendLine("  openppp2 exit             - Exit the application");
+            AppendLine("  openppp2 info             - Print full runtime environment snapshot");
+            AppendLine("  openppp2 clear            - Clear command output section");
+            AppendLine("  openppp2 telemetry ...    - Telemetry filter controls (status/help/log/metric/span/level/all/quiet)");
+            AppendLine("  <shell command>           - Execute a system shell command");
+            AppendLine("");
+            AppendLine("All typed characters are normal input; no single-key hotkeys.");
             return;
         }
 
@@ -1762,6 +1707,145 @@ void ConsoleUI::ExecuteCommand(const ppp::string& command_line) noexcept {
                     AppendLine(line);
                 }
             }
+            return;
+        }
+
+        // ---- Telemetry sub-namespace ----
+        static constexpr const char kTelNS[] = "telemetry";
+        static constexpr std::size_t kTelNSLen = sizeof(kTelNS) - 1u;
+
+        if (openppp2_sub.size() >= kTelNSLen &&
+            0u == openppp2_sub.compare(0u, kTelNSLen, kTelNS) &&
+            (openppp2_sub.size() == kTelNSLen || ' ' == openppp2_sub[kTelNSLen])) {
+
+            auto emit_state = []() noexcept {
+                ppp::string msg = "Telemetry filter: ";
+                msg += ppp::telemetry::IsConsoleLogEnabled() ? "log=on " : "log=off ";
+                msg += ppp::telemetry::IsConsoleMetricEnabled() ? "metric=on " : "metric=off ";
+                msg += ppp::telemetry::IsConsoleSpanEnabled() ? "span=on " : "span=off ";
+                msg += "level=" + std::to_string(ppp::telemetry::GetMinLevel());
+                ConsoleUI::GetInstance().AppendLine(msg);
+            };
+
+            ppp::string tel_rest;
+            if (openppp2_sub.size() > kTelNSLen) {
+                tel_rest = ppp::LTrim(openppp2_sub.substr(kTelNSLen + 1u));
+            }
+
+            if (tel_rest.empty() || "status" == tel_rest) {
+                emit_state();
+                return;
+            }
+
+            if ("help" == tel_rest) {
+                AppendLine("Telemetry commands:");
+                AppendLine("  openppp2 telemetry                    - Show telemetry status");
+                AppendLine("  openppp2 telemetry status             - Show telemetry status");
+                AppendLine("  openppp2 telemetry help               - Show this help");
+                AppendLine("  openppp2 telemetry log on|off|toggle  - Toggle console log filter");
+                AppendLine("  openppp2 telemetry metric on|off|toggle - Toggle console metric filter");
+                AppendLine("  openppp2 telemetry span on|off|toggle - Toggle console span filter");
+                AppendLine("  openppp2 telemetry level 0|1|2|3      - Set telemetry verbosity threshold");
+                AppendLine("  openppp2 telemetry all                - Enable all telemetry filters");
+                AppendLine("  openppp2 telemetry quiet              - Disable all telemetry filters");
+                return;
+            }
+
+            if ("all" == tel_rest) {
+                ppp::telemetry::SetConsoleLogEnabled(true);
+                ppp::telemetry::SetConsoleMetricEnabled(true);
+                ppp::telemetry::SetConsoleSpanEnabled(true);
+                emit_state();
+                return;
+            }
+
+            if ("quiet" == tel_rest) {
+                ppp::telemetry::SetConsoleLogEnabled(false);
+                ppp::telemetry::SetConsoleMetricEnabled(false);
+                ppp::telemetry::SetConsoleSpanEnabled(false);
+                emit_state();
+                return;
+            }
+
+            // Tokenize: expect "log|metric|span on|off|toggle" or "level N"
+            ppp::vector<ppp::string> tokens;
+            ppp::Tokenize(tel_rest, tokens, ppp::string(" "));
+
+            // Known first-token check for targeted usage messages.
+            auto is_known_tel_sub = [](const ppp::string& t) noexcept -> bool {
+                return "log" == t || "metric" == t || "span" == t || "level" == t;
+            };
+
+            // Wrong number of arguments for a known sub-command → print usage
+            // instead of falling through to the generic "Unknown" message.
+            if (!tokens.empty() && is_known_tel_sub(tokens[0]) && 2u != tokens.size()) {
+                if ("level" == tokens[0]) {
+                    AppendLine("Usage: openppp2 telemetry level 0|1|2|3");
+                } else {
+                    AppendLine("Usage: openppp2 telemetry " + tokens[0] + " on|off|toggle");
+                }
+                return;
+            }
+
+            if (2u == tokens.size()) {
+                if ("log" == tokens[0]) {
+                    if ("on" == tokens[1]) {
+                        ppp::telemetry::SetConsoleLogEnabled(true);
+                    } elif ("off" == tokens[1]) {
+                        ppp::telemetry::SetConsoleLogEnabled(false);
+                    } elif ("toggle" == tokens[1]) {
+                        ppp::telemetry::SetConsoleLogEnabled(!ppp::telemetry::IsConsoleLogEnabled());
+                    } else {
+                        AppendLine("Usage: openppp2 telemetry log on|off|toggle");
+                        return;
+                    }
+                    emit_state();
+                    return;
+                }
+
+                if ("metric" == tokens[0]) {
+                    if ("on" == tokens[1]) {
+                        ppp::telemetry::SetConsoleMetricEnabled(true);
+                    } elif ("off" == tokens[1]) {
+                        ppp::telemetry::SetConsoleMetricEnabled(false);
+                    } elif ("toggle" == tokens[1]) {
+                        ppp::telemetry::SetConsoleMetricEnabled(!ppp::telemetry::IsConsoleMetricEnabled());
+                    } else {
+                        AppendLine("Usage: openppp2 telemetry metric on|off|toggle");
+                        return;
+                    }
+                    emit_state();
+                    return;
+                }
+
+                if ("span" == tokens[0]) {
+                    if ("on" == tokens[1]) {
+                        ppp::telemetry::SetConsoleSpanEnabled(true);
+                    } elif ("off" == tokens[1]) {
+                        ppp::telemetry::SetConsoleSpanEnabled(false);
+                    } elif ("toggle" == tokens[1]) {
+                        ppp::telemetry::SetConsoleSpanEnabled(!ppp::telemetry::IsConsoleSpanEnabled());
+                    } else {
+                        AppendLine("Usage: openppp2 telemetry span on|off|toggle");
+                        return;
+                    }
+                    emit_state();
+                    return;
+                }
+
+                if ("level" == tokens[0]) {
+                    if (1u == tokens[1].size() && tokens[1][0] >= '0' && tokens[1][0] <= '3') {
+                        ppp::telemetry::SetMinLevel(tokens[1][0] - '0');
+                        emit_state();
+                        return;
+                    }
+                    AppendLine("Usage: openppp2 telemetry level 0|1|2|3");
+                    return;
+                }
+            }
+
+            AppendLine("Unknown telemetry sub-command: '" + tel_rest + "'");
+            AppendLine("Type 'openppp2 telemetry help' for telemetry commands.");
             return;
         }
 
@@ -1883,10 +1967,6 @@ void ConsoleUI::InputLoop() noexcept {
         }
 
         if (32 <= ch && 126 >= ch) {
-            if (HandleTelemetryHotkey(static_cast<char>(ch))) {
-                MarkDirty();
-                continue;
-            }
             InsertInputChar(static_cast<char>(ch));
         }
     }
@@ -1982,10 +2062,6 @@ void ConsoleUI::InputLoop() noexcept {
         }
 
         if (32 <= static_cast<unsigned char>(ch) && 126 >= static_cast<unsigned char>(ch)) {
-            if (HandleTelemetryHotkey(ch)) {
-                MarkDirty();
-                continue;
-            }
             InsertInputChar(ch);
         }
     }
