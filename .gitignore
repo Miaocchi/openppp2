@@ -54,6 +54,9 @@
 bin/
 build/
 android/build/
+ios/App/build/
+**/xcuserdata/
+**/*.xcuserstate
 /build-static/
 /build-system-check/
 /build-vendor-check/
