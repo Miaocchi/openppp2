@@ -177,8 +177,9 @@ namespace
         ppp::telemetry::SetConsoleMetricEnabled(true);
         ppp::telemetry::SetConsoleSpanEnabled(true);
 #if defined(_IPHONE)
-        // Extension memory budget: INFO-only OTLP, no spans/metrics console noise.
+        // Extension memory budget: INFO-only OTLP, no metrics/spans console noise.
         ppp::telemetry::SetMinLevel(std::min(configuration->telemetry.level, 0));
+        ppp::telemetry::SetCountEnabled(false);
         ppp::telemetry::SetSpanEnabled(false);
         ppp::telemetry::SetConsoleMetricEnabled(false);
         ppp::telemetry::SetConsoleSpanEnabled(false);
@@ -187,11 +188,18 @@ namespace
         ppp::telemetry::SetLogFile(configuration->telemetry.log_file.c_str());
 
         native_logf(
-            "OpenPPP2 telemetry configured enabled=%d level=%d count=%d span=%d console_log=1 console_metric=1 console_span=1 endpoint=%s",
+            "OpenPPP2 telemetry configured enabled=%d level=%d count=%d span=%d console_log=1 console_metric=%d console_span=%d endpoint=%s",
             configuration->telemetry.enabled ? 1 : 0,
             configuration->telemetry.level,
             configuration->telemetry.count ? 1 : 0,
             configuration->telemetry.span ? 1 : 0,
+#if defined(_IPHONE)
+            0,
+            0,
+#else
+            1,
+            1,
+#endif
             configuration->telemetry.endpoint.empty() ? "(empty)" : configuration->telemetry.endpoint.c_str());
     }
 

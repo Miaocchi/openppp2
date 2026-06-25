@@ -9,8 +9,9 @@
 
 #include <common/chnroutes2/chnroutes2.h>
 
+#include <chrono>
 #include <ctime>
-#include <sys/stat.h>
+#include <filesystem>
 
 /**
  * @file GeoRuleGenerator.cpp
@@ -120,19 +121,25 @@ namespace ppp {
                  *          the download path so behaviour is at worst unchanged.
                  */
                 {
-                    struct stat st {};
-                    if (::stat(full_path.data(), &st) == 0 && S_ISREG(st.st_mode)) {
-                        std::time_t mtime = st.st_mtime;
-                        if (mtime > 0) {
-                            constexpr std::time_t kCacheTtlSeconds = 30 * 24 * 60 * 60; // 30 days
-                            std::time_t now = std::time(nullptr);
-                            std::time_t age = (now > mtime) ? (now - mtime) : 0;
-                            if (age < kCacheTtlSeconds) {
-                                ppp::telemetry::Log(Level::kInfo, "geo-rules",
-                                    "%s dat cache is fresh, skipping download: %s (age=%lld s)",
-                                    label ? label : "geo", full_path.data(), static_cast<long long>(age));
-                                ppp::telemetry::Count("geo-rules.download_skipped_fresh", 1);
-                                return true;
+                    namespace fs = std::filesystem;
+                    std::error_code ec;
+                    if (fs::exists(full_path, ec) && fs::is_regular_file(full_path, ec)) {
+                        const auto ftime = fs::last_write_time(full_path, ec);
+                        if (!ec) {
+                            const auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                                ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+                            const std::time_t mtime = std::chrono::system_clock::to_time_t(sctp);
+                            if (mtime > 0) {
+                                constexpr std::time_t kCacheTtlSeconds = 30 * 24 * 60 * 60; // 30 days
+                                const std::time_t now = std::time(nullptr);
+                                const std::time_t age = (now > mtime) ? (now - mtime) : 0;
+                                if (age < kCacheTtlSeconds) {
+                                    ppp::telemetry::Log(Level::kInfo, "geo-rules",
+                                        "%s dat cache is fresh, skipping download: %s (age=%lld s)",
+                                        label ? label : "geo", full_path.data(), static_cast<long long>(age));
+                                    ppp::telemetry::Count("geo-rules.download_skipped_fresh", 1);
+                                    return true;
+                                }
                             }
                         }
                     }

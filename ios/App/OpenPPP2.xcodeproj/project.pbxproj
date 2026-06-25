@@ -352,6 +352,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				OPENPPP2_BUNDLE_ID = io.github.miaocchi.openppp2;
+				OPENPPP2_APP_GROUP = "group.$(OPENPPP2_BUNDLE_ID)";
 				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID)";
 				PRODUCT_MODULE_NAME = OpenPPP2App;
@@ -380,6 +381,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				OPENPPP2_BUNDLE_ID = io.github.miaocchi.openppp2;
+				OPENPPP2_APP_GROUP = "group.$(OPENPPP2_BUNDLE_ID)";
 				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID)";
 				PRODUCT_MODULE_NAME = OpenPPP2App;
@@ -430,6 +432,7 @@
 				"OPENSSL_LIB_DIR[sdk=iphoneos*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphoneos-arm64/lib";
 				"OPENSSL_LIB_DIR[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphonesimulator-x86_64/lib";
 				OPENPPP2_BUNDLE_ID = io.github.miaocchi.openppp2;
+				OPENPPP2_APP_GROUP = "group.$(OPENPPP2_BUNDLE_ID)";
 				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID).PacketTunnel";
 				PRODUCT_NAME = OpenPPP2PacketTunnel;
@@ -481,6 +484,7 @@
 				"OPENSSL_LIB_DIR[sdk=iphoneos*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphoneos-arm64/lib";
 				"OPENSSL_LIB_DIR[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphonesimulator-x86_64/lib";
 				OPENPPP2_BUNDLE_ID = io.github.miaocchi.openppp2;
+				OPENPPP2_APP_GROUP = "group.$(OPENPPP2_BUNDLE_ID)";
 				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID).PacketTunnel";
 				PRODUCT_NAME = OpenPPP2PacketTunnel;

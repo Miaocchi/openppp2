@@ -21,7 +21,7 @@ struct TelemetrySettings: Codable, Equatable {
     var includeCrashReports: Bool = true
     var includeNativeTelemetry: Bool = true
     var nativeLogLevel: Int = 1
-    var nativeMetricsEnabled: Bool = true
+    var nativeMetricsEnabled: Bool = false
     var nativeSpansEnabled: Bool = false
 
     var effectiveEndpoint: String {
@@ -70,10 +70,7 @@ final class TelemetrySettingsStore {
     private init() {}
 
     func settings() -> TelemetrySettings {
-        if let settings = autoConfiguredDeveloperSettingsIfNeeded() {
-            return settings
-        }
-
+        rememberDeveloperEndpointIfNeeded()
         return savedSettings() ?? TelemetrySettings()
     }
 
@@ -90,21 +87,16 @@ final class TelemetrySettingsStore {
         return settings
     }
 
-    private func autoConfiguredDeveloperSettingsIfNeeded() -> TelemetrySettings? {
+    private func rememberDeveloperEndpointIfNeeded() {
         let endpoint = TelemetrySettings.developerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !endpoint.isEmpty else { return nil }
-        guard defaults.string(forKey: autoConfiguredEndpointKey) != endpoint else { return nil }
+        guard !endpoint.isEmpty else { return }
+        guard defaults.string(forKey: autoConfiguredEndpointKey) != endpoint else { return }
 
-        var settings = savedSettings() ?? TelemetrySettings()
-        settings.uploadEnabled = true
-        settings.destination = .developer
-        settings.includeCrashReports = true
-        settings.includeNativeTelemetry = true
-        settings.nativeMetricsEnabled = true
-        settings.nativeSpansEnabled = false
         defaults.set(endpoint, forKey: autoConfiguredEndpointKey)
-        persist(settings, notify: true)
-        return settings
+        if var settings = savedSettings(), settings.destination != .developer {
+            settings.destination = .developer
+            persist(settings, notify: true)
+        }
     }
 
     private func persist(_ settings: TelemetrySettings, notify: Bool) {

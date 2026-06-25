@@ -22,6 +22,8 @@
 	<string>1</string>
 	<key>OpenPPP2TelemetryDeveloperEndpoint</key>
 	<string>$(OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT)</string>
+	<key>OpenPPP2AppGroupIdentifier</key>
+	<string>$(OPENPPP2_APP_GROUP)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

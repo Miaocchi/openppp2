@@ -18,6 +18,9 @@ final class ViewController: UITabBarController {
 
     @discardableResult
     func handleDebugURL(_ url: URL) -> Bool {
+#if !DEBUG
+        return false
+#else
         guard url.scheme?.lowercased() == "openppp2" else {
             return false
         }
@@ -39,6 +42,7 @@ final class ViewController: UITabBarController {
         default:
             return false
         }
+#endif
     }
 
     private func makeTab(_ root: UIViewController, title: String, image: String, selectedImage: String) -> UIViewController {
@@ -498,12 +502,12 @@ final class ProfileStore {
 
         var telemetryMap = root["telemetry"] as? [String: Any] ?? [:]
         telemetryMap["enabled"] = telemetry.uploadEnabled && telemetry.includeNativeTelemetry
-        telemetryMap["level"] = max(0, min(telemetry.nativeLogLevel, 3))
-        telemetryMap["count"] = telemetry.nativeMetricsEnabled
-        telemetryMap["span"] = telemetry.nativeSpansEnabled
+        telemetryMap["level"] = 0
+        telemetryMap["count"] = false
+        telemetryMap["span"] = false
         telemetryMap["console-log"] = true
-        telemetryMap["console-metric"] = telemetry.nativeMetricsEnabled
-        telemetryMap["console-span"] = telemetry.nativeSpansEnabled
+        telemetryMap["console-metric"] = false
+        telemetryMap["console-span"] = false
         if let endpoint = nativeTelemetryEndpoint(from: telemetry) {
             telemetryMap["endpoint"] = endpoint
         } else {
@@ -2545,6 +2549,7 @@ final class TelemetrySettingsViewController: UIViewController {
     private let spansSwitch = UISwitch()
     private let levelControl = UISegmentedControl(items: ["Info", "Verb", "Debug", "Trace"])
     private let developerEndpointLabel = UILabel()
+    private let extensionNoteLabel = UILabel()
     private let uploadButton = UIButton(type: .system)
     private var settings = TelemetrySettings()
     private var uploading = false
@@ -2586,6 +2591,11 @@ final class TelemetrySettingsViewController: UIViewController {
         developerEndpointLabel.textColor = .secondaryLabel
         developerEndpointLabel.numberOfLines = 0
 
+        extensionNoteLabel.font = .preferredFont(forTextStyle: .footnote)
+        extensionNoteLabel.textColor = .secondaryLabel
+        extensionNoteLabel.numberOfLines = 0
+        extensionNoteLabel.text = "VPN 扩展运行时固定 INFO 日志，并禁用 metrics/spans 导出。"
+
         destinationControl.addTarget(self, action: #selector(destinationChanged), for: .valueChanged)
         [uploadSwitch, crashSwitch, nativeSwitch, metricsSwitch, spansSwitch].forEach {
             $0.addTarget(self, action: #selector(controlChanged), for: .valueChanged)
@@ -2607,7 +2617,8 @@ final class TelemetrySettingsViewController: UIViewController {
         content.addArrangedSubview(SectionView(title: "Native", symbol: "waveform.path.ecg", views: [
             levelControl,
             switchRow(title: "Metrics", subtitle: "Counter / Gauge / Histogram", control: metricsSwitch),
-            switchRow(title: "Spans", subtitle: "Trace spans", control: spansSwitch)
+            switchRow(title: "Spans", subtitle: "Trace spans", control: spansSwitch),
+            extensionNoteLabel
         ]))
 
         uploadButton.setTitle("上传崩溃报告", for: .normal)
@@ -2657,9 +2668,12 @@ final class TelemetrySettingsViewController: UIViewController {
         developerEndpointLabel.text = TelemetrySettings.developerEndpoint.isEmpty
             ? "开发者默认 endpoint 未配置"
             : TelemetrySettings.developerEndpoint
-        metricsSwitch.isEnabled = next.includeNativeTelemetry
-        spansSwitch.isEnabled = next.includeNativeTelemetry
-        levelControl.isEnabled = next.includeNativeTelemetry
+        metricsSwitch.isEnabled = false
+        spansSwitch.isEnabled = false
+        levelControl.isEnabled = false
+        metricsSwitch.alpha = 0.45
+        spansSwitch.alpha = 0.45
+        levelControl.alpha = 0.45
         uploadButton.isEnabled = next.canUpload && next.includeCrashReports && !uploading
         uploadButton.alpha = uploadButton.isEnabled ? 1 : 0.45
         uploadButton.setTitle(uploading ? "上传中..." : "上传崩溃报告", for: .normal)

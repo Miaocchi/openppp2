@@ -57,7 +57,7 @@ namespace ppp {
                 UInt32                                                      serverSeqno = 0;
                 /** @brief Next expected client sequence number (network byte order). */
                 UInt32                                                      clientAckno = 0;
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
                 /** @brief True once the iOS native tap relay has started. */
                 std::atomic_bool                                            nativeInjectReady = { false };
                 /** @brief Guards against starting duplicate relay pumps. */
@@ -188,7 +188,7 @@ namespace ppp {
                 /** @brief Gets the optional execution strand. */
                 ppp::threading::Executors::StrandPtr&                       GetStrand() noexcept  { return strand_; }
 
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
                 /** @brief Starts iOS ctcp relay without TUN loopback to the listener. */
                 virtual bool                                                StartNativeRelay() noexcept { return false; }
                 /** @brief Forwards decoded client TCP payload to the upstream socket. */
@@ -296,7 +296,7 @@ namespace ppp {
             /** @brief Performs periodic timeout and cleanup maintenance. */
             virtual bool                                                    Update(uint64_t now) noexcept;
 
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
             /** @brief Emits server payload to the TUN client as a TCP segment (iOS ctcp). */
             bool                                                            EmitNativeToClient(const std::shared_ptr<TapTcpLink>& link, const void* payload, int payload_len) noexcept;
 #endif
@@ -341,7 +341,7 @@ namespace ppp {
             std::shared_ptr<TapTcpLink>                                     FindTcpLink(const Int128& key) noexcept;
             /** @brief Allocates a new NAT translation link for SYN flows. */
             std::shared_ptr<TapTcpLink>                                     AllocTcpLink(UInt32 src_ip, int src_port, UInt32 dst_ip, int dst_port) noexcept;
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
             /** @brief Connects a loopback socket into the local listener (iOS ctcp). */
             bool                                                            EnsureNativeInject(const std::shared_ptr<TapTcpLink>& link, const std::shared_ptr<boost::asio::io_context>& context) noexcept;
             /** @brief Forwards client TCP payload through the iOS native relay path. */

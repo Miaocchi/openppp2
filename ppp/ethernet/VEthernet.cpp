@@ -1,5 +1,6 @@
 #include <ppp/ethernet/VEthernet.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/Telemetry.h>
 /**
  * @file VEthernet.cpp
  * @brief Implements TAP-facing virtual Ethernet packet dispatch and timers.
@@ -751,6 +752,7 @@ namespace ppp
                         }
                         catch (...)
                         {
+                            ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "vnetstack", "ssmt worker terminated with exception");
                         }
                     };
 

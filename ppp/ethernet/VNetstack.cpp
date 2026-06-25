@@ -504,7 +504,7 @@ namespace ppp {
                     link->Update();
                     rst = false;
 
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
                     if (!lwip_) {
                         return this->DeliverNativeLoopback(link, tcp, tcp_len);
                     }
@@ -611,7 +611,7 @@ namespace ppp {
                     ppp::telemetry::Count("vnetstack.connect", 1);
                     ppp::telemetry::Log(Level::kDebug, "vnetstack", "TCP connect begin local=%s:%u remote=%s:%u", localEP.address().to_string().c_str(), localEP.port(), remoteEP.address().to_string().c_str(), remoteEP.port());
                     rst = false;
-#if !defined(__APPLE__)
+#if !defined(_IPHONE) && !defined(IPHONE)
                     ip->src = tap->GatewayServer;
                     tcp->src = htons(link->natPort);
                     ip->dest = tap->IPAddress;
@@ -1035,13 +1035,13 @@ namespace ppp {
                     }
                 }
                 elif(remoteEP.GetAddress() != tap->GatewayServer) {
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
                     if (remoteEP.GetAddress() != htonl(IPEndPoint::LoopbackAddress)) {
 #endif
                         ppp::telemetry::Count("vnetstack.accept.fail.endpoint", 1);
                         ppp::telemetry::Log(Level::kInfo, "vnetstack", "accept failed: endpoint mismatch nat=%s:%u", natEP.address().to_string().c_str(), natEP.port());
                         break;
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
                     }
 #endif
                 }
@@ -1115,7 +1115,7 @@ namespace ppp {
             return false;
         }
 
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
         /**
          * @brief Starts the iOS ctcp relay that writes client payload to rinetd remote.
          */
@@ -1263,7 +1263,7 @@ namespace ppp {
                 return false;
             }
 
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
             static constexpr int kNativeMaxTcpPayload = 1360; // 1400 MTU - IPv4(20) - TCP(20)
 #else
             static constexpr int kNativeMaxTcpPayload = ITap::Mtu - ip_hdr::IP_HLEN - tcp_hdr::TCP_HLEN;
@@ -1710,7 +1710,7 @@ namespace ppp {
             }
         }
 
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
         /**
          * @brief Updates iOS native relay client sequence tracking from a TUN packet.
          */
@@ -2065,7 +2065,7 @@ namespace ppp {
                     inject_link->Update();
                 }
 
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
                 std::shared_ptr<VNetstack> owner = this->owner_.lock();
                 if (NULLPTR != inject_link && NULLPTR != owner) {
                     owner->EnsureNativeInject(inject_link, this->context_);

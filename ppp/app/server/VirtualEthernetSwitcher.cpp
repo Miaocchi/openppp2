@@ -2576,6 +2576,7 @@ namespace ppp {
                             }
                             catch (...)
                             {
+                                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "server", "linux ssmt worker terminated with exception");
                             }
                         });
                     ssmt_thread.detach();

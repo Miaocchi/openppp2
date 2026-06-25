@@ -329,6 +329,7 @@ namespace ppp
                 }
                 catch (...)
                 {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "net", "unix acceptor watchdog cancel failed");
                 }
             }
 

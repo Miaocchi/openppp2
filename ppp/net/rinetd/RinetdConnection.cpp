@@ -258,7 +258,7 @@ namespace ppp {
                 return true;
             }
 
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
             bool RinetdConnection::WriteRemote(const void* data, size_t len) noexcept {
                 if (disposed_ || NULLPTR == data || len < 1) {
                     return len == 0;

@@ -62,7 +62,7 @@ namespace ppp {
                  */
                 virtual bool                                                            Run() noexcept;
 
-#if defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE)
                 /**
                  * @brief Writes client payload directly to the connected remote socket.
                  * @note Used by iOS ctcp when TUN loopback to the local listener is unavailable.

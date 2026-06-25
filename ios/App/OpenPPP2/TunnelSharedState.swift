@@ -3,7 +3,18 @@ import Foundation
 /// Cross-process tunnel liveness and diagnostics via App Group (mirrors Android
 /// `openppp2-linkstate.txt` + `PppStateStore`).
 enum TunnelSharedState {
-    static let appGroupIdentifier = "group.com.haochengwu.openppp2"
+    static var appGroupIdentifier: String {
+        if let configured = Bundle.main.object(forInfoDictionaryKey: "OpenPPP2AppGroupIdentifier") as? String {
+            let trimmed = configured.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
+            return "group." + bundleId
+        }
+        return "group.io.github.miaocchi.openppp2"
+    }
     static let heartbeatStaleMilliseconds: Int64 = 30_000
     static let connectWatchdogMaxSeconds = 180
 

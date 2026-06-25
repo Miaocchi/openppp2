@@ -5,12 +5,14 @@ import OpenPPP2
 enum NativeTelemetryTransport {
     private static var installed = false
     private static let uploadQueue = DispatchQueue(label: "io.github.openppp2.native-telemetry", qos: .utility)
-    private static let inflightLock = NSLock()
-    private static var inflightUploads = 0
-    private static let maxInflightUploads = 2
+    private static let stateLock = NSLock()
+    private static var pendingPosts: [(URL, Data)] = []
+    private static var workerScheduled = false
+    private static var droppedPosts = 0
+    private static let maxPendingPosts = 16
     private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
-        config.httpMaximumConnectionsPerHost = 2
+        config.httpMaximumConnectionsPerHost = 1
         config.timeoutIntervalForRequest = 8
         config.timeoutIntervalForResource = 12
         config.urlCache = nil
@@ -42,25 +44,46 @@ enum NativeTelemetryTransport {
         return enqueuePost(url: url, body: body) ? 1 : 0
     }
 
-    /// Accept into a bounded async queue; never block the native dataplane thread.
+    /// Accept into a bounded queue; never block the native dataplane thread.
     private static func enqueuePost(url: URL, body: Data) -> Bool {
-        inflightLock.lock()
-        if inflightUploads >= maxInflightUploads {
-            inflightLock.unlock()
-            return true
-        }
-        inflightUploads += 1
-        inflightLock.unlock()
-
-        uploadQueue.async {
-            defer {
-                inflightLock.lock()
-                inflightUploads = max(0, inflightUploads - 1)
-                inflightLock.unlock()
+        stateLock.lock()
+        if pendingPosts.count >= maxPendingPosts {
+            droppedPosts += 1
+            if droppedPosts == 1 || droppedPosts % 32 == 0 {
+                NSLog("OpenPPP2 native telemetry queue full; dropped=%d", droppedPosts)
             }
-            _ = performPost(url: url, body: body)
+            stateLock.unlock()
+            return false
+        }
+
+        pendingPosts.append((url, body))
+        let shouldSchedule = !workerScheduled
+        if shouldSchedule {
+            workerScheduled = true
+        }
+        stateLock.unlock()
+
+        if shouldSchedule {
+            uploadQueue.async {
+                drainPendingPosts()
+            }
         }
         return true
+    }
+
+    private static func drainPendingPosts() {
+        while true {
+            stateLock.lock()
+            if pendingPosts.isEmpty {
+                workerScheduled = false
+                stateLock.unlock()
+                return
+            }
+            let item = pendingPosts.removeFirst()
+            stateLock.unlock()
+
+            _ = performPost(url: item.0, body: item.1)
+        }
     }
 
     private static func performPost(url: URL, body: Data) -> Bool {
@@ -91,14 +114,15 @@ enum NativeTelemetryTransport {
         return accepted
     }
 
-    /// Block briefly so in-flight native OTLP posts can finish before the extension exits.
+    /// Block briefly so queued native OTLP posts can finish before the extension exits.
     static func flushPendingUploads(timeout: TimeInterval = 3) {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            inflightLock.lock()
-            let pending = inflightUploads
-            inflightLock.unlock()
-            if pending == 0 {
+            stateLock.lock()
+            let pending = pendingPosts.count
+            let active = workerScheduled
+            stateLock.unlock()
+            if pending == 0 && !active {
                 return
             }
             Thread.sleep(forTimeInterval: 0.05)
