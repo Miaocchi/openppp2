@@ -9,6 +9,10 @@
 #include <stddef.h>
 #include <string.h>
 
+#if defined(__APPLE__) && defined(__MACH__)
+#include <TargetConditionals.h>
+#endif
+
 #if !defined(NULL)
 #define NULL 0
 #endif
@@ -68,12 +72,38 @@
 #define LINUX 1
 #endif
 #elif defined(__APPLE__) && defined(__MACH__)
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+#if !defined(_IPHONE)
+#define _IPHONE 1
+#endif
+
+#if !defined(IPHONE)
+#define IPHONE 1
+#endif
+#elif defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#if !defined(_IPHONE)
+#define _IPHONE 1
+#endif
+
+#if !defined(IPHONE)
+#define IPHONE 1
+#endif
+#elif defined(__IPHONE_OS_VERSION_MIN_REQUIRED) || defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
+#if !defined(_IPHONE)
+#define _IPHONE 1
+#endif
+
+#if !defined(IPHONE)
+#define IPHONE 1
+#endif
+#else
 #if !defined(_MACOS)
 #define _MACOS 1
 #endif
 
 #if !defined(MACOS)
 #define MACOS 1
+#endif
 #endif
 #endif
 
@@ -139,7 +169,7 @@
 #endif
 #endif
 
-#if ((defined(__IPHONE_OS_VERSION_MIN_REQUIRED)) || (defined(__APPLE__) && defined(__MACH__) && defined(TARGET_OS_IOS) && TARGET_OS_IOS != 0))
+#if ((defined(__IPHONE_OS_VERSION_MIN_REQUIRED)) || (defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)) || (defined(__APPLE__) && defined(__MACH__) && defined(TARGET_OS_IOS) && TARGET_OS_IOS != 0))
 #if !defined(_IPHONE)
 #define _IPHONE 1
 #endif
@@ -241,7 +271,7 @@
 #include <limits.h>
 #include <time.h>
 
-#if defined(_MACOS)
+#if defined(_MACOS) || defined(_IPHONE)
 #include <stdlib.h>
 #else
 #include <malloc.h>
@@ -283,6 +313,7 @@
 #define BOOST_BEAST_VERSION_STRING "ppp"
 #endif
 
+#include <boost/version.hpp>
 #include <boost/asio.hpp>
 #include <boost/asio/spawn.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
@@ -867,11 +898,13 @@ namespace boost { // boost::asio::posix::stream_descriptor
 }
 #include <WinSock2.h>
 #else
+#if BOOST_VERSION < 106600
 namespace boost {
     namespace asio {
         typedef io_service io_context;
     }
 }
+#endif
 #endif
 
 #if defined(JEMALLOC)

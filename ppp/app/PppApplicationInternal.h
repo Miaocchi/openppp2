@@ -36,7 +36,10 @@
 #include <windows/ppp/win32/network/NetworkInterface.h>
 #else
 #include <common/unix/UnixAfx.h>
-#if defined(_MACOS)
+#if defined(_IPHONE)
+#include <ppp/ipv6/IPv6Auxiliary.h>
+#include <ios/ppp/tap/TapIos.h>
+#elif defined(_MACOS)
 #include <darwin/ppp/tap/TapDarwin.h>
 #else
 #include <ppp/ipv6/IPv6Auxiliary.h>

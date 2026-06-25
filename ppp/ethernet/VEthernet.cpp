@@ -731,7 +731,6 @@ namespace ppp
                             SetThreadPriorityToMaxLevel();
                         }
 
-                        boost::system::error_code ec;
                         SetThreadName("ssmt");
 
                         auto work = boost::asio::make_work_guard(*context);
@@ -746,7 +745,13 @@ namespace ppp
                                     awaitable->Processed();
                                 }
                             });
-                        context->run(ec);
+                        try
+                        {
+                            context->run();
+                        }
+                        catch (...)
+                        {
+                        }
                     };
 
                 std::thread ssmt_thread(process_wt);
@@ -928,10 +933,8 @@ namespace ppp
          *
          * @details Large IP frames (e.g. UDP datagrams reassembled from the tunnel that
          *          exceed the TAP MTU) are split into MTU-sized IPv4 fragments before
-         *          output.  Without this, Windows (Wintun) and macOS (utun) reject any
-         *          write larger than ITap::Mtu and the datagram is silently dropped,
-         *          while Linux happens to accept the oversized write - a platform
-         *          inconsistency that breaks large reverse UDP (big DNS/EDNS, QUIC, media).
+         *          output. Without this, Windows (Wintun) and macOS/iOS utun reject any
+         *          write larger than ITap::Mtu and the datagram is silently dropped.
          *          IPFrame::Subpackages() is a no-op for frames that already fit the MTU.
          */
         bool VEthernet::Output(IPFrame* packet) noexcept
@@ -955,7 +958,6 @@ namespace ppp
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
             }
 
-            // Fast path: a single fragment means the frame already fits the MTU.
             if (fragment_count == 1)
             {
                 std::shared_ptr<BufferSegment> messages = IPFrame::ToArray(allocator, packet);

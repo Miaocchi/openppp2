@@ -17,6 +17,8 @@
 #if defined(_WIN32)
 #include <windows/ppp/tap/TapWindows.h>
 #include <windows/ppp/tap/WintunAdapter.h>
+#elif defined(_IPHONE)
+#include <ios/ppp/tap/TapIos.h>
 #elif defined(_MACOS)
 #include <darwin/ppp/tap/TapDarwin.h>
 #else
@@ -300,7 +302,9 @@ namespace ppp
                 return NULLPTR;
             }
 
-#if defined(_MACOS)
+#if defined(_IPHONE)
+            return ppp::tap::TapIos::Create(context, dev, ip, gw, mask, promisc, hosted_network, dns_addresses);
+#elif defined(_MACOS)
             return ppp::tap::TapDarwin::Create(context, dev, ip, gw, mask, promisc, hosted_network, dns_addresses);
 #else
             return ppp::tap::TapLinux::Create(context, dev, ip, gw, mask, promisc, hosted_network, dns_addresses);

@@ -47,7 +47,7 @@
 #include <err.h>
 #include <poll.h>
 #else
-#if defined(_MACOS)
+#if defined(_MACOS) || defined(_IPHONE)
 #include <errno.h>
 #include <sys/poll.h>
 #elif defined(_LINUX)
@@ -383,7 +383,7 @@ namespace ppp {
             int ttl = DFL_TTL;
             int fd = (int)socket(AF_INET, SOCK_DGRAM, 0);
             if (fd != -1) {
-#if defined(_MACOS)
+#if defined(_MACOS) || defined(_IPHONE)
                 socklen_t len = sizeof(ttl);
                 if (getsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, &len) < 0) {
                     int mib[] = { CTL_NET, IPPROTO_IP, IPCTL_DEFTTL };
@@ -513,7 +513,7 @@ namespace ppp {
             }
 
             bool any = false;
-#if defined(_MACOS)
+#if defined(_MACOS) || defined(_IPHONE)
 #if defined(IPV6_TCLASS)
             if (SOCKET_RESTRICTIONS_.IPV6_TCLASS_ON) {
                 any |= ::setsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, (char*)&tos, sizeof(tos)) == 0;
@@ -728,7 +728,7 @@ namespace ppp {
                 uint8_t tos = SOCKET_RESTRICTIONS_.IP_TOS_DEFAULT_FLASH ? IPTOS_LOWDELAY : 0;
                 if (in4) {
                     if (SOCKET_RESTRICTIONS_.IP_TOS_ON) {
-#if defined(_MACOS)
+#if defined(_MACOS) || defined(_IPHONE)
                         ::setsockopt(sockfd, IPPROTO_IP, IP_TOS, (char*)&tos, sizeof(tos));
 #else
                         ::setsockopt(sockfd, SOL_IP, IP_TOS, (char*)&tos, sizeof(tos));

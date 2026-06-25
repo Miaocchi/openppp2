@@ -45,10 +45,12 @@
 #include <memory>
 #include <cstdlib>
 
+#if !defined(_IPHONE)
 #if BOOST_VERSION >= 108700
 #include <boost/stacktrace/stacktrace.hpp>
 #else
 #include <boost/stacktrace.hpp>
+#endif
 #endif
 #include <ppp/text/Encoding.h>
 #include <ppp/hash/hash_bytes.h>
@@ -879,6 +881,9 @@ namespace ppp {
 
     /** @brief Captures current call stack as text. */
     std::string CaptureStackTrace() noexcept {
+#if defined(_IPHONE)
+        return "";
+#else
 #if defined(_LINUX) && !defined(_ANDROID) && !defined(__MUSL__)
         if (ppp::diagnostics::Addr2lineIsSupport()) {
             return ppp::diagnostics::CaptureStackTrace();
@@ -887,6 +892,7 @@ namespace ppp {
 
         boost::stacktrace::stacktrace st;
         return boost::stacktrace::to_string(st);
+#endif
     }
 
     /** @brief Queries operating system memory page size. */
@@ -1124,6 +1130,8 @@ namespace ppp {
             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeEnvironmentInvalid);
         }
         return true;
+#elif defined(_IPHONE)
+        return true;
 #else
         if (0 != system("clear")) {
             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeEnvironmentInvalid);
@@ -1316,7 +1324,7 @@ namespace ppp {
 
 #if defined(_WIN32)
         ppp::win32::Win32Native::SetThreadDescription(name);
-#elif defined(_MACOS)
+#elif defined(_MACOS) || defined(_IPHONE)
         pthread_setname_np(name);
 #else
         pthread_setname_np(pthread_self(), name);

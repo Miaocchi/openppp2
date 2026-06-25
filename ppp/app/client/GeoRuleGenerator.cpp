@@ -9,8 +9,8 @@
 
 #include <common/chnroutes2/chnroutes2.h>
 
-#include <boost/filesystem.hpp>
 #include <ctime>
+#include <sys/stat.h>
 
 /**
  * @file GeoRuleGenerator.cpp
@@ -120,10 +120,10 @@ namespace ppp {
                  *          the download path so behaviour is at worst unchanged.
                  */
                 {
-                    boost::system::error_code ec_stat;
-                    if (boost::filesystem::is_regular_file(full_path.data(), ec_stat) && !ec_stat) {
-                        std::time_t mtime = boost::filesystem::last_write_time(full_path.data(), ec_stat);
-                        if (!ec_stat && mtime > 0) {
+                    struct stat st {};
+                    if (::stat(full_path.data(), &st) == 0 && S_ISREG(st.st_mode)) {
+                        std::time_t mtime = st.st_mtime;
+                        if (mtime > 0) {
                             constexpr std::time_t kCacheTtlSeconds = 30 * 24 * 60 * 60; // 30 days
                             std::time_t now = std::time(nullptr);
                             std::time_t age = (now > mtime) ? (now - mtime) : 0;
