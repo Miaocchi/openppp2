@@ -53,6 +53,11 @@ namespace ppp
                 return false;
             }
 
+            if (!IsOpen() || NULLPTR == PacketInput)
+            {
+                return false;
+            }
+
             PacketInputEventArgs e;
             e.Packet = const_cast<void*>(packet);
             e.PacketLength = packet_size;

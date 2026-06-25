@@ -5,6 +5,7 @@
 #include <ppp/auxiliary/JsonAuxiliary.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/Telemetry.h>
 #include <ppp/IDisposable.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
@@ -17,10 +18,15 @@
 #include <atomic>
 #include <cinttypes>
 #include <condition_variable>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <chrono>
 #include <mutex>
+#include <os/log.h>
+#include <pthread.h>
+#include <system_error>
 #include <thread>
 
 struct openppp2_ios_tap
@@ -33,6 +39,7 @@ struct openppp2_ios_tap
     std::shared_ptr<boost::asio::io_context>                                    context;
     std::shared_ptr<ppp::threading::BufferswapAllocator>                        allocator;
     ppp::transmissions::ITransmissionStatistics                                 statistics_reference;
+    ppp::string                                                                 start_stage = "idle";
     std::thread                                                                 runtime_thread;
     openppp2_ios_packet_writer                                                  writer = nullptr;
     void*                                                                       user_data = nullptr;
@@ -66,6 +73,127 @@ namespace
 
     std::mutex g_last_error_mutex;
     ppp::string g_last_error_text = "success";
+    std::once_flag g_runtime_bootstrap_once;
+    std::once_flag g_telemetry_sink_once;
+
+    void native_logf(const char* format, ...) noexcept
+    {
+        if (format == nullptr)
+        {
+            return;
+        }
+
+        char buffer[512];
+        va_list args;
+        va_start(args, format);
+        std::vsnprintf(buffer, sizeof(buffer), format, args);
+        va_end(args);
+        buffer[sizeof(buffer) - 1] = '\0';
+        os_log(OS_LOG_DEFAULT, "%{public}s", buffer);
+    }
+
+    void telemetry_os_log_sink(const char* line) noexcept
+    {
+        if (line == nullptr)
+        {
+            return;
+        }
+
+        os_log(OS_LOG_DEFAULT, "OpenPPP2 telemetry: %{public}s", line);
+    }
+
+    void set_start_stage(openppp2_ios_tap* tap, const char* stage) noexcept
+    {
+        if (tap == nullptr || stage == nullptr)
+        {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> scope(tap->sync);
+            tap->start_stage = stage;
+        }
+        native_logf("OpenPPP2 native start: %s", stage);
+    }
+
+    void ensure_runtime_bootstrap() noexcept
+    {
+        std::call_once(g_runtime_bootstrap_once, []() noexcept {
+            ppp::global::cctor();
+        });
+        std::call_once(g_telemetry_sink_once, []() noexcept {
+            ppp::telemetry::SetConsoleSink(telemetry_os_log_sink);
+        });
+    }
+
+    template<typename Callable>
+    std::thread start_thread_with_stack_size(Callable&& callable, size_t stack_size)
+    {
+        using CallableType = std::decay_t<Callable>;
+        auto* wrapper = new CallableType(std::forward<Callable>(callable));
+
+        pthread_attr_t attributes;
+        pthread_attr_init(&attributes);
+        pthread_attr_setstacksize(&attributes, stack_size);
+
+        pthread_t pthread_id;
+        const int rc = pthread_create(
+            &pthread_id,
+            &attributes,
+            [](void* arg) -> void*
+            {
+                auto* callable_ptr = static_cast<CallableType*>(arg);
+                (*callable_ptr)();
+                delete callable_ptr;
+                return nullptr;
+            },
+            wrapper);
+        pthread_attr_destroy(&attributes);
+
+        if (rc != 0)
+        {
+            delete wrapper;
+            throw std::system_error(rc, std::generic_category(), "pthread_create failed");
+        }
+
+        return std::thread([pthread_id]()
+        {
+            pthread_join(pthread_id, nullptr);
+        });
+    }
+
+    void configure_native_telemetry(const std::shared_ptr<AppConfiguration>& configuration) noexcept
+    {
+        if (configuration == nullptr)
+        {
+            return;
+        }
+
+        ppp::telemetry::SetEnabled(configuration->telemetry.enabled);
+        ppp::telemetry::SetMinLevel(configuration->telemetry.level);
+        ppp::telemetry::SetCountEnabled(configuration->telemetry.count);
+        ppp::telemetry::SetSpanEnabled(configuration->telemetry.span);
+        ppp::telemetry::SetConsoleLogEnabled(true);
+        ppp::telemetry::SetConsoleMetricEnabled(true);
+        ppp::telemetry::SetConsoleSpanEnabled(true);
+#if defined(_IPHONE)
+        // Extension memory budget: INFO-only OTLP, no spans/metrics console noise.
+        ppp::telemetry::SetMinLevel(std::min(configuration->telemetry.level, 0));
+        ppp::telemetry::SetSpanEnabled(false);
+        ppp::telemetry::SetConsoleMetricEnabled(false);
+        ppp::telemetry::SetConsoleSpanEnabled(false);
+#endif
+        ppp::telemetry::Configure(configuration->telemetry.endpoint.c_str());
+        ppp::telemetry::SetLogFile(configuration->telemetry.log_file.c_str());
+
+        native_logf(
+            "OpenPPP2 telemetry configured enabled=%d level=%d count=%d span=%d console_log=1 console_metric=1 console_span=1 endpoint=%s",
+            configuration->telemetry.enabled ? 1 : 0,
+            configuration->telemetry.level,
+            configuration->telemetry.count ? 1 : 0,
+            configuration->telemetry.span ? 1 : 0,
+            configuration->telemetry.endpoint.empty() ? "(empty)" : configuration->telemetry.endpoint.c_str());
+    }
 
     void set_last_error(const char* text) noexcept
     {
@@ -126,6 +254,7 @@ namespace
     {
         int         mux = 0;
         int         vnet = 0;
+        int         lwip = 0;
         int         block_quic = 0;
         int         static_mode = 0;
         ppp::string ip;
@@ -140,6 +269,7 @@ namespace
         tunnel_options_snapshot snapshot;
         snapshot.mux = options.mux;
         snapshot.vnet = options.vnet;
+        snapshot.lwip = options.lwip;
         snapshot.block_quic = options.block_quic;
         snapshot.static_mode = options.static_mode;
         snapshot.ip = c_string_or_empty(options.ip);
@@ -201,6 +331,7 @@ namespace
         ppp::net::asio::vdns::ttl = parsed->udp.dns.ttl;
         ppp::net::asio::vdns::enabled = parsed->udp.dns.turbo;
         configuration = parsed;
+        configure_native_telemetry(configuration);
         return true;
     }
 
@@ -395,6 +526,8 @@ namespace
             return false;
         }
 
+        ensure_runtime_bootstrap();
+
         tunnel_options_snapshot options_copy = snapshot_options(*options);
 
         if (!change_working_directory(options_copy.root_path.c_str()))
@@ -433,15 +566,18 @@ namespace
             tap->inbound_last = 0;
             tap->outbound_last = 0;
             tap->latest_statistics = "{}";
+            tap->start_stage = "runtime thread pending";
         }
 
         try
         {
-            tap->runtime_thread = std::thread(
+            native_logf("OpenPPP2 native start: creating runtime thread");
+            tap->runtime_thread = start_thread_with_stack_size(
                 [tap, configuration, options_copy, ip, gateway, mask, statistics_writer, statistics_user_data]() mutable noexcept
             {
                 auto start = [tap, configuration, &options_copy, ip, gateway, mask, statistics_writer, statistics_user_data](int, const char**) noexcept -> int
                 {
+                    set_start_stage(tap, "executor callback entered");
                     std::shared_ptr<boost::asio::io_context> context = Executors::GetDefault();
                     if (context == nullptr)
                     {
@@ -449,10 +585,16 @@ namespace
                         return complete_start(tap, 1);
                     }
 
+                    set_start_stage(tap, "configuring executors");
                     int max_concurrent = std::max<int>(1, ppp::GetProcesserCount());
+#if defined(_IPHONE)
+                    // Network Extension memory budget: cap worker threads (keep >= 2 for ctcp accept/connect).
+                    max_concurrent = std::min(max_concurrent, 2);
+#endif
                     Executors::SetMaxThreads(configuration->GetBufferAllocator(), max_concurrent);
                     Executors::SetMaxSchedulers(max_concurrent);
 
+                    set_start_stage(tap, "creating TapIos");
                     std::shared_ptr<ppp::tap::TapIos> ios_tap = ppp::tap::TapIos::Create(
                         context,
                         "packet-tunnel",
@@ -469,10 +611,20 @@ namespace
                         return complete_start(tap, 1);
                     }
 
+                    set_start_stage(tap, "installing packet output");
                     ios_tap->SetPacketOutput(
                         [tap](const void* packet, int packet_size) noexcept -> bool
                         {
                             bool ok = tap->writer(packet, packet_size, tap->user_data) != 0;
+                            if (packet_size > 0)
+                            {
+                                static std::atomic<uint64_t> output_count { 0 };
+                                uint64_t n = ++output_count;
+                                if (n <= 20 || (n % 50) == 0 || !ok)
+                                {
+                                    native_logf("OpenPPP2 native output #%llu bytes=%d ok=%d", (unsigned long long)n, packet_size, ok ? 1 : 0);
+                                }
+                            }
                             if (ok && packet_size > 0)
                             {
                                 std::lock_guard<std::mutex> scope(tap->sync);
@@ -481,15 +633,17 @@ namespace
                             return ok;
                         });
 
+                    set_start_stage(tap, "opening TapIos");
                     if (!ios_tap->Open())
                     {
                         set_last_error("failed to open iOS packet tap");
                         return complete_start(tap, 1);
                     }
 
-                    bool lwip = false;
+                    set_start_stage(tap, "creating network switcher");
+                    bool lwip = options_copy.lwip != 0;
                     bool vnet = options_copy.vnet != 0;
-                    bool mta = max_concurrent > 1;
+                    bool mta = false;
                     std::shared_ptr<VEthernetNetworkSwitcher> client =
                         ppp::make_shared_object<VEthernetNetworkSwitcher>(context, lwip, vnet, mta, configuration);
                     if (client == nullptr)
@@ -499,7 +653,13 @@ namespace
                         return complete_start(tap, 1);
                     }
 
+                    set_start_stage(tap, "configuring network switcher");
                     uint16_t mux = static_cast<uint16_t>(std::min<int>(std::max<int>(0, options_copy.mux), UINT16_MAX));
+                    native_logf("OpenPPP2 native dataplane: lwip=%d vnet=%d mta=%d mux=%d max_concurrent=%d stack_mb=5",
+                        lwip ? 1 : 0, vnet ? 1 : 0, mta ? 1 : 0, static_cast<int>(mux), max_concurrent);
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "ios_tunnel",
+                        "dataplane start lwip=%d mux=%d max_concurrent=%d stack_mb=5",
+                        lwip ? 1 : 0, static_cast<int>(mux), max_concurrent);
                     bool static_mode = options_copy.static_mode != 0;
                     client->Mux(&mux);
                     client->StaticMode(&static_mode);
@@ -517,6 +677,7 @@ namespace
                         client->SetBypassIpList(std::move(bypass_ip_list));
                     }
 
+                    set_start_stage(tap, "opening OpenPPP2 client");
                     if (!client->Open(ios_tap))
                     {
                         set_last_error_from_diagnostics("failed to open OpenPPP2 client");
@@ -524,6 +685,7 @@ namespace
                         return complete_start(tap, 1);
                     }
 
+                    set_start_stage(tap, "publishing runtime objects");
                     {
                         std::lock_guard<std::mutex> scope(tap->sync);
                         tap->tap = ios_tap;
@@ -534,13 +696,16 @@ namespace
 
                     refresh_statistics(tap, statistics_writer, statistics_user_data);
                     set_last_error("success");
+                    set_start_stage(tap, "client opened");
                     return complete_start(tap, 0);
                 };
 
                 int rc = 1;
                 try
                 {
+                    set_start_stage(tap, "running executor");
                     rc = Executors::Run(configuration->GetBufferAllocator(), start);
+                    native_logf("OpenPPP2 native start: executor exited rc=%d", rc);
                 }
                 catch (const std::exception& e)
                 {
@@ -556,6 +721,15 @@ namespace
                 }
 
                 {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "ios_tunnel",
+                        "runtime thread exiting rc=%d stopping=%d inbound=%llu outbound=%llu error=%s",
+                        rc,
+                        tap->stopping ? 1 : 0,
+                        (unsigned long long)tap->inbound_total,
+                        (unsigned long long)tap->outbound_total,
+                        g_last_error_text.c_str());
+                    ppp::telemetry::Count("ios_tunnel.runtime_exit", 1);
+
                     std::lock_guard<std::mutex> scope(tap->sync);
                     tap->running = false;
                     tap->context.reset();
@@ -566,10 +740,13 @@ namespace
                         tap->configuration.reset();
                     }
                     tap->link_state = tap->stopping ? 2 : tap->link_state;
+                    tap->start_stage = tap->stopping ? "runtime exited (stop requested)" : "runtime exited (unexpected)";
                 }
                 tap->start_condition.notify_all();
                 (void)rc;
-            });
+            // iOS Network Extension memory budget is tight (~15-50MB). Reserve a
+            // moderate stack: 32MB risks Jetsam; 4MB was too small for ctcp load.
+            }, static_cast<size_t>(5) * 1024 * 1024);
         }
         catch (const std::exception& e)
         {
@@ -584,7 +761,17 @@ namespace
 
         {
             std::unique_lock<std::mutex> lock(tap->sync);
-            tap->start_condition.wait(lock, [tap]() noexcept { return tap->start_completed; });
+            while (!tap->start_completed)
+            {
+                ppp::string stage = tap->start_stage;
+                if (tap->start_condition.wait_for(lock, std::chrono::seconds(3), [tap]() noexcept { return tap->start_completed; }))
+                {
+                    break;
+                }
+                lock.unlock();
+                native_logf("OpenPPP2 native start: still waiting at %s", stage.c_str());
+                lock.lock();
+            }
             bool ok = tap->start_result == 0;
             lock.unlock();
             if (!ok && tap->runtime_thread.joinable())
@@ -630,7 +817,7 @@ void openppp2_ios_tap_destroy(openppp2_ios_tap* tap)
         return;
     }
 
-    openppp2_ios_tap_stop(tap);
+    openppp2_ios_tap_stop(tap, -1);
     delete tap;
 }
 
@@ -663,7 +850,40 @@ int openppp2_ios_tap_start(
     return 0;
 }
 
-int openppp2_ios_tap_stop(openppp2_ios_tap* tap)
+    const char* stop_reason_name(int stop_reason) noexcept
+    {
+        switch (stop_reason)
+        {
+        case 0:
+            return "none";
+        case 1:
+            return "user_initiated";
+        case 2:
+            return "provider_failed";
+        case 3:
+            return "no_network";
+        case 4:
+            return "network_change";
+        case 5:
+            return "provider_disabled";
+        case 6:
+            return "auth_canceled";
+        case 7:
+            return "config_failed";
+        case 8:
+            return "idle_timeout";
+        case 9:
+            return "config_disabled";
+        case 10:
+            return "config_removed";
+        case 11:
+            return "supervisor";
+        default:
+            return stop_reason < 0 ? "unknown" : "other";
+        }
+    }
+
+int openppp2_ios_tap_stop(openppp2_ios_tap* tap, int stop_reason)
 {
     if (nullptr == tap)
     {
@@ -681,6 +901,15 @@ int openppp2_ios_tap_stop(openppp2_ios_tap* tap)
         context = tap->context;
     }
 
+    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "ios_tunnel",
+        "tap stop reason=%d name=%s inbound=%llu outbound=%llu",
+        stop_reason,
+        stop_reason_name(stop_reason),
+        (unsigned long long)tap->inbound_total,
+        (unsigned long long)tap->outbound_total);
+    ppp::telemetry::Count("ios_tunnel.stop", 1);
+    ppp::telemetry::Flush(3000);
+
     if (nullptr != client)
     {
         client->Dispose();
@@ -691,13 +920,11 @@ int openppp2_ios_tap_stop(openppp2_ios_tap* tap)
         ios_tap->Dispose();
     }
 
+    // Stop only this tunnel's io_context. Never call Executors::Exit() without a
+    // context from the XPC stop thread — that joins worker threads and can SIGSEGV.
     if (nullptr != context)
     {
         Executors::Exit(context);
-    }
-    else
-    {
-        Executors::Exit();
     }
 
     if (tap->runtime_thread.joinable())
@@ -737,7 +964,14 @@ int openppp2_ios_tap_input(
     {
         return 0;
     }
+
+    static std::atomic<uint64_t> input_count { 0 };
     bool ok = ios_tap->Input(packet, packet_size);
+    uint64_t n = ++input_count;
+    if (n <= 20 || (n % 50) == 0 || !ok)
+    {
+        native_logf("OpenPPP2 native input #%llu bytes=%d ok=%d", (unsigned long long)n, packet_size, ok ? 1 : 0);
+    }
     if (ok)
     {
         std::lock_guard<std::mutex> scope(tap->sync);
@@ -794,8 +1028,55 @@ int openppp2_ios_tap_get_statistics(
     return static_cast<int>(statistics.size());
 }
 
+int openppp2_ios_tap_get_start_stage(
+    openppp2_ios_tap* tap,
+    char*             buffer,
+    int               buffer_size)
+{
+    if (nullptr == tap)
+    {
+        return 0;
+    }
+
+    ppp::string stage;
+    {
+        std::lock_guard<std::mutex> scope(tap->sync);
+        stage = tap->start_stage;
+    }
+
+    if (!copy_text(stage, buffer, buffer_size))
+    {
+        return 0;
+    }
+    return static_cast<int>(stage.size());
+}
+
 const char* openppp2_ios_last_error_text(void)
 {
     std::lock_guard<std::mutex> scope(g_last_error_mutex);
     return g_last_error_text.data();
+}
+
+namespace
+{
+    openppp2_ios_http_post_fn g_ios_http_post = nullptr;
+    void*                       g_ios_http_post_user_data = nullptr;
+
+    bool ios_http_post_sink(const char* url, const void* body, size_t body_len, void* user_data) noexcept
+    {
+        (void)user_data;
+        if (g_ios_http_post == nullptr || url == nullptr || body == nullptr || body_len == 0)
+        {
+            return false;
+        }
+
+        return g_ios_http_post(url, body, static_cast<int>(body_len), g_ios_http_post_user_data) != 0;
+    }
+}
+
+void openppp2_ios_set_telemetry_http_post(openppp2_ios_http_post_fn fn, void* user_data)
+{
+    g_ios_http_post = fn;
+    g_ios_http_post_user_data = user_data;
+    ppp::telemetry::SetHttpPostSink(fn != nullptr ? ios_http_post_sink : nullptr, nullptr);
 }

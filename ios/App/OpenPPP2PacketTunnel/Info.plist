@@ -20,6 +20,13 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>OpenPPP2TelemetryDeveloperEndpoint</key>
+	<string>$(OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT)</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>
