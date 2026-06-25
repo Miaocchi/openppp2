@@ -393,6 +393,11 @@ namespace ppp {
                  */
                 virtual bool                                                EndAccept(const std::shared_ptr<boost::asio::ip::tcp::socket>& socket, const boost::asio::ip::tcp::endpoint& natEP) noexcept override;
 
+#if defined(_IPHONE) || defined(IPHONE)
+                virtual bool                                                StartNativeRelay() noexcept override;
+                virtual bool                                                DeliverNativePayload(ppp::ethernet::VNetstack::tcp_hdr* tcp, int tcp_len) noexcept override;
+#endif
+
             private:
                 /**
                  * @brief Releases all active forwarding channels (VPN, rinetd, vmux).
@@ -436,7 +441,11 @@ namespace ppp {
                 /** @brief Active rinetd bypass connection; null if not using bypass path. */
                 std::shared_ptr<RinetdConnection>                           connection_rinetd_;
                 /** @brief Active VMUX sub-channel socket; null if not using mux path. */
-                std::shared_ptr<vmux::vmux_skt>                             connection_mux_;                       
+                std::shared_ptr<vmux::vmux_skt>                             connection_mux_;
+#if defined(_IPHONE)
+                /** @brief Tracks iOS per-flow server TCP slot held for mux=0 VPN path. */
+                bool                                                        ios_child_transmission_slot_held_ = false;
+#endif
             };
         }
     }

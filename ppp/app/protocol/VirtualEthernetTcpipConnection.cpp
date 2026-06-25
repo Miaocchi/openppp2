@@ -5,6 +5,9 @@
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
 
+#include <deque>
+#include <vector>
+
 #include <ppp/threading/Executors.h>
 #include <ppp/coroutines/asio/asio.h>
 #include <ppp/coroutines/YieldContext.h>
@@ -561,6 +564,14 @@ namespace ppp {
                 disposed_ = true;
                 connected_ = false;
 
+#if defined(_IPHONE) || defined(IPHONE)
+                {
+                    std::lock_guard<std::mutex> lock(native_upload_mutex_);
+                    native_upload_queue_.clear();
+                    native_upload_writer_started_ = false;
+                }
+#endif
+
                 ppp::net::Socket::Closesocket(socket_);
             }
 
@@ -895,6 +906,173 @@ namespace ppp {
                 Dispose();
                 return any;
             }
+
+#if defined(_IPHONE) || defined(IPHONE)
+            bool VirtualEthernetTcpipConnection::EnsureNativeUploadWriter() noexcept {
+                if (disposed_ || !connected_) {
+                    return false;
+                }
+
+                std::unique_lock<std::mutex> lock(native_upload_mutex_);
+                if (native_upload_writer_started_ || native_upload_queue_.empty()) {
+                    return native_upload_writer_started_;
+                }
+
+                native_upload_writer_started_ = true;
+                auto self = shared_from_this();
+                auto allocator = configuration_->GetBufferAllocator();
+                auto spawn_work =
+                    [self, this](YieldContext& y) noexcept {
+                        return RunNativeUploadWriter(y);
+                    };
+
+                lock.unlock();
+                if (!YieldContext::Spawn(allocator.get(), *context_, strand_.get(), spawn_work)) {
+                    std::lock_guard<std::mutex> reset_lock(native_upload_mutex_);
+                    native_upload_writer_started_ = false;
+                    return false;
+                }
+
+                return true;
+            }
+
+            bool VirtualEthernetTcpipConnection::RunNativeUploadWriter(YieldContext& y) noexcept {
+                while (!disposed_ && connected_) {
+                    std::shared_ptr<std::vector<Byte>> payload;
+                    {
+                        std::lock_guard<std::mutex> lock(native_upload_mutex_);
+                        if (native_upload_queue_.empty()) {
+                            native_upload_writer_started_ = false;
+                            return true;
+                        }
+
+                        payload = std::move(native_upload_queue_.front());
+                        native_upload_queue_.pop_front();
+                    }
+
+                    if (NULLPTR == payload || payload->empty()) {
+                        continue;
+                    }
+
+                    if (!SendBufferToPeer(y, payload->data(), (int)payload->size())) {
+                        size_t queue_depth = 0;
+                        {
+                            std::lock_guard<std::mutex> lock(native_upload_mutex_);
+                            queue_depth = native_upload_queue_.size();
+                        }
+                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip",
+                            "native upload write failed len=%d error=%d queue=%zu disposed=%s connected=%s",
+                            (int)payload->size(),
+                            (int)ppp::diagnostics::GetLastErrorCode(),
+                            queue_depth,
+                            disposed_ ? "yes" : "no",
+                            connected_ ? "yes" : "no");
+                    }
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(native_upload_mutex_);
+                    native_upload_writer_started_ = false;
+                }
+
+                return true;
+            }
+
+            bool VirtualEthernetTcpipConnection::SendBufferToPeerAsync(const std::shared_ptr<std::vector<Byte>>& payload) noexcept {
+                if (NULLPTR == payload || payload->empty()) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionSendPeerInvalidPayload);
+                    return false;
+                }
+
+                if (disposed_ || !connected_) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionSendPeerNotConnected);
+                    return false;
+                }
+
+                if (NULLPTR == transmission_) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionTransportMissing);
+                    return false;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(native_upload_mutex_);
+                    if (native_upload_queue_.size() >= kNativeUploadQueueMax) {
+                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip",
+                            "native upload queue full drop len=%zu depth=%zu",
+                            payload->size(),
+                            native_upload_queue_.size());
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionSendPeerInvalidPayload);
+                        return false;
+                    }
+
+                    native_upload_queue_.push_back(payload);
+                }
+
+                return EnsureNativeUploadWriter();
+            }
+
+            bool VirtualEthernetTcpipConnection::SendBufferToPeerAsync(const void* packet, int packet_length) noexcept {
+                if (NULLPTR == packet || packet_length < 1) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionSendPeerInvalidPayload);
+                    return false;
+                }
+
+                std::shared_ptr<std::vector<Byte>> payload =
+                    std::make_shared<std::vector<Byte>>((const Byte*)packet, (const Byte*)packet + packet_length);
+                if (NULLPTR == payload) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    return false;
+                }
+
+                return SendBufferToPeerAsync(payload);
+            }
+
+            bool VirtualEthernetTcpipConnection::StartNativeTapRelay(const ppp::function<void(const void*, size_t)>& on_data) noexcept {
+                if (disposed_ || !connected_ || !on_data) {
+                    return false;
+                }
+
+                ITransmissionPtr transmission = transmission_;
+                if (NULLPTR == transmission) {
+                    return false;
+                }
+
+                auto self = shared_from_this();
+                ppp::function<void(const void*, size_t)> relay = on_data;
+                auto allocator = configuration_->GetBufferAllocator();
+                auto spawn_work =
+                    [self, this, relay](YieldContext& y) noexcept {
+                        while (!disposed_ && connected_) {
+                            ITransmissionPtr active = transmission_;
+                            if (NULLPTR == active) {
+                                break;
+                            }
+
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Success);
+
+                            int packet_length = 0;
+                            std::shared_ptr<Byte> packet = active->Read(y, packet_length);
+                            if (NULLPTR == packet || packet_length < 1) {
+                                const auto error = ppp::diagnostics::GetLastErrorCode();
+                                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip",
+                                    "vpn native inject read end packet_length=%d error=%d disposed=%s connected=%s",
+                                    packet_length,
+                                    (int)error,
+                                    disposed_ ? "yes" : "no",
+                                    connected_ ? "yes" : "no");
+                                break;
+                            }
+
+                            relay(packet.get(), (size_t)packet_length);
+                            Update();
+                        }
+
+                        return true;
+                    };
+
+                return YieldContext::Spawn(allocator.get(), *context_, strand_.get(), spawn_work);
+            }
+#endif
         }
     }
 }

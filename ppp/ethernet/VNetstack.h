@@ -51,6 +51,18 @@ namespace ppp {
                 UInt16                                                      srcPort = 0;
                 /** @brief Locally allocated NAT port used on the loopback listener side. */
                 UInt16                                                      natPort = 0;
+                /** @brief Client ISN from the original SYN (network byte order). */
+                UInt32                                                      clientSeqno = 0;
+                /** @brief Server ISN used for native client-facing replies (network byte order). */
+                UInt32                                                      serverSeqno = 0;
+                /** @brief Next expected client sequence number (network byte order). */
+                UInt32                                                      clientAckno = 0;
+#if defined(__APPLE__)
+                /** @brief True once the iOS native tap relay has started. */
+                std::atomic_bool                                            nativeInjectReady = { false };
+                /** @brief Guards against starting duplicate relay pumps. */
+                std::atomic_bool                                            nativeRelayStarted = { false };
+#endif
                 /**
                  * @brief Full Int128 LAN2WAN key stored by the lwIP accept path.
                  *        Standard NAT path flows leave this zero and use natPort for
@@ -176,6 +188,21 @@ namespace ppp {
                 /** @brief Gets the optional execution strand. */
                 ppp::threading::Executors::StrandPtr&                       GetStrand() noexcept  { return strand_; }
 
+#if defined(__APPLE__)
+                /** @brief Starts iOS ctcp relay without TUN loopback to the listener. */
+                virtual bool                                                StartNativeRelay() noexcept { return false; }
+                /** @brief Forwards decoded client TCP payload to the upstream socket. */
+                virtual bool                                                DeliverNativePayload(tcp_hdr* tcp, int tcp_len) noexcept { (void)tcp; (void)tcp_len; return false; }
+                /** @brief Updates client ACK tracking from a packet received from TUN. */
+                bool                                                        UpdateNativeClientAck(tcp_hdr* tcp, int tcp_len) noexcept;
+                /** @brief Emits upstream payload back to the TUN client. */
+                bool                                                        EmitNativeToClient(const void* payload, int payload_len) noexcept;
+#endif
+
+                /** @brief Owning NAT flow link entry. */
+                std::shared_ptr<TapTcpLink>                                 link_;
+                std::weak_ptr<VNetstack>                                    owner_;
+
             protected:
                 /** @brief Starts outbound connection preparation. */
                 virtual bool                                                BeginAccept() noexcept = 0;
@@ -208,9 +235,6 @@ namespace ppp {
                 ppp::threading::Executors::StrandPtr                        strand_;
                 /** @brief Outbound TCP socket connecting to the upstream destination. */
                 std::shared_ptr<boost::asio::ip::tcp::socket>               socket_;
-                /** @brief Owning NAT flow link entry. */
-                std::shared_ptr<TapTcpLink>                                 link_;
-                std::weak_ptr<VNetstack>                                    owner_;
 
                 /**
                  * @note  These fields MUST be accessed exclusively via `std::atomic_load` /
@@ -272,6 +296,11 @@ namespace ppp {
             /** @brief Performs periodic timeout and cleanup maintenance. */
             virtual bool                                                    Update(uint64_t now) noexcept;
 
+#if defined(__APPLE__)
+            /** @brief Emits server payload to the TUN client as a TCP segment (iOS ctcp). */
+            bool                                                            EmitNativeToClient(const std::shared_ptr<TapTcpLink>& link, const void* payload, int payload_len) noexcept;
+#endif
+
         protected:
             /** @brief Creates a transport client for a new TCP flow. */
             virtual std::shared_ptr<TapTcpClient>                           BeginAcceptClient(const boost::asio::ip::tcp::endpoint& localEP, const boost::asio::ip::tcp::endpoint& remoteEP) noexcept = 0;
@@ -312,8 +341,13 @@ namespace ppp {
             std::shared_ptr<TapTcpLink>                                     FindTcpLink(const Int128& key) noexcept;
             /** @brief Allocates a new NAT translation link for SYN flows. */
             std::shared_ptr<TapTcpLink>                                     AllocTcpLink(UInt32 src_ip, int src_port, UInt32 dst_ip, int dst_port) noexcept;
+#if defined(__APPLE__)
+            /** @brief Connects a loopback socket into the local listener (iOS ctcp). */
+            bool                                                            EnsureNativeInject(const std::shared_ptr<TapTcpLink>& link, const std::shared_ptr<boost::asio::io_context>& context) noexcept;
+            /** @brief Forwards client TCP payload through the iOS native relay path. */
+            bool                                                            DeliverNativeLoopback(const std::shared_ptr<TapTcpLink>& link, tcp_hdr* tcp, int tcp_len) noexcept;
+#endif
 
-        private:
             /** @brief Guards wan2lan_, lan2wan_, and acceptor_ from concurrent access. */
             SynchronizedObject                                              syncobj_;
             /** @brief Next NAT port allocation counter. */

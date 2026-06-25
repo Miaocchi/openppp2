@@ -62,6 +62,19 @@ namespace ppp {
                  */
                 virtual bool                                                            Run() noexcept;
 
+#if defined(__APPLE__)
+                /**
+                 * @brief Writes client payload directly to the connected remote socket.
+                 * @note Used by iOS ctcp when TUN loopback to the local listener is unavailable.
+                 */
+                bool                                                                    WriteRemote(const void* data, size_t len) noexcept;
+
+                /**
+                 * @brief Reads remote responses and forwards them to the supplied callback.
+                 */
+                void                                                                    StartRemoteToTapRelay(const ppp::function<void(const void*, size_t)>& on_data) noexcept;
+#endif
+
             public:
                 /** @brief Returns a shared reference to this object. */
                 std::shared_ptr<RinetdConnection>                                       GetReference()     noexcept { return shared_from_this(); }

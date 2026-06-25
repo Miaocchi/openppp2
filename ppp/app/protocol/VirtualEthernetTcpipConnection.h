@@ -15,6 +15,10 @@
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 
+#if defined(_IPHONE) || defined(IPHONE)
+#include <deque>
+#endif
+
 #if defined(_WIN32)
 #include <windows/ppp/net/QoSS.h>
 #elif defined(_LINUX)
@@ -180,6 +184,18 @@ namespace ppp {
                  */
                 virtual bool                                                    SendBufferToPeer(YieldContext& y, const void* packet, int packet_length) noexcept;
 
+#if defined(_IPHONE) || defined(IPHONE)
+                /**
+                 * @brief Queues native TUN upload payload for a single writer coroutine.
+                 */
+                bool                                                            SendBufferToPeerAsync(const void* packet, int packet_length) noexcept;
+                bool                                                            SendBufferToPeerAsync(const std::shared_ptr<std::vector<Byte>>& payload) noexcept;
+                /**
+                 * @brief Reads VPN responses and forwards them through the supplied callback.
+                 */
+                bool                                                            StartNativeTapRelay(const ppp::function<void(const void*, size_t)>& on_data) noexcept;
+#endif
+
             private:
                 /**
                  * @brief Finalizes connection synchronously.
@@ -292,6 +308,15 @@ namespace ppp {
                 Int128                                                          id_        = 0; ///< Logical connection identifier assigned at construction time.
                 std::shared_ptr<boost::asio::ip::tcp::socket>                   socket_;        ///< Local TCP socket bridged to the virtual Ethernet transmission.
                 ITransmissionPtr                                                transmission_; ///< Virtual Ethernet transmission channel used for protocol framing.
+#if defined(_IPHONE) || defined(IPHONE)
+                bool                                                            EnsureNativeUploadWriter() noexcept;
+                bool                                                            RunNativeUploadWriter(YieldContext& y) noexcept;
+
+                static constexpr size_t                                         kNativeUploadQueueMax = 512;
+                std::mutex                                                      native_upload_mutex_;
+                std::deque<std::shared_ptr<std::vector<Byte>>>                  native_upload_queue_;
+                bool                                                            native_upload_writer_started_ = false;
+#endif
             };
         }
     }

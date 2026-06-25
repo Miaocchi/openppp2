@@ -7,6 +7,7 @@
 #include <ppp/net/Socket.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/Telemetry.h>
 
 #include <ppp/coroutines/asio/asio.h>
 #include <ppp/coroutines/YieldContext.h>
@@ -256,6 +257,73 @@ namespace ppp {
                     });
                 return true;
             }
+
+#if defined(__APPLE__)
+            bool RinetdConnection::WriteRemote(const void* data, size_t len) noexcept {
+                if (disposed_ || NULLPTR == data || len < 1) {
+                    return len == 0;
+                }
+
+                std::shared_ptr<boost::asio::ip::tcp::socket> remote = remote_socket_;
+                if (NULLPTR == remote || !remote->is_open()) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketNotOpen);
+                    return false;
+                }
+
+                boost::system::error_code ec;
+                boost::asio::write(*remote, boost::asio::buffer(data, len), ec);
+                if (ec) {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "rinetd", "native inject write remote failed bytes=%zu error=%s",
+                        len, ec.message().c_str());
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketWriteFailed);
+                    return false;
+                }
+
+                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "rinetd", "native inject write remote bytes=%zu", len);
+                Update();
+                return true;
+            }
+
+            void RinetdConnection::StartRemoteToTapRelay(const ppp::function<void(const void*, size_t)>& on_data) noexcept {
+                if (disposed_ || !on_data) {
+                    return;
+                }
+
+                std::shared_ptr<boost::asio::ip::tcp::socket> remote = remote_socket_;
+                if (NULLPTR == remote || !remote->is_open()) {
+                    return;
+                }
+
+                std::shared_ptr<ppp::configurations::AppConfiguration> configuration = GetConfiguration();
+                if (NULLPTR == configuration) {
+                    return;
+                }
+
+                if (NULLPTR == remote_buffer_) {
+                    remote_buffer_ = ppp::threading::BufferswapAllocator::MakeByteArray(configuration->GetBufferAllocator(), PPP_BUFFER_SIZE);
+                    if (NULLPTR == remote_buffer_) {
+                        return;
+                    }
+                }
+
+                std::shared_ptr<RinetdConnection> self = shared_from_this();
+                remote->async_receive(boost::asio::buffer(remote_buffer_.get(), PPP_BUFFER_SIZE),
+                    [self, this, on_data](const boost::system::error_code& ec, std::size_t bytes) noexcept {
+                        if (ec || bytes < 1) {
+                            if (ec && ec != boost::asio::error::operation_aborted) {
+                                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "rinetd", "native inject read end bytes=%zu error=%s",
+                                    bytes, ec.message().c_str());
+                            }
+                            return;
+                        }
+
+                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "rinetd", "native inject read remote bytes=%zu", bytes);
+                        on_data(remote_buffer_.get(), bytes);
+                        Update();
+                        StartRemoteToTapRelay(on_data);
+                    });
+            }
+#endif
         }
     }
 }

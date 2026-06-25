@@ -23,6 +23,7 @@
 #include <ppp/coroutines/asio/asio.h>
 
 #include <chrono>
+#include <vector>
 
 #include <libtcpip/netstack.h>
 
@@ -247,7 +248,9 @@ namespace ppp {
                             link->srcAddr = src_ip;
                             link->srcPort = src_port;
                             link->natPort = newPort;
-                            link->state.store((Byte)TcpState::TCP_STATE_SYN_RECEIVED, std::memory_order_relaxed);
+                            // Native ctcp defers SYN-ACK until VPN peer connect completes; keep
+                            // the link in SYN_SENT until AckAccept() emits SYN-ACK.
+                            link->state.store((Byte)TcpState::TCP_STATE_SYN_SENT, std::memory_order_relaxed);
 
                             this->lan2wan_[key]     = link;
                             this->wan2lan_[newPort] = link;
@@ -338,8 +341,9 @@ namespace ppp {
                 }
             } connect_histogram;
 
-            if (localPort < IPEndPoint::MinPort || localPort > IPEndPoint::MaxPort) {
-                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "vnetstack", "network port invalid in Open local_port=%d", localPort);
+            int bindPort = localPort;
+            if (bindPort < IPEndPoint::MinPort || bindPort > IPEndPoint::MaxPort) {
+                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "vnetstack", "network port invalid in Open local_port=%d", bindPort);
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkPortInvalid);
             }
 
@@ -360,7 +364,7 @@ namespace ppp {
                     };
 
                 ppp::string bindIP = ppp::net::Ipep::ToAddressString<ppp::string>(boost::asio::ip::address_v4::any());
-                if (!acceptor->Open(bindIP.data(), localPort, PPP_LISTEN_BACKLOG)) {
+                if (!acceptor->Open(bindIP.data(), bindPort, PPP_LISTEN_BACKLOG)) {
                     acceptor->Dispose();
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketListenFailed);
                 }
@@ -371,7 +375,7 @@ namespace ppp {
                     ppp::net::Socket::SetSignalPipeline(handle, false);
 
                     listenEP_ = IPEndPoint::ToEndPoint(Socket::GetLocalEndPoint(acceptor->GetHandle()));
-                    constantof(localPort) = listenEP_.Port;
+                    bindPort = listenEP_.Port;
                     listenPort_.store(listenEP_.Port, std::memory_order_release);
                 }
             }
@@ -379,7 +383,8 @@ namespace ppp {
             lwip_ = lwip;
             acceptor_ = acceptor;
 
-            lwip::netstack::Localhost = localPort;
+            lwip::netstack::Localhost = bindPort;
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "vnetstack", "open listener lwip=%d requested_port=%d bound_port=%d", lwip ? 1 : 0, localPort, bindPort);
 #ifdef SYSNAT
             sysnat_ = SysnatAttachDriver(tap, sysnat_interface_name_);
 #endif
@@ -462,6 +467,15 @@ namespace ppp {
             UInt32 original_dst_addr = ip->dest;
             UInt16 original_src_port = tcp->src;
             UInt16 original_dst_port = tcp->dest;
+            bool syn_only = (flags & TcpFlags::TCP_SYN) && !(flags & TcpFlags::TCP_ACK);
+            if (syn_only) {
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "TCP SYN input src=%s:%u dst=%s:%u len=%d",
+                    IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(original_src_addr, ntohs(original_src_port)).address().to_string().c_str(),
+                    ntohs(original_src_port),
+                    IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(original_dst_addr, ntohs(original_dst_port)).address().to_string().c_str(),
+                    ntohs(original_dst_port),
+                    tcp_len);
+            }
             bool lan2wan = true;
             bool rst = true;
             std::shared_ptr<TapTcpLink> link;
@@ -474,7 +488,7 @@ namespace ppp {
              * - SYN packets allocate mapping and start accept path.
              */
             if (ip->dest == tap->GatewayServer) { // V->Local
-                if ((link = this->FindTcpLink(tcp->dest))) {
+                if ((link = this->FindTcpLink(ntohs(tcp->dest)))) {
                     link->Update();
                     lan2wan = false;
                     rst = false;
@@ -485,18 +499,25 @@ namespace ppp {
                     tcp->dest = link->srcPort;
                 }
             }
-            elif(flags != TcpFlags::TCP_SYN) { // Local->V
+            elif(!(flags & TcpFlags::TCP_SYN)) { // Local->V
                 if ((link = this->FindTcpLink(LAN2WAN_KEY(ip->src, tcp->src, ip->dest, tcp->dest)))) {
                     link->Update();
                     rst = false;
 
+#if defined(__APPLE__)
+                    if (!lwip_) {
+                        return this->DeliverNativeLoopback(link, tcp, tcp_len);
+                    }
+#endif
+
                     ip->src = tap->GatewayServer;
-                    tcp->src = link->natPort;
+                    tcp->src = htons(link->natPort);
                     ip->dest = tap->IPAddress;
-                    tcp->dest = ntohs((UInt16)this->listenPort_.load(std::memory_order_acquire));
+                    tcp->dest = htons((UInt16)this->listenPort_.load(std::memory_order_acquire));
                 }
             }
             elif((link = this->AllocTcpLink(ip->src, tcp->src, ip->dest, tcp->dest))) { // SYN
+                link->clientSeqno = tcp->seqno;
                 for (;;) {
                     TcpState ls = (TcpState)link->state.load(std::memory_order_relaxed);
                     if (ls == TcpState::TCP_STATE_CLOSED) {
@@ -553,6 +574,13 @@ namespace ppp {
                         link->Update();
                         return true;
                     }
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "TCP begin client ok local=%s:%u remote=%s:%u nat=%u listen=%u",
+                        localEP.address().to_string().c_str(),
+                        localEP.port(),
+                        remoteEP.address().to_string().c_str(),
+                        remoteEP.port(),
+                        (unsigned int)link->natPort,
+                        (unsigned int)listenPort_.load(std::memory_order_acquire));
 
                     c->sync_ack_state_ = VNETSTACK_SYNC_ACK_STATE_SYN_SENT;
 #ifdef SYSNAT
@@ -562,6 +590,10 @@ namespace ppp {
                         break;
                     }
 #endif
+
+                    c->link_ = link;
+                    c->owner_ = shared_from_this();
+                    std::atomic_store(&link->socket, c);
 
                     if (!c->BeginAccept()) {
                         ppp::telemetry::Count("vnetstack.connect.fail.begin_accept", 1);
@@ -574,18 +606,17 @@ namespace ppp {
                         link->Update();
                         return true;
                     }
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "TCP begin accept posted local=%s:%u remote=%s:%u", localEP.address().to_string().c_str(), localEP.port(), remoteEP.address().to_string().c_str(), remoteEP.port());
 
                     ppp::telemetry::Count("vnetstack.connect", 1);
                     ppp::telemetry::Log(Level::kDebug, "vnetstack", "TCP connect begin local=%s:%u remote=%s:%u", localEP.address().to_string().c_str(), localEP.port(), remoteEP.address().to_string().c_str(), remoteEP.port());
                     rst = false;
-                    c->link_ = link;
-                    c->owner_ = shared_from_this();
-                    std::atomic_store(&link->socket, c);
-
+#if !defined(__APPLE__)
                     ip->src = tap->GatewayServer;
-                    tcp->src = link->natPort;
+                    tcp->src = htons(link->natPort);
                     ip->dest = tap->IPAddress;
-                    tcp->dest = ntohs((UInt16)this->listenPort_.load(std::memory_order_acquire));
+                    tcp->dest = htons((UInt16)this->listenPort_.load(std::memory_order_acquire));
+#endif
                     break;
                 }
             }
@@ -670,6 +701,16 @@ namespace ppp {
             }
 
             bool output = this->Output(lan2wan, ip, tcp, tcp_len, c.get());
+            if (syn_only || (flags & TcpFlags::TCP_SYN) || (flags & TcpFlags::TCP_RST)) {
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "TCP output result ok=%d dir=%s flags=0x%02x src=%s:%u dst=%s:%u",
+                    output ? 1 : 0,
+                    lan2wan ? "lan2wan" : "wan2lan",
+                    (unsigned int)flags,
+                    IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(ip->src, ntohs(tcp->src)).address().to_string().c_str(),
+                    ntohs(tcp->src),
+                    IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(ip->dest, ntohs(tcp->dest)).address().to_string().c_str(),
+                    ntohs(tcp->dest));
+            }
             if ((flags & TcpFlags::TCP_RST) && NULLPTR != link && !link->lwip) {
                 this->CloseTcpLink(link);
             }
@@ -681,7 +722,12 @@ namespace ppp {
          * @brief Returns connect-phase timeout in milliseconds.
          */
         uint64_t VNetstack::GetMaxConnectTimeout() noexcept {
+#if defined(_IPHONE)
+            // ctcp child connects may queue for a transmission slot during speed tests.
+            return 30000;
+#else
             return 10000;
+#endif
         }
 
         /**
@@ -902,7 +948,9 @@ namespace ppp {
 
             int ippkg_len = ((char*)tcp + tcp_len) - (char*)ip;
             if (NULLPTR == c) {
-                return tap->Output(ip, ippkg_len);
+                bool ok = tap->Output(ip, ippkg_len);
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "tap output direct bytes=%d ok=%d", ippkg_len, ok ? 1 : 0);
+                return ok;
             }
 
             std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = GetBufferAllocator();
@@ -918,6 +966,7 @@ namespace ppp {
             std::atomic_store(&c->sync_ack_tap_driver_, tap);
             std::atomic_store(&c->sync_ack_byte_array_, packet);
             c->sync_ack_bytes_size_.store(ippkg_len, std::memory_order_release);
+            ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack cached bytes=%d", ippkg_len);
             return true;
         }
 
@@ -986,9 +1035,15 @@ namespace ppp {
                     }
                 }
                 elif(remoteEP.GetAddress() != tap->GatewayServer) {
-                    ppp::telemetry::Count("vnetstack.accept.fail.endpoint", 1);
-                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "accept failed: endpoint mismatch nat=%s:%u", natEP.address().to_string().c_str(), natEP.port());
-                    break;
+#if defined(__APPLE__)
+                    if (remoteEP.GetAddress() != htonl(IPEndPoint::LoopbackAddress)) {
+#endif
+                        ppp::telemetry::Count("vnetstack.accept.fail.endpoint", 1);
+                        ppp::telemetry::Log(Level::kInfo, "vnetstack", "accept failed: endpoint mismatch nat=%s:%u", natEP.address().to_string().c_str(), natEP.port());
+                        break;
+#if defined(__APPLE__)
+                    }
+#endif
                 }
 
                 if (remoteEP.Port <= IPEndPoint::MinPort || remoteEP.Port > IPEndPoint::MaxPort) {
@@ -1011,7 +1066,7 @@ namespace ppp {
                     link = this->LwIpAcceptLink(srcAddr, dstAddr, srcPort, dstPort);
                 }
                 else {
-                    link = this->FindTcpLink(htons(remoteEP.Port));
+                    link = this->FindTcpLink(remoteEP.Port);
                 }
 
                 if (NULLPTR == link) {
@@ -1047,7 +1102,7 @@ namespace ppp {
                 else {
                     ppp::telemetry::Count("vnetstack.accept.fail.end_accept", 1);
                     ppp::telemetry::Log(Level::kInfo, "vnetstack", "accept failed: end accept failed nat=%s:%u local=%s:%u remote=%s:%u error=%d", natEP.address().to_string().c_str(), natEP.port(), pcb->GetLocalEndPoint().address().to_string().c_str(), pcb->GetLocalEndPoint().port(), pcb->GetRemoteEndPoint().address().to_string().c_str(), pcb->GetRemoteEndPoint().port(), (int)ppp::diagnostics::GetLastErrorCode());
-                    link->Release();
+                    this->CloseTcpLink(link);
                 }
 
                 return ok;
@@ -1059,6 +1114,262 @@ namespace ppp {
 
             return false;
         }
+
+#if defined(__APPLE__)
+        /**
+         * @brief Starts the iOS ctcp relay that writes client payload to rinetd remote.
+         */
+        bool VNetstack::EnsureNativeInject(const std::shared_ptr<TapTcpLink>& link, const std::shared_ptr<boost::asio::io_context>& context) noexcept {
+            (void)context;
+            if (NULLPTR == link || lwip_ || link->lwip) {
+                return false;
+            }
+
+            if (link->nativeInjectReady.load(std::memory_order_acquire)) {
+                return true;
+            }
+
+            bool relay_started = false;
+            if (!link->nativeRelayStarted.compare_exchange_strong(relay_started, true, std::memory_order_acq_rel)) {
+                return link->nativeInjectReady.load(std::memory_order_acquire);
+            }
+
+            std::shared_ptr<TapTcpClient> pcb = std::atomic_load(&link->socket);
+            if (NULLPTR == pcb) {
+                link->nativeRelayStarted.store(false, std::memory_order_release);
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject relay failed: pcb missing nat=%u", (unsigned int)link->natPort);
+                return false;
+            }
+
+            if (!pcb->StartNativeRelay()) {
+                link->nativeRelayStarted.store(false, std::memory_order_release);
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject relay start failed nat=%u", (unsigned int)link->natPort);
+                return false;
+            }
+
+            link->nativeInjectReady.store(true, std::memory_order_release);
+            ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject ready nat=%u lan=%s:%u wan=%s:%u",
+                (unsigned int)link->natPort,
+                IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(link->srcAddr, ntohs(link->srcPort)).address().to_string().c_str(),
+                ntohs(link->srcPort),
+                IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(link->dstAddr, ntohs(link->dstPort)).address().to_string().c_str(),
+                ntohs(link->dstPort));
+            return true;
+        }
+
+        /**
+         * @brief Forwards client TCP payload through the iOS native relay path.
+         */
+        bool VNetstack::DeliverNativeLoopback(const std::shared_ptr<TapTcpLink>& link, tcp_hdr* tcp, int tcp_len) noexcept {
+            if (NULLPTR == link || NULLPTR == tcp || tcp_len < 1) {
+                return false;
+            }
+
+            const uint32_t hdrlen_bytes = tcp_hdr::TCPH_HDRLEN_BYTES(tcp);
+            if (tcp_len < (int)hdrlen_bytes) {
+                return false;
+            }
+
+            const int payload_len = tcp_len - (int)hdrlen_bytes;
+            const uint8_t flags = tcp_hdr::TCPH_FLAGS(tcp);
+
+            if (!link->nativeInjectReady.load(std::memory_order_acquire)) {
+                std::shared_ptr<TapTcpClient> pcb = std::atomic_load(&link->socket);
+                if (NULLPTR != pcb) {
+                    std::shared_ptr<boost::asio::io_context> context = pcb->GetContext();
+                    this->EnsureNativeInject(link, context);
+                }
+            }
+
+            if (!link->nativeInjectReady.load(std::memory_order_acquire)) {
+                if (payload_len > 0) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject not ready payload refused nat=%u flags=0x%02x payload=%d",
+                        (unsigned int)link->natPort,
+                        (unsigned int)flags,
+                        payload_len);
+                    return false;
+                }
+                link->Update();
+                return true;
+            }
+
+            if (flags & TcpFlags::TCP_ACK) {
+                TcpState ls = (TcpState)link->state.load(std::memory_order_relaxed);
+                std::shared_ptr<TapTcpClient> established_pcb = std::atomic_load(&link->socket);
+                // Only treat client ACK as handshake completion after we have emitted SYN-ACK.
+                // Premature ACK handling races with deferred AckAccept() and yields ack accept result=0.
+                if (NULLPTR != established_pcb
+                    && established_pcb->sync_ack_state_.load(std::memory_order_acquire) >= VNETSTACK_SYNC_ACK_STATE_SYN_RECVD
+                    && (ls == TcpState::TCP_STATE_SYN_RECEIVED || ls == TcpState::TCP_STATE_SYN_SENT)) {
+                    link->state.store((Byte)TcpState::TCP_STATE_ESTABLISHED, std::memory_order_relaxed);
+
+                    established_pcb->CancelSyncAckRetry();
+                    std::atomic_store(&established_pcb->sync_ack_byte_array_, std::shared_ptr<Byte>());
+                    established_pcb->sync_ack_bytes_size_.store(0, std::memory_order_release);
+                    std::atomic_store(&established_pcb->sync_ack_tap_driver_, std::shared_ptr<ITap>());
+                    established_pcb->sync_ack_retry_count_ = 0;
+                    established_pcb->sync_ack_state_ = VNETSTACK_SYNC_ACK_STATE_CLOSED;
+
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native client ack established nat=%u flags=0x%02x payload=%d",
+                        (unsigned int)link->natPort,
+                        (unsigned int)flags,
+                        payload_len);
+                }
+            }
+
+#if !defined(_IPHONE) && !defined(IPHONE)
+            if (payload_len > 0) {
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject client payload nat=%u flags=0x%02x payload=%d",
+                    (unsigned int)link->natPort,
+                    (unsigned int)flags,
+                    payload_len);
+            }
+#endif
+
+            std::shared_ptr<TapTcpClient> pcb = std::atomic_load(&link->socket);
+            if (NULLPTR == pcb) {
+                return false;
+            }
+
+            if (!pcb->DeliverNativePayload(tcp, tcp_len)) {
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject write failed nat=%u flags=0x%02x len=%d",
+                    (unsigned int)link->natPort,
+                    (unsigned int)tcp_hdr::TCPH_FLAGS(tcp),
+                    tcp_len);
+                return false;
+            }
+
+            link->Update();
+            return true;
+        }
+
+        /**
+         * @brief Emits server payload to the TUN client as TCP PSH|ACK segment(s).
+         *
+         * VPN reads can return multi-kilobyte chunks, but iOS utun rejects writes
+         * larger than the tunnel MTU (typically 1400). Split into MSS-sized segments.
+         */
+        bool VNetstack::EmitNativeToClient(const std::shared_ptr<TapTcpLink>& link, const void* payload, int payload_len) noexcept {
+            if (NULLPTR == link || payload_len < 0) {
+                return false;
+            }
+
+            if (NULLPTR == payload && payload_len > 0) {
+                return false;
+            }
+
+            std::shared_ptr<ITap> tap = this->Tap;
+            if (NULLPTR == tap) {
+                return false;
+            }
+
+#if defined(__APPLE__)
+            static constexpr int kNativeMaxTcpPayload = 1360; // 1400 MTU - IPv4(20) - TCP(20)
+#else
+            static constexpr int kNativeMaxTcpPayload = ITap::Mtu - ip_hdr::IP_HLEN - tcp_hdr::TCP_HLEN;
+#endif
+
+            const uint8_t* bytes = (const uint8_t*)payload;
+            int offset = 0;
+            bool all_ok = true;
+
+            do {
+                const int chunk_len = payload_len == 0
+                    ? 0
+                    : std::min(payload_len - offset, kNativeMaxTcpPayload);
+                const int outlen = ip_hdr::IP_HLEN + tcp_hdr::TCP_HLEN + chunk_len;
+                std::shared_ptr<Byte> packet = ppp::make_shared_alloc<Byte>(outlen);
+                if (NULLPTR == packet) {
+                    return false;
+                }
+
+                ip_hdr* iphdr = (ip_hdr*)packet.get();
+                iphdr->src    = link->dstAddr;
+                iphdr->dest   = link->srcAddr;
+                iphdr->ttl    = ip_hdr::IP_DFT_TTL;
+                iphdr->proto  = ip_hdr::IP_PROTO_TCP;
+                iphdr->v_hl   = 4 << 4 | ip_hdr::IP_HLEN >> 2;
+                iphdr->tos    = 0;
+                iphdr->len    = htons((uint16_t)outlen);
+                iphdr->id     = ntohs(ip_hdr::NewId());
+                iphdr->flags  = htons(ip_hdr::IP_DF);
+                iphdr->chksum = 0;
+                iphdr->chksum = ppp::net::native::inet_chksum(iphdr, ip_hdr::IP_HLEN);
+                if (iphdr->chksum == 0) {
+                    iphdr->chksum = 0xffff;
+                }
+
+                tcp_hdr* tcphdr = (tcp_hdr*)(iphdr + 1);
+                tcphdr->src               = link->dstPort;
+                tcphdr->dest              = link->srcPort;
+                tcphdr->seqno             = link->serverSeqno;
+                tcphdr->ackno             = link->clientAckno;
+                tcphdr->wnd               = htons(65535);
+                tcphdr->urgp              = 0;
+                tcphdr->chksum            = 0;
+                tcphdr->hdrlen_rsvd_flags = 0;
+                tcp_hdr::TCPH_HDRLEN_BYTES_SET(tcphdr, tcp_hdr::TCP_HLEN);
+
+                TcpFlags out_flags = TcpFlags::TCP_ACK;
+                if (chunk_len > 0) {
+                    out_flags = (TcpFlags)(out_flags | TcpFlags::TCP_PSH);
+                }
+                tcp_hdr::TCPH_FLAGS_SET(tcphdr, out_flags);
+
+                if (chunk_len > 0) {
+                    memcpy((uint8_t*)tcphdr + tcp_hdr::TCP_HLEN, bytes + offset, (size_t)chunk_len);
+                }
+
+                tcphdr->chksum = ppp::net::native::inet_chksum_pseudo((unsigned char*)tcphdr,
+                    (unsigned int)ip_hdr::IP_PROTO_TCP,
+                    (unsigned int)(tcp_hdr::TCP_HLEN + chunk_len),
+                    iphdr->src,
+                    iphdr->dest);
+                if (tcphdr->chksum == 0) {
+                    tcphdr->chksum = 0xffff;
+                }
+
+                uint32_t next_seq = ntohl(link->serverSeqno) + (uint32_t)chunk_len;
+                link->serverSeqno = htonl(next_seq);
+                link->Update();
+
+                bool ok = tap->Output(packet, outlen);
+                all_ok = all_ok && ok;
+#if defined(_IPHONE) || defined(IPHONE)
+                if (payload_len == 0) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native upload ack nat=%u ackno=%u ok=%d",
+                        (unsigned int)link->natPort,
+                        (unsigned int)ntohl(link->clientAckno),
+                        ok ? 1 : 0);
+                }
+                elif(payload_len > 0 && offset == 0) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject emit client nat=%u payload=%d chunk=%d ok=%d",
+                        (unsigned int)link->natPort,
+                        payload_len,
+                        chunk_len,
+                        ok ? 1 : 0);
+                }
+#else
+                if (payload_len > 0) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject emit client nat=%u payload=%d chunk=%d offset=%d ok=%d",
+                        (unsigned int)link->natPort,
+                        payload_len,
+                        chunk_len,
+                        offset,
+                        ok ? 1 : 0);
+                }
+#endif
+
+                if (!ok) {
+                    return false;
+                }
+
+                offset += chunk_len;
+            } while (payload_len > 0 && offset < payload_len);
+
+            return all_ok;
+        }
+#endif
 
         /**
          * @brief Handles lwIP accept callback and prepares SYN/ACK packet state.
@@ -1094,6 +1405,8 @@ namespace ppp {
                     if (NULLPTR != pcb) {
                         pcb->lwip_ = link->lwipKey;   // Non-zero key marks this TapTcpClient as lwIP-path.
                         pcb->link_ = link;
+                        pcb->owner_ = shared_from_this();
+                        std::atomic_store(&pcb->sync_ack_tap_driver_, this->Tap);
                         std::atomic_store(&link->socket, pcb);
                     }
                 }
@@ -1111,6 +1424,7 @@ namespace ppp {
                 ppp::telemetry::Log(Level::kDebug, "vnetstack", "lwip sync-ack begin");
 
                 pcb->sync_ack_bytes_size_.store(0, std::memory_order_relaxed);
+                std::atomic_store(&pcb->sync_ack_tap_driver_, this->Tap);
                 std::atomic_store(&pcb->sync_ack_byte_array_, lwip::netstack_wrap_ipv4_tcp_syn_packet(dest, src, wnd, ack, seq, sync_packet_size));
 
                 if (NULLPTR != std::atomic_load(&pcb->sync_ack_byte_array_)) {
@@ -1396,6 +1710,52 @@ namespace ppp {
             }
         }
 
+#if defined(__APPLE__)
+        /**
+         * @brief Updates iOS native relay client sequence tracking from a TUN packet.
+         */
+        bool VNetstack::TapTcpClient::UpdateNativeClientAck(tcp_hdr* tcp, int tcp_len) noexcept {
+            if (NULLPTR == tcp || tcp_len < 1) {
+                return false;
+            }
+
+            std::shared_ptr<TapTcpLink> link = link_;
+            if (NULLPTR == link) {
+                return false;
+            }
+
+            const uint32_t hdrlen_bytes = tcp_hdr::TCPH_HDRLEN_BYTES(tcp);
+            if (tcp_len < (int)hdrlen_bytes) {
+                return false;
+            }
+
+            const int payload_len = tcp_len - (int)hdrlen_bytes;
+            const uint8_t tcp_flags = tcp_hdr::TCPH_FLAGS(tcp);
+            uint32_t client_seq = ntohl(tcp->seqno);
+            uint32_t client_end = client_seq + (uint32_t)payload_len;
+            if (tcp_flags & (TcpFlags::TCP_SYN | TcpFlags::TCP_FIN)) {
+                client_end++;
+            }
+
+            link->clientAckno = htonl(client_end);
+            link->Update();
+            return true;
+        }
+
+        /**
+         * @brief Emits iOS native relay upstream payload back to the TUN client.
+         */
+        bool VNetstack::TapTcpClient::EmitNativeToClient(const void* payload, int payload_len) noexcept {
+            std::shared_ptr<TapTcpLink> link = link_;
+            std::shared_ptr<VNetstack> owner = owner_.lock();
+            if (NULLPTR == link || NULLPTR == owner) {
+                return false;
+            }
+
+            return owner->EmitNativeToClient(link, payload, payload_len);
+        }
+#endif
+
         /**
          * @brief Binds accepted NAT endpoint and transitions into established flow.
          */
@@ -1431,6 +1791,69 @@ namespace ppp {
             return this->Establish();
         }
 
+        namespace {
+            /**
+             * @brief Builds a client-facing SYN/ACK for the native (ctcp) dataplane.
+             *
+             * The lan2wan rewrite cached during SYN handling targets the VPN listener and
+             * must not be written back to the TUN device on iOS/Android.
+             */
+            std::shared_ptr<Byte> BuildNativeSynAckPacket(
+                uint32_t remote_ip,
+                uint16_t remote_port,
+                uint32_t local_ip,
+                uint16_t local_port,
+                uint32_t ack_seq,
+                uint32_t seq_num,
+                int&                                 outlen) noexcept {
+                outlen = ip_hdr::IP_HLEN + tcp_hdr::TCP_HLEN;
+
+                std::shared_ptr<Byte> packet = ppp::make_shared_alloc<Byte>(outlen);
+                if (NULLPTR == packet) {
+                    outlen = 0;
+                    return NULLPTR;
+                }
+
+                ip_hdr* iphdr = (ip_hdr*)packet.get();
+                iphdr->src    = remote_ip;
+                iphdr->dest   = local_ip;
+                iphdr->ttl    = ip_hdr::IP_DFT_TTL;
+                iphdr->proto  = ip_hdr::IP_PROTO_TCP;
+                iphdr->v_hl   = 4 << 4 | ip_hdr::IP_HLEN >> 2;
+                iphdr->tos    = 0;
+                iphdr->len    = htons(outlen);
+                iphdr->id     = ntohs(ip_hdr::NewId());
+                iphdr->flags  = htons(ip_hdr::IP_DF);
+                iphdr->chksum = 0;
+                iphdr->chksum = ppp::net::native::inet_chksum(iphdr, ip_hdr::IP_HLEN);
+                if (iphdr->chksum == 0) {
+                    iphdr->chksum = 0xffff;
+                }
+
+                tcp_hdr* tcphdr = (tcp_hdr*)(iphdr + 1);
+                tcphdr->src               = remote_port;
+                tcphdr->dest              = local_port;
+                tcphdr->seqno             = htonl(seq_num);
+                tcphdr->ackno             = htonl(ack_seq);
+                tcphdr->wnd               = htons(65535);
+                tcphdr->urgp              = 0;
+                tcphdr->chksum            = 0;
+                tcphdr->hdrlen_rsvd_flags = 0;
+                tcp_hdr::TCPH_HDRLEN_BYTES_SET(tcphdr, tcp_hdr::TCP_HLEN);
+                tcp_hdr::TCPH_FLAGS_SET(tcphdr, TcpFlags::TCP_SYN | TcpFlags::TCP_ACK);
+                tcphdr->chksum = ppp::net::native::inet_chksum_pseudo((unsigned char*)tcphdr,
+                    (unsigned int)ip_hdr::IP_PROTO_TCP,
+                    (unsigned int)tcp_hdr::TCP_HLEN,
+                    iphdr->src,
+                    iphdr->dest);
+                if (tcphdr->chksum == 0) {
+                    tcphdr->chksum = 0xffff;
+                }
+
+                return packet;
+            }
+        }
+
         /**
          * @brief Sends SYN/ACK once and schedules retransmission when needed.
          */
@@ -1444,13 +1867,20 @@ namespace ppp {
             std::shared_ptr<ITap> tap    = std::atomic_load(&this->sync_ack_tap_driver_);
 
             int packet_length = this->sync_ack_bytes_size_.load(std::memory_order_acquire);
-            if (packet_length < 1) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VNetstackSyncAckInvalidState);
-                return false;
+
+            Byte sync_ack_state = this->sync_ack_state_.load(std::memory_order_acquire);
+            if (sync_ack_state == VNETSTACK_SYNC_ACK_STATE_SYN_RECVD) {
+                ppp::telemetry::Log(Level::kDebug, "vnetstack", "sync-ack already sent");
+                return true;
             }
 
-            Byte sync_ack_state = VNETSTACK_SYNC_ACK_STATE_SYN_SENT;
+            sync_ack_state = VNETSTACK_SYNC_ACK_STATE_SYN_SENT;
             if (!this->sync_ack_state_.compare_exchange_strong(sync_ack_state, VNETSTACK_SYNC_ACK_STATE_SYN_RECVD)) {
+                if (sync_ack_state == VNETSTACK_SYNC_ACK_STATE_SYN_RECVD) {
+                    return true;
+                }
+
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack invalid state=%u", (unsigned int)sync_ack_state);
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VNetstackSyncAckInvalidState);
                 return false;
             }
@@ -1462,7 +1892,55 @@ namespace ppp {
             }
 
             if (NULLPTR == tap) {
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: tap missing");
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceMissing);
+                return false;
+            }
+
+            if (!lwip_) {
+                if (NULLPTR == link || link->clientSeqno == 0) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: native link missing or client seq unset");
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VNetstackSyncAckInvalidState);
+                    return false;
+                }
+
+                std::shared_ptr<VNetstack> owner = this->owner_.lock();
+                if (NULLPTR == owner || !owner->EnsureNativeInject(link, this->context_)) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: native relay not ready nat=%u",
+                        (unsigned int)link->natPort);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionTransportMissing);
+                    return false;
+                }
+
+                const uint32_t ack_seq = ntohl(link->clientSeqno) + 1;
+                const uint32_t seq_num = static_cast<uint32_t>(ip_hdr::NewId());
+                packet = BuildNativeSynAckPacket(
+                    link->dstAddr,
+                    link->dstPort,
+                    link->srcAddr,
+                    link->srcPort,
+                    ack_seq,
+                    seq_num,
+                    packet_length);
+                if (NULLPTR == packet || packet_length < 1) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: native packet build failed");
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    return false;
+                }
+
+                link->state.store((Byte)TcpState::TCP_STATE_SYN_RECEIVED, std::memory_order_relaxed);
+                link->serverSeqno = htonl(seq_num + 1);
+                link->clientAckno = htonl(ack_seq);
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "native sync-ack built remote=%s:%u local=%s:%u bytes=%d",
+                    IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(link->dstAddr, ntohs(link->dstPort)).address().to_string().c_str(),
+                    ntohs(link->dstPort),
+                    IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(link->srcAddr, ntohs(link->srcPort)).address().to_string().c_str(),
+                    ntohs(link->srcPort),
+                    packet_length);
+            }
+            elif(packet_length < 1) {
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack invalid: packet_length=%d", packet_length);
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VNetstackSyncAckInvalidState);
                 return false;
             }
 
@@ -1473,18 +1951,13 @@ namespace ppp {
                 }
 
                 link->state.store((Byte)TcpState::TCP_STATE_SYN_RECEIVED, std::memory_order_relaxed);
-                (void)tap->Output(packet, packet_length);
-
-                std::atomic_store(&this->sync_ack_byte_array_, packet);
-                this->sync_ack_bytes_size_.store(packet_length, std::memory_order_release);
-                this->sync_ack_retry_count_ = 0;
-                this->ScheduleSyncAckRetry(200);
-
-                (void)lwip::netstack::input(packet.get(), packet_length);
-                return true;
+                bool ok = lwip::netstack::input(packet.get(), packet_length);
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "lwip sync input bytes=%d ok=%d", packet_length, ok ? 1 : 0);
+                return ok;
             }
 
             if (NULLPTR == packet) {
+                ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: packet missing");
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryBufferNull);
                 return false;
             }
@@ -1567,8 +2040,20 @@ namespace ppp {
             this->sync_ack_retry_count_ = 0;
             this->ScheduleSyncAckRetry(200);
 
-            (void)tap->Output(packet, packet_length);
-            return true;
+            bool ok = tap->Output(packet, packet_length);
+            ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack write bytes=%d ok=%d", packet_length, ok ? 1 : 0);
+
+#if defined(__APPLE__)
+            if (ok && !lwip_) {
+                std::shared_ptr<TapTcpLink> inject_link = this->link_;
+                std::shared_ptr<VNetstack> owner = this->owner_.lock();
+                if (NULLPTR != inject_link && NULLPTR != owner) {
+                    owner->EnsureNativeInject(inject_link, this->context_);
+                }
+            }
+#endif
+
+            return ok;
         }
 
         /**
