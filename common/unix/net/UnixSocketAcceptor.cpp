@@ -323,8 +323,13 @@ namespace ppp
             std::shared_ptr<boost::asio::steady_timer> watchdog = std::move(watchdog_);
             if (NULLPTR != watchdog)
             {
-                boost::system::error_code ec;
-                watchdog->cancel(ec);
+                try
+                {
+                    watchdog->cancel();
+                }
+                catch (...)
+                {
+                }
             }
 
             std::shared_ptr<boost::asio::ip::tcp::acceptor> server = std::move(server_);
