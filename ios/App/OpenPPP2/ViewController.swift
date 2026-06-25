@@ -16,6 +16,31 @@ final class ViewController: UITabBarController {
         ]
     }
 
+    @discardableResult
+    func handleDebugURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "openppp2" else {
+            return false
+        }
+
+        selectedIndex = 0
+        let action = (url.host?.isEmpty == false ? url.host : url.pathComponents.dropFirst().first)?
+            .lowercased() ?? "connect"
+
+        switch action {
+        case "connect", "start":
+            connectActiveProfile(restart: false)
+            return true
+        case "reconnect", "restart":
+            connectActiveProfile(restart: true)
+            return true
+        case "disconnect", "stop":
+            VPNController.shared.disconnect()
+            return true
+        default:
+            return false
+        }
+    }
+
     private func makeTab(_ root: UIViewController, title: String, image: String, selectedImage: String) -> UIViewController {
         let nav = UINavigationController(rootViewController: root)
         nav.navigationBar.prefersLargeTitles = false
@@ -25,6 +50,21 @@ final class ViewController: UITabBarController {
             selectedImage: UIImage(systemName: selectedImage)
         )
         return nav
+    }
+
+    private func connectActiveProfile(restart: Bool) {
+        guard let profile = ProfileStore.shared.activeProfile(),
+              !profile.json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return
+        }
+
+        let completion: (Result<Void, Error>) -> Void = { _ in }
+        if restart {
+            VPNController.shared.reconnect(profile: profile, completion: completion)
+        } else {
+            VPNController.shared.connect(profile: profile, completion: completion)
+        }
     }
 }
 
@@ -36,10 +76,10 @@ struct ConfigSnapshot: Codable, Equatable {
 }
 
 struct LaunchOptions: Codable, Equatable {
-    var tunIp: String = "10.0.0.2"
+    var tunIp: String = "10.8.0.2"
     var tunMask: String = "255.255.255.0"
     var tunPrefix: Int = 24
-    var gateway: String = "10.0.0.1"
+    var gateway: String = "10.8.0.1"
     var route: String = "0.0.0.0"
     var routePrefix: Int = 0
     var dns1: String = "8.8.8.8"
@@ -47,9 +87,10 @@ struct LaunchOptions: Codable, Equatable {
     var mtu: Int = 1400
     var mux: Int = 0
     var vnet: Bool = false
+    var lwip: Bool = false
     var blockQuic: Bool = true
-    var staticMode: Bool = false
-    var bypassIpList: String = ""
+    var staticMode: Bool = true
+    var bypassIpList: String = "10.0.0.0/8\n172.16.0.0/12\n192.168.0.0/16\n169.254.0.0/16\n100.64.0.0/10"
     var dnsRulesList: String = ""
     var allowLan: Bool = true
     var dnsDomestic: String = "doh.pub"
@@ -63,6 +104,72 @@ struct LaunchOptions: Codable, Equatable {
     var geoCountry: String = "cn"
     var geoIpDat: String = "./rules/GeoIP.dat"
     var geoSiteDat: String = "./rules/GeoSite.dat"
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case tunIp
+        case tunMask
+        case tunPrefix
+        case gateway
+        case route
+        case routePrefix
+        case dns1
+        case dns2
+        case mtu
+        case mux
+        case vnet
+        case lwip
+        case blockQuic
+        case staticMode
+        case bypassIpList
+        case dnsRulesList
+        case allowLan
+        case dnsDomestic
+        case dnsForeign
+        case dnsInterceptUnmatched
+        case dnsEcsEnabled
+        case dnsEcsOverrideIp
+        case dnsTlsVerifyPeer
+        case dnsStunCandidates
+        case geoEnabled
+        case geoCountry
+        case geoIpDat
+        case geoSiteDat
+    }
+
+    init(from decoder: Decoder) throws {
+        let defaults = LaunchOptions()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tunIp = try container.decodeIfPresent(String.self, forKey: .tunIp) ?? defaults.tunIp
+        tunMask = try container.decodeIfPresent(String.self, forKey: .tunMask) ?? defaults.tunMask
+        tunPrefix = try container.decodeIfPresent(Int.self, forKey: .tunPrefix) ?? defaults.tunPrefix
+        gateway = try container.decodeIfPresent(String.self, forKey: .gateway) ?? defaults.gateway
+        route = try container.decodeIfPresent(String.self, forKey: .route) ?? defaults.route
+        routePrefix = try container.decodeIfPresent(Int.self, forKey: .routePrefix) ?? defaults.routePrefix
+        dns1 = try container.decodeIfPresent(String.self, forKey: .dns1) ?? defaults.dns1
+        dns2 = try container.decodeIfPresent(String.self, forKey: .dns2) ?? defaults.dns2
+        mtu = try container.decodeIfPresent(Int.self, forKey: .mtu) ?? defaults.mtu
+        mux = try container.decodeIfPresent(Int.self, forKey: .mux) ?? defaults.mux
+        vnet = try container.decodeIfPresent(Bool.self, forKey: .vnet) ?? defaults.vnet
+        lwip = try container.decodeIfPresent(Bool.self, forKey: .lwip) ?? defaults.lwip
+        blockQuic = try container.decodeIfPresent(Bool.self, forKey: .blockQuic) ?? defaults.blockQuic
+        staticMode = try container.decodeIfPresent(Bool.self, forKey: .staticMode) ?? defaults.staticMode
+        bypassIpList = try container.decodeIfPresent(String.self, forKey: .bypassIpList) ?? defaults.bypassIpList
+        dnsRulesList = try container.decodeIfPresent(String.self, forKey: .dnsRulesList) ?? defaults.dnsRulesList
+        allowLan = try container.decodeIfPresent(Bool.self, forKey: .allowLan) ?? defaults.allowLan
+        dnsDomestic = try container.decodeIfPresent(String.self, forKey: .dnsDomestic) ?? defaults.dnsDomestic
+        dnsForeign = try container.decodeIfPresent(String.self, forKey: .dnsForeign) ?? defaults.dnsForeign
+        dnsInterceptUnmatched = try container.decodeIfPresent(Bool.self, forKey: .dnsInterceptUnmatched) ?? defaults.dnsInterceptUnmatched
+        dnsEcsEnabled = try container.decodeIfPresent(Bool.self, forKey: .dnsEcsEnabled) ?? defaults.dnsEcsEnabled
+        dnsEcsOverrideIp = try container.decodeIfPresent(String.self, forKey: .dnsEcsOverrideIp) ?? defaults.dnsEcsOverrideIp
+        dnsTlsVerifyPeer = try container.decodeIfPresent(Bool.self, forKey: .dnsTlsVerifyPeer) ?? defaults.dnsTlsVerifyPeer
+        dnsStunCandidates = try container.decodeIfPresent(String.self, forKey: .dnsStunCandidates) ?? defaults.dnsStunCandidates
+        geoEnabled = try container.decodeIfPresent(Bool.self, forKey: .geoEnabled) ?? defaults.geoEnabled
+        geoCountry = try container.decodeIfPresent(String.self, forKey: .geoCountry) ?? defaults.geoCountry
+        geoIpDat = try container.decodeIfPresent(String.self, forKey: .geoIpDat) ?? defaults.geoIpDat
+        geoSiteDat = try container.decodeIfPresent(String.self, forKey: .geoSiteDat) ?? defaults.geoSiteDat
+    }
 }
 
 struct ConfigProfile: Codable, Equatable {
@@ -139,6 +246,104 @@ struct VpnStatistics: Equatable {
     }
 }
 
+struct VpnDiagnostics: Equatable {
+    var linkState: Int?
+    var startStage: String = ""
+    var lastError: String = ""
+    var serverHost: String = ""
+    var tunIp: String = ""
+    var route: String = ""
+    var dataplane: String = ""
+    var inputPacketCount: Int = 0
+    var lastInputPacket: String = ""
+    var outputPacketCount: Int = 0
+    var lastOutputPacket: String = ""
+    var lastOutputPacketOK: Bool?
+
+    static let empty = VpnDiagnostics()
+
+    init() {}
+
+    init(jsonText: String) {
+        guard let data = jsonText.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let map = object as? [String: Any]
+        else {
+            self = .empty
+            return
+        }
+
+        if let number = map["linkState"] as? NSNumber {
+            linkState = number.intValue
+        } else if let text = map["linkState"] as? String {
+            linkState = Int(text)
+        }
+        startStage = map["startStage"] as? String ?? ""
+        lastError = map["lastError"] as? String ?? ""
+        serverHost = map["serverHost"] as? String ?? ""
+        tunIp = map["tunIp"] as? String ?? ""
+        route = map["route"] as? String ?? ""
+        dataplane = map["dataplane"] as? String ?? ""
+        if let number = map["inputPacketCount"] as? NSNumber {
+            inputPacketCount = number.intValue
+        } else if let text = map["inputPacketCount"] as? String {
+            inputPacketCount = Int(text) ?? 0
+        }
+        lastInputPacket = map["lastInputPacket"] as? String ?? ""
+        if let number = map["outputPacketCount"] as? NSNumber {
+            outputPacketCount = number.intValue
+        } else if let text = map["outputPacketCount"] as? String {
+            outputPacketCount = Int(text) ?? 0
+        }
+        lastOutputPacket = map["lastOutputPacket"] as? String ?? ""
+        if let number = map["lastOutputPacketOK"] as? NSNumber {
+            lastOutputPacketOK = number.boolValue
+        } else if let value = map["lastOutputPacketOK"] as? Bool {
+            lastOutputPacketOK = value
+        } else if let text = map["lastOutputPacketOK"] as? String {
+            lastOutputPacketOK = (text as NSString).boolValue
+        }
+    }
+
+    var hasContent: Bool {
+        linkState != nil || !startStage.isEmpty || !meaningfulLastError.isEmpty
+    }
+
+    var meaningfulLastError: String {
+        let trimmed = lastError.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.lowercased() == "success" ? "" : trimmed
+    }
+
+    func summaryText(fallbackLinkState: Int) -> String? {
+        guard hasContent else { return nil }
+        let state = linkState ?? fallbackLinkState
+        var parts = ["linkState \(state)"]
+        if !startStage.isEmpty {
+            parts.append("stage \(startStage)")
+        }
+        if !serverHost.isEmpty {
+            parts.append("server \(serverHost)")
+        }
+        if !tunIp.isEmpty || !route.isEmpty {
+            parts.append("tunnel \(tunIp) route \(route)")
+        }
+        if !dataplane.isEmpty {
+            parts.append("dataplane \(dataplane)")
+        }
+        if inputPacketCount > 0 || !lastInputPacket.isEmpty {
+            parts.append("input #\(inputPacketCount) \(lastInputPacket)")
+        }
+        if outputPacketCount > 0 || !lastOutputPacket.isEmpty {
+            let okText = lastOutputPacketOK.map { $0 ? "ok" : "failed" } ?? "unknown"
+            parts.append("output #\(outputPacketCount) \(okText) \(lastOutputPacket)")
+        }
+        if !meaningfulLastError.isEmpty {
+            parts.append("error \(meaningfulLastError)")
+        }
+        return parts.joined(separator: "\n")
+    }
+}
+
 // MARK: - Store
 
 final class ProfileStore {
@@ -149,6 +354,7 @@ final class ProfileStore {
     private let profilesKey = "openppp2_profiles_v2"
     private let activeIdKey = "openppp2_active_profile_id"
     private let debugPanelKey = "openppp2_debug_panel_enabled"
+    private let defaultServerPresetKey = "openppp2_default_server_preset_v5"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -237,8 +443,8 @@ final class ProfileStore {
     static func defaultProfile() -> ConfigProfile {
         ConfigProfile(
             id: UUID().uuidString,
-            name: "Default",
-            subtitle: "192.168.0.24:20000",
+            name: defaultProfileName,
+            subtitle: defaultServerSubtitle,
             flag: "",
             json: defaultJson,
             favorite: false,
@@ -248,6 +454,10 @@ final class ProfileStore {
     }
 
     static func effectiveJson(_ profileJson: String, options: LaunchOptions) -> String {
+        effectiveJson(profileJson, options: options, telemetry: .disabled)
+    }
+
+    static func effectiveJson(_ profileJson: String, options: LaunchOptions, telemetry: TelemetrySettings) -> String {
         let source = profileJson.data(using: .utf8) ?? Data()
         let defaultData = defaultJson.data(using: .utf8) ?? Data()
         let object = (try? JSONSerialization.jsonObject(with: source))
@@ -286,13 +496,42 @@ final class ProfileStore {
         client["socks-proxy"] = socks
         root["client"] = client
 
+        var telemetryMap = root["telemetry"] as? [String: Any] ?? [:]
+        telemetryMap["enabled"] = telemetry.uploadEnabled && telemetry.includeNativeTelemetry
+        telemetryMap["level"] = max(0, min(telemetry.nativeLogLevel, 3))
+        telemetryMap["count"] = telemetry.nativeMetricsEnabled
+        telemetryMap["span"] = telemetry.nativeSpansEnabled
+        telemetryMap["console-log"] = true
+        telemetryMap["console-metric"] = telemetry.nativeMetricsEnabled
+        telemetryMap["console-span"] = telemetry.nativeSpansEnabled
+        if let endpoint = nativeTelemetryEndpoint(from: telemetry) {
+            telemetryMap["endpoint"] = endpoint
+        } else {
+            telemetryMap["endpoint"] = ""
+        }
+        root["telemetry"] = telemetryMap
+
         guard JSONSerialization.isValidJSONObject(root),
               let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]),
               let json = String(data: data, encoding: .utf8)
         else {
             return profileJson
         }
+
         return json
+    }
+
+    private static func nativeTelemetryEndpoint(from settings: TelemetrySettings) -> String? {
+        guard settings.uploadEnabled, settings.includeNativeTelemetry else { return nil }
+        let endpoint = settings.effectiveEndpoint
+        guard let components = URLComponents(string: endpoint),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              components.host?.isEmpty == false
+        else {
+            return nil
+        }
+        return endpoint
     }
 
     private static func splitLines(_ value: String) -> [String] {
@@ -303,11 +542,124 @@ final class ProfileStore {
     }
 
     private func ensureSeeded() {
-        if defaults.data(forKey: profilesKey) != nil { return }
-        let seed = Self.defaultProfile()
-        save([seed], notify: false)
-        defaults.set(seed.id, forKey: activeIdKey)
+        guard let data = defaults.data(forKey: profilesKey) else {
+            let seed = Self.defaultProfile()
+            save([seed], notify: false)
+            defaults.set(seed.id, forKey: activeIdKey)
+            defaults.set(Self.defaultServerPresetMarker, forKey: defaultServerPresetKey)
+            return
+        }
+
+        guard defaults.string(forKey: defaultServerPresetKey) != Self.defaultServerPresetMarker else {
+            return
+        }
+
+        guard var list = try? decoder.decode([ConfigProfile].self, from: data) else {
+            let seed = Self.defaultProfile()
+            save([seed], notify: false)
+            defaults.set(seed.id, forKey: activeIdKey)
+            defaults.set(Self.defaultServerPresetMarker, forKey: defaultServerPresetKey)
+            return
+        }
+
+        var changed = false
+        list = list.map { profile in
+            guard Self.canClearLegacyDefaultServer(to: profile) else { return profile }
+            var updated = profile
+            updated.name = Self.defaultProfileName
+            updated.subtitle = Self.defaultServerSubtitle
+            updated.json = Self.jsonByReplacingClientServer(in: updated.json, server: Self.defaultServerURI)
+            updated.options = LaunchOptions()
+            changed = true
+            return updated
+        }
+
+        let testIndex = list.firstIndex { profile in
+            Self.canClearLegacyDefaultServer(to: profile)
+        }
+        if let testIndex {
+            var updated = list[testIndex]
+            if updated.name != Self.defaultProfileName
+                || updated.subtitle != Self.defaultServerSubtitle
+                || Self.clientServer(in: updated.json) != Self.defaultServerURI
+                || updated.options != LaunchOptions() {
+                updated.name = Self.defaultProfileName
+                updated.subtitle = Self.defaultServerSubtitle
+                updated.json = Self.jsonByReplacingClientServer(in: updated.json, server: Self.defaultServerURI)
+                updated.options = LaunchOptions()
+                list[testIndex] = updated
+                changed = true
+            }
+            defaults.set(updated.id, forKey: activeIdKey)
+        } else {
+            let seed = Self.defaultProfile()
+            list.insert(seed, at: 0)
+            defaults.set(seed.id, forKey: activeIdKey)
+            changed = true
+        }
+
+        if changed {
+            save(list, notify: false)
+        }
+        defaults.set(Self.defaultServerPresetMarker, forKey: defaultServerPresetKey)
     }
+
+    private static func canClearLegacyDefaultServer(to profile: ConfigProfile) -> Bool {
+        if profile.favorite || !profile.history.isEmpty {
+            return false
+        }
+
+        let knownNames = [defaultProfileName, "Default", "JP Test", "未配置"]
+        let knownSubtitles = ["", "192.168.0.24:20000", "127.0.0.1:20000"]
+        let legacyServer = clientServer(in: profile.json) ?? ""
+        return knownNames.contains(profile.name)
+            && (profile.subtitle.isEmpty || knownSubtitles.contains(profile.subtitle))
+            && (legacyDefaultServerURIs.contains(legacyServer) || profile.name == "JP Test")
+    }
+
+    private static func clientServer(in json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let root = object as? [String: Any],
+              let client = root["client"] as? [String: Any]
+        else {
+            return nil
+        }
+
+        return client["server"] as? String
+    }
+
+    private static func jsonByReplacingClientServer(in json: String, server: String) -> String {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              var root = object as? [String: Any]
+        else {
+            return defaultJson
+        }
+
+        var client = root["client"] as? [String: Any] ?? [:]
+        client["server"] = server
+        root["client"] = client
+
+        guard JSONSerialization.isValidJSONObject(root),
+              let updated = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: updated, encoding: .utf8)
+        else {
+            return defaultJson
+        }
+
+        return text
+    }
+
+    private static let defaultProfileName = "未配置"
+    private static let defaultServerSubtitle = ""
+    private static let defaultServerURI = ""
+    private static let defaultServerPresetMarker = "default-empty-profile-v1"
+    private static let legacyDefaultServerURIs: Set<String> = [
+        "",
+        "ppp://192.168.0.24:20000/",
+        "ppp://127.0.0.1:20000/"
+    ]
 
     private func save(_ profiles: [ConfigProfile], notify: Bool = true) {
         if let data = try? encoder.encode(profiles) {
@@ -375,7 +727,7 @@ final class ProfileStore {
       },
       "client" : {
         "guid" : "{F4569420-4E49-4CBA-9C36-94E722C8E363}",
-        "server" : "ppp://192.168.0.24:20000/",
+        "server" : "",
         "bandwidth" : 0,
         "reconnections" : { "timeout" : 5 },
         "paper-airplane" : { "tcp" : true },
@@ -389,6 +741,14 @@ final class ProfileStore {
 
 // MARK: - VPN Controller
 
+enum VPNReconnectError: LocalizedError {
+    case teardownTimeout
+
+    var errorDescription: String? {
+        "VPN 扩展尚未完全停止，请稍后重试"
+    }
+}
+
 final class VPNController {
     static let shared = VPNController()
     static let didChangeNotification = Notification.Name("OpenPPP2VPNControllerDidChange")
@@ -396,6 +756,8 @@ final class VPNController {
     private var manager: NETunnelProviderManager?
     private(set) var status: NEVPNStatus = .invalid
     private(set) var lastError: String?
+    private(set) var diagnostics = VpnDiagnostics.empty
+    private var lastStatusBeforeChange: NEVPNStatus = .invalid
 #if targetEnvironment(simulator)
     private var simulatorPreviewConnected = false
 #endif
@@ -417,6 +779,28 @@ final class VPNController {
         status == .connected || status == .connecting || status == .reasserting
     }
 
+    func recoverStaleTunnelState() {
+#if targetEnvironment(simulator)
+        return
+#else
+        refresh { [weak self] in
+            guard let self else { return }
+            let active = self.status == .connecting || self.status == .connected || self.status == .reasserting
+            if active, !TunnelSharedState.isExtensionAlive() {
+                NSLog("OpenPPP2 recovering stale VPN state (NE status=%d)", self.status.rawValue)
+                self.manager?.connection.stopVPNTunnel()
+                TunnelSharedState.clearSession()
+                self.lastError = "上次 VPN 会话异常结束，已重置状态。"
+                self.status = .disconnected
+                self.diagnostics = .empty
+                self.emitChange()
+            } else if !active {
+                TunnelSharedState.clearSession()
+            }
+        }
+#endif
+    }
+
     func refresh(completion: (() -> Void)? = nil) {
 #if targetEnvironment(simulator)
         status = simulatorPreviewConnected ? .connected : .disconnected
@@ -425,7 +809,11 @@ final class VPNController {
 #else
         loadManager { [weak self] manager, _ in
             self?.manager = manager
+            self?.lastStatusBeforeChange = self?.status ?? .invalid
             self?.status = manager?.connection.status ?? .disconnected
+            if self?.status == .disconnected || self?.status == .invalid {
+                self?.diagnostics = .empty
+            }
             self?.emitChange()
             completion?()
         }
@@ -436,12 +824,14 @@ final class VPNController {
 #if targetEnvironment(simulator)
         simulatorPreviewConnected = true
         lastError = nil
+        lastStatusBeforeChange = status
         status = .connected
         emitChange()
         completion(.success(()))
 #else
         let options = profile.options
-        let effectiveJson = ProfileStore.effectiveJson(profile.json, options: options)
+        let telemetry = TelemetrySettingsStore.shared.settings()
+        let effectiveJson = ProfileStore.effectiveJson(profile.json, options: options, telemetry: telemetry)
         loadManager { [weak self] manager, error in
             if let error {
                 self?.record(error)
@@ -457,7 +847,8 @@ final class VPNController {
                 "profileId": profile.id,
                 "profileName": profile.name,
                 "configJson": effectiveJson,
-                "optionsJson": Self.encodeOptions(options)
+                "optionsJson": Self.encodeOptions(options),
+                "telemetryJson": Self.encodeTelemetry(telemetry)
             ]
             manager.localizedDescription = "OpenPPP2"
             manager.protocolConfiguration = proto
@@ -481,6 +872,8 @@ final class VPNController {
                         try manager.connection.startVPNTunnel()
                         self?.manager = manager
                         self?.lastError = nil
+                        self?.diagnostics = .empty
+                        self?.lastStatusBeforeChange = self?.status ?? .invalid
                         self?.status = manager.connection.status
                         self?.emitChange()
                         completion(.success(()))
@@ -504,18 +897,21 @@ final class VPNController {
         }
 
         disconnect()
-        waitForDisconnectThenConnect(profile: profile, attemptsRemaining: 12, completion: completion)
+        waitForDisconnectThenConnect(profile: profile, attemptsRemaining: 40, completion: completion)
 #endif
     }
 
     func disconnect() {
 #if targetEnvironment(simulator)
         simulatorPreviewConnected = false
+        lastStatusBeforeChange = status
         status = .disconnected
         emitChange()
 #else
         manager?.connection.stopVPNTunnel()
+        lastStatusBeforeChange = status
         status = manager?.connection.status ?? .disconnected
+        diagnostics = .empty
         emitChange()
 #endif
     }
@@ -541,6 +937,11 @@ final class VPNController {
 #if targetEnvironment(simulator)
         completion(simulatorPreviewConnected ? 0 : 6)
 #else
+        if let shared = TunnelSharedState.readLinkStateIfAlive() {
+            completion(shared)
+            return
+        }
+
         sendProviderMessage("linkState") { data in
             guard let data,
                   let raw = String(data: data, encoding: .utf8),
@@ -550,6 +951,41 @@ final class VPNController {
                 return
             }
             completion(state)
+        }
+#endif
+    }
+
+    func fetchDiagnostics(completion: @escaping (VpnDiagnostics) -> Void) {
+#if targetEnvironment(simulator)
+        completion(.empty)
+#else
+        if let json = TunnelSharedState.readDiagnosticsJson() {
+            let diagnostics = VpnDiagnostics(jsonText: json)
+            self.diagnostics = diagnostics
+            if !diagnostics.meaningfulLastError.isEmpty {
+                lastError = diagnostics.meaningfulLastError
+            }
+            emitChange()
+            completion(diagnostics)
+            return
+        }
+
+        sendProviderMessage("diagnostics") { [weak self] data in
+            guard let data,
+                  let raw = String(data: data, encoding: .utf8),
+                  !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                completion(self?.diagnostics ?? .empty)
+                return
+            }
+
+            let diagnostics = VpnDiagnostics(jsonText: raw)
+            self?.diagnostics = diagnostics
+            if !diagnostics.meaningfulLastError.isEmpty {
+                self?.lastError = diagnostics.meaningfulLastError
+            }
+            self?.emitChange()
+            completion(diagnostics)
         }
 #endif
     }
@@ -574,6 +1010,20 @@ final class VPNController {
 #endif
     }
 
+    func uploadPacketTunnelCrashReports(
+        settings: TelemetrySettings,
+        completion: @escaping (TelemetryUploadSummary?) -> Void
+    ) {
+#if targetEnvironment(simulator)
+        completion(TelemetryUploadSummary())
+#else
+        let command = ProviderCommand(command: "uploadCrashReports", telemetry: settings)
+        sendProviderCommand(command) { data in
+            completion(CrashReporter.decodedUploadSummary(from: data))
+        }
+#endif
+    }
+
     private func loadManager(completion: @escaping (NETunnelProviderManager?, Error?) -> Void) {
         NETunnelProviderManager.loadAllFromPreferences { managers, error in
             if let error {
@@ -590,10 +1040,18 @@ final class VPNController {
     }
 
     private func sendProviderMessage(_ command: String, completion: @escaping (Data?) -> Void) {
+        sendProviderData(command.data(using: .utf8), completion: completion)
+    }
+
+    private func sendProviderCommand(_ command: ProviderCommand, completion: @escaping (Data?) -> Void) {
+        sendProviderData(try? JSONEncoder().encode(command), completion: completion)
+    }
+
+    private func sendProviderData(_ data: Data?, completion: @escaping (Data?) -> Void) {
         let send: (NETunnelProviderManager?) -> Void = { manager in
             guard let session = manager?.connection as? NETunnelProviderSession,
                   manager?.connection.status == .connected,
-                  let data = command.data(using: .utf8)
+                  let data
             else {
                 completion(nil)
                 return
@@ -629,8 +1087,13 @@ final class VPNController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self else { return }
             self.refresh {
-                if self.status == .disconnected || self.status == .invalid || attemptsRemaining <= 0 {
+                let extensionDead = !TunnelSharedState.isExtensionAlive()
+                let neReady = self.status == .disconnected || self.status == .invalid
+                if neReady && extensionDead {
                     self.connect(profile: profile, completion: completion)
+                } else if attemptsRemaining <= 0 {
+                    self.record(VPNReconnectError.teardownTimeout)
+                    completion(.failure(VPNReconnectError.teardownTimeout))
                 } else {
                     self.waitForDisconnectThenConnect(
                         profile: profile,
@@ -644,7 +1107,16 @@ final class VPNController {
 
     @objc private func statusDidChange(_ notification: Notification) {
         guard let connection = notification.object as? NEVPNConnection else { return }
+        lastStatusBeforeChange = status
         status = connection.status
+        if status == .disconnected,
+           (lastStatusBeforeChange == .connecting || lastStatusBeforeChange == .reasserting),
+           lastError == nil {
+            lastError = "VPN 扩展启动失败，已回到 OFF。请在 Xcode Console 过滤 OpenPPP2 查看 PacketTunnel 的具体错误。"
+        }
+        if status == .disconnected || status == .invalid {
+            diagnostics = .empty
+        }
         emitChange()
     }
 
@@ -667,6 +1139,13 @@ final class VPNController {
         else { return "{}" }
         return raw
     }
+
+    private static func encodeTelemetry(_ settings: TelemetrySettings) -> String {
+        guard let data = try? JSONEncoder().encode(settings),
+              let raw = String(data: data, encoding: .utf8)
+        else { return "{}" }
+        return raw
+    }
 }
 
 // MARK: - Home
@@ -683,12 +1162,15 @@ final class HomeViewController: UIViewController {
     private let profileButton = UIButton(type: .system)
     private let uploadCard = StatCard(title: "上行", symbol: "arrow.up", tint: .systemOrange)
     private let downloadCard = StatCard(title: "下行", symbol: "arrow.down", tint: .systemBlue)
+    private let diagnosticLabel = PaddingLabel()
     private let errorLabel = PaddingLabel()
     private var timer: Timer?
     private var pollTimer: Timer?
     private var connectedAt: Date?
     private var linkState = 6
     private var statistics = VpnStatistics.empty
+    private var connectStartedAt: Date?
+    private var connectWatchdogTimer: Timer?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -704,6 +1186,7 @@ final class HomeViewController: UIViewController {
     deinit {
         timer?.invalidate()
         pollTimer?.invalidate()
+        connectWatchdogTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -752,6 +1235,14 @@ final class HomeViewController: UIViewController {
         durationLabel.textColor = .secondaryLabel
         content.addArrangedSubview(durationLabel)
 
+        diagnosticLabel.backgroundColor = .systemBlue.withAlphaComponent(0.10)
+        diagnosticLabel.textColor = .secondaryLabel
+        diagnosticLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        diagnosticLabel.numberOfLines = 0
+        diagnosticLabel.layer.cornerRadius = 12
+        diagnosticLabel.clipsToBounds = true
+        content.addArrangedSubview(diagnosticLabel)
+
         let connectTitle = UILabel()
         connectTitle.text = "Connect to"
         connectTitle.font = .preferredFont(forTextStyle: .subheadline)
@@ -793,16 +1284,23 @@ final class HomeViewController: UIViewController {
                 statusLabel.text = "Connected"
                 subtitleLabel.text = "VPN is ON"
                 connectedAt = connectedAt ?? Date()
+                stopConnectWatchdog()
                 startTimer()
             } else {
                 statusLabel.text = connectingText(for: linkState)
                 subtitleLabel.text = "VPN is starting"
                 startPolling()
+                if connectStartedAt == nil {
+                    startConnectWatchdog()
+                }
             }
         case .connecting:
             statusLabel.text = connectingText(for: linkState)
             subtitleLabel.text = "VPN is starting"
             startPolling()
+            if connectStartedAt == nil {
+                startConnectWatchdog()
+            }
         case .disconnecting:
             statusLabel.text = "Disconnecting..."
             subtitleLabel.text = "VPN is OFF"
@@ -810,6 +1308,9 @@ final class HomeViewController: UIViewController {
             statusLabel.text = "Reconnecting..."
             subtitleLabel.text = "VPN is ON"
             startPolling()
+            if connectStartedAt == nil {
+                startConnectWatchdog()
+            }
         default:
             statusLabel.text = "Not Connected"
             subtitleLabel.text = "VPN is OFF"
@@ -817,6 +1318,7 @@ final class HomeViewController: UIViewController {
             timer?.invalidate()
             pollTimer?.invalidate()
             pollTimer = nil
+            stopConnectWatchdog()
             durationLabel.text = "00:00:00"
             linkState = 6
             statistics = .empty
@@ -831,6 +1333,9 @@ final class HomeViewController: UIViewController {
 
         uploadCard.set(value: "\(formatBytes(statistics.txSpeedBytes))/s", subtitle: "总 \(formatBytes(statistics.outBytes))")
         downloadCard.set(value: "\(formatBytes(statistics.rxSpeedBytes))/s", subtitle: "总 \(formatBytes(statistics.inBytes))")
+        let diagnosticText = vpn.diagnostics.summaryText(fallbackLinkState: linkState)
+        diagnosticLabel.text = diagnosticText
+        diagnosticLabel.isHidden = diagnosticText == nil
         errorLabel.text = vpn.lastError
         errorLabel.isHidden = vpn.lastError == nil
     }
@@ -875,11 +1380,60 @@ final class HomeViewController: UIViewController {
             self.refreshUI()
         }
 
+        vpn.fetchDiagnostics { [weak self] diagnostics in
+            guard let self else { return }
+            if let state = diagnostics.linkState {
+                self.linkState = state
+            }
+            self.refreshUI()
+        }
+
         vpn.fetchStatistics(previous: statistics) { [weak self] stats in
             guard let self else { return }
             self.statistics = stats
             self.refreshUI()
         }
+    }
+
+    private func startConnectWatchdog() {
+        connectStartedAt = Date()
+        connectWatchdogTimer?.invalidate()
+        connectWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.evaluateConnectWatchdog()
+        }
+    }
+
+    private func stopConnectWatchdog() {
+        connectWatchdogTimer?.invalidate()
+        connectWatchdogTimer = nil
+        connectStartedAt = nil
+    }
+
+    private func evaluateConnectWatchdog() {
+        guard let startedAt = connectStartedAt else { return }
+
+        let status = vpn.status
+        let stillConnecting = status == .connecting || status == .reasserting
+            || (status == .connected && linkState != 0)
+        guard stillConnecting else {
+            stopConnectWatchdog()
+            return
+        }
+
+        let totalSeconds = Int(Date().timeIntervalSince(startedAt))
+        let heartbeatAge = TunnelSharedState.heartbeatAgeMs()
+        let heartbeatStale = heartbeatAge < 0 || heartbeatAge > TunnelSharedState.heartbeatStaleMilliseconds
+        if !heartbeatStale && totalSeconds < TunnelSharedState.connectWatchdogMaxSeconds {
+            return
+        }
+
+        stopConnectWatchdog()
+        let reason = totalSeconds >= TunnelSharedState.connectWatchdogMaxSeconds
+            ? "超过 \(TunnelSharedState.connectWatchdogMaxSeconds)s 上限"
+            : "扩展心跳已停 \(String(format: "%.1f", Double(heartbeatAge) / 1000))s"
+        vpn.disconnect()
+        presentError("连接超时（\(reason)）：请检查服务器地址、密钥与网络连通性。")
+        refreshUI()
     }
 
     @objc private func toggleConnection() {
@@ -897,9 +1451,11 @@ final class HomeViewController: UIViewController {
         vpn.connect(profile: profile) { [weak self] result in
             guard let self else { return }
             if case let .failure(error) = result {
+                self.stopConnectWatchdog()
                 self.presentError(error.localizedDescription)
             } else {
                 self.startPolling()
+                self.startConnectWatchdog()
             }
             self.refreshUI()
         }
@@ -1410,6 +1966,8 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
         let port = Int(portField.textValue) ?? 0
         if !host.isEmpty {
             client["server"] = "ppp://\(host)\(port > 0 ? ":\(port)" : "")/"
+        } else {
+            client["server"] = ""
         }
         client["guid"] = guidField.textValue
         client["bandwidth"] = Int(bandwidthField.textValue) ?? 0
@@ -1482,6 +2040,7 @@ final class OptionsViewController: UIViewController {
     private let allowLan = UISwitch()
     private let blockQuic = UISwitch()
     private let vnet = UISwitch()
+    private let lwip = UISwitch()
     private let staticMode = UISwitch()
     private let geoEnabled = UISwitch()
     private let ecsEnabled = UISwitch()
@@ -1552,6 +2111,7 @@ final class OptionsViewController: UIViewController {
         content.addArrangedSubview(SectionView(title: "高级", symbol: "tuningfork", views: [
             mux,
             switchRow(title: "VNet", subtitle: "启用虚拟网卡路径", control: vnet),
+            switchRow(title: "lwIP Dataplane", subtitle: "关闭时使用 native ctcp 路径", control: lwip),
             switchRow(title: "Block QUIC", subtitle: "屏蔽 UDP/443 防止绕过", control: blockQuic),
             switchRow(title: "Static Mode", subtitle: "UDP 静态隧道模式", control: staticMode)
         ]))
@@ -1595,6 +2155,7 @@ final class OptionsViewController: UIViewController {
         allowLan.isOn = options.allowLan
         blockQuic.isOn = options.blockQuic
         vnet.isOn = options.vnet
+        lwip.isOn = options.lwip
         staticMode.isOn = options.staticMode
         geoEnabled.isOn = options.geoEnabled
         ecsEnabled.isOn = options.dnsEcsEnabled
@@ -1628,6 +2189,7 @@ final class OptionsViewController: UIViewController {
         options.allowLan = allowLan.isOn
         options.blockQuic = blockQuic.isOn
         options.vnet = vnet.isOn
+        options.lwip = lwip.isOn
         options.staticMode = staticMode.isOn
         options.geoEnabled = geoEnabled.isOn
         options.dnsEcsEnabled = ecsEnabled.isOn
@@ -1652,7 +2214,7 @@ final class OptionsViewController: UIViewController {
 final class SettingsViewController: UITableViewController {
     private let store = ProfileStore.shared
     private let vpn = VPNController.shared
-    private let rows = ["调试面板", "刷新 VPN 状态", "崩溃收集", "打开系统设置", "清空配置文件"]
+    private let rows = ["调试面板", "刷新 VPN 状态", "崩溃收集", "遥测上传", "打开系统设置", "清空配置文件"]
     private var crashReportSummary: String?
 
     override func viewDidLoad() {
@@ -1683,9 +2245,12 @@ final class SettingsViewController: UITableViewController {
         case 2:
             config.secondaryText = crashReportSummary ?? CrashReporter.pendingReportsSummary()
         case 3:
+            let telemetry = TelemetrySettingsStore.shared.settings()
+            config.secondaryText = telemetry.uploadEnabled ? telemetry.destination.displayName : "关闭"
+        case 4:
             config.secondaryText = "iOS VPN / App 设置"
         default:
-            config.secondaryText = "恢复 Default"
+            config.secondaryText = "恢复默认配置"
         }
         cell.contentConfiguration = config
         cell.accessoryType = indexPath.row == 0 ? .none : .disclosureIndicator
@@ -1711,10 +2276,12 @@ final class SettingsViewController: UITableViewController {
         case 2:
             navigationController?.pushViewController(CrashReportsViewController(), animated: true)
         case 3:
+            navigationController?.pushViewController(TelemetrySettingsViewController(), animated: true)
+        case 4:
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.open(url)
             }
-        case 4:
+        case 5:
             confirmReset()
         default:
             break
@@ -1722,7 +2289,7 @@ final class SettingsViewController: UITableViewController {
     }
 
     private func confirmReset() {
-        let alert = UIAlertController(title: "清空配置文件", message: "这会删除所有本地配置并恢复 Default。", preferredStyle: .alert)
+        let alert = UIAlertController(title: "清空配置文件", message: "这会删除所有本地配置并恢复默认空白配置。", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
             self?.store.resetAll()
@@ -1754,10 +2321,11 @@ final class SettingsViewController: UITableViewController {
 }
 
 final class CrashReportsViewController: UITableViewController {
-    private let rows = ["状态", "存储位置", "清空本地报告"]
+    private let rows = ["状态", "存储位置", "上传到 OpenTelemetry", "清空本地报告"]
     private let vpn = VPNController.shared
     private var snapshots: [CrashReporter.StoreSnapshot] = []
     private var packetTunnelSnapshotAvailable = false
+    private var uploading = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -1830,6 +2398,9 @@ final class CrashReportsViewController: UITableViewController {
             case 1:
                 config.secondaryText = CrashReporter.storageDescription()
                 cell.accessoryType = .none
+            case 2:
+                config.secondaryText = uploading ? "上传中..." : "成功上传后会删除本地报告"
+                cell.accessoryType = uploading ? .none : .disclosureIndicator
             default:
                 config.secondaryText = "删除尚未上传的崩溃报告"
                 cell.accessoryType = .disclosureIndicator
@@ -1861,7 +2432,14 @@ final class CrashReportsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard indexPath.section == 0, indexPath.row == 2 else { return }
+        guard indexPath.section == 0 else { return }
+
+        if indexPath.row == 2 {
+            uploadCrashReports()
+            return
+        }
+
+        guard indexPath.row == 3 else { return }
 
         let alert = UIAlertController(title: "清空崩溃报告", message: "这会删除本机尚未上传的 KSCrash 报告。", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -1877,6 +2455,53 @@ final class CrashReportsViewController: UITableViewController {
             }
         })
         present(alert, animated: true)
+    }
+
+    private func uploadCrashReports() {
+        guard !uploading else { return }
+        let settings = TelemetrySettingsStore.shared.settings()
+        guard settings.canUpload, settings.includeCrashReports else {
+            presentMessage(title: "遥测上传未开启", message: "请先在设置里的「遥测上传」开启上传并配置 endpoint。")
+            return
+        }
+
+        uploading = true
+        tableView.reloadData()
+        var summary = TelemetryUploadSummary()
+        let group = DispatchGroup()
+
+        group.enter()
+        CrashReporter.uploadReports(for: .app, settings: settings) { result in
+            summary.merge(result)
+            group.leave()
+        }
+
+        if CrashReporter.isSharedContainerAvailable {
+            group.enter()
+            CrashReporter.uploadReports(for: .packetTunnel, settings: settings) { result in
+                summary.merge(result)
+                group.leave()
+            }
+        } else {
+            group.enter()
+            vpn.uploadPacketTunnelCrashReports(settings: settings) { result in
+                if let result {
+                    summary.merge(result)
+                } else {
+                    summary.skipped += 1
+                    summary.lastError = "VPN 未连接，无法读取扩展沙盒中的报告"
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            self.uploading = false
+            self.reloadReports()
+            let detail = summary.lastError.map { "\n\($0)" } ?? ""
+            self.presentMessage(title: "上传完成", message: summary.displayText + detail)
+        }
     }
 
     private func snapshot(forSection section: Int) -> CrashReporter.StoreSnapshot? {
@@ -1901,6 +2526,226 @@ final class CrashReportsViewController: UITableViewController {
     }
 }
 
+final class TelemetrySettingsViewController: UIViewController {
+    private let store = TelemetrySettingsStore.shared
+    private let profileStore = ProfileStore.shared
+    private let vpn = VPNController.shared
+    private let scrollView = UIScrollView()
+    private let content = UIStackView()
+    private let uploadSwitch = UISwitch()
+    private let destinationControl = UISegmentedControl(items: TelemetrySettings.Destination.allCases.map(\.displayName))
+    private let endpointField = FormTextField(label: "OTLP HTTP Endpoint")
+    private let crashSwitch = UISwitch()
+    private let nativeSwitch = UISwitch()
+    private let metricsSwitch = UISwitch()
+    private let spansSwitch = UISwitch()
+    private let levelControl = UISegmentedControl(items: ["Info", "Verb", "Debug", "Trace"])
+    private let developerEndpointLabel = UILabel()
+    private let uploadButton = UIButton(type: .system)
+    private var settings = TelemetrySettings()
+    private var uploading = false
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "遥测上传"
+        view.backgroundColor = .systemGroupedBackground
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .save,
+            target: self,
+            action: #selector(save)
+        )
+        setupLayout()
+        load()
+    }
+
+    private func setupLayout() {
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        content.axis = .vertical
+        content.spacing = 12
+        content.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scrollView)
+        scrollView.addSubview(content)
+
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 16),
+            content.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -16),
+            content.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 16),
+            content.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -24),
+            content.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor, constant: -32)
+        ])
+
+        developerEndpointLabel.font = .preferredFont(forTextStyle: .footnote)
+        developerEndpointLabel.textColor = .secondaryLabel
+        developerEndpointLabel.numberOfLines = 0
+
+        destinationControl.addTarget(self, action: #selector(destinationChanged), for: .valueChanged)
+        [uploadSwitch, crashSwitch, nativeSwitch, metricsSwitch, spansSwitch].forEach {
+            $0.addTarget(self, action: #selector(controlChanged), for: .valueChanged)
+        }
+        levelControl.addTarget(self, action: #selector(controlChanged), for: .valueChanged)
+
+        content.addArrangedSubview(SectionView(title: "上传", symbol: "arrow.up.doc", views: [
+            switchRow(title: "启用上传", subtitle: "OTLP/HTTP JSON", control: uploadSwitch),
+            destinationControl,
+            developerEndpointLabel,
+            endpointField
+        ]))
+
+        content.addArrangedSubview(SectionView(title: "数据", symbol: "checklist", views: [
+            switchRow(title: "KSCrash", subtitle: "App 与 VPN 扩展崩溃报告", control: crashSwitch),
+            switchRow(title: "Native Telemetry", subtitle: "OpenPPP2 日志、计数与 Span", control: nativeSwitch)
+        ]))
+
+        content.addArrangedSubview(SectionView(title: "Native", symbol: "waveform.path.ecg", views: [
+            levelControl,
+            switchRow(title: "Metrics", subtitle: "Counter / Gauge / Histogram", control: metricsSwitch),
+            switchRow(title: "Spans", subtitle: "Trace spans", control: spansSwitch)
+        ]))
+
+        uploadButton.setTitle("上传崩溃报告", for: .normal)
+        uploadButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        uploadButton.backgroundColor = .systemBlue
+        uploadButton.tintColor = .white
+        uploadButton.layer.cornerRadius = 12
+        uploadButton.addTarget(self, action: #selector(uploadCrashReports), for: .touchUpInside)
+        uploadButton.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        content.addArrangedSubview(uploadButton)
+    }
+
+    private func load() {
+        settings = store.settings()
+        uploadSwitch.isOn = settings.uploadEnabled
+        destinationControl.selectedSegmentIndex = TelemetrySettings.Destination.allCases.firstIndex(of: settings.destination) ?? 0
+        endpointField.text = settings.customEndpoint
+        crashSwitch.isOn = settings.includeCrashReports
+        nativeSwitch.isOn = settings.includeNativeTelemetry
+        metricsSwitch.isOn = settings.nativeMetricsEnabled
+        spansSwitch.isOn = settings.nativeSpansEnabled
+        levelControl.selectedSegmentIndex = max(0, min(settings.nativeLogLevel, 3))
+        refreshControls()
+    }
+
+    private func applyForm() -> TelemetrySettings {
+        var next = settings
+        next.uploadEnabled = uploadSwitch.isOn
+        let destinations = TelemetrySettings.Destination.allCases
+        let selected = max(0, min(destinationControl.selectedSegmentIndex, destinations.count - 1))
+        next.destination = destinations[selected]
+        next.customEndpoint = endpointField.textValue
+        next.includeCrashReports = crashSwitch.isOn
+        next.includeNativeTelemetry = nativeSwitch.isOn
+        next.nativeMetricsEnabled = metricsSwitch.isOn
+        next.nativeSpansEnabled = spansSwitch.isOn
+        next.nativeLogLevel = max(0, min(levelControl.selectedSegmentIndex, 3))
+        return next
+    }
+
+    private func refreshControls() {
+        let next = applyForm()
+        let usesCustom = next.destination == .custom
+        endpointField.isHidden = !usesCustom
+        endpointField.field.isEnabled = usesCustom
+        developerEndpointLabel.isHidden = usesCustom
+        developerEndpointLabel.text = TelemetrySettings.developerEndpoint.isEmpty
+            ? "开发者默认 endpoint 未配置"
+            : TelemetrySettings.developerEndpoint
+        metricsSwitch.isEnabled = next.includeNativeTelemetry
+        spansSwitch.isEnabled = next.includeNativeTelemetry
+        levelControl.isEnabled = next.includeNativeTelemetry
+        uploadButton.isEnabled = next.canUpload && next.includeCrashReports && !uploading
+        uploadButton.alpha = uploadButton.isEnabled ? 1 : 0.45
+        uploadButton.setTitle(uploading ? "上传中..." : "上传崩溃报告", for: .normal)
+    }
+
+    @objc private func destinationChanged() {
+        refreshControls()
+    }
+
+    @objc private func controlChanged() {
+        refreshControls()
+    }
+
+    @objc private func save() {
+        settings = applyForm()
+        guard !settings.uploadEnabled || settings.destination != .custom || !settings.customEndpoint.isEmpty else {
+            presentMessage(title: "Endpoint 为空", message: "请填写 OTLP HTTP endpoint。")
+            return
+        }
+
+        if settings.uploadEnabled,
+           !settings.effectiveEndpoint.isEmpty,
+           URLComponents(string: settings.effectiveEndpoint)?.host == nil {
+            presentMessage(title: "Endpoint 无效", message: "请填写 http:// 或 https:// 开头的 OTLP HTTP endpoint。")
+            return
+        }
+
+        store.save(settings)
+        refreshControls()
+
+        guard let profile = profileStore.activeProfile(), vpn.requiresRestartToApplyConfiguration else {
+            presentToast("遥测设置已保存")
+            return
+        }
+
+        promptRestartForActiveTunnelIfNeeded(
+            profile: profile,
+            message: "遥测设置已保存。当前 VPN 正在运行，要让 Native Telemetry 生效需要重连。",
+            noRestartMessage: "遥测设置已保存"
+        )
+    }
+
+    @objc private func uploadCrashReports() {
+        settings = applyForm()
+        guard settings.canUpload, settings.includeCrashReports else {
+            presentMessage(title: "不能上传", message: "请先开启上传并配置 endpoint。")
+            return
+        }
+
+        store.save(settings)
+        uploading = true
+        refreshControls()
+        var summary = TelemetryUploadSummary()
+        let group = DispatchGroup()
+
+        group.enter()
+        CrashReporter.uploadReports(for: .app, settings: settings) { result in
+            summary.merge(result)
+            group.leave()
+        }
+
+        if CrashReporter.isSharedContainerAvailable {
+            group.enter()
+            CrashReporter.uploadReports(for: .packetTunnel, settings: settings) { result in
+                summary.merge(result)
+                group.leave()
+            }
+        } else {
+            group.enter()
+            vpn.uploadPacketTunnelCrashReports(settings: settings) { result in
+                if let result {
+                    summary.merge(result)
+                } else {
+                    summary.skipped += 1
+                    summary.lastError = "VPN 未连接，无法上传 VPN 扩展报告"
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            self.uploading = false
+            self.refreshControls()
+            let detail = summary.lastError.map { "\n\($0)" } ?? ""
+            self.presentMessage(title: "上传完成", message: summary.displayText + detail)
+        }
+    }
+}
+
 // MARK: - UI Helpers
 
 final class PowerButton: UIControl {
@@ -1920,6 +2765,9 @@ final class PowerButton: UIControl {
     }
 
     private func setup() {
+        isAccessibilityElement = true
+        accessibilityTraits = [.button]
+
         [outer, middle, inner, symbol, spinner].forEach { item in
             item.translatesAutoresizingMaskIntoConstraints = false
             item.isUserInteractionEnabled = false
@@ -1973,6 +2821,7 @@ final class PowerButton: UIControl {
         symbol.isHidden = isBusy
         isBusy ? spinner.startAnimating() : spinner.stopAnimating()
         accessibilityLabel = isOn ? "断开 VPN" : "连接 VPN"
+        accessibilityValue = isBusy ? "正在连接" : (isOn ? "已连接" : "未连接")
     }
 }
 

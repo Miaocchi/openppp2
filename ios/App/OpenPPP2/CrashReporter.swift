@@ -30,7 +30,13 @@ enum CrashReporter {
         let id: Int64
     }
 
-    private static let appGroupIdentifier = "group.com.haochengwu.openppp2"
+    private struct CrashReportUploadItem {
+        let process: ProcessKind
+        let id: Int64
+        let body: String
+    }
+
+    private static let appGroupIdentifier = TunnelSharedState.appGroupIdentifier
     private static let maxReportCount = 12
     private static var installed = false
     private static let queue = DispatchQueue(label: "openppp2.crash-reporter")
@@ -95,6 +101,34 @@ enum CrashReporter {
         reportStore(for: process)?.deleteAllReports()
     }
 
+    static func uploadReports(
+        for process: ProcessKind,
+        settings: TelemetrySettings,
+        completion: @escaping (TelemetryUploadSummary) -> Void
+    ) {
+        guard settings.canUpload, settings.includeCrashReports else {
+            completion(TelemetryUploadSummary(skipped: storeSnapshot(for: process).reportCount))
+            return
+        }
+
+        queue.async {
+            let items = reportBodies(for: process)
+            guard !items.isEmpty else {
+                DispatchQueue.main.async {
+                    completion(TelemetryUploadSummary())
+                }
+                return
+            }
+
+            let exporter = OTLPHTTPLogExporter(settings: settings)
+            upload(items: items, exporter: exporter, summary: TelemetryUploadSummary()) { summary in
+                DispatchQueue.main.async {
+                    completion(summary)
+                }
+            }
+        }
+    }
+
     static func pendingReportsSummary() -> String {
         pendingReportsSummary(for: storeSnapshots)
     }
@@ -135,6 +169,71 @@ enum CrashReporter {
     static func decodedStoreSnapshot(from data: Data?) -> StoreSnapshot? {
         guard let data else { return nil }
         return try? JSONDecoder().decode(StoreSnapshot.self, from: data)
+    }
+
+    static func encodedUploadSummary(_ summary: TelemetryUploadSummary) -> Data? {
+        try? JSONEncoder().encode(summary)
+    }
+
+    static func decodedUploadSummary(from data: Data?) -> TelemetryUploadSummary? {
+        guard let data else { return nil }
+        return try? JSONDecoder().decode(TelemetryUploadSummary.self, from: data)
+    }
+
+    private static func reportBodies(for process: ProcessKind) -> [CrashReportUploadItem] {
+        guard let store = reportStore(for: process) else { return [] }
+        return store.reportIDs.compactMap { reportID in
+            let id = reportID.int64Value
+            guard let report = store.report(for: id),
+                  JSONSerialization.isValidJSONObject(report.value),
+                  let data = try? JSONSerialization.data(withJSONObject: report.value, options: [.sortedKeys]),
+                  let body = String(data: data, encoding: .utf8)
+            else {
+                return nil
+            }
+            return CrashReportUploadItem(process: process, id: id, body: body)
+        }
+    }
+
+    private static func upload(
+        items: [CrashReportUploadItem],
+        exporter: OTLPHTTPLogExporter,
+        summary: TelemetryUploadSummary,
+        completion: @escaping (TelemetryUploadSummary) -> Void
+    ) {
+        var remaining = items
+        guard let item = remaining.first else {
+            completion(summary)
+            return
+        }
+        remaining.removeFirst()
+
+        let record = OTLPLogRecord(
+            timeUnixNano: UInt64(Date().timeIntervalSince1970 * 1_000_000_000),
+            severityText: "ERROR",
+            body: item.body,
+            attributes: [
+                "event.name": .string("kscrash.report"),
+                "openppp2.process": .string(item.process.rawValue),
+                "openppp2.process.display_name": .string(item.process.displayName),
+                "kscrash.report_id": .int(item.id),
+                "crash.reporter": .string("KSCrash")
+            ]
+        )
+
+        exporter.export(records: [record]) { result in
+            var next = summary
+            next.attempted += 1
+            switch result {
+            case .success:
+                reportStore(for: item.process)?.deleteReport(with: item.id)
+                next.uploaded += 1
+            case let .failure(error):
+                next.failed += 1
+                next.lastError = error.localizedDescription
+            }
+            upload(items: remaining, exporter: exporter, summary: next, completion: completion)
+        }
     }
 
     private static func reportStore(for process: ProcessKind) -> CrashReportStore? {
