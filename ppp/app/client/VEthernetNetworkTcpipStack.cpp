@@ -2,6 +2,7 @@
 #include <ppp/app/client/VEthernetNetworkTcpipConnection.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/Telemetry.h>
 
 #include <ppp/IDisposable.h>
 #include <ppp/threading/Executors.h>
@@ -41,6 +42,12 @@ namespace ppp {
 
                 NetworkState network_state = exchanger->GetNetworkState();
                 if (network_state != NetworkState::NetworkState_Established) {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip_stack", "begin accept rejected: network state=%d local=%s:%u remote=%s:%u",
+                        (int)network_state,
+                        localEP.address().to_string().c_str(),
+                        localEP.port(),
+                        remoteEP.address().to_string().c_str(),
+                        remoteEP.port());
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionNotFound, std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
                 }
                 
@@ -49,15 +56,22 @@ namespace ppp {
                 context = ppp::threading::Executors::SelectScheduler(strand);
 
                 if (NULLPTR == context) {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip_stack", "begin accept failed: scheduler unavailable");
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeSchedulerUnavailable, std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
                 }
 
                 auto connection = make_shared_object<VEthernetNetworkTcpipConnection>(exchanger, context, strand);
                 if (NULLPTR == connection) {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip_stack", "begin accept failed: allocation failed");
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
                 }
 
                 connection->Open(localEP, remoteEP);
+                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip_stack", "begin accept client local=%s:%u remote=%s:%u",
+                    localEP.address().to_string().c_str(),
+                    localEP.port(),
+                    remoteEP.address().to_string().c_str(),
+                    remoteEP.port());
                 return connection;
             }
 

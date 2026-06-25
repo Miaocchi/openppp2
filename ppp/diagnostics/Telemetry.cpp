@@ -52,6 +52,8 @@ namespace ppp {
         std::atomic<bool> g_console_metric{true};
         std::atomic<bool> g_console_span{true};
         std::atomic<ConsoleSinkFn> g_console_sink{nullptr};
+        std::atomic<HttpPostFn>    g_http_post_sink{nullptr};
+        std::atomic<void*>         g_http_post_user_data{nullptr};
         std::string       g_endpoint;
         std::string       g_log_file;
 
@@ -96,7 +98,11 @@ namespace ppp {
 #if defined(_WIN32)
                 return "windows";
 #elif defined(__APPLE__)
+#if defined(_IPHONE) || defined(IPHONE) || defined(__IPHONE_OS_VERSION_MIN_REQUIRED)
+                return "ios";
+#else
                 return "macos";
+#endif
 #elif defined(__ANDROID__)
                 return "android";
 #elif defined(__linux__)
@@ -212,6 +218,11 @@ namespace ppp {
             g_console_sink.store(fn, std::memory_order_release);
         }
 
+        void SetHttpPostSink(HttpPostFn fn, void* user_data) noexcept {
+            g_http_post_sink.store(fn, std::memory_order_release);
+            g_http_post_user_data.store(user_data, std::memory_order_release);
+        }
+
         ConsoleSinkFn GetConsoleSink() noexcept {
             return g_console_sink.load(std::memory_order_acquire);
         }
@@ -314,56 +325,113 @@ namespace ppp {
                 void SetEndpoint(const std::string& url) {
                     std::lock_guard<std::mutex> lock(mutex_);
                     if (url.empty()) {
-                        endpoint_.clear(); host_.clear(); port_.clear(); path_.clear();
+                        scheme_.clear();
+                        endpoint_.clear();
+                        host_.clear();
+                        port_.clear();
+                        base_path_.clear();
+                        logs_path_.clear();
+                        metrics_path_.clear();
+                        traces_path_.clear();
                         return;
                     }
+
                     endpoint_ = url;
-                    ParseUrl(url, host_, port_, path_);
+                    scheme_ = "http";
+                    if (url.rfind("https://", 0) == 0) {
+                        scheme_ = "https";
+                    }
+
+                    ParseUrl(url, host_, port_, base_path_);
+                    logs_path_ = BuildSignalPath(base_path_, "logs");
+                    metrics_path_ = BuildSignalPath(base_path_, "metrics");
+                    traces_path_ = BuildSignalPath(base_path_, "traces");
                 }
 
                 void ExportLogs(const std::vector<LogEvent>& events) noexcept {
-                    if (events.empty() || endpoint_.empty()) return;
-                    std::string body = BuildLogJson(events);
-                    PostHttp(body);
+                    if (events.empty() || host_.empty()) return;
+                    PostHttp(logs_path_, BuildLogJson(events));
                 }
 
                 void ExportCounters(const std::vector<CounterEvent>& events) noexcept {
-                    if (events.empty() || endpoint_.empty()) return;
-                    std::string body = BuildCounterJson(events);
-                    PostHttp(body);
+                    if (events.empty() || host_.empty()) return;
+                    PostHttp(metrics_path_, BuildCounterJson(events));
                 }
 
                 void ExportSpans(const std::vector<SpanEvent>& events) noexcept {
-                    if (events.empty() || endpoint_.empty()) return;
-                    std::string body = BuildSpanJson(events);
-                    PostHttp(body);
+                    if (events.empty() || host_.empty()) return;
+                    PostHttp(traces_path_, BuildSpanJson(events));
                 }
 
                 void ExportGauges(const std::vector<GaugeEvent>& events) noexcept {
-                    if (events.empty() || endpoint_.empty()) return;
-                    std::string body = BuildGaugeJson(events);
-                    PostHttp(body);
+                    if (events.empty() || host_.empty()) return;
+                    PostHttp(metrics_path_, BuildGaugeJson(events));
                 }
 
                 void ExportHistograms(const std::vector<HistogramEvent>& events) noexcept {
-                    if (events.empty() || endpoint_.empty()) return;
-                    std::string body = BuildHistogramJson(events);
-                    PostHttp(body);
+                    if (events.empty() || host_.empty()) return;
+                    PostHttp(metrics_path_, BuildHistogramJson(events));
                 }
 
             private:
-                static std::string BuildAttributeJson(const std::vector<std::pair<std::string, std::string>>& attributes) noexcept {
-                    std::string json;
-                    for (size_t i = 0; i < attributes.size(); ++i) {
-                        if (i > 0) json += ",";
-                        json += "{\"key\":\"" + JsonEscape(attributes[i].first) + "\",\"value\":{\"stringValue\":\"" + JsonEscape(attributes[i].second) + "\"}}";
+                static std::string TrimTrailingSlash(std::string value) {
+                    while (!value.empty() && value.back() == '/') {
+                        value.pop_back();
                     }
-                    return json;
+                    return value;
                 }
 
-                void PostHttp(const std::string& body) noexcept {
+                static std::string BuildSignalPath(const std::string& base_path, const char* signal) {
+                    const std::string suffix = std::string("/v1/") + signal;
+                    if (base_path.empty()) {
+                        return suffix;
+                    }
+
+                    if (base_path.find("/v1/") != std::string::npos) {
+                        const std::string logs_suffix = "/v1/logs";
+                        const std::string metrics_suffix = "/v1/metrics";
+                        const std::string traces_suffix = "/v1/traces";
+                        if (base_path.size() >= logs_suffix.size()
+                            && base_path.compare(base_path.size() - logs_suffix.size(), logs_suffix.size(), logs_suffix) == 0) {
+                            return TrimTrailingSlash(base_path.substr(0, base_path.size() - logs_suffix.size())) + suffix;
+                        }
+                        if (base_path.size() >= metrics_suffix.size()
+                            && base_path.compare(base_path.size() - metrics_suffix.size(), metrics_suffix.size(), metrics_suffix) == 0) {
+                            return TrimTrailingSlash(base_path.substr(0, base_path.size() - metrics_suffix.size())) + suffix;
+                        }
+                        if (base_path.size() >= traces_suffix.size()
+                            && base_path.compare(base_path.size() - traces_suffix.size(), traces_suffix.size(), traces_suffix) == 0) {
+                            return TrimTrailingSlash(base_path.substr(0, base_path.size() - traces_suffix.size())) + suffix;
+                        }
+                    }
+
+                    return TrimTrailingSlash(base_path) + suffix;
+                }
+
+                std::string BuildFullUrl(const std::string& path) const {
+                    if (host_.empty() || path.empty()) {
+                        return {};
+                    }
+                    return scheme_ + "://" + host_ + ":" + port_ + path;
+                }
+
+                void PostHttp(const std::string& path, const std::string& body) noexcept {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    if (host_.empty()) return;
+                    if (host_.empty() || path.empty()) {
+                        return;
+                    }
+
+                    const std::string full_url = BuildFullUrl(path);
+                    HttpPostFn sink = g_http_post_sink.load(std::memory_order_acquire);
+                    void* user_data = g_http_post_user_data.load(std::memory_order_acquire);
+                    if (sink != nullptr) {
+                        sink(full_url.c_str(), body.data(), body.size(), user_data);
+                        return;
+                    }
+
+                    if (scheme_ == "https") {
+                        return;
+                    }
 
                     struct addrinfo hints{}, *result = nullptr;
                     hints.ai_family = AF_UNSPEC;
@@ -383,7 +451,7 @@ namespace ppp {
                     freeaddrinfo(result);
 
                     std::string request;
-                    request += "POST " + path_ + " HTTP/1.0\r\n";
+                    request += "POST " + path + " HTTP/1.0\r\n";
                     request += "Host: " + host_ + "\r\n";
                     request += "Content-Type: application/json\r\n";
                     request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
@@ -404,11 +472,20 @@ namespace ppp {
 
                     const char* slash = strchr(p, '/');
                     if (slash) { path.assign(slash); host.assign(p, slash - p); }
-                    else       { path = "/v1/logs"; host = p; }
+                    else       { path.clear(); host = p; }
 
                     const char* colon = strrchr(host.c_str(), ':');
                     if (colon) { port.assign(colon + 1); host.resize(colon - host.c_str()); }
                     else       { port = "4318"; }
+                }
+
+                static std::string BuildAttributeJson(const std::vector<std::pair<std::string, std::string>>& attributes) noexcept {
+                    std::string json;
+                    for (size_t i = 0; i < attributes.size(); ++i) {
+                        if (i > 0) json += ",";
+                        json += "{\"key\":\"" + JsonEscape(attributes[i].first) + "\",\"value\":{\"stringValue\":\"" + JsonEscape(attributes[i].second) + "\"}}";
+                    }
+                    return json;
                 }
 
                 static std::string BuildResourceJson() noexcept {
@@ -553,9 +630,13 @@ namespace ppp {
 
                 std::mutex  mutex_;
                 std::string endpoint_;
+                std::string scheme_;
                 std::string host_;
                 std::string port_;
-                std::string path_;
+                std::string base_path_;
+                std::string logs_path_;
+                std::string metrics_path_;
+                std::string traces_path_;
             };
 
             class TelemetryBackend final {
@@ -663,8 +744,13 @@ namespace ppp {
                 }
 
             private:
+#if defined(IPHONE)
+                static constexpr size_t kMaxQueueSize = 256;
+                static constexpr size_t kBatchSize    = 32;
+#else
                 static constexpr size_t kMaxQueueSize = 4096;
                 static constexpr size_t kBatchSize    = 256;
+#endif
 
                 void SetOtlpEndpointLocked(const std::string& url) {
                     use_otlp_ = !url.empty();
@@ -674,7 +760,11 @@ namespace ppp {
                 void Run() noexcept {
                     for (;;) {
                         std::unique_lock<std::mutex> lock(mutex_);
+#if defined(IPHONE)
+                        cv_.wait_for(lock, std::chrono::milliseconds(500),
+#else
                         cv_.wait_for(lock, std::chrono::milliseconds(100),
+#endif
                             [this] { return HasPendingLocked() || !running_.load(); });
 
                         if (!running_.load() && !HasPendingLocked()) {
@@ -722,6 +812,23 @@ namespace ppp {
                     }
 
                     lock.unlock();
+                    for (const LogEvent& ev : log_batch) {
+                        if (static_cast<int>(ev.level) <= g_min_level.load(std::memory_order_relaxed)) {
+                            PrintLog(ev);
+                        }
+                    }
+                    for (const CounterEvent& ev : counter_batch) {
+                        PrintCounter(ev);
+                    }
+                    for (const SpanEvent& ev : span_batch) {
+                        PrintSpan(ev);
+                    }
+                    for (const GaugeEvent& ev : gauge_batch) {
+                        PrintGauge(ev);
+                    }
+                    for (const HistogramEvent& ev : histogram_batch) {
+                        PrintHistogram(ev);
+                    }
                     if (!log_batch.empty())    exporter_.ExportLogs(log_batch);
                     if (!counter_batch.empty()) exporter_.ExportCounters(counter_batch);
                     if (!span_batch.empty())    exporter_.ExportSpans(span_batch);

@@ -114,6 +114,17 @@ namespace ppp {
         void SetConsoleSink(ConsoleSinkFn fn) noexcept;
 
         /**
+         * @brief Platform HTTP POST hook for OTLP export.
+         *
+         * When installed, HttpOtlpExporter delivers fully-qualified OTLP URLs
+         * (including https://) to this callback instead of using raw sockets.
+         * Return true when the collector accepted the payload.
+         */
+        using HttpPostFn = bool(*)(const char* url, const void* body, size_t body_len, void* user_data) noexcept;
+
+        void SetHttpPostSink(HttpPostFn fn, void* user_data) noexcept;
+
+        /**
          * @brief Returns the currently installed console sink callback.
          * @return The active sink, or nullptr when stderr is the output target.
          */

@@ -7,6 +7,7 @@
 #include <ppp/coroutines/asio/asio.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/Telemetry.h>
 
 /**
  * @file VEthernetDatagramPort.cpp
@@ -212,6 +213,15 @@ namespace ppp {
 #endif
                     // Send it to the VPN server for outgoing.
                     ok = exchanger_->DoSendTo(transmission, sourceEP_, destinationEP, (Byte*)packet, packet_length, nullof<YieldContext>());
+                    if (destinationPort == PPP_DNS_SYS_PORT || !ok) {
+                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "udp_port", "DoSendTo source=%s:%u destination=%s:%u bytes=%d ok=%d",
+                            sourceEP_.address().to_string().c_str(),
+                            sourceEP_.port(),
+                            destinationEP.address().to_string().c_str(),
+                            destinationEP.port(),
+                            packet_length,
+                            ok ? 1 : 0);
+                    }
                     if (!ok) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::UdpSendFailed);
                         fin = true;
