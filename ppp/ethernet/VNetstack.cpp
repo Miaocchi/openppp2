@@ -1337,7 +1337,7 @@ namespace ppp {
                 all_ok = all_ok && ok;
 #if defined(_IPHONE) || defined(IPHONE)
                 if (payload_len == 0) {
-                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native upload ack nat=%u ackno=%u ok=%d",
+                    ppp::telemetry::Log(Level::kDebug, "vnetstack", "native upload ack nat=%u ackno=%u ok=%d",
                         (unsigned int)link->natPort,
                         (unsigned int)ntohl(link->clientAckno),
                         ok ? 1 : 0);
@@ -1885,6 +1885,10 @@ namespace ppp {
                 return false;
             }
 
+            auto rollback_sync_ack_state = [this]() noexcept {
+                this->sync_ack_state_.store(VNETSTACK_SYNC_ACK_STATE_SYN_SENT, std::memory_order_release);
+            };
+
             ppp::telemetry::Log(Level::kDebug, "vnetstack", "sync-ack accepted");
             std::shared_ptr<TapTcpLink> link = this->link_;
             if (NULLPTR != link) {
@@ -1894,6 +1898,7 @@ namespace ppp {
             if (NULLPTR == tap) {
                 ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: tap missing");
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceMissing);
+                rollback_sync_ack_state();
                 return false;
             }
 
@@ -1901,6 +1906,7 @@ namespace ppp {
                 if (NULLPTR == link || link->clientSeqno == 0) {
                     ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: native link missing or client seq unset");
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VNetstackSyncAckInvalidState);
+                    rollback_sync_ack_state();
                     return false;
                 }
 
@@ -1909,6 +1915,7 @@ namespace ppp {
                     ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: native relay not ready nat=%u",
                         (unsigned int)link->natPort);
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionTransportMissing);
+                    rollback_sync_ack_state();
                     return false;
                 }
 
@@ -1925,12 +1932,10 @@ namespace ppp {
                 if (NULLPTR == packet || packet_length < 1) {
                     ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: native packet build failed");
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    rollback_sync_ack_state();
                     return false;
                 }
 
-                link->state.store((Byte)TcpState::TCP_STATE_SYN_RECEIVED, std::memory_order_relaxed);
-                link->serverSeqno = htonl(seq_num + 1);
-                link->clientAckno = htonl(ack_seq);
                 ppp::telemetry::Log(Level::kInfo, "vnetstack", "native sync-ack built remote=%s:%u local=%s:%u bytes=%d",
                     IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(link->dstAddr, ntohs(link->dstPort)).address().to_string().c_str(),
                     ntohs(link->dstPort),
@@ -1941,24 +1946,30 @@ namespace ppp {
             elif(packet_length < 1) {
                 ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack invalid: packet_length=%d", packet_length);
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VNetstackSyncAckInvalidState);
+                rollback_sync_ack_state();
                 return false;
             }
 
             if (lwip_) {
                 if (NULLPTR == link) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::InternalLogicNullPointer);
+                    rollback_sync_ack_state();
                     return false;
                 }
 
                 link->state.store((Byte)TcpState::TCP_STATE_SYN_RECEIVED, std::memory_order_relaxed);
                 bool ok = lwip::netstack::input(packet.get(), packet_length);
                 ppp::telemetry::Log(Level::kInfo, "vnetstack", "lwip sync input bytes=%d ok=%d", packet_length, ok ? 1 : 0);
+                if (!ok) {
+                    rollback_sync_ack_state();
+                }
                 return ok;
             }
 
             if (NULLPTR == packet) {
                 ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: packet missing");
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryBufferNull);
+                rollback_sync_ack_state();
                 return false;
             }
 
@@ -2043,15 +2054,29 @@ namespace ppp {
             bool ok = tap->Output(packet, packet_length);
             ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack write bytes=%d ok=%d", packet_length, ok ? 1 : 0);
 
-#if defined(__APPLE__)
             if (ok && !lwip_) {
                 std::shared_ptr<TapTcpLink> inject_link = this->link_;
+                if (NULLPTR != inject_link && NULLPTR != packet) {
+                    const ip_hdr* iphdr = (const ip_hdr*)packet.get();
+                    const tcp_hdr* tcphdr = (const tcp_hdr*)(iphdr + 1);
+                    inject_link->state.store((Byte)TcpState::TCP_STATE_SYN_RECEIVED, std::memory_order_relaxed);
+                    inject_link->serverSeqno = htonl(ntohl(tcphdr->seqno) + 1);
+                    inject_link->clientAckno = tcphdr->ackno;
+                    inject_link->Update();
+                }
+
+#if defined(__APPLE__)
                 std::shared_ptr<VNetstack> owner = this->owner_.lock();
                 if (NULLPTR != inject_link && NULLPTR != owner) {
                     owner->EnsureNativeInject(inject_link, this->context_);
                 }
-            }
 #endif
+            }
+
+            if (!ok) {
+                // Retry timer will retransmit; returning true avoids tearing down the flow.
+                return true;
+            }
 
             return ok;
         }

@@ -698,6 +698,11 @@ namespace ppp {
                     }
                 } waiter_guard{ios_child_connect_waiters_};
 
+                if (ios_child_connect_waiters_.load(std::memory_order_relaxed) > IOS_CHILD_CONNECT_WAITER_LIMIT) {
+                    ppp::telemetry::Count("client_exchanger.ios_child_slot.waiter_rejected", 1);
+                    return false;
+                }
+
                 for (;;) {
                     if (disposed_.load(std::memory_order_acquire)) {
                         return false;

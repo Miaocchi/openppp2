@@ -1421,19 +1421,23 @@ final class HomeViewController: UIViewController {
         }
 
         let totalSeconds = Int(Date().timeIntervalSince(startedAt))
-        let heartbeatAge = TunnelSharedState.heartbeatAgeMs()
-        let heartbeatStale = heartbeatAge < 0 || heartbeatAge > TunnelSharedState.heartbeatStaleMilliseconds
-        if !heartbeatStale && totalSeconds < TunnelSharedState.connectWatchdogMaxSeconds {
+        if totalSeconds >= TunnelSharedState.connectWatchdogMaxSeconds {
+            stopConnectWatchdog()
+            vpn.disconnect()
+            presentError("连接超时（超过 \(TunnelSharedState.connectWatchdogMaxSeconds)s 上限）：请检查服务器地址、密钥与网络连通性。")
+            refreshUI()
             return
         }
 
-        stopConnectWatchdog()
-        let reason = totalSeconds >= TunnelSharedState.connectWatchdogMaxSeconds
-            ? "超过 \(TunnelSharedState.connectWatchdogMaxSeconds)s 上限"
-            : "扩展心跳已停 \(String(format: "%.1f", Double(heartbeatAge) / 1000))s"
-        vpn.disconnect()
-        presentError("连接超时（\(reason)）：请检查服务器地址、密钥与网络连通性。")
-        refreshUI()
+        if TunnelSharedState.shouldUseSharedHeartbeat {
+            let heartbeatAge = TunnelSharedState.heartbeatAgeMs()
+            if heartbeatAge >= 0 && heartbeatAge > TunnelSharedState.heartbeatStaleMilliseconds {
+                stopConnectWatchdog()
+                vpn.disconnect()
+                presentError("连接超时（扩展心跳已停 \(String(format: "%.1f", Double(heartbeatAge) / 1000))s）：请检查服务器地址、密钥与网络连通性。")
+                refreshUI()
+            }
+        }
     }
 
     @objc private func toggleConnection() {

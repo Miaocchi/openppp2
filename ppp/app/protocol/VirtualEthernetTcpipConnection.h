@@ -312,7 +312,7 @@ namespace ppp {
                 bool                                                            EnsureNativeUploadWriter() noexcept;
                 bool                                                            RunNativeUploadWriter(YieldContext& y) noexcept;
 
-                static constexpr size_t                                         kNativeUploadQueueMax = 512;
+                static constexpr size_t                                         kNativeUploadQueueMax = 64;
                 std::mutex                                                      native_upload_mutex_;
                 std::deque<std::shared_ptr<std::vector<Byte>>>                  native_upload_queue_;
                 bool                                                            native_upload_writer_started_ = false;

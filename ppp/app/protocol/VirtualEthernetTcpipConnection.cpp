@@ -946,11 +946,14 @@ namespace ppp {
                             return true;
                         }
 
-                        payload = std::move(native_upload_queue_.front());
-                        native_upload_queue_.pop_front();
+                        payload = native_upload_queue_.front();
                     }
 
                     if (NULLPTR == payload || payload->empty()) {
+                        std::lock_guard<std::mutex> lock(native_upload_mutex_);
+                        if (!native_upload_queue_.empty()) {
+                            native_upload_queue_.pop_front();
+                        }
                         continue;
                     }
 
@@ -967,12 +970,26 @@ namespace ppp {
                             queue_depth,
                             disposed_ ? "yes" : "no",
                             connected_ ? "yes" : "no");
+                        break;
+                    }
+
+                    {
+                        std::lock_guard<std::mutex> lock(native_upload_mutex_);
+                        if (!native_upload_queue_.empty()) {
+                            native_upload_queue_.pop_front();
+                        }
                     }
                 }
 
+                bool restart_writer = false;
                 {
                     std::lock_guard<std::mutex> lock(native_upload_mutex_);
                     native_upload_writer_started_ = false;
+                    restart_writer = !native_upload_queue_.empty() && !disposed_ && connected_;
+                }
+
+                if (restart_writer) {
+                    EnsureNativeUploadWriter();
                 }
 
                 return true;
