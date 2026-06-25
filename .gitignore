@@ -119,3 +119,6 @@ android/android/keystore/*.keystore
 android/android/keystore/*.properties
 /third-party
 .DS_Store
+
+# Local OTEL/Grafana deploy configs (not for version control)
+scripts/deploy/

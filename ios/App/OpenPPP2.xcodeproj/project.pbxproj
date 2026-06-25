@@ -13,6 +13,11 @@
 		100000000000000000000004 /* OpenPPP2PacketTunnelAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000104 /* OpenPPP2PacketTunnelAdapter.swift */; };
 		100000000000000000000013 /* CrashReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000113 /* CrashReporter.swift */; };
 		100000000000000000000014 /* CrashReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000113 /* CrashReporter.swift */; };
+		100000000000000000000017 /* Telemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000114 /* Telemetry.swift */; };
+		100000000000000000000018 /* Telemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000114 /* Telemetry.swift */; };
+		100000000000000000000019 /* TunnelSharedState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000115 /* TunnelSharedState.swift */; };
+		10000000000000000000001A /* TunnelSharedState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000115 /* TunnelSharedState.swift */; };
+		10000000000000000000001B /* NativeTelemetryTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000116 /* NativeTelemetryTransport.swift */; };
 		100000000000000000000005 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 100000000000000000000105 /* NetworkExtension.framework */; };
 		100000000000000000000006 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 100000000000000000000105 /* NetworkExtension.framework */; };
 		100000000000000000000007 /* OpenPPP2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 100000000000000000000106 /* OpenPPP2.xcframework */; };
@@ -61,6 +66,9 @@
 		100000000000000000000111 /* OpenPPP2PacketTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OpenPPP2PacketTunnel.entitlements; sourceTree = "<group>"; };
 		100000000000000000000112 /* rules */ = {isa = PBXFileReference; lastKnownFileType = folder; path = rules; sourceTree = "<group>"; };
 		100000000000000000000113 /* CrashReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CrashReporter.swift; path = CrashReporter.swift; sourceTree = "<group>"; };
+		100000000000000000000114 /* Telemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Telemetry.swift; path = Telemetry.swift; sourceTree = "<group>"; };
+		100000000000000000000115 /* TunnelSharedState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TunnelSharedState.swift; path = TunnelSharedState.swift; sourceTree = "<group>"; };
+		100000000000000000000116 /* NativeTelemetryTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTelemetryTransport.swift; sourceTree = "<group>"; };
 		100000000000000000000201 /* OpenPPP2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenPPP2.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		100000000000000000000202 /* OpenPPP2PacketTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OpenPPP2PacketTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -105,6 +113,8 @@
 				100000000000000000000101 /* AppDelegate.swift */,
 				100000000000000000000102 /* ViewController.swift */,
 				100000000000000000000113 /* CrashReporter.swift */,
+				100000000000000000000114 /* Telemetry.swift */,
+				100000000000000000000115 /* TunnelSharedState.swift */,
 				100000000000000000000108 /* Info.plist */,
 				100000000000000000000109 /* OpenPPP2.entitlements */,
 			);
@@ -116,6 +126,7 @@
 			children = (
 				100000000000000000000103 /* PacketTunnelProvider.swift */,
 				100000000000000000000104 /* OpenPPP2PacketTunnelAdapter.swift */,
+				100000000000000000000116 /* NativeTelemetryTransport.swift */,
 				100000000000000000000112 /* rules */,
 				100000000000000000000110 /* Info.plist */,
 				100000000000000000000111 /* OpenPPP2PacketTunnel.entitlements */,
@@ -245,6 +256,8 @@
 				100000000000000000000001 /* AppDelegate.swift in Sources */,
 				100000000000000000000002 /* ViewController.swift in Sources */,
 				100000000000000000000013 /* CrashReporter.swift in Sources */,
+				100000000000000000000017 /* Telemetry.swift in Sources */,
+				100000000000000000000019 /* TunnelSharedState.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -255,6 +268,9 @@
 				100000000000000000000003 /* PacketTunnelProvider.swift in Sources */,
 				100000000000000000000004 /* OpenPPP2PacketTunnelAdapter.swift in Sources */,
 				100000000000000000000014 /* CrashReporter.swift in Sources */,
+				100000000000000000000018 /* Telemetry.swift in Sources */,
+				10000000000000000000001A /* TunnelSharedState.swift in Sources */,
+				10000000000000000000001B /* NativeTelemetryTransport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -326,6 +342,7 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenPPP2/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
@@ -335,6 +352,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				OPENPPP2_BUNDLE_ID = io.github.miaocchi.openppp2;
+				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID)";
 				PRODUCT_MODULE_NAME = OpenPPP2App;
 				PRODUCT_NAME = OpenPPP2;
@@ -352,6 +370,7 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenPPP2/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
@@ -361,6 +380,7 @@
 				);
 				MARKETING_VERSION = 0.1.0;
 				OPENPPP2_BUNDLE_ID = io.github.miaocchi.openppp2;
+				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID)";
 				PRODUCT_MODULE_NAME = OpenPPP2App;
 				PRODUCT_NAME = OpenPPP2;
@@ -378,6 +398,7 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ENABLE_DEBUG_DYLIB = NO;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/../../bin",
@@ -409,6 +430,7 @@
 				"OPENSSL_LIB_DIR[sdk=iphoneos*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphoneos-arm64/lib";
 				"OPENSSL_LIB_DIR[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphonesimulator-x86_64/lib";
 				OPENPPP2_BUNDLE_ID = io.github.miaocchi.openppp2;
+				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID).PacketTunnel";
 				PRODUCT_NAME = OpenPPP2PacketTunnel;
 				SKIP_INSTALL = YES;
@@ -427,6 +449,7 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ENABLE_DEBUG_DYLIB = NO;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/../../bin",
@@ -458,6 +481,7 @@
 				"OPENSSL_LIB_DIR[sdk=iphoneos*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphoneos-arm64/lib";
 				"OPENSSL_LIB_DIR[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphonesimulator-x86_64/lib";
 				OPENPPP2_BUNDLE_ID = io.github.miaocchi.openppp2;
+				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID).PacketTunnel";
 				PRODUCT_NAME = OpenPPP2PacketTunnel;
 				SKIP_INSTALL = YES;

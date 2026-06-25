@@ -76,15 +76,20 @@ sign_path() {
     fi
 }
 
+# Xcode 16+ Debug builds may embed *.debug.dylib and __preview.dylib as files
+# (not directories). dyld rejects unsigned copies when installing with manual codesign.
+find "$SIGNED_APP" -type f \( -name "*.dylib" -o -name "*.debug.dylib" \) -print | while IFS= read -r dylib; do
+    sign_path "$dylib"
+done
+
 find "$SIGNED_APP" -type d -name "*.framework" -print | while IFS= read -r framework; do
     sign_path "$framework"
 done
 
-find "$SIGNED_APP" -type d -name "*.dylib" -print | while IFS= read -r dylib; do
-    sign_path "$dylib"
-done
-
 find "$SIGNED_APP" -type d -name "*.appex" -print | while IFS= read -r appex; do
+    find "$appex" -type f \( -name "*.dylib" -o -name "*.debug.dylib" \) -print | while IFS= read -r dylib; do
+        sign_path "$dylib"
+    done
     find "$appex" -type d -name "*.framework" -print | while IFS= read -r framework; do
         sign_path "$framework"
     done
