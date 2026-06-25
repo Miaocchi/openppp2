@@ -262,6 +262,14 @@ namespace ppp {
                  */
                 virtual ITransmissionPtr                                                ConnectTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y) noexcept;
 
+#if defined(_IPHONE)
+                /** @brief True when ctcp peer-connect backlog should defer new SYN accepts. */
+                bool                                                                    IosPeerConnectBacklogged() const noexcept;
+
+                /** @brief Releases one iOS child-transmission slot (mux=0 per-flow server TCP). */
+                void                                                                    ReleaseIosChildTransmissionSlot() noexcept;
+#endif
+
             public:
                 /**
                  * @brief Executes a callable in the exchanger's IO context.
@@ -1129,6 +1137,15 @@ namespace ppp {
                 int                                                                     static_echo_session_id_  = 0;
                 /** @brief UDP port on the server used for static-echo traffic. */
                 int                                                                     static_echo_remote_port_ = 0;
+
+#if defined(_IPHONE)
+                /** @brief Active per-flow server transmissions when mux is disabled. */
+                std::atomic<int>                                                        ios_child_transmission_active_{0};
+                /** @brief Coroutines blocked waiting for a child-transmission slot. */
+                std::atomic<int>                                                        ios_child_connect_waiters_{0};
+
+                bool                                                                    TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y) noexcept;
+#endif
             };
         }
     }

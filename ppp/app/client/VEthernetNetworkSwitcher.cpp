@@ -477,7 +477,18 @@ namespace ppp {
 
                 boost::asio::ip::udp::endpoint sourceEP = IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
                 boost::asio::ip::udp::endpoint destinationEP = IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Destination);
-                return exchanger->SendTo(sourceEP, destinationEP, messages->Buffer.get(), messages->Length);
+                bool ok = exchanger->SendTo(sourceEP, destinationEP, messages->Buffer.get(), messages->Length);
+                if (destinationEP.port() == PPP_DNS_SYS_PORT || !ok) {
+                    ppp::telemetry::Log(Level::kInfo, "switcher", "UDP send source=%s:%u destination=%s:%u bytes=%d ok=%d error=%d",
+                        sourceEP.address().to_string().c_str(),
+                        sourceEP.port(),
+                        destinationEP.address().to_string().c_str(),
+                        destinationEP.port(),
+                        messages->Length,
+                        ok ? 1 : 0,
+                        (int)ppp::diagnostics::GetLastErrorCode());
+                }
+                return ok;
             }
 
             /** @brief Sends ICMP Echo Reply generated from tracked packet context. */
@@ -2919,8 +2930,9 @@ namespace ppp {
                 }
 
                 uint32_t nip = htonl(ip.to_v4().to_uint());
-#if defined(_ANDROID)
-                // RIB
+#if defined(_ANDROID) || defined(_IPHONE)
+                // Use the mobile RIB/FIB built from bypass_ip_list (private LAN, geo CN, DNS, server).
+                // Default: only listed CIDRs bypass the tunnel; everything else goes through VPN.
                 if (auto fib = fib_; NULLPTR != fib) {
                     uint32_t ngw = fib->GetNextHop(nip);
                     return ngw != tap->GatewayServer;

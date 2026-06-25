@@ -57,7 +57,16 @@ namespace ppp {
             /** @brief Maximum keepalive echo interval in milliseconds. */
             static constexpr int SEND_ECHO_KEEP_ALIVE_PACKET_MAX_TIMEOUT = 5000;
             /** @brief Hard timeout threshold before keepalive is considered stale. */
+#if defined(_IPHONE)
+            // Under ctcp load the io_context may not service the main transmission read
+            // loop for tens of seconds while hundreds of per-flow handshakes run.
+            static constexpr int SEND_ECHO_KEEP_ALIVE_PACKET_MMX_TIMEOUT = 120000;
+            // mux=0 opens one server TCP+handshake per TUN flow; cap to stay inside NE memory.
+            static constexpr int IOS_CHILD_TRANSMISSION_LIMIT = 24;
+            static constexpr int IOS_CHILD_CONNECT_WAITER_LIMIT = 64;
+#else
             static constexpr int SEND_ECHO_KEEP_ALIVE_PACKET_MMX_TIMEOUT = SEND_ECHO_KEEP_ALIVE_PACKET_MAX_TIMEOUT << 2;
+#endif
             /** @brief Reserved ACK identifier used for static-echo keepalive signaling. */
             static constexpr int STATIC_ECHO_KEEP_ALIVED_ID              = IPEndPoint::NoneAddress - 1;
 
@@ -617,8 +626,22 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionTransportMissing, VEthernetExchanger::ITransmissionPtr(NULLPTR));
                 }
 
+#if defined(_IPHONE)
+                const bool ios_child_slot = (NULLPTR == mux_);
+                if (ios_child_slot) {
+                    if (!TryReserveIosChildTransmissionSlot(context, y)) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed, VEthernetExchanger::ITransmissionPtr(NULLPTR));
+                    }
+                }
+#endif
+
                 ITransmissionPtr transmission = OpenTransmission(context, strand, y);
                 if (NULLPTR == transmission) {
+#if defined(_IPHONE)
+                    if (ios_child_slot) {
+                        ReleaseIosChildTransmissionSlot();
+                    }
+#endif
                     return NULLPTR;
                 }
 
@@ -629,9 +652,73 @@ namespace ppp {
                 else {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionHandshakeFailed);
                     transmission->Dispose();
+#if defined(_IPHONE)
+                    if (ios_child_slot) {
+                        ReleaseIosChildTransmissionSlot();
+                    }
+#endif
                     return NULLPTR;
                 }
             }
+
+#if defined(_IPHONE)
+            bool VEthernetExchanger::IosPeerConnectBacklogged() const noexcept {
+                if (NULLPTR != mux_) {
+                    return false;
+                }
+
+                int active = ios_child_transmission_active_.load(std::memory_order_acquire);
+                return active >= IOS_CHILD_TRANSMISSION_LIMIT;
+            }
+
+            void VEthernetExchanger::ReleaseIosChildTransmissionSlot() noexcept {
+                if (NULLPTR != mux_) {
+                    return;
+                }
+
+                int prev = ios_child_transmission_active_.fetch_sub(1, std::memory_order_acq_rel);
+                if (prev <= 0) {
+                    ios_child_transmission_active_.store(0, std::memory_order_release);
+                }
+            }
+
+            bool VEthernetExchanger::TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y) noexcept {
+                if (NULLPTR != mux_) {
+                    return true;
+                }
+
+                ios_child_connect_waiters_.fetch_add(1, std::memory_order_relaxed);
+                struct WaiterGuard final {
+                    std::atomic<int>& counter;
+                    bool released = false;
+                    ~WaiterGuard() noexcept {
+                        if (!released) {
+                            counter.fetch_sub(1, std::memory_order_relaxed);
+                        }
+                    }
+                } waiter_guard{ios_child_connect_waiters_};
+
+                for (;;) {
+                    if (disposed_.load(std::memory_order_acquire)) {
+                        return false;
+                    }
+
+                    int active = ios_child_transmission_active_.load(std::memory_order_acquire);
+                    if (active < IOS_CHILD_TRANSMISSION_LIMIT) {
+                        ios_child_transmission_active_.fetch_add(1, std::memory_order_acq_rel);
+                        waiter_guard.released = true;
+                        ios_child_connect_waiters_.fetch_sub(1, std::memory_order_relaxed);
+                        ppp::telemetry::Histogram("client_exchanger.ios_child_slot.active", active + 1);
+                        return true;
+                    }
+
+                    ppp::telemetry::Count("client_exchanger.ios_child_slot.wait", 1);
+                    if (!Sleep(5, context, y)) {
+                        return false;
+                    }
+                }
+            }
+#endif
 
 #if defined(_ANDROID)
             /** @brief Waits until Android protector JNI context becomes available. */
@@ -1362,10 +1449,26 @@ namespace ppp {
 
                 VEthernetDatagramPortPtr datagram = AddNewDatagramPort(transmission, sourceEP);
                 if (NULLPTR == datagram) {
+                    ppp::telemetry::Log(Level::kInfo, "client_exchanger", "UDP mapping failed source=%s:%u destination=%s:%u",
+                        sourceEP.address().to_string().c_str(),
+                        sourceEP.port(),
+                        destinationEP.address().to_string().c_str(),
+                        destinationEP.port());
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpMappingFailed);
                 }
 
-                return datagram->SendTo(packet, packet_size, destinationEP);
+                bool ok = datagram->SendTo(packet, packet_size, destinationEP);
+                if (destinationEP.port() == PPP_DNS_SYS_PORT || !ok) {
+                    ppp::telemetry::Log(Level::kInfo, "client_exchanger", "UDP datagram send source=%s:%u destination=%s:%u bytes=%d ok=%d error=%d",
+                        sourceEP.address().to_string().c_str(),
+                        sourceEP.port(),
+                        destinationEP.address().to_string().c_str(),
+                        destinationEP.port(),
+                        packet_size,
+                        ok ? 1 : 0,
+                        (int)ppp::diagnostics::GetLastErrorCode());
+                }
+                return ok;
             }
 
             /** @brief Registers a local datagram reply handler for a specific source endpoint. */
@@ -1588,6 +1691,19 @@ namespace ppp {
                 if (now >= next) {
                     ITransmissionPtr transmission = transmission_;
                     if (transmission) {
+#if defined(_IPHONE)
+                        if (NULLPTR == mux_
+                            && ios_child_transmission_active_.load(std::memory_order_acquire) > 0) {
+                            sekap_last_ = now;
+                            ppp::telemetry::Count("client_exchanger.keepalive.defer_children", 1);
+                            return false;
+                        }
+#endif
+                        ppp::telemetry::Count("client_exchanger.keepalive.timeout", 1);
+                        ppp::telemetry::Log(Level::kInfo, "client_exchanger",
+                            "echo keepalive stale disposing transmission silence_ms=%llu threshold_ms=%d",
+                            (unsigned long long)(now - sekap_last_),
+                            SEND_ECHO_KEEP_ALIVE_PACKET_MMX_TIMEOUT);
                         transmission->Dispose();
                         return false;
                     }
