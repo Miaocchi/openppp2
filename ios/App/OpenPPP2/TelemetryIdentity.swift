@@ -74,8 +74,9 @@ enum TelemetryIdentity {
     private static var deviceModel: String {
         var systemInfo = utsname()
         uname(&systemInfo)
+        let capacity = MemoryLayout.size(ofValue: systemInfo.machine)
         return withUnsafePointer(to: &systemInfo.machine) { pointer in
-            pointer.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: systemInfo.machine)) {
+            pointer.withMemoryRebound(to: CChar.self, capacity: capacity) {
                 String(validatingUTF8: $0) ?? UIDevice.current.model
             }
         }
