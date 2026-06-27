@@ -285,6 +285,9 @@ final class OTLPHTTPLogExporter {
             "telemetry.sdk.language": .string("swift"),
             "os.type": .string("ios")
         ]
+        for (key, value) in TelemetryIdentity.resourceAttributes {
+            attrs[key] = value
+        }
         if let bundleIdentifier = Bundle.main.bundleIdentifier {
             attrs["app.bundle_id"] = .string(bundleIdentifier)
         }

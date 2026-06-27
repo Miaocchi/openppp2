@@ -13,8 +13,8 @@ enum NativeTelemetryTransport {
     private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpMaximumConnectionsPerHost = 1
-        config.timeoutIntervalForRequest = 8
-        config.timeoutIntervalForResource = 12
+        config.timeoutIntervalForRequest = 3
+        config.timeoutIntervalForResource = 4
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config)
@@ -24,6 +24,10 @@ enum NativeTelemetryTransport {
         guard !installed else { return }
         installed = true
         openppp2_ios_set_telemetry_http_post(nativeHttpPost, nil)
+        openppp2_ios_clear_telemetry_resource_attributes()
+        for (key, value) in TelemetryIdentity.nativeResourceAttributes {
+            openppp2_ios_set_telemetry_resource_attribute(key, value)
+        }
     }
 
     private static let nativeHttpPost: @convention(c) (
@@ -92,7 +96,7 @@ enum NativeTelemetryTransport {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 8
+        request.timeoutInterval = 3
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpBody = body
@@ -110,7 +114,7 @@ enum NativeTelemetryTransport {
             semaphore.signal()
         }.resume()
 
-        _ = semaphore.wait(timeout: .now() + 10)
+        _ = semaphore.wait(timeout: .now() + 4)
         return accepted
     }
 
@@ -171,7 +175,7 @@ enum NativeTelemetryTransport {
             }
             semaphore.signal()
         }
-        _ = semaphore.wait(timeout: .now() + 12)
+        _ = semaphore.wait(timeout: .now() + 2)
 
         if let exportError {
             NSLog("OpenPPP2 PacketTunnel stop telemetry upload failed: %@", exportError.localizedDescription)

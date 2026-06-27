@@ -59,7 +59,7 @@
       launchAutomaticallySubstyle = "2">
       <RemoteRunnable
          runnableDebuggingMode = "1"
-         BundleIdentifier = "io.github.miaocchi.openppp2"
+         BundleIdentifier = "com.tunnel.openppp2"
          RemotePath = "/Users/ling/Library/Developer/CoreSimulator/Devices/42739F34-A16E-4DFF-A86C-9B1DEEFBAA54/data/Containers/Bundle/Application/122B9BF2-1D1F-4920-9443-7FA887C2E63A/OpenPPP2.app">
       </RemoteRunnable>
       <MacroExpansion>

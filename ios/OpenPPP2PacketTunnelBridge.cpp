@@ -662,12 +662,15 @@ namespace
                     }
 
                     set_start_stage(tap, "configuring network switcher");
-                    uint16_t mux = static_cast<uint16_t>(std::min<int>(std::max<int>(0, options_copy.mux), UINT16_MAX));
-                    native_logf("OpenPPP2 native dataplane: lwip=%d vnet=%d mta=%d mux=%d max_concurrent=%d stack_mb=5",
-                        lwip ? 1 : 0, vnet ? 1 : 0, mta ? 1 : 0, static_cast<int>(mux), max_concurrent);
+                    int requested_mux = options_copy.mux;
+                    int effective_mux = requested_mux > 0 ? std::min<int>(requested_mux, UINT16_MAX) : 0;
+                    uint16_t mux = static_cast<uint16_t>(effective_mux);
+                    bool vmux_active = effective_mux > 0;
+                    native_logf("OpenPPP2 native dataplane: lwip=%d vnet=%d mta=%d mux=%d requested_mux=%d effective_mux=%d vmux_active=%d max_concurrent=%d stack_mb=5",
+                        lwip ? 1 : 0, vnet ? 1 : 0, mta ? 1 : 0, static_cast<int>(mux), requested_mux, effective_mux, vmux_active ? 1 : 0, max_concurrent);
                     ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "ios_tunnel",
-                        "dataplane start lwip=%d mux=%d max_concurrent=%d stack_mb=5",
-                        lwip ? 1 : 0, static_cast<int>(mux), max_concurrent);
+                        "dataplane start lwip=%d mux=%d requested_mux=%d effective_mux=%d vmux_active=%d max_concurrent=%d stack_mb=5",
+                        lwip ? 1 : 0, static_cast<int>(mux), requested_mux, effective_mux, vmux_active ? 1 : 0, max_concurrent);
                     bool static_mode = options_copy.static_mode != 0;
                     client->Mux(&mux);
                     client->StaticMode(&static_mode);
@@ -825,7 +828,6 @@ void openppp2_ios_tap_destroy(openppp2_ios_tap* tap)
         return;
     }
 
-    openppp2_ios_tap_stop(tap, -1);
     delete tap;
 }
 
@@ -1087,4 +1089,14 @@ void openppp2_ios_set_telemetry_http_post(openppp2_ios_http_post_fn fn, void* us
     g_ios_http_post = fn;
     g_ios_http_post_user_data = user_data;
     ppp::telemetry::SetHttpPostSink(fn != nullptr ? ios_http_post_sink : nullptr, nullptr);
+}
+
+void openppp2_ios_set_telemetry_resource_attribute(const char* key, const char* value)
+{
+    ppp::telemetry::SetResourceAttribute(key, value);
+}
+
+void openppp2_ios_clear_telemetry_resource_attributes(void)
+{
+    ppp::telemetry::ClearResourceAttributes();
 }

@@ -8,6 +8,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        TelemetryIdentity.installIfNeeded()
         CrashReporter.install(process: .app)
 
         VPNController.shared.recoverStaleTunnelState()

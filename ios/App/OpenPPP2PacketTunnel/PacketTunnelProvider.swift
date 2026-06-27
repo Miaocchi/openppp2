@@ -12,6 +12,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         options: [String: NSObject]?,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        TelemetryIdentity.installIfNeeded()
         CrashReporter.install(process: .packetTunnel)
         NativeTelemetryTransport.install()
 
@@ -122,16 +123,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         NSLog("OpenPPP2 PacketTunnel stop reason=%d (%@)", reason.rawValue, reason.telemetryLabel)
 
         let stopAttributes = adapter?.telemetryStopAttributes() ?? [:]
-        NativeTelemetryTransport.flushPendingUploads(timeout: 2)
+        adapter?.stop(stopReason: Int32(reason.rawValue))
+        adapter = nil
+
         NativeTelemetryTransport.exportStopEvent(
             settings: telemetrySettings,
             reason: reason,
             extraAttributes: stopAttributes
         )
-
-        adapter?.stop(stopReason: Int32(reason.rawValue))
-        adapter = nil
-        NativeTelemetryTransport.flushPendingUploads(timeout: 2)
+        NativeTelemetryTransport.flushPendingUploads(timeout: 0.5)
         TunnelSharedState.clearSession()
         completionHandler()
     }

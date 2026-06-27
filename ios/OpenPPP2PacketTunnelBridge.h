@@ -67,6 +67,12 @@ void openppp2_ios_set_telemetry_http_post(
     openppp2_ios_http_post_fn fn,
     void*                      user_data);
 
+void openppp2_ios_set_telemetry_resource_attribute(
+    const char* key,
+    const char* value);
+
+void openppp2_ios_clear_telemetry_resource_attributes(void);
+
 #ifdef __cplusplus
 }
 #endif

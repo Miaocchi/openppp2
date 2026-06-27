@@ -86,6 +86,8 @@ namespace ppp {
         void SetMinLevel(int level) noexcept;
         void Configure(const char* endpoint) noexcept;
         void SetLogFile(const char* path) noexcept;
+        void SetResourceAttribute(const char* key, const char* value) noexcept;
+        void ClearResourceAttributes() noexcept;
         void Flush(int timeout_ms = 3000) noexcept;
         void Shutdown() noexcept;
 

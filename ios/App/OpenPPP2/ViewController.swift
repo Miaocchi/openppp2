@@ -1134,7 +1134,7 @@ final class VPNController {
     }
 
     private static var providerBundleIdentifier: String {
-        "\(Bundle.main.bundleIdentifier ?? "io.github.miaocchi.openppp2").PacketTunnel"
+        "\(Bundle.main.bundleIdentifier ?? "com.tunnel.openppp2").PacketTunnel"
     }
 
     private static func encodeOptions(_ options: LaunchOptions) -> String {
@@ -2548,6 +2548,9 @@ final class TelemetrySettingsViewController: UIViewController {
     private let metricsSwitch = UISwitch()
     private let spansSwitch = UISwitch()
     private let levelControl = UISegmentedControl(items: ["Info", "Verb", "Debug", "Trace"])
+    private let machineShortLabel = UILabel()
+    private let machineFullLabel = UILabel()
+    private let machineDeviceLabel = UILabel()
     private let developerEndpointLabel = UILabel()
     private let extensionNoteLabel = UILabel()
     private let uploadButton = UIButton(type: .system)
@@ -2602,6 +2605,27 @@ final class TelemetrySettingsViewController: UIViewController {
         }
         levelControl.addTarget(self, action: #selector(controlChanged), for: .valueChanged)
 
+        [machineShortLabel, machineFullLabel, machineDeviceLabel].forEach {
+            $0.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            $0.textColor = .secondaryLabel
+            $0.numberOfLines = 0
+            $0.lineBreakMode = .byCharWrapping
+        }
+
+        let copyMachineButton = UIButton(type: .system)
+        copyMachineButton.setImage(UIImage(systemName: "doc.on.doc"), for: .normal)
+        copyMachineButton.setTitle("复制遥测 ID", for: .normal)
+        copyMachineButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        copyMachineButton.addTarget(self, action: #selector(copyMachineId), for: .touchUpInside)
+        copyMachineButton.contentHorizontalAlignment = .leading
+
+        content.addArrangedSubview(SectionView(title: "身份", symbol: "number", views: [
+            machineShortLabel,
+            machineFullLabel,
+            machineDeviceLabel,
+            copyMachineButton
+        ]))
+
         content.addArrangedSubview(SectionView(title: "上传", symbol: "arrow.up.doc", views: [
             switchRow(title: "启用上传", subtitle: "OTLP/HTTP JSON", control: uploadSwitch),
             destinationControl,
@@ -2641,7 +2665,19 @@ final class TelemetrySettingsViewController: UIViewController {
         metricsSwitch.isOn = settings.nativeMetricsEnabled
         spansSwitch.isOn = settings.nativeSpansEnabled
         levelControl.selectedSegmentIndex = max(0, min(settings.nativeLogLevel, 3))
+        refreshIdentity()
         refreshControls()
+    }
+
+    private func refreshIdentity() {
+        let id = TelemetryIdentity.machineId
+        machineShortLabel.text = "短 ID: \(String(id.prefix(12)))"
+        machineFullLabel.text = "machine.id: \(id)"
+        let attrs = TelemetryIdentity.nativeResourceAttributes
+        let model = attrs["device.model"] ?? "unknown"
+        let osName = attrs["os.name"] ?? "iOS"
+        let osVersion = attrs["os.version"] ?? ""
+        machineDeviceLabel.text = "device: \(model) / \(osName) \(osVersion)"
     }
 
     private func applyForm() -> TelemetrySettings {
@@ -2685,6 +2721,11 @@ final class TelemetrySettingsViewController: UIViewController {
 
     @objc private func controlChanged() {
         refreshControls()
+    }
+
+    @objc private func copyMachineId() {
+        UIPasteboard.general.string = TelemetryIdentity.machineId
+        presentToast("遥测 ID 已复制")
     }
 
     @objc private func save() {

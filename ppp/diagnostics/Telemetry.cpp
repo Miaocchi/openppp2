@@ -12,6 +12,7 @@
 #include <cstdarg>
 #include <chrono>
 #include <cinttypes>
+#include <algorithm>
 #include <random>
 #include <string>
 #include <functional>
@@ -20,6 +21,7 @@
 #include <memory>
 #include <sstream>
 #include <ctime>
+#include <unordered_map>
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -56,6 +58,8 @@ namespace ppp {
         std::atomic<void*>         g_http_post_user_data{nullptr};
         std::string       g_endpoint;
         std::string       g_log_file;
+        std::mutex        g_resource_attributes_mutex;
+        std::unordered_map<std::string, std::string> g_resource_attributes;
 
         namespace {
             struct TraceContext final {
@@ -88,6 +92,21 @@ namespace ppp {
                 }
                 out = g_trace_stack.back();
                 return true;
+            }
+
+            std::vector<std::pair<std::string, std::string>> CopyResourceAttributes() noexcept {
+                std::vector<std::pair<std::string, std::string>> attrs;
+                std::lock_guard<std::mutex> lock(g_resource_attributes_mutex);
+                attrs.reserve(g_resource_attributes.size());
+                for (const auto& item : g_resource_attributes) {
+                    if (!item.first.empty() && !item.second.empty()) {
+                        attrs.emplace_back(item.first, item.second);
+                    }
+                }
+                std::sort(attrs.begin(), attrs.end(), [](const auto& lhs, const auto& rhs) {
+                    return lhs.first < rhs.first;
+                });
+                return attrs;
             }
 
             const char* ServiceVersion() noexcept {
@@ -229,6 +248,19 @@ namespace ppp {
 
         int GetMinLevel() noexcept {
             return g_min_level.load(std::memory_order_relaxed);
+        }
+
+        void SetResourceAttribute(const char* key, const char* value) noexcept {
+            if (key == nullptr || value == nullptr || key[0] == '\0') {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(g_resource_attributes_mutex);
+            g_resource_attributes[key] = value;
+        }
+
+        void ClearResourceAttributes() noexcept {
+            std::lock_guard<std::mutex> lock(g_resource_attributes_mutex);
+            g_resource_attributes.clear();
         }
 
         namespace {
@@ -494,6 +526,10 @@ namespace ppp {
                     json += "{\"key\":\"service.version\",\"value\":{\"stringValue\":\"" + JsonEscape(ServiceVersion()) + "\"}},";
                     json += "{\"key\":\"platform\",\"value\":{\"stringValue\":\"" + JsonEscape(PlatformName()) + "\"}},";
                     json += "{\"key\":\"process.pid\",\"value\":{\"intValue\":\"" + std::to_string(ProcessId()) + "\"}}";
+                    const auto extra_attrs = CopyResourceAttributes();
+                    for (const auto& attr : extra_attrs) {
+                        json += ",{\"key\":\"" + JsonEscape(attr.first) + "\",\"value\":{\"stringValue\":\"" + JsonEscape(attr.second) + "\"}}";
+                    }
                     json += "]}";
                     return json;
                 }

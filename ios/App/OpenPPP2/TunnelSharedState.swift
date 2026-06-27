@@ -13,7 +13,7 @@ enum TunnelSharedState {
         if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
             return "group." + bundleId
         }
-        return "group.io.github.miaocchi.openppp2"
+        return "group.openppp2"
     }
     static let heartbeatStaleMilliseconds: Int64 = 30_000
     static let connectWatchdogMaxSeconds = 180
