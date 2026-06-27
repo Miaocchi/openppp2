@@ -11,9 +11,12 @@
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
 
-#if defined(_ANDROID) 
+#if defined(_ANDROID)
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#include <linux/netlink.h>
+#include <linux/neighbour.h>
+#include <linux/rtnetlink.h>
 #include <linux/route.h>
 #include <linux/ipv6_route.h>
 #else
@@ -21,6 +24,9 @@
 #include <net/route.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#include <linux/netlink.h>
+#include <linux/neighbour.h>
+#include <linux/rtnetlink.h>
 #endif
 
 #include <stdio.h>
@@ -30,7 +36,9 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 
 #include <string>
 #include <chrono>
@@ -69,6 +77,12 @@ using ppp::telemetry::Level;
 namespace ppp {
     namespace tap {
         namespace {
+            template <size_t N>
+            struct NetlinkRequest final {
+                struct nlmsghdr header;
+                Byte payload[N];
+            };
+
             static bool IsSafeShellToken(const ppp::string& value) noexcept {
                 if (value.empty()) {
                     return false;
@@ -85,6 +99,388 @@ namespace ppp {
                     }
                 }
 
+                return true;
+            }
+
+            static bool IsSafeInterfaceName(const ppp::string& value) noexcept {
+                if (value.empty() || value.size() >= IFNAMSIZ) {
+                    return false;
+                }
+
+                for (char ch : value) {
+                    bool ok =
+                        (ch >= 'a' && ch <= 'z') ||
+                        (ch >= 'A' && ch <= 'Z') ||
+                        (ch >= '0' && ch <= '9') ||
+                        ch == ':' || ch == '.' || ch == '_' || ch == '-';
+                    if (!ok) {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            static bool CopyInterfaceName(ifreq& ifr, const ppp::string& ifrName) noexcept {
+                if (!IsSafeInterfaceName(ifrName)) {
+                    return false;
+                }
+
+                memset(&ifr, 0, sizeof(ifr));
+                memcpy(ifr.ifr_name, ifrName.data(), ifrName.size());
+                ifr.ifr_name[ifrName.size()] = '\x0';
+                return true;
+            }
+
+            static int GetInterfaceIndexByName(const ppp::string& ifrName) noexcept {
+                if (!IsSafeInterfaceName(ifrName)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxUnsafeToken);
+                    return -1;
+                }
+
+                int sock_v4 = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+                if (sock_v4 == -1) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOpenFailed);
+                    return -1;
+                }
+
+                struct ifreq ifr;
+                if (!CopyInterfaceName(ifr, ifrName)) {
+                    ::close(sock_v4);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxInterfaceNameTooLong);
+                    return -1;
+                }
+
+                if (ioctl(sock_v4, SIOGIFINDEX, &ifr) < 0) {
+                    ::close(sock_v4);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
+                    return -1;
+                }
+
+                ::close(sock_v4);
+                return ifr.ifr_ifindex;
+            }
+
+            static bool ParseIPv6Address(const ppp::string& address, struct in6_addr& out) noexcept {
+                if (!IsSafeShellToken(address)) {
+                    return false;
+                }
+
+                memset(&out, 0, sizeof(out));
+                return inet_pton(AF_INET6, address.data(), &out) == 1;
+            }
+
+            static bool AppendNetlinkAttribute(struct nlmsghdr& header, size_t capacity, int type, const void* data, size_t length) noexcept {
+                size_t attr_len = RTA_LENGTH(length);
+                size_t aligned_msg_len = NLMSG_ALIGN(header.nlmsg_len);
+                size_t next_len = aligned_msg_len + RTA_ALIGN(attr_len);
+                if (NULLPTR == data || length < 1 || next_len > capacity) {
+                    return false;
+                }
+
+                struct rtattr* attr = reinterpret_cast<struct rtattr*>(reinterpret_cast<Byte*>(&header) + aligned_msg_len);
+                attr->rta_type = static_cast<unsigned short>(type);
+                attr->rta_len = static_cast<unsigned short>(attr_len);
+                memcpy(RTA_DATA(attr), data, length);
+                header.nlmsg_len = static_cast<unsigned int>(next_len);
+                return true;
+            }
+
+            static bool SendNetlinkRequest(struct nlmsghdr& header, ppp::diagnostics::ErrorCode failure_code, bool missing_ok) noexcept {
+                int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+                if (fd < 0) {
+                    ppp::diagnostics::SetLastErrorCode(failure_code);
+                    return false;
+                }
+
+                struct sockaddr_nl local_addr;
+                memset(&local_addr, 0, sizeof(local_addr));
+                local_addr.nl_family = AF_NETLINK;
+                if (bind(fd, reinterpret_cast<struct sockaddr*>(&local_addr), sizeof(local_addr)) < 0) {
+                    ::close(fd);
+                    ppp::diagnostics::SetLastErrorCode(failure_code);
+                    return false;
+                }
+
+                struct timeval timeout;
+                memset(&timeout, 0, sizeof(timeout));
+                timeout.tv_sec = 1;
+                if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) < 0) {
+                    ::close(fd);
+                    ppp::diagnostics::SetLastErrorCode(failure_code);
+                    return false;
+                }
+
+                header.nlmsg_flags |= NLM_F_REQUEST | NLM_F_ACK;
+                header.nlmsg_pid = 0;
+                header.nlmsg_seq = static_cast<unsigned int>(std::chrono::steady_clock::now().time_since_epoch().count());
+
+                struct sockaddr_nl kernel_addr;
+                memset(&kernel_addr, 0, sizeof(kernel_addr));
+                kernel_addr.nl_family = AF_NETLINK;
+
+                struct iovec iov;
+                memset(&iov, 0, sizeof(iov));
+                iov.iov_base = &header;
+                iov.iov_len = header.nlmsg_len;
+
+                struct msghdr msg;
+                memset(&msg, 0, sizeof(msg));
+                msg.msg_name = &kernel_addr;
+                msg.msg_namelen = sizeof(kernel_addr);
+                msg.msg_iov = &iov;
+                msg.msg_iovlen = 1;
+
+                if (sendmsg(fd, &msg, 0) < 0) {
+                    ::close(fd);
+                    ppp::diagnostics::SetLastErrorCode(failure_code);
+                    return false;
+                }
+
+                Byte buffer[4096];
+                for (;;) {
+                    ssize_t received = recv(fd, buffer, sizeof(buffer), 0);
+                    if (received < 0) {
+                        if (errno == EINTR) {
+                            continue;
+                        }
+
+                        ::close(fd);
+                        ppp::diagnostics::SetLastErrorCode(failure_code);
+                        return false;
+                    }
+                    if (received == 0) {
+                        ::close(fd);
+                        ppp::diagnostics::SetLastErrorCode(failure_code);
+                        return false;
+                    }
+
+                    int remaining = static_cast<int>(received);
+                    for (struct nlmsghdr* response = reinterpret_cast<struct nlmsghdr*>(buffer);
+                        NLMSG_OK(response, remaining);
+                        response = NLMSG_NEXT(response, remaining)) {
+                        if (response->nlmsg_seq != header.nlmsg_seq) {
+                            continue;
+                        }
+
+                        if (response->nlmsg_type == NLMSG_ERROR) {
+                            if (response->nlmsg_len < NLMSG_LENGTH(sizeof(struct nlmsgerr))) {
+                                ::close(fd);
+                                ppp::diagnostics::SetLastErrorCode(failure_code);
+                                return false;
+                            }
+
+                            struct nlmsgerr* error = reinterpret_cast<struct nlmsgerr*>(NLMSG_DATA(response));
+                            int error_code = error->error;
+                            ::close(fd);
+                            if (error_code == 0 || (missing_ok && (error_code == -ENOENT || error_code == -ESRCH))) {
+                                return true;
+                            }
+
+                            ppp::diagnostics::SetLastErrorCode(failure_code);
+                            return false;
+                        }
+
+                        if (response->nlmsg_type == NLMSG_DONE) {
+                            ::close(fd);
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            static bool DeleteIPv6AddressByNetlink(const ppp::string& ifrName, const ppp::string& addressIP, int prefix_length) noexcept {
+                int interface_index = GetInterfaceIndexByName(ifrName);
+                if (interface_index < 0) {
+                    return false;
+                }
+
+                struct in6_addr address;
+                if (!ParseIPv6Address(addressIP, address)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxUnsafeToken);
+                    return false;
+                }
+
+                prefix_length = std::max<int>(ppp::ipv6::IPv6_MIN_PREFIX_LENGTH, std::min<int>(ppp::ipv6::IPv6_MAX_PREFIX_LENGTH, prefix_length));
+
+                NetlinkRequest<256> request;
+                memset(&request, 0, sizeof(request));
+                request.header.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+                request.header.nlmsg_type = RTM_DELADDR;
+
+                struct ifaddrmsg* message = reinterpret_cast<struct ifaddrmsg*>(NLMSG_DATA(&request.header));
+                message->ifa_family = AF_INET6;
+                message->ifa_prefixlen = static_cast<unsigned char>(prefix_length);
+                message->ifa_scope = RT_SCOPE_UNIVERSE;
+                message->ifa_index = static_cast<unsigned int>(interface_index);
+
+                if (!AppendNetlinkAttribute(request.header, sizeof(request), IFA_LOCAL, &address, sizeof(address))) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelAddressConfigureFailed);
+                    return false;
+                }
+                if (!AppendNetlinkAttribute(request.header, sizeof(request), IFA_ADDRESS, &address, sizeof(address))) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelAddressConfigureFailed);
+                    return false;
+                }
+
+                return SendNetlinkRequest(request.header, ppp::diagnostics::ErrorCode::TunnelAddressConfigureFailed, false);
+            }
+
+            static bool DeleteIPv6RouteByNetlink(const ppp::string& ifrName, const ppp::string& addressIP, int prefix_length, const ppp::string& gw) noexcept {
+                int interface_index = GetInterfaceIndexByName(ifrName);
+                if (interface_index < 0) {
+                    return false;
+                }
+
+                bool is_default_route = addressIP == "::" && prefix_length == 0;
+                struct in6_addr destination;
+                if (!ParseIPv6Address(addressIP, destination)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxUnsafeToken);
+                    return false;
+                }
+
+                struct in6_addr gateway;
+                bool has_gateway = !gw.empty();
+                if (has_gateway && !ParseIPv6Address(gw, gateway)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxUnsafeToken);
+                    return false;
+                }
+
+                prefix_length = std::max<int>(ppp::ipv6::IPv6_MIN_PREFIX_LENGTH, std::min<int>(ppp::ipv6::IPv6_MAX_PREFIX_LENGTH, prefix_length));
+
+                NetlinkRequest<256> request;
+                memset(&request, 0, sizeof(request));
+                request.header.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+                request.header.nlmsg_type = RTM_DELROUTE;
+
+                struct rtmsg* message = reinterpret_cast<struct rtmsg*>(NLMSG_DATA(&request.header));
+                message->rtm_family = AF_INET6;
+                message->rtm_dst_len = static_cast<unsigned char>(is_default_route ? 0 : prefix_length);
+                message->rtm_table = RT_TABLE_MAIN;
+                message->rtm_protocol = RTPROT_UNSPEC;
+                message->rtm_scope = RT_SCOPE_UNIVERSE;
+                message->rtm_type = RTN_UNICAST;
+
+                if (!is_default_route && !AppendNetlinkAttribute(request.header, sizeof(request), RTA_DST, &destination, sizeof(destination))) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                    return false;
+                }
+                if (has_gateway && !AppendNetlinkAttribute(request.header, sizeof(request), RTA_GATEWAY, &gateway, sizeof(gateway))) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                    return false;
+                }
+                if (!AppendNetlinkAttribute(request.header, sizeof(request), RTA_OIF, &interface_index, sizeof(interface_index))) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                    return false;
+                }
+
+                return SendNetlinkRequest(request.header, ppp::diagnostics::ErrorCode::RouteDeleteFailed, false);
+            }
+
+            static bool SetIPv6NeighborProxyByNetlink(const ppp::string& ifrName, const ppp::string& addressIP, bool add) noexcept {
+                int interface_index = GetInterfaceIndexByName(ifrName);
+                if (interface_index < 0) {
+                    return false;
+                }
+
+                struct in6_addr address;
+                if (!ParseIPv6Address(addressIP, address)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return false;
+                }
+
+                NetlinkRequest<256> request;
+                memset(&request, 0, sizeof(request));
+                request.header.nlmsg_len = NLMSG_LENGTH(sizeof(struct ndmsg));
+                request.header.nlmsg_type = add ? RTM_NEWNEIGH : RTM_DELNEIGH;
+                if (add) {
+                    request.header.nlmsg_flags = NLM_F_CREATE | NLM_F_REPLACE;
+                }
+
+                struct ndmsg* message = reinterpret_cast<struct ndmsg*>(NLMSG_DATA(&request.header));
+                message->ndm_family = AF_INET6;
+                message->ndm_ifindex = interface_index;
+                message->ndm_state = add ? NUD_PERMANENT : 0;
+                message->ndm_flags = NTF_PROXY;
+
+                if (!AppendNetlinkAttribute(request.header, sizeof(request), NDA_DST, &address, sizeof(address))) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+                    return false;
+                }
+
+                return SendNetlinkRequest(request.header, ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed, false);
+            }
+
+            static ppp::string GetProxyNdpPath(const ppp::string& ifrName) noexcept {
+                if (!IsSafeInterfaceName(ifrName)) {
+                    return ppp::string();
+                }
+
+                return "/proc/sys/net/ipv6/conf/" + ifrName + "/proxy_ndp";
+            }
+
+            static bool ReadProxyNdpState(const ppp::string& ifrName, bool& enabled) noexcept {
+                enabled = false;
+
+                ppp::string path = GetProxyNdpPath(ifrName);
+                if (path.empty()) {
+                    return false;
+                }
+
+                ppp::string value = ppp::io::File::ReadAllText(path.data());
+                value = LTrim(RTrim(value));
+                if (value.empty()) {
+                    return false;
+                }
+
+                enabled = atoi(value.c_str()) > 0;
+                return true;
+            }
+
+            static bool WriteProxyNdpState(const ppp::string& ifrName, bool enabled) noexcept {
+                ppp::string path = GetProxyNdpPath(ifrName);
+                if (path.empty()) {
+                    return false;
+                }
+
+                const char* value = enabled ? "1\n" : "0\n";
+                int fd = ::open(path.data(), O_WRONLY | O_CLOEXEC);
+                if (fd < 0) {
+                    return false;
+                }
+
+                ssize_t written = ::write(fd, value, 2);
+                int close_status = ::close(fd);
+                return written == 2 && close_status == 0;
+            }
+
+            static bool SetInterfaceMtuByName(const ppp::string& ifrName, int mtu) noexcept {
+                if (!IsSafeInterfaceName(ifrName)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxUnsafeToken);
+                    return false;
+                }
+
+                int sock_v4 = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+                if (sock_v4 == -1) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOpenFailed);
+                    return false;
+                }
+
+                struct ifreq ifr;
+                if (!CopyInterfaceName(ifr, ifrName)) {
+                    ::close(sock_v4);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxInterfaceNameTooLong);
+                    return false;
+                }
+
+                ifr.ifr_mtu = ppp::net::native::ip_hdr::Mtu(mtu, true);
+                if (ioctl(sock_v4, SIOCSIFMTU, &ifr) < 0) {
+                    ::close(sock_v4);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelMtuConfigureFailed);
+                    return false;
+                }
+
+                ::close(sock_v4);
                 return true;
             }
         }
@@ -240,14 +636,9 @@ namespace ppp {
         }
 
         // NOTE: ExecuteIpCommand() calls system() which performs a blocking fork()+exec().
-        // Most callers (SetIPv6Address, AddRoute6, DeleteRoute6, AddIPv6NeighborProxy,
-        // DeleteIPv6NeighborProxy, EnableIPv6NeighborProxy, DisableIPv6NeighborProxy, SetMtu)
-        // are invoked directly or indirectly from ASIO IO-thread callbacks (e.g. OnTick,
-        // AddIPv6Exchanger, DeleteIPv6Exchanger).  Each system() call blocks the calling
-        // thread for the duration of the subprocess (typically 10–100 ms).  This is
-        // accepted as a known limitation of the current Linux network-management model;
-        // no restructuring of the async workflow is performed here.  Callers that run on
-        // a dedicated non-IO thread (e.g. startup/shutdown paths) are safe without restriction.
+        // The remaining IPv6 callers are add/replace flows whose iproute2 semantics are
+        // more subtle than cleanup operations.  Cleanup, NDP proxy and MTU paths below use
+        // netlink/procfs/ioctl instead of shelling out.
         static bool ExecuteIpCommand(const ppp::string& command, ppp::diagnostics::ErrorCode failure_code) noexcept {
             if (command.empty()) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxCommandEmpty);
@@ -283,27 +674,35 @@ namespace ppp {
         }
 
         bool TapLinux::SetMtu(const ppp::string& ifrName, int mtu) noexcept {
-            if (!IsSafeShellToken(ifrName)) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxUnsafeToken);
-                return false;
+            ppp::telemetry::SpanScope span("tap.mtu.set");
+
+            auto started_at = std::chrono::steady_clock::now();
+            bool ok = SetInterfaceMtuByName(ifrName, mtu);
+            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started_at).count();
+            ppp::telemetry::Histogram("tap.mtu.set.us", elapsed);
+            if (ok) {
+                ppp::telemetry::Count("tap.mtu.set", 1);
             }
-
-            mtu = std::max<int>(1280, std::min<int>(9000, mtu));
-
-            char command[1200];
-            snprintf(command, sizeof(command), "ip link set dev %s mtu %d > /dev/null 2>&1", ifrName.data(), mtu);
-            return ExecuteIpCommand(command, ppp::diagnostics::ErrorCode::TunnelMtuConfigureFailed);
+            return ok;
         }
 
         bool TapLinux::DeleteIPv6Address(const ppp::string& ifrName, const ppp::string& addressIP, int prefix_length) noexcept {
+            ppp::telemetry::SpanScope span("tap.ipv6.address.delete");
+
             if (!IsSafeShellToken(ifrName) || !IsSafeShellToken(addressIP)) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxUnsafeToken);
                 return false;
             }
 
-            char command[1200];
-            snprintf(command, sizeof(command), "ip -6 addr del %s/%d dev %s > /dev/null 2>&1", addressIP.data(), std::max<int>(ppp::ipv6::IPv6_MIN_PREFIX_LENGTH, std::min<int>(ppp::ipv6::IPv6_MAX_PREFIX_LENGTH, prefix_length)), ifrName.data());
-            return ExecuteIpCommand(command, ppp::diagnostics::ErrorCode::TunnelAddressConfigureFailed);
+            auto started_at = std::chrono::steady_clock::now();
+            bool ok = DeleteIPv6AddressByNetlink(ifrName, addressIP, prefix_length);
+            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started_at).count();
+            ppp::telemetry::Histogram("tap.ipv6.address.delete.us", elapsed);
+            if (ok) {
+                ppp::telemetry::Count("tap.ipv6.address.delete", 1);
+                ppp::telemetry::Log(Level::kDebug, "tap", "ipv6 address delete: %s/%d", addressIP.data(), prefix_length);
+            }
+            return ok;
         }
 
         bool TapLinux::AddRoute6(const ppp::string& ifrName, const ppp::string& addressIP, int prefix_length, const ppp::string& gw) noexcept {
@@ -344,31 +743,20 @@ namespace ppp {
         }
 
         bool TapLinux::DeleteRoute6(const ppp::string& ifrName, const ppp::string& addressIP, int prefix_length, const ppp::string& gw) noexcept {
+            ppp::telemetry::SpanScope span("tap.ipv6.route.delete");
+
             if (!IsSafeShellToken(ifrName) || !IsSafeShellToken(addressIP) || (!gw.empty() && !IsSafeShellToken(gw))) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TapLinuxUnsafeToken);
                 return false;
             }
 
-            char command[1200];
-            if (gw.empty()) {
-                if (addressIP == "::" && prefix_length == 0) {
-                    snprintf(command, sizeof(command), "ip -6 route del default dev %s > /dev/null 2>&1", ifrName.data());
-                }
-                else {
-                    snprintf(command, sizeof(command), "ip -6 route del %s/%d dev %s > /dev/null 2>&1", addressIP.data(), std::max<int>(ppp::ipv6::IPv6_MIN_PREFIX_LENGTH, std::min<int>(ppp::ipv6::IPv6_MAX_PREFIX_LENGTH, prefix_length)), ifrName.data());
-                }
-            }
-            else {
-                if (addressIP == "::" && prefix_length == 0) {
-                    snprintf(command, sizeof(command), "ip -6 route del default via %s dev %s > /dev/null 2>&1", gw.data(), ifrName.data());
-                }
-                else {
-            snprintf(command, sizeof(command), "ip -6 route del %s/%d via %s dev %s > /dev/null 2>&1", addressIP.data(), std::max<int>(ppp::ipv6::IPv6_MIN_PREFIX_LENGTH, std::min<int>(ppp::ipv6::IPv6_MAX_PREFIX_LENGTH, prefix_length)), gw.data(), ifrName.data());
-                }
-            }
-            bool ok = ExecuteIpCommand(command, ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+            auto started_at = std::chrono::steady_clock::now();
+            bool ok = DeleteIPv6RouteByNetlink(ifrName, addressIP, prefix_length, gw);
+            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started_at).count();
+            ppp::telemetry::Histogram("tap.ipv6.route.delete.us", elapsed);
             if (ok) {
                 ppp::telemetry::Log(Level::kDebug, "tap", "ipv6 route delete: %s/%d", addressIP.data(), prefix_length);
+                ppp::telemetry::Count("tap.ipv6.route.delete", 1);
             }
             return ok;
         }
@@ -380,57 +768,27 @@ namespace ppp {
                 return false;
             }
 
-            char command[1200];
-            snprintf(command, sizeof(command), "sysctl -w net.ipv6.conf.%s.proxy_ndp=1 > /dev/null 2>&1", ifrName.data());
             auto started_at = std::chrono::steady_clock::now();
-            bool ok = ExecuteIpCommand(command, ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+            bool ok = WriteProxyNdpState(ifrName, true);
             auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started_at).count();
             ppp::telemetry::Histogram("tap.ipv6.neighbor.proxy.enable.us", elapsed);
+            if (!ok) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+            }
             return ok;
         }
 
         bool TapLinux::QueryIPv6NeighborProxy(const ppp::string& ifrName, bool& enabled) noexcept {
-            // NOTE: This function calls popen() which forks a shell process and blocks until
-            // the child exits.  It is invoked from RefreshIPv6NeighborProxyIfNeed(), which
-            // runs on the IO thread via OnTick.  The call is intentional and expected to be
-            // fast (sysctl read), but callers must be aware of the blocking cost and should
-            // guard against redundant invocations (e.g. cache the result when the interface
-            // has not changed).
             enabled = false;
             if (!IsSafeShellToken(ifrName)) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
                 return false;
             }
 
-            char command[1200];
-            snprintf(command, sizeof(command), "sysctl -n net.ipv6.conf.%s.proxy_ndp", ifrName.data());
-
-            FILE* pipe = popen(command, "r");
-            if (NULLPTR == pipe) {
+            if (!ReadProxyNdpState(ifrName, enabled)) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
                 return false;
             }
-
-            char buffer[64];
-            ppp::string value;
-            while (fgets(buffer, sizeof(buffer), pipe) != NULLPTR) {
-                value = buffer;
-                while (!value.empty() && (value.back() == '\n' || value.back() == '\r' || value.back() == ' ' || value.back() == '\t')) {
-                    value.pop_back();
-                }
-                
-                if (!value.empty()) {
-                    break;
-                }
-            }
-
-            int status = pclose(pipe);
-            if (status != 0 || value.empty()) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
-                return false;
-            }
-
-            enabled = atoi(value.c_str()) > 0;
             return true;
         }
 
@@ -441,12 +799,13 @@ namespace ppp {
                 return false;
             }
 
-            char command[1200];
-            snprintf(command, sizeof(command), "sysctl -w net.ipv6.conf.%s.proxy_ndp=0 > /dev/null 2>&1", ifrName.data());
             auto started_at = std::chrono::steady_clock::now();
-            bool ok = ExecuteIpCommand(command, ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+            bool ok = WriteProxyNdpState(ifrName, false);
             auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started_at).count();
             ppp::telemetry::Histogram("tap.ipv6.neighbor.proxy.disable.us", elapsed);
+            if (!ok) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+            }
             return ok;
         }
 
@@ -457,10 +816,8 @@ namespace ppp {
                 return false;
             }
 
-            char command[1200];
-            snprintf(command, sizeof(command), "ip -6 neigh replace proxy %s dev %s > /dev/null 2>&1", addressIP.data(), ifrName.data());
             auto started_at = std::chrono::steady_clock::now();
-            bool ok = ExecuteIpCommand(command, ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+            bool ok = SetIPv6NeighborProxyByNetlink(ifrName, addressIP, true);
             if (ok) {
                 auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started_at).count();
                 ppp::telemetry::Log(Level::kDebug, "tap", "ipv6 neighbor add: %s", addressIP.data());
@@ -481,10 +838,8 @@ namespace ppp {
                 return false;
             }
 
-            char command[1200];
-            snprintf(command, sizeof(command), "ip -6 neigh del proxy %s dev %s > /dev/null 2>&1", addressIP.data(), ifrName.data());
             auto started_at = std::chrono::steady_clock::now();
-            bool ok = ExecuteIpCommand(command, ppp::diagnostics::ErrorCode::IPv6NDPProxyFailed);
+            bool ok = SetIPv6NeighborProxyByNetlink(ifrName, addressIP, false);
             if (ok) {
                 auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started_at).count();
                 ppp::telemetry::Log(Level::kDebug, "tap", "ipv6 neighbor delete: %s", addressIP.data());
@@ -1126,7 +1481,7 @@ namespace ppp {
         }
 
         bool TapLinux::Output(const void* packet, int packet_size) noexcept {
-            // Windows virtual nics need to use Event to write to the kernel asynchronously, 
+            // Windows virtual nics need to use Event to write to the kernel asynchronously,
             // Linux virtual nics can directly write to the kernel ::write function,
             // Can reduce a memory allocation and replication, improve throughput efficiency.
             if (NULLPTR == packet || packet_size < 1) {
@@ -1404,8 +1759,8 @@ namespace ppp {
                 return NULLPTR;
             }
 
-            // GCC 7.5 compiler BUG, generated code, not split this part of the code into other functions, 
-            // There will be a crash problem (can not be fixed, unless the upgrade of the GCC compiler version is very high, 
+            // GCC 7.5 compiler BUG, generated code, not split this part of the code into other functions,
+            // There will be a crash problem (can not be fixed, unless the upgrade of the GCC compiler version is very high,
             // But most systems come with 7.5 version of GCC, the higher version is not common).
             // Clang 6.x compiler support.
             ppp::vector<boost::asio::ip::address> dns_servers;
@@ -1573,7 +1928,7 @@ namespace ppp {
             ppp::string interface_name;
             ppp::tap::ITap* tap = linux_tap.get();
 
-            // Because it is not certain that the caller has correctly set tun to non-blocking and allows the child process to turn it off, 
+            // Because it is not certain that the caller has correctly set tun to non-blocking and allows the child process to turn it off,
             // It is being reset regardless of whether the caller has already set it or not.
             int tun_fd = static_cast<int>(reinterpret_cast<std::intptr_t>(tun));
             Socket::SetNonblocking(tun_fd, true);
