@@ -13,15 +13,12 @@
 static constexpr int PPP_UNIX_ACCEPTOR_WATCHDOG_INTERVAL_MS = 5000;
 
 /**
- * @brief Maximum silence window between accept callbacks before the watchdog
- *        treats the pending async_accept as stalled and cancels it to force
- *        the kqueue reactor to re-register the readable event.
+ * @brief Maximum silence window before the watchdog checks whether a pending
+ *        async_accept is truly wedged.
  *
- * On macOS we observe the boost.asio kqueue reactor silently dropping readable
- * notifications for the listener fd after roughly 60s under load, even though
- * the underlying socket remains open and the io_context is healthy. Cancelling
- * the pending async_accept drives the handler to run with operation_aborted
- * which triggers a fresh Next() that re-arms the event.
+ * A listener can legitimately have an async_accept pending forever while it is
+ * idle. Only rebuild when the listener fd is already readable/error-ready but
+ * the async_accept callback did not arrive.
  */
 static constexpr int PPP_UNIX_ACCEPTOR_STALL_THRESHOLD_MS = 15000;
 
@@ -407,84 +404,71 @@ namespace ppp
             uint64_t pending_since = pending_since_tick_.load(std::memory_order_acquire);
             uint64_t last_event = last_event_tick_.load(std::memory_order_acquire);
 
-            /**
-             * @brief Detect two distinct stalls:
-             *        1) A pending async_accept has been outstanding for longer than the
-             *           stall threshold without any callback.
-             *        2) No accept scheduling has happened at all (pending_since=0) for
-             *           longer than the stall threshold while the server is still open
-             *           -- this is the "silent idle" state that should never persist
-             *           when the caller expects continuous accepts.
-             */
             bool stalled = false;
+            bool fd_readable = false;
+            bool fd_error = false;
             uint64_t silence_ms = 0;
             if (pending_since != 0)
             {
                 silence_ms = now_ms - pending_since;
                 if (silence_ms >= (uint64_t)PPP_UNIX_ACCEPTOR_STALL_THRESHOLD_MS)
                 {
-                    stalled = true;
-                }
-            }
-            else if (last_event != 0)
-            {
-                silence_ms = now_ms - last_event;
-                if (silence_ms >= (uint64_t)PPP_UNIX_ACCEPTOR_STALL_THRESHOLD_MS)
-                {
-                    stalled = true;
-                }
-            }
-
-            if (stalled)
-            {
-                ppp::telemetry::Count("socket_acceptor.watchdog.stall", 1);
-                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "socket_acceptor", "unix accept watchdog stall detected silence_ms=%llu pending_since=%llu last_event=%llu fd=%d", (unsigned long long)silence_ms, (unsigned long long)pending_since, (unsigned long long)last_event, server->native_handle());
-
-                bool recovered = false;
-                if (pending_since == 0)
-                {
-                    if (Next())
+                    int fd = server->native_handle();
+                    if (fd < 0)
                     {
-                        recovered = true;
-                        ppp::telemetry::Count("socket_acceptor.watchdog.idle_next", 1);
-                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "socket_acceptor", "unix accept watchdog rearmed idle accept fd=%d", server->native_handle());
+                        fd_error = true;
                     }
                     else
                     {
-                        ppp::telemetry::Count("socket_acceptor.watchdog.idle_next_failed", 1);
-                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "socket_acceptor", "unix accept watchdog idle rearm failed fd=%d", server->native_handle());
+                        fd_error = Socket::Poll(fd, 0, Socket::SelectMode_SelectError);
+                        fd_readable = Socket::Poll(fd, 0, Socket::SelectMode_SelectRead);
                     }
+
+                    stalled = fd_error || fd_readable;
+                }
+            }
+            else
+            {
+                silence_ms = last_event == 0 ? 0 : now_ms - last_event;
+                if (silence_ms < (uint64_t)PPP_UNIX_ACCEPTOR_STALL_THRESHOLD_MS)
+                {
+                    ArmWatchdog();
+                    return;
                 }
 
-                /**
-                 * @brief Observed on macOS: once the kqueue reactor stops reporting
-                 *        readable for the listener fd, simply cancelling the pending
-                 *        async_accept is NOT enough. The subsequent re-registered
-                 *        async_accept never fires either. The only reliable recovery
-                 *        is to destroy the current acceptor and create a fresh one
-                 *        bound to the same port. SO_REUSEADDR is set on the listener
-                 *        so re-binding the same port succeeds.
-                 */
-                if (!recovered)
+                if (!Next())
                 {
-                    if (RebuildListener())
-                    {
-                        recovered = true;
-                    }
-                    else
+                    ppp::telemetry::Count("socket_acceptor.watchdog.idle_next_failed", 1);
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "socket_acceptor", "unix accept watchdog idle rearm failed fd=%d last_event=%llu", server->native_handle(), (unsigned long long)last_event);
+                    if (!RebuildListener())
                     {
                         ppp::telemetry::Count("socket_acceptor.watchdog.rebuild_failed", 1);
                         ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "socket_acceptor", "unix accept watchdog rebuild failed");
                     }
                 }
+                ArmWatchdog();
+                return;
+            }
 
-                if (!recovered && pending_since == 0)
+            if (silence_ms >= (uint64_t)PPP_UNIX_ACCEPTOR_STALL_THRESHOLD_MS && !stalled)
+            {
+                ppp::telemetry::Count("socket_acceptor.watchdog.idle_pending", 1);
+                ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "socket_acceptor", "unix accept watchdog idle pending silence_ms=%llu pending_since=%llu last_event=%llu fd=%d", (unsigned long long)silence_ms, (unsigned long long)pending_since, (unsigned long long)last_event, server->native_handle());
+            }
+
+            if (stalled)
+            {
+                ppp::telemetry::Count("socket_acceptor.watchdog.stall", 1);
+                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "socket_acceptor", "unix accept watchdog stall detected silence_ms=%llu pending_since=%llu last_event=%llu fd=%d readable=%d error=%d", (unsigned long long)silence_ms, (unsigned long long)pending_since, (unsigned long long)last_event, server->native_handle(), fd_readable ? 1 : 0, fd_error ? 1 : 0);
+
+                if (RebuildListener())
                 {
-                    /**
-                     * @brief Reset so the next tick starts a fresh silence window.
-                     */
-                    last_event_tick_.store(now_ms, std::memory_order_release);
-                    pending_since_tick_.store(0, std::memory_order_release);
+                    /* RebuildListener() also schedules the next async_accept. */
+                }
+                else
+                {
+                    ppp::telemetry::Count("socket_acceptor.watchdog.rebuild_failed", 1);
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "socket_acceptor", "unix accept watchdog rebuild failed");
                 }
             }
 
