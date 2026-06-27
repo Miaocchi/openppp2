@@ -177,12 +177,9 @@ namespace
         ppp::telemetry::SetConsoleMetricEnabled(true);
         ppp::telemetry::SetConsoleSpanEnabled(true);
 #if defined(_IPHONE)
-        // Extension memory budget: INFO-only OTLP, no metrics/spans console noise.
-        ppp::telemetry::SetMinLevel(std::min(configuration->telemetry.level, 0));
+        // Extension memory budget: keep metrics disabled, but allow explicit TRACE/spans for diagnostics.
         ppp::telemetry::SetCountEnabled(false);
-        ppp::telemetry::SetSpanEnabled(false);
         ppp::telemetry::SetConsoleMetricEnabled(false);
-        ppp::telemetry::SetConsoleSpanEnabled(false);
 #endif
         ppp::telemetry::Configure(configuration->telemetry.endpoint.c_str());
         ppp::telemetry::SetLogFile(configuration->telemetry.log_file.c_str());
@@ -195,7 +192,7 @@ namespace
             configuration->telemetry.span ? 1 : 0,
 #if defined(_IPHONE)
             0,
-            0,
+            configuration->telemetry.span ? 1 : 0,
 #else
             1,
             1,

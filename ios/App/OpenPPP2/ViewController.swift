@@ -502,12 +502,12 @@ final class ProfileStore {
 
         var telemetryMap = root["telemetry"] as? [String: Any] ?? [:]
         telemetryMap["enabled"] = telemetry.uploadEnabled && telemetry.includeNativeTelemetry
-        telemetryMap["level"] = 0
-        telemetryMap["count"] = false
-        telemetryMap["span"] = false
+        telemetryMap["level"] = telemetry.nativeLogLevel
+        telemetryMap["count"] = telemetry.nativeMetricsEnabled
+        telemetryMap["span"] = telemetry.nativeSpansEnabled
         telemetryMap["console-log"] = true
-        telemetryMap["console-metric"] = false
-        telemetryMap["console-span"] = false
+        telemetryMap["console-metric"] = telemetry.nativeMetricsEnabled
+        telemetryMap["console-span"] = telemetry.nativeSpansEnabled
         if let endpoint = nativeTelemetryEndpoint(from: telemetry) {
             telemetryMap["endpoint"] = endpoint
         } else {
@@ -2597,7 +2597,7 @@ final class TelemetrySettingsViewController: UIViewController {
         extensionNoteLabel.font = .preferredFont(forTextStyle: .footnote)
         extensionNoteLabel.textColor = .secondaryLabel
         extensionNoteLabel.numberOfLines = 0
-        extensionNoteLabel.text = "VPN 扩展运行时固定 INFO 日志，并禁用 metrics/spans 导出。"
+        extensionNoteLabel.text = "Trace 日志和 Spans 仅在上传与 Native Telemetry 开启后生效；Metrics 在 VPN 扩展内保持关闭。"
 
         destinationControl.addTarget(self, action: #selector(destinationChanged), for: .valueChanged)
         [uploadSwitch, crashSwitch, nativeSwitch, metricsSwitch, spansSwitch].forEach {
@@ -2704,12 +2704,13 @@ final class TelemetrySettingsViewController: UIViewController {
         developerEndpointLabel.text = TelemetrySettings.developerEndpoint.isEmpty
             ? "开发者默认 endpoint 未配置"
             : TelemetrySettings.developerEndpoint
+        let nativeControlsEnabled = next.canUpload && next.includeNativeTelemetry
         metricsSwitch.isEnabled = false
-        spansSwitch.isEnabled = false
-        levelControl.isEnabled = false
+        spansSwitch.isEnabled = nativeControlsEnabled
+        levelControl.isEnabled = nativeControlsEnabled
         metricsSwitch.alpha = 0.45
-        spansSwitch.alpha = 0.45
-        levelControl.alpha = 0.45
+        spansSwitch.alpha = nativeControlsEnabled ? 1 : 0.45
+        levelControl.alpha = nativeControlsEnabled ? 1 : 0.45
         uploadButton.isEnabled = next.canUpload && next.includeCrashReports && !uploading
         uploadButton.alpha = uploadButton.isEnabled ? 1 : 0.45
         uploadButton.setTitle(uploading ? "上传中..." : "上传崩溃报告", for: .normal)
