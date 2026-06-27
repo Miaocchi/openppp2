@@ -24,7 +24,7 @@ env:
 jobs:
   build:
     name: Windows ARM64 ${{ matrix.configuration }}
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
@@ -35,6 +35,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: microsoft/setup-msbuild@v2
+        with:
+          vs-version: '[17.0,18.0)'
 
       - uses: NuGet/setup-nuget@v2
 

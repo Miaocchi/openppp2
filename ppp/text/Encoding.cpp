@@ -11,8 +11,6 @@
 #include <vector>
 
 #if defined(_WIN32)
-#include <atlconv.h>
-
 #include <windows/ppp/win32/Win32Native.h>
 #endif
 
