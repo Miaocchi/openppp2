@@ -8,6 +8,9 @@
 #include <ppp/diagnostics/Error.h>
 #include <common/chnroutes2/chnroutes2.h>
 
+#include <memory>
+#include <new>
+
 #include <Windows.h>
 #include <process.h>
 #include <Shlwapi.h>
@@ -18,8 +21,6 @@
 
 #include <intrin.h>
 #include <initguid.h>
-#include <atlbase.h>
-#include <atlcom.h>
 #include <io.h>
 #include <fcntl.h>
 #include <propkey.h>
@@ -31,6 +32,7 @@
 #include <comdef.h>
 #include <comutil.h>
 #include <Wbemidl.h>
+#include <wrl/client.h>
 #include <crtdbg.h>
 #include <dbghelp.h>
 
@@ -176,9 +178,9 @@ namespace ppp
             return Seh_UnhandledExceptionFilter(&exception_ptrs);
         }
 
-        static int __CRTDECL Crt_NewHandler(size_t) noexcept
+        static void __CRTDECL Crt_NewHandler()
         {
-            return Seh_NoncontinuableException();
+            Seh_NoncontinuableException();
         }
 
         static void __CRTDECL Crt_HandlePureVirtualCall() noexcept
@@ -236,7 +238,7 @@ namespace ppp
             ::_set_abort_behavior(_CALL_REPORTFAULT, _CALL_REPORTFAULT);
 
             ::_set_purecall_handler(Crt_HandlePureVirtualCall);
-            ::_set_new_handler(Crt_NewHandler); /* std::set_new_handler(...) */
+            std::set_new_handler(Crt_NewHandler);
 
 #if _MSC_VER >= 1400 
             ::_set_invalid_parameter_handler(Crt_InvalidParameterHandler);
@@ -864,38 +866,42 @@ namespace ppp
             }
         }
 
+        struct CoTaskMemFreeDeleter
+        {
+            void operator()(WCHAR* value) const noexcept
+            {
+                CoTaskMemFree(value);
+            }
+        };
+
         // Wrapper for SHCreateItemFromParsingName(), IShellItem2::GetString()
         // Throws std::system_error in case of any error.
-        static std::wstring GetShellPropStringFromPath(CComPtr<IShellItem2>& pItem, CComHeapPtr<WCHAR>& pValue, LPCWSTR pPath, PROPERTYKEY const& key)
+        static std::wstring GetShellPropStringFromPath(LPCWSTR pPath, PROPERTYKEY const& key)
         {
-            // Use CComPtr to automatically release the IShellItem2 interface when the function returns
-            // or an exception is thrown.
-            HRESULT hr = SHCreateItemFromParsingName(pPath, NULLPTR, IID_PPV_ARGS(&pItem));
+            Microsoft::WRL::ComPtr<IShellItem2> pItem;
+            HRESULT hr = SHCreateItemFromParsingName(pPath, NULLPTR, IID_PPV_ARGS(pItem.GetAddressOf()));
             if (FAILED(hr))
             {
                 throw std::system_error(hr, std::system_category(), "SHCreateItemFromParsingName() failed");
             }
 
-            // Use CComHeapPtr to automatically release the string allocated by the shell when the function returns
-            // or an exception is thrown (calls CoTaskMemFree).
-            hr = pItem->GetString(key, &pValue);
+            WCHAR* rawValue = NULLPTR;
+            hr = pItem->GetString(key, &rawValue);
             if (FAILED(hr))
             {
                 throw std::system_error(hr, std::system_category(), "IShellItem2::GetString() failed");
             }
+            std::unique_ptr<WCHAR, CoTaskMemFreeDeleter> pValue(rawValue);
 
             // Copy to wstring for convenience
-            return std::wstring(pValue);
+            return std::wstring(pValue.get());
         }
 
         static bool GetShellPropStringFromPath(LPCWSTR pPath, PROPERTYKEY const& key, std::wstring& out) noexcept
         {
-            CComPtr<IShellItem2> pItem;
-            CComHeapPtr<WCHAR> pValue;
-
             try
             {
-                out = GetShellPropStringFromPath(pItem, pValue, pPath, key);
+                out = GetShellPropStringFromPath(pPath, key);
                 return true;
             }
             catch (const std::exception&)

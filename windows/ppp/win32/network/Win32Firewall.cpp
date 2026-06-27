@@ -5,9 +5,9 @@
 #include <ppp/diagnostics/Error.h>
 
 #include <Windows.h>
-#include <atlbase.h>
 #include <netfw.h>
 #include <comutil.h>
+#include <wrl/client.h>
 
 #pragma comment(lib, "ole32.lib")          /* netfw32.lib */
 #pragma comment(lib, "comsuppw.lib")
@@ -30,22 +30,22 @@ namespace ppp
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FirewallCreateFailed);
                 }
 
-                CComPtr<INetFwMgr> pNetFwMgr;
-                HRESULT hr = CoCreateInstance(__uuidof(NetFwMgr), NULLPTR, CLSCTX_INPROC_SERVER, __uuidof(INetFwMgr), (void**)&pNetFwMgr);
+                Microsoft::WRL::ComPtr<INetFwMgr> pNetFwMgr;
+                HRESULT hr = CoCreateInstance(__uuidof(NetFwMgr), NULLPTR, CLSCTX_INPROC_SERVER, __uuidof(INetFwMgr), reinterpret_cast<void**>(pNetFwMgr.GetAddressOf()));
                 if (FAILED(hr))
                 {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FirewallCreateFailed);
                 }
 
-                CComPtr<INetFwPolicy> pNetFwPolicy;
-                hr = pNetFwMgr->get_LocalPolicy(&pNetFwPolicy);
+                Microsoft::WRL::ComPtr<INetFwPolicy> pNetFwPolicy;
+                hr = pNetFwMgr->get_LocalPolicy(pNetFwPolicy.GetAddressOf());
                 if (FAILED(hr))
                 {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FirewallCreateFailed);
                 }
 
-                CComPtr<INetFwAuthorizedApplication> pApp;
-                hr = CoCreateInstance(__uuidof(NetFwAuthorizedApplication), NULLPTR, CLSCTX_INPROC_SERVER, __uuidof(INetFwAuthorizedApplication), (void**)&pApp);
+                Microsoft::WRL::ComPtr<INetFwAuthorizedApplication> pApp;
+                hr = CoCreateInstance(__uuidof(NetFwAuthorizedApplication), NULLPTR, CLSCTX_INPROC_SERVER, __uuidof(INetFwAuthorizedApplication), reinterpret_cast<void**>(pApp.GetAddressOf()));
                 if (FAILED(hr))
                 {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FirewallCreateFailed);
@@ -65,21 +65,21 @@ namespace ppp
                 pApp->put_Enabled(VARIANT_TRUE);
 
                 // 获取对应配置文件下的防火墙规则集合。
-                CComPtr<INetFwProfile> pNetFwProfile;
-                hr = pNetFwPolicy->GetProfileByType(netFwType, &pNetFwProfile);
+                Microsoft::WRL::ComPtr<INetFwProfile> pNetFwProfile;
+                hr = pNetFwPolicy->GetProfileByType(netFwType, pNetFwProfile.GetAddressOf());
                 if (FAILED(hr))
                 {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FirewallCreateFailed);
                 }
 
-                CComPtr<INetFwAuthorizedApplications> pApps;
-                hr = pNetFwProfile->get_AuthorizedApplications(&pApps);
+                Microsoft::WRL::ComPtr<INetFwAuthorizedApplications> pApps;
+                hr = pNetFwProfile->get_AuthorizedApplications(pApps.GetAddressOf());
                 if (FAILED(hr))
                 {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FirewallCreateFailed);
                 }
 
-                hr = pApps->Add(pApp);
+                hr = pApps->Add(pApp.Get());
                 if (FAILED(hr))
                 {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FirewallCreateFailed);
