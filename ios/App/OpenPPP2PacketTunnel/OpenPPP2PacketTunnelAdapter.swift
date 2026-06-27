@@ -4,15 +4,15 @@ import NetworkExtension
 import OpenPPP2
 
 final class OpenPPP2PacketTunnelAdapter {
-    private static let packetSampleLimit = 24
+    private static let packetSampleLimit = 16
     private static let packetTelemetryInitialLimit = 4
     private static let packetTelemetryInterval = 200
     private static let packetTelemetrySnapshotInterval: TimeInterval = 30
-    private static let diagnosticsWriteInterval = 100
+    private static let diagnosticsWriteInterval = 500
     private static let readBackpressureDelay: TimeInterval = 0.005
-    private static let outputBatchLimit = 24
-    private static let outputQueueHighWater = 192
-    private static let outputQueueMax = 512
+    private static let outputBatchLimit = 64
+    private static let outputQueueHighWater = 384
+    private static let outputQueueMax = 1024
 
     private let flow: NEPacketTunnelFlow
     private let packetFlowExporter: OTLPHTTPLogExporter?
@@ -249,33 +249,44 @@ final class OpenPPP2PacketTunnelAdapter {
     }
 
     private func noteInputPacket(_ packet: Data, protocolNumber: NSNumber?) {
-        let summary = Self.packetSummary(packet, protocolNumber: protocolNumber)
         statsQueue.async { [weak self] in
             guard let self else { return }
             self.inputPacketCount += 1
-            self.lastInputPacketSummary = summary
-            self.inputPacketSamples.append("#\(self.inputPacketCount) \(summary)")
-            if self.inputPacketSamples.count > Self.packetSampleLimit {
-                self.inputPacketSamples.removeFirst(self.inputPacketSamples.count - Self.packetSampleLimit)
-            }
             let packetNumber = self.inputPacketCount
+            let shouldSample = packetNumber <= Self.packetSampleLimit
+                || packetNumber % Self.diagnosticsWriteInterval == 0
+            let shouldLog = packetNumber <= 8
+                || packetNumber % Self.diagnosticsWriteInterval == 0
+            let shouldExport = self.shouldExportPacketTelemetry(packetNumber: packetNumber, ok: true)
             let shouldWrite = self.inputPacketCount <= 20
                 || self.inputPacketCount % Self.diagnosticsWriteInterval == 0
-            if self.inputPacketCount <= 8 || self.inputPacketCount % Self.diagnosticsWriteInterval == 0 {
-                NSLog("OpenPPP2 PacketTunnel input #%d %@", self.inputPacketCount, summary)
+
+            if shouldSample || shouldLog || shouldExport {
+                let summary = Self.packetSummary(packet, protocolNumber: protocolNumber)
+                self.lastInputPacketSummary = summary
+                if shouldSample {
+                    self.inputPacketSamples.append("#\(packetNumber) \(summary)")
+                    if self.inputPacketSamples.count > Self.packetSampleLimit {
+                        self.inputPacketSamples.removeFirst(self.inputPacketSamples.count - Self.packetSampleLimit)
+                    }
+                }
+                if shouldLog {
+                    NSLog("OpenPPP2 PacketTunnel input #%d %@", packetNumber, summary)
+                }
+                if shouldExport {
+                    self.exportPacketTelemetryLocked(
+                        direction: "input",
+                        packetNumber: packetNumber,
+                        packet: packet,
+                        protocolNumber: protocolNumber,
+                        summary: summary,
+                        ok: true
+                    )
+                }
             }
+
             if shouldWrite {
                 self.writeDiagnosticsSnapshotLocked()
-            }
-            if self.shouldExportPacketTelemetry(packetNumber: packetNumber, ok: true) {
-                self.exportPacketTelemetryLocked(
-                    direction: "input",
-                    packetNumber: packetNumber,
-                    packet: packet,
-                    protocolNumber: protocolNumber,
-                    summary: summary,
-                    ok: true
-                )
             }
         }
     }
@@ -293,38 +304,49 @@ final class OpenPPP2PacketTunnelAdapter {
     }
 
     private func noteOutputPacket(_ packet: Data, protocolNumber: NSNumber, ok: Bool) {
-        let summary = Self.packetSummary(packet, protocolNumber: protocolNumber)
         statsQueue.async { [weak self] in
             guard let self else { return }
             self.outputPacketCount += 1
-            self.lastOutputPacketSummary = summary
             self.lastOutputPacketOK = ok
-            let okText = ok ? "ok" : "failed"
-            self.outputPacketSamples.append("#\(self.outputPacketCount) \(okText) \(summary)")
-            if self.outputPacketSamples.count > Self.packetSampleLimit {
-                self.outputPacketSamples.removeFirst(self.outputPacketSamples.count - Self.packetSampleLimit)
-            }
             let packetNumber = self.outputPacketCount
+            let shouldSample = !ok
+                || packetNumber <= Self.packetSampleLimit
+                || packetNumber % Self.diagnosticsWriteInterval == 0
+            let shouldLog = !ok
+                || packetNumber <= 8
+                || packetNumber % Self.diagnosticsWriteInterval == 0
+            let shouldExport = self.shouldExportPacketTelemetry(packetNumber: packetNumber, ok: ok)
             let shouldWrite = self.outputPacketCount <= 20
                 || self.outputPacketCount % Self.diagnosticsWriteInterval == 0
                 || !ok
-            if self.outputPacketCount <= 8
-                || self.outputPacketCount % Self.diagnosticsWriteInterval == 0
-                || !ok {
-                NSLog("OpenPPP2 PacketTunnel output #%d ok=%d %@", self.outputPacketCount, ok ? 1 : 0, summary)
+
+            if shouldSample || shouldLog || shouldExport {
+                let summary = Self.packetSummary(packet, protocolNumber: protocolNumber)
+                self.lastOutputPacketSummary = summary
+                if shouldSample {
+                    let okText = ok ? "ok" : "failed"
+                    self.outputPacketSamples.append("#\(packetNumber) \(okText) \(summary)")
+                    if self.outputPacketSamples.count > Self.packetSampleLimit {
+                        self.outputPacketSamples.removeFirst(self.outputPacketSamples.count - Self.packetSampleLimit)
+                    }
+                }
+                if shouldLog {
+                    NSLog("OpenPPP2 PacketTunnel output #%d ok=%d %@", packetNumber, ok ? 1 : 0, summary)
+                }
+                if shouldExport {
+                    self.exportPacketTelemetryLocked(
+                        direction: "output",
+                        packetNumber: packetNumber,
+                        packet: packet,
+                        protocolNumber: protocolNumber,
+                        summary: summary,
+                        ok: ok
+                    )
+                }
             }
+
             if shouldWrite {
                 self.writeDiagnosticsSnapshotLocked()
-            }
-            if self.shouldExportPacketTelemetry(packetNumber: packetNumber, ok: ok) {
-                self.exportPacketTelemetryLocked(
-                    direction: "output",
-                    packetNumber: packetNumber,
-                    packet: packet,
-                    protocolNumber: protocolNumber,
-                    summary: summary,
-                    ok: ok
-                )
             }
         }
     }
