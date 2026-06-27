@@ -149,7 +149,7 @@ namespace ppp {
                     const ppp::threading::Executors::StrandPtr&             strand,
                     const std::shared_ptr<AppConfiguration>&                configuration,
                     const std::shared_ptr<boost::asio::ip::tcp::socket>&    socket,
-                    const boost::asio::ip::tcp::endpoint&                   remoteEP, 
+                    const boost::asio::ip::tcp::endpoint&                   remoteEP,
                     std::shared_ptr<RinetdConnection>&                      out,
                     ppp::coroutines::YieldContext&                          y) noexcept {
 
@@ -185,10 +185,10 @@ namespace ppp {
                          */
                         VEthernetRinetdConnection(
                             const std::shared_ptr<TReference>&                              owner,
-                            const std::shared_ptr<ppp::configurations::AppConfiguration>&   configuration, 
-                            const std::shared_ptr<boost::asio::io_context>&                 context, 
+                            const std::shared_ptr<ppp::configurations::AppConfiguration>&   configuration,
+                            const std::shared_ptr<boost::asio::io_context>&                 context,
                             const ppp::threading::Executors::StrandPtr&                     strand,
-                            const std::shared_ptr<boost::asio::ip::tcp::socket>&            local_socket) noexcept 
+                            const std::shared_ptr<boost::asio::ip::tcp::socket>&            local_socket) noexcept
                                 : RinetdConnection(configuration, context, strand, local_socket)
                                 , owner_(owner) {
 
@@ -231,7 +231,7 @@ namespace ppp {
                         std::shared_ptr<TReference>                                         owner_;
                     };
 
-                    std::shared_ptr<VEthernetRinetdConnection> connection_rinetd = 
+                    std::shared_ptr<VEthernetRinetdConnection> connection_rinetd =
                         make_shared_object<VEthernetRinetdConnection>(reference, configuration, context, strand, socket);
                     if (NULLPTR == connection_rinetd) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
@@ -296,10 +296,10 @@ namespace ppp {
                             }
 
                             if (!mux->connect_yield(
-                                y, 
+                                y,
                                 reference->GetContext(),
                                 reference->GetStrand(),
-                                socket, 
+                                socket,
                                 host,
                                 port,
                                 pmux_connection)) {
@@ -309,18 +309,18 @@ namespace ppp {
                             else {
                                 reference->Update();
                             }
-                            
+
                             VmuxSktPtr mux_connection = *pmux_connection;
                             if (NULLPTR == mux_connection) {
                                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
                                 return -1;
                             }
 
-                            mux_connection->disposed_event = 
+                            mux_connection->disposed_event =
                                 [reference](vmux::vmux_skt*) noexcept {
                                     reference->Dispose();
                                 };
-                            mux_connection->active_event = 
+                            mux_connection->active_event =
                                 [reference](vmux::vmux_skt*, bool success) noexcept {
                                     if (success) {
                                         reference->Update();
@@ -358,7 +358,7 @@ namespace ppp {
                 static int                                                  Mux(
                     const std::shared_ptr<TReference>&                      reference,
                     const std::shared_ptr<VEthernetExchanger>&              exchanger,
-                    const boost::asio::ip::tcp::endpoint&                   remoteEP, 
+                    const boost::asio::ip::tcp::endpoint&                   remoteEP,
                     const std::shared_ptr<boost::asio::ip::tcp::socket>&    socket,
                     std::shared_ptr<vmux::vmux_skt>&                        out,
                     ppp::coroutines::YieldContext&                          y) noexcept {
@@ -404,6 +404,10 @@ namespace ppp {
                  * @note Called from Dispose() and the destructor.
                  */
                 void                                                        Finalize() noexcept;
+#if defined(_IPHONE) || defined(IPHONE)
+                /** @brief Releases the held iOS child transmission slot, if any. */
+                void                                                        ReleaseIosChildTransmissionSlot() noexcept;
+#endif
 
                 /**
                  * @brief Runs the currently selected forwarding path data loop.
@@ -442,9 +446,11 @@ namespace ppp {
                 std::shared_ptr<RinetdConnection>                           connection_rinetd_;
                 /** @brief Active VMUX sub-channel socket; null if not using mux path. */
                 std::shared_ptr<vmux::vmux_skt>                             connection_mux_;
-#if defined(_IPHONE)
+#if defined(_IPHONE) || defined(IPHONE)
                 /** @brief Tracks iOS per-flow server TCP slot held for mux=0 VPN path. */
                 bool                                                        ios_child_transmission_slot_held_ = false;
+                /** @brief Generation token for the held iOS child slot. */
+                uint64_t                                                    ios_child_transmission_slot_generation_ = 0;
 #endif
             };
         }

@@ -469,7 +469,7 @@ namespace ppp {
             UInt16 original_dst_port = tcp->dest;
             bool syn_only = (flags & TcpFlags::TCP_SYN) && !(flags & TcpFlags::TCP_ACK);
             if (syn_only) {
-                ppp::telemetry::Log(Level::kInfo, "vnetstack", "TCP SYN input src=%s:%u dst=%s:%u len=%d",
+                ppp::telemetry::Log(Level::kDebug, "vnetstack", "TCP SYN input src=%s:%u dst=%s:%u len=%d",
                     IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(original_src_addr, ntohs(original_src_port)).address().to_string().c_str(),
                     ntohs(original_src_port),
                     IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(original_dst_addr, ntohs(original_dst_port)).address().to_string().c_str(),
@@ -574,7 +574,7 @@ namespace ppp {
                         link->Update();
                         return true;
                     }
-                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "TCP begin client ok local=%s:%u remote=%s:%u nat=%u listen=%u",
+                    ppp::telemetry::Log(Level::kDebug, "vnetstack", "TCP begin client ok local=%s:%u remote=%s:%u nat=%u listen=%u",
                         localEP.address().to_string().c_str(),
                         localEP.port(),
                         remoteEP.address().to_string().c_str(),
@@ -606,7 +606,7 @@ namespace ppp {
                         link->Update();
                         return true;
                     }
-                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "TCP begin accept posted local=%s:%u remote=%s:%u", localEP.address().to_string().c_str(), localEP.port(), remoteEP.address().to_string().c_str(), remoteEP.port());
+                    ppp::telemetry::Log(Level::kDebug, "vnetstack", "TCP begin accept posted local=%s:%u remote=%s:%u", localEP.address().to_string().c_str(), localEP.port(), remoteEP.address().to_string().c_str(), remoteEP.port());
 
                     ppp::telemetry::Count("vnetstack.connect", 1);
                     ppp::telemetry::Log(Level::kDebug, "vnetstack", "TCP connect begin local=%s:%u remote=%s:%u", localEP.address().to_string().c_str(), localEP.port(), remoteEP.address().to_string().c_str(), remoteEP.port());
@@ -702,7 +702,7 @@ namespace ppp {
 
             bool output = this->Output(lan2wan, ip, tcp, tcp_len, c.get());
             if (syn_only || (flags & TcpFlags::TCP_SYN) || (flags & TcpFlags::TCP_RST)) {
-                ppp::telemetry::Log(Level::kInfo, "vnetstack", "TCP output result ok=%d dir=%s flags=0x%02x src=%s:%u dst=%s:%u",
+                ppp::telemetry::Log(output ? Level::kDebug : Level::kInfo, "vnetstack", "TCP output result ok=%d dir=%s flags=0x%02x src=%s:%u dst=%s:%u",
                     output ? 1 : 0,
                     lan2wan ? "lan2wan" : "wan2lan",
                     (unsigned int)flags,
@@ -949,7 +949,9 @@ namespace ppp {
             int ippkg_len = ((char*)tcp + tcp_len) - (char*)ip;
             if (NULLPTR == c) {
                 bool ok = tap->Output(ip, ippkg_len);
-                ppp::telemetry::Log(Level::kInfo, "vnetstack", "tap output direct bytes=%d ok=%d", ippkg_len, ok ? 1 : 0);
+                if (!ok) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "tap output direct bytes=%d ok=%d", ippkg_len, 0);
+                }
                 return ok;
             }
 
@@ -966,7 +968,7 @@ namespace ppp {
             std::atomic_store(&c->sync_ack_tap_driver_, tap);
             std::atomic_store(&c->sync_ack_byte_array_, packet);
             c->sync_ack_bytes_size_.store(ippkg_len, std::memory_order_release);
-            ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack cached bytes=%d", ippkg_len);
+            ppp::telemetry::Log(Level::kDebug, "vnetstack", "sync-ack cached bytes=%d", ippkg_len);
             return true;
         }
 
@@ -1148,7 +1150,7 @@ namespace ppp {
             }
 
             link->nativeInjectReady.store(true, std::memory_order_release);
-            ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject ready nat=%u lan=%s:%u wan=%s:%u",
+            ppp::telemetry::Log(Level::kDebug, "vnetstack", "native inject ready nat=%u lan=%s:%u wan=%s:%u",
                 (unsigned int)link->natPort,
                 IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(link->srcAddr, ntohs(link->srcPort)).address().to_string().c_str(),
                 ntohs(link->srcPort),
@@ -1210,7 +1212,7 @@ namespace ppp {
                     established_pcb->sync_ack_retry_count_ = 0;
                     established_pcb->sync_ack_state_ = VNETSTACK_SYNC_ACK_STATE_CLOSED;
 
-                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native client ack established nat=%u flags=0x%02x payload=%d",
+                    ppp::telemetry::Log(Level::kDebug, "vnetstack", "native client ack established nat=%u flags=0x%02x payload=%d",
                         (unsigned int)link->natPort,
                         (unsigned int)flags,
                         payload_len);
@@ -1250,6 +1252,10 @@ namespace ppp {
          * larger than the tunnel MTU (typically 1400). Split into MSS-sized segments.
          */
         bool VNetstack::EmitNativeToClient(const std::shared_ptr<TapTcpLink>& link, const void* payload, int payload_len) noexcept {
+            return EmitNativeToClient(link, payload, payload_len, TcpFlags::TCP_ACK);
+        }
+
+        bool VNetstack::EmitNativeToClient(const std::shared_ptr<TapTcpLink>& link, const void* payload, int payload_len, int tcp_flags) noexcept {
             if (NULLPTR == link || payload_len < 0) {
                 return false;
             }
@@ -1277,6 +1283,7 @@ namespace ppp {
                 const int chunk_len = payload_len == 0
                     ? 0
                     : std::min(payload_len - offset, kNativeMaxTcpPayload);
+                const bool final_segment = payload_len == 0 || (offset + chunk_len) >= payload_len;
                 const int outlen = ip_hdr::IP_HLEN + tcp_hdr::TCP_HLEN + chunk_len;
                 std::shared_ptr<Byte> packet = ppp::make_shared_alloc<Byte>(outlen);
                 if (NULLPTR == packet) {
@@ -1310,9 +1317,12 @@ namespace ppp {
                 tcphdr->hdrlen_rsvd_flags = 0;
                 tcp_hdr::TCPH_HDRLEN_BYTES_SET(tcphdr, tcp_hdr::TCP_HLEN);
 
-                TcpFlags out_flags = TcpFlags::TCP_ACK;
+                TcpFlags out_flags = (TcpFlags)(tcp_flags | TcpFlags::TCP_ACK);
                 if (chunk_len > 0) {
                     out_flags = (TcpFlags)(out_flags | TcpFlags::TCP_PSH);
+                }
+                if (!final_segment) {
+                    out_flags = (TcpFlags)(out_flags & ~(TcpFlags::TCP_FIN | TcpFlags::TCP_RST));
                 }
                 tcp_hdr::TCPH_FLAGS_SET(tcphdr, out_flags);
 
@@ -1329,21 +1339,41 @@ namespace ppp {
                     tcphdr->chksum = 0xffff;
                 }
 
-                uint32_t next_seq = ntohl(link->serverSeqno) + (uint32_t)chunk_len;
+                uint32_t seq_delta = (uint32_t)chunk_len;
+                if (final_segment && (out_flags & TcpFlags::TCP_FIN)) {
+                    seq_delta++;
+                    link->state.store((Byte)TcpState::TCP_STATE_FIN_WAIT1, std::memory_order_relaxed);
+                }
+
+                uint32_t next_seq = ntohl(link->serverSeqno) + seq_delta;
                 link->serverSeqno = htonl(next_seq);
                 link->Update();
 
                 bool ok = tap->Output(packet, outlen);
                 all_ok = all_ok && ok;
 #if defined(_IPHONE) || defined(IPHONE)
-                if (payload_len == 0) {
+                if (!ok) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject emit client failed nat=%u payload=%d chunk=%d offset=%d",
+                        (unsigned int)link->natPort,
+                        payload_len,
+                        chunk_len,
+                        offset);
+                }
+                elif (payload_len == 0 && (out_flags & TcpFlags::TCP_FIN)) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject remote fin nat=%u seq=%u ackno=%u ok=%d",
+                        (unsigned int)link->natPort,
+                        (unsigned int)ntohl(link->serverSeqno),
+                        (unsigned int)ntohl(link->clientAckno),
+                        ok ? 1 : 0);
+                }
+                elif (payload_len == 0) {
                     ppp::telemetry::Log(Level::kDebug, "vnetstack", "native upload ack nat=%u ackno=%u ok=%d",
                         (unsigned int)link->natPort,
                         (unsigned int)ntohl(link->clientAckno),
                         ok ? 1 : 0);
                 }
                 elif(payload_len > 0 && offset == 0) {
-                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject emit client nat=%u payload=%d chunk=%d ok=%d",
+                    ppp::telemetry::Log(Level::kDebug, "vnetstack", "native inject emit client nat=%u payload=%d chunk=%d ok=%d",
                         (unsigned int)link->natPort,
                         payload_len,
                         chunk_len,
@@ -1351,7 +1381,7 @@ namespace ppp {
                 }
 #else
                 if (payload_len > 0) {
-                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "native inject emit client nat=%u payload=%d chunk=%d offset=%d ok=%d",
+                    ppp::telemetry::Log(ok ? Level::kDebug : Level::kInfo, "vnetstack", "native inject emit client nat=%u payload=%d chunk=%d offset=%d ok=%d",
                         (unsigned int)link->natPort,
                         payload_len,
                         chunk_len,
@@ -1746,13 +1776,17 @@ namespace ppp {
          * @brief Emits iOS native relay upstream payload back to the TUN client.
          */
         bool VNetstack::TapTcpClient::EmitNativeToClient(const void* payload, int payload_len) noexcept {
+            return EmitNativeToClient(payload, payload_len, TcpFlags::TCP_ACK);
+        }
+
+        bool VNetstack::TapTcpClient::EmitNativeToClient(const void* payload, int payload_len, int tcp_flags) noexcept {
             std::shared_ptr<TapTcpLink> link = link_;
             std::shared_ptr<VNetstack> owner = owner_.lock();
             if (NULLPTR == link || NULLPTR == owner) {
                 return false;
             }
 
-            return owner->EmitNativeToClient(link, payload, payload_len);
+            return owner->EmitNativeToClient(link, payload, payload_len, tcp_flags);
         }
 #endif
 
@@ -1792,6 +1826,7 @@ namespace ppp {
         }
 
         namespace {
+#if defined(_IPHONE) || defined(IPHONE)
             /**
              * @brief Builds a client-facing SYN/ACK for the native (ctcp) dataplane.
              *
@@ -1852,6 +1887,7 @@ namespace ppp {
 
                 return packet;
             }
+#endif
         }
 
         /**
@@ -1910,6 +1946,7 @@ namespace ppp {
                     return false;
                 }
 
+#if defined(_IPHONE) || defined(IPHONE)
                 std::shared_ptr<VNetstack> owner = this->owner_.lock();
                 if (NULLPTR == owner || !owner->EnsureNativeInject(link, this->context_)) {
                     ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack failed: native relay not ready nat=%u",
@@ -1936,12 +1973,20 @@ namespace ppp {
                     return false;
                 }
 
-                ppp::telemetry::Log(Level::kInfo, "vnetstack", "native sync-ack built remote=%s:%u local=%s:%u bytes=%d",
+                ppp::telemetry::Log(Level::kDebug, "vnetstack", "native sync-ack built remote=%s:%u local=%s:%u bytes=%d",
                     IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(link->dstAddr, ntohs(link->dstPort)).address().to_string().c_str(),
                     ntohs(link->dstPort),
                     IPEndPoint::WrapAddressV4<boost::asio::ip::tcp>(link->srcAddr, ntohs(link->srcPort)).address().to_string().c_str(),
                     ntohs(link->srcPort),
                     packet_length);
+#else
+                if (packet_length < 1) {
+                    ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack invalid: packet_length=%d", packet_length);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VNetstackSyncAckInvalidState);
+                    rollback_sync_ack_state();
+                    return false;
+                }
+#endif
             }
             elif(packet_length < 1) {
                 ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack invalid: packet_length=%d", packet_length);
@@ -2052,7 +2097,7 @@ namespace ppp {
             this->ScheduleSyncAckRetry(200);
 
             bool ok = tap->Output(packet, packet_length);
-            ppp::telemetry::Log(Level::kInfo, "vnetstack", "sync-ack write bytes=%d ok=%d", packet_length, ok ? 1 : 0);
+            ppp::telemetry::Log(ok ? Level::kDebug : Level::kInfo, "vnetstack", "sync-ack write bytes=%d ok=%d", packet_length, ok ? 1 : 0);
 
             if (ok && !lwip_) {
                 std::shared_ptr<TapTcpLink> inject_link = this->link_;

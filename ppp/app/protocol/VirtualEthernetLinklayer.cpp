@@ -101,7 +101,7 @@ namespace ppp {
                 // Returns an empty endpoint (port 0) on any failure.
                 // -----------------------------------------------------------------
                 template <class TProtocol>
-                static boost::asio::ip::basic_endpoint<TProtocol>       PACKET_IPEndPoint(const std::shared_ptr<ppp::net::Firewall>& firewall, Byte*& stream, int& packet_length, YieldContext& y, ppp::string& hostname) noexcept 
+                static boost::asio::ip::basic_endpoint<TProtocol>       PACKET_IPEndPoint(const std::shared_ptr<ppp::net::Firewall>& firewall, Byte*& stream, int& packet_length, YieldContext& y, ppp::string& hostname) noexcept
                 {
                     /* Packet wire format:
                        ACTION(1) ADDR_LEN(1) HOSTNAME(ADDR_LEN) PORT_LEN(1) PORT_STRING(PORT_LEN) */
@@ -155,7 +155,7 @@ namespace ppp {
                         if (NULLPTR != endptr && endptr != port_std_str.c_str() && *endptr == '\x0' && parsed_port > IPEndPoint::MinPort && parsed_port <= IPEndPoint::MaxPort) {
                             port = static_cast<int>(parsed_port);
                         }
-                        
+
                         if (port < IPEndPoint::MinPort || port > IPEndPoint::MaxPort) {
                             port = IPEndPoint::MinPort;
                         }
@@ -286,8 +286,8 @@ namespace ppp {
                 // Write a packet header (action + 3‑byte connection ID) followed by payload.
                 // -----------------------------------------------------------------
                 /** @brief Writes action + 3-byte connection ID header with payload. */
-                static bool PACKET_ConnectId(Stream& stream, PacketAction packet_action, 
-                                             int connection_id, Byte* packet, int packet_length) noexcept 
+                static bool PACKET_ConnectId(Stream& stream, PacketAction packet_action,
+                                             int connection_id, Byte* packet, int packet_length) noexcept
                 {
                     if (packet_length < 0 || (NULLPTR == packet && packet_length != 0)) {
                         return PACKET_Fail(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
@@ -313,7 +313,7 @@ namespace ppp {
                 // -----------------------------------------------------------------
                 /** @brief Sends connection-bound packet through transport. */
                 static bool PACKET_Push(PacketAction packet_action, const ITransmissionPtr& transmission,
-                                        int connection_id, Byte* packet, int packet_length, YieldContext& y) noexcept 
+                                        int connection_id, Byte* packet, int packet_length, YieldContext& y) noexcept
                 {
                     if (NULLPTR == transmission) {
                         return PACKET_Fail(ppp::diagnostics::ErrorCode::SessionTransportMissing);
@@ -333,7 +333,7 @@ namespace ppp {
                 // -----------------------------------------------------------------
                 template <class TProtocol>
                 /** @brief Validates protocol endpoint for protocol-level constraints. */
-                static bool PACKET_IPEndPoint(const boost::asio::ip::basic_endpoint<TProtocol>& destinationEP) noexcept 
+                static bool PACKET_IPEndPoint(const boost::asio::ip::basic_endpoint<TProtocol>& destinationEP) noexcept
                 {
                     int destinationPort = destinationEP.port();
                     if (destinationPort <= IPEndPoint::MinPort || destinationPort > IPEndPoint::MaxPort) {
@@ -369,7 +369,7 @@ namespace ppp {
                 // -----------------------------------------------------------------
                 template <class TString>
                 /** @brief Writes endpoint host/port string tuple to packet stream. */
-                static bool PACKET_IPEndPoint(Stream& stream, const TString& address_string, int address_port) noexcept 
+                static bool PACKET_IPEndPoint(Stream& stream, const TString& address_string, int address_port) noexcept
                 {
                     if (address_port <= IPEndPoint::MinPort || address_port > IPEndPoint::MaxPort) {
                         return false;
@@ -382,7 +382,7 @@ namespace ppp {
                     if (stream.WriteByte(static_cast<Byte>(address_string.size()))) {
                         if (stream.Write(address_string.data(), 0, static_cast<int>(address_string.size()))) {
                             char address_port_string[16];
-                            int address_port_string_size = snprintf(address_port_string, sizeof(address_port_string), 
+                            int address_port_string_size = snprintf(address_port_string, sizeof(address_port_string),
                                                                      "%d", address_port);
                             if (address_port_string_size < 1 || address_port_string_size >= static_cast<int>(sizeof(address_port_string))) {
                                 return false;   // truncation or error
@@ -407,7 +407,7 @@ namespace ppp {
                 // -----------------------------------------------------------------
                 template <class TProtocol>
                 /** @brief Writes a validated endpoint to packet stream. */
-                static bool PACKET_IPEndPoint(Stream& stream, const boost::asio::ip::basic_endpoint<TProtocol>& destinationEP) noexcept 
+                static bool PACKET_IPEndPoint(Stream& stream, const boost::asio::ip::basic_endpoint<TProtocol>& destinationEP) noexcept
                 {
                     if (!PACKET_IPEndPoint<TProtocol>(destinationEP)) {
                         return false;
@@ -420,7 +420,7 @@ namespace ppp {
                 // Send a TCP SYN (connect) packet.
                 // -----------------------------------------------------------------
                 /** @brief Builds and sends TCP connect request packet. */
-                static bool PACKET_DoConnect(const ITransmissionPtr& transmission, int connection_id, const boost::asio::ip::tcp::endpoint* destinationEP, const ppp::string& hostname, int port, YieldContext& y) noexcept 
+                static bool PACKET_DoConnect(const ITransmissionPtr& transmission, int connection_id, const boost::asio::ip::tcp::endpoint* destinationEP, const ppp::string& hostname, int port, YieldContext& y) noexcept
                 {
                     typedef VirtualEthernetLinklayer PacketAction;   // bring enum into scope
                     if (NULLPTR == transmission) {
@@ -443,7 +443,7 @@ namespace ppp {
                     }
 
                     std::shared_ptr<Byte> buffer = ms.GetBuffer();
-                    return PACKET_Push(PacketAction::PacketAction_SYN, transmission, connection_id, 
+                    return PACKET_Push(PacketAction::PacketAction_SYN, transmission, connection_id,
                                        buffer.get(), ms.GetPosition(), y);
                 }
 
@@ -451,7 +451,7 @@ namespace ppp {
                 // Send a simple action packet with raw payload (no connection ID).
                 // -----------------------------------------------------------------
                 /** @brief Sends action packet with raw payload and no connection ID. */
-                static bool PACKET_Push(PacketAction packet_action, const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept 
+                static bool PACKET_Push(PacketAction packet_action, const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept
                 {
                     if (NULLPTR == packet || packet_length < 1) {
                         return PACKET_Fail(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
@@ -478,7 +478,7 @@ namespace ppp {
             // ---------------------------------------------------------------------
             /** @brief Constructs the link-layer runtime object. */
             VirtualEthernetLinklayer::VirtualEthernetLinklayer(
-                const AppConfigurationPtr&  configuration, 
+                const AppConfigurationPtr&  configuration,
                 const ContextPtr&           context,
                 const Int128&               id) noexcept
                 : context_(context)
@@ -532,6 +532,8 @@ namespace ppp {
                     int packet_length = 0;
                     std::shared_ptr<Byte> packet = transmission->Read(y, packet_length);
                     if (NULLPTR == packet || packet_length < 1) {
+                        ppp::telemetry::Log(Level::kInfo, "protocol", "session read_end error=%d",
+                            (int)ppp::diagnostics::GetLastErrorCode());
                         break;                              // no more data or read error
                     }
 
@@ -545,16 +547,18 @@ namespace ppp {
                         last_ = Executors::GetTickCount();  // update last activity on success
                     }
                 }
-                ppp::telemetry::Log(Level::kInfo, "protocol", "session disposed");
+                ppp::telemetry::Log(Level::kInfo, "protocol", "session disposed ok=%d error=%d",
+                    ok ? 1 : 0,
+                    (int)ppp::diagnostics::GetLastErrorCode());
                 ppp::telemetry::Count("protocol.session.disposed", 1);
                 return ok;
             }
 
 #pragma pack(push, 1)   // ensure packed structures for wire compatibility
             // MUX request structure (includes action byte)
-            typedef struct 
+            typedef struct
 #if defined(__GNUC__) || defined(__clang__)
-                __attribute__((packed)) 
+                __attribute__((packed))
 #endif
             {
                 Byte        il;                 // action byte (PacketAction_MUX)
@@ -565,9 +569,9 @@ namespace ppp {
             } VirtualEthernetLinklayer_MUX_IL;
 
             // MUXON acknowledgment structure (includes action byte)
-            typedef struct 
+            typedef struct
 #if defined(__GNUC__) || defined(__clang__)
-                __attribute__((packed)) 
+                __attribute__((packed))
 #endif
             {
                 Byte        il;                 // action byte (PacketAction_MUXON)
@@ -586,7 +590,7 @@ namespace ppp {
              * @details The first byte selects action; remaining payload is parsed by
              * action-specific wire-format readers before calling `On*` handlers.
              */
-            bool VirtualEthernetLinklayer::PacketInput(const ITransmissionPtr& transmission, Byte* p, int packet_length, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::PacketInput(const ITransmissionPtr& transmission, Byte* p, int packet_length, YieldContext& y) noexcept
             {
                 if (NULLPTR == p || packet_length < 1) {
                     return global::PACKET_Fail(ppp::diagnostics::ErrorCode::ProtocolFrameInvalid);
@@ -613,13 +617,13 @@ namespace ppp {
                 }
                 elif (packet_action == PacketAction_SENDTO) {        // UDP send‑to
                     ppp::string destinationHost;
-                    boost::asio::ip::udp::endpoint destinationEP = 
+                    boost::asio::ip::udp::endpoint destinationEP =
                         global::PACKET_IPEndPoint<boost::asio::ip::udp>(GetFirewall(), p, packet_length, y, destinationHost);
 
                     int destinationPort = destinationEP.port();
                     if (destinationPort > IPEndPoint::MinPort && destinationPort <= IPEndPoint::MaxPort) {
                         ppp::string sourceHost;
-                        boost::asio::ip::udp::endpoint sourceEP = 
+                        boost::asio::ip::udp::endpoint sourceEP =
                             global::PACKET_IPEndPoint<boost::asio::ip::udp>(GetFirewall(), p, packet_length, y, sourceHost);
                         if (sourceEP.port() != 0 && packet_length >= 0) {
                             // call preparation hook and then the actual send handler
@@ -649,7 +653,7 @@ namespace ppp {
                 }
                 elif (packet_action == PacketAction_FRP_SENDTO) {    // FRP UDP send‑to
                     ppp::string destinationHost;
-                    boost::asio::ip::udp::endpoint destinationEP = 
+                    boost::asio::ip::udp::endpoint destinationEP =
                         global::PACKET_IPEndPoint<boost::asio::ip::udp>(GetFirewall(), p, packet_length, y, destinationHost);
                     if (destinationEP.port() != 0 && packet_length > 0) {
                         bool in = (*p != 0);
@@ -685,7 +689,7 @@ namespace ppp {
                     int connection_id = global::PACKET_ConnectId(p, packet_length);
                     if (connection_id != 0) {
                         ppp::string destinationHost;
-                        boost::asio::ip::tcp::endpoint destinationEP = 
+                        boost::asio::ip::tcp::endpoint destinationEP =
                             global::PACKET_IPEndPoint<boost::asio::ip::tcp>(GetFirewall(), p, packet_length, y, destinationHost);
                         if (destinationEP.port() != 0) {
                             if (OnPreparedConnect(transmission, connection_id, destinationHost, destinationEP, y)) {
@@ -869,7 +873,7 @@ namespace ppp {
                                             static_cast<unsigned int>(ntohs(pil->max_connections)),
                                             static_cast<unsigned int>(ordering_caps));
                         ppp::telemetry::Count("protocol.mux.received", 1);
-                        return global::PACKET_Result(OnMux(transmission, ntohs(pil->vlan), ntohs(pil->max_connections), 
+                        return global::PACKET_Result(OnMux(transmission, ntohs(pil->vlan), ntohs(pil->max_connections),
                                      pil->acceleration != 0, ordering_caps, y), ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
                     } else {
                         return packet_length == 0;
@@ -949,7 +953,7 @@ namespace ppp {
                 }
 
                 YieldContext& y_null = nullof<YieldContext>();   // dummy yield context for synchronous send
-                if (!global::PACKET_Push(PacketAction_KEEPALIVED, transmission, packet, packet_size, 
+                if (!global::PACKET_Push(PacketAction_KEEPALIVED, transmission, packet, packet_size,
                                          y_null /* no coroutine context */)) {
                     if (ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketWriteFailed);
@@ -967,10 +971,10 @@ namespace ppp {
             // Send a LAN advertisement packet (IP + netmask).
             // ---------------------------------------------------------------------
             /** @brief Sends LAN advertisement payload. */
-            bool VirtualEthernetLinklayer::DoLan(const ITransmissionPtr& transmission, uint32_t ip, uint32_t mask, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoLan(const ITransmissionPtr& transmission, uint32_t ip, uint32_t mask, YieldContext& y) noexcept
             {
                 uint32_t addresses[] = { ip, mask };
-                return global::PACKET_Push(PacketAction_LAN, transmission, 
+                return global::PACKET_Push(PacketAction_LAN, transmission,
                                            reinterpret_cast<Byte*>(addresses), sizeof(addresses), y);
             }
 
@@ -978,12 +982,12 @@ namespace ppp {
             // Send a NAT data packet.
             // ---------------------------------------------------------------------
             /** @brief Sends NAT packet payload. */
-            bool VirtualEthernetLinklayer::DoNat(const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoNat(const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept
             {
                 if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
-                
+
                 return global::PACKET_Push(PacketAction_NAT, transmission, packet, packet_length, y);
             }
 
@@ -1038,9 +1042,9 @@ namespace ppp {
             // Send a TCP connection request using an endpoint.
             // ---------------------------------------------------------------------
             /** @brief Sends connect request using destination endpoint. */
-            bool VirtualEthernetLinklayer::DoConnect(const ITransmissionPtr& transmission, int connection_id, const boost::asio::ip::tcp::endpoint& destinationEP, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoConnect(const ITransmissionPtr& transmission, int connection_id, const boost::asio::ip::tcp::endpoint& destinationEP, YieldContext& y) noexcept
             {
-                return global::PACKET_DoConnect(transmission, connection_id, &destinationEP, 
+                return global::PACKET_DoConnect(transmission, connection_id, &destinationEP,
                                                 ppp::string(), IPEndPoint::MinPort, y);
             }
 
@@ -1048,7 +1052,7 @@ namespace ppp {
             // Send a TCP connection request using hostname and port.
             // ---------------------------------------------------------------------
             /** @brief Sends connect request using host text and port. */
-            bool VirtualEthernetLinklayer::DoConnect(const ITransmissionPtr& transmission, int connection_id, const ppp::string& hostname, int port, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoConnect(const ITransmissionPtr& transmission, int connection_id, const ppp::string& hostname, int port, YieldContext& y) noexcept
             {
                 return global::PACKET_DoConnect(transmission, connection_id, NULLPTR, hostname, port, y);
             }
@@ -1057,9 +1061,9 @@ namespace ppp {
             // Send a TCP connection acknowledgment with error code.
             // ---------------------------------------------------------------------
             /** @brief Sends connect acknowledgment with error code. */
-            bool VirtualEthernetLinklayer::DoConnectOK(const ITransmissionPtr& transmission, int connection_id, Byte error_code, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoConnectOK(const ITransmissionPtr& transmission, int connection_id, Byte error_code, YieldContext& y) noexcept
             {
-                return global::PACKET_Push(PacketAction_SYNOK, transmission, connection_id, 
+                return global::PACKET_Push(PacketAction_SYNOK, transmission, connection_id,
                                            &error_code, sizeof(error_code), y);
             }
 
@@ -1067,13 +1071,13 @@ namespace ppp {
             // Send TCP data push on a connection.
             // ---------------------------------------------------------------------
             /** @brief Sends stream payload on established connection. */
-            bool VirtualEthernetLinklayer::DoPush(const ITransmissionPtr& transmission, int connection_id, Byte* packet, int packet_length, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoPush(const ITransmissionPtr& transmission, int connection_id, Byte* packet, int packet_length, YieldContext& y) noexcept
             {
                 if (NULLPTR == packet || packet_length < 1) {
                     return false;
                 }
 
-                return global::PACKET_Push(PacketAction_PSH, transmission, connection_id, 
+                return global::PACKET_Push(PacketAction_PSH, transmission, connection_id,
                                            packet, packet_length, y);
             }
 
@@ -1081,7 +1085,7 @@ namespace ppp {
             // Send TCP disconnection notification (FIN).
             // ---------------------------------------------------------------------
             /** @brief Sends connection close notification. */
-            bool VirtualEthernetLinklayer::DoDisconnect(const ITransmissionPtr& transmission, int connection_id, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoDisconnect(const ITransmissionPtr& transmission, int connection_id, YieldContext& y) noexcept
             {
                 return global::PACKET_Push(PacketAction_FIN, transmission, connection_id, NULLPTR, 0, y);
             }
@@ -1101,7 +1105,7 @@ namespace ppp {
             // Send a UDP datagram with source and destination endpoints.
             // ---------------------------------------------------------------------
             /** @brief Sends UDP payload with source and destination endpoint metadata. */
-            bool VirtualEthernetLinklayer::DoSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoSendTo(const ITransmissionPtr& transmission, const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, Byte* packet, int packet_length, YieldContext& y) noexcept
             {
                 if (NULLPTR == packet && packet_length != 0) {
                     return false;
@@ -1151,7 +1155,7 @@ namespace ppp {
             // Send an echo reply (acknowledgment).
             // ---------------------------------------------------------------------
             /** @brief Sends echo acknowledgment by connection-style ID field. */
-            bool VirtualEthernetLinklayer::DoEcho(const ITransmissionPtr& transmission, int ack_id, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoEcho(const ITransmissionPtr& transmission, int ack_id, YieldContext& y) noexcept
             {
                 ppp::telemetry::Log(Level::kDebug, "protocol", "ECHOACK sent ack_id=%d", ack_id);
                 ppp::telemetry::Count("protocol.echoack.sent", 1);
@@ -1162,7 +1166,7 @@ namespace ppp {
             // Send an echo request with payload.
             // ---------------------------------------------------------------------
             /** @brief Sends echo payload packet. */
-            bool VirtualEthernetLinklayer::DoEcho(const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoEcho(const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept
             {
                 // In plaintext mode the frame is base94-wrapped before transport and may expand
                 // by up to 2x.  An ICMP echo payload large enough to exceed PPP_BUFFER_SIZE after
@@ -1190,7 +1194,7 @@ namespace ppp {
             // Request static route information.
             // ---------------------------------------------------------------------
             /** @brief Sends static-route request packet. */
-            bool VirtualEthernetLinklayer::DoStatic(const ITransmissionPtr& transmission, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoStatic(const ITransmissionPtr& transmission, YieldContext& y) noexcept
             {
                 MemoryStream ms;
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_STATIC))) {
@@ -1208,7 +1212,7 @@ namespace ppp {
             // Fixed: use memcpy for alignment‑safe UUID conversion.
             // ---------------------------------------------------------------------
             /** @brief Sends static-route acknowledgment payload. */
-            bool VirtualEthernetLinklayer::DoStatic(const ITransmissionPtr& transmission, Int128 fsid, int session_id, int remote_port, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoStatic(const ITransmissionPtr& transmission, Int128 fsid, int session_id, int remote_port, YieldContext& y) noexcept
             {
                 MemoryStream ms;
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_STATICACK))) {
@@ -1217,7 +1221,7 @@ namespace ppp {
                             // safely copy Int128 into a uuid buffer (avoids alignment UB)
                             boost::uuids::uuid uuid_buf;
                             std::memcpy(&uuid_buf, &fsid, sizeof(uuid_buf));
-                            
+
                             Int128 fsid_netbuf = ppp::auxiliary::StringAuxiliary::GuidStringToInt128(uuid_buf);
                             if (ms.Write(&fsid_netbuf, 0, sizeof(fsid_netbuf))) {
                                 std::shared_ptr<Byte> buffer = ms.GetBuffer();
@@ -1236,7 +1240,7 @@ namespace ppp {
             // Send MUX setup request.
             // ---------------------------------------------------------------------
             /** @brief Sends MUX setup request packet. */
-            bool VirtualEthernetLinklayer::DoMux(const ITransmissionPtr& transmission, uint16_t vlan, uint16_t max_connections, bool acceleration, Byte ordering_caps, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoMux(const ITransmissionPtr& transmission, uint16_t vlan, uint16_t max_connections, bool acceleration, Byte ordering_caps, YieldContext& y) noexcept
             {
                 MemoryStream ms;
                 VirtualEthernetLinklayer_MUX_IL data;
@@ -1262,7 +1266,7 @@ namespace ppp {
             // Send MUXON acknowledgment.
             // ---------------------------------------------------------------------
             /** @brief Sends MUX setup acknowledgment packet. */
-            bool VirtualEthernetLinklayer::DoMuxON(const ITransmissionPtr& transmission, uint16_t vlan, uint32_t seq, uint32_t ack, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoMuxON(const ITransmissionPtr& transmission, uint16_t vlan, uint32_t seq, uint32_t ack, YieldContext& y) noexcept
             {
                 MemoryStream ms;
                 VirtualEthernetLinklayer_MUXON_IL data;
@@ -1286,7 +1290,7 @@ namespace ppp {
             // Send FRP entry registration.
             // ---------------------------------------------------------------------
             /** @brief Sends FRP entry registration packet. */
-            bool VirtualEthernetLinklayer::DoFrpEntry(const ITransmissionPtr& transmission, bool tcp, bool in, int remote_port, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoFrpEntry(const ITransmissionPtr& transmission, bool tcp, bool in, int remote_port, YieldContext& y) noexcept
             {
                 MemoryStream ms;
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_FRP_ENTRY))) {
@@ -1309,7 +1313,7 @@ namespace ppp {
             // Send FRP UDP datagram.
             // ---------------------------------------------------------------------
             /** @brief Sends FRP UDP payload packet. */
-            bool VirtualEthernetLinklayer::DoFrpSendTo(const ITransmissionPtr& transmission, bool in, int remote_port, const boost::asio::ip::udp::endpoint& sourceEP, Byte* packet, int packet_length, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoFrpSendTo(const ITransmissionPtr& transmission, bool in, int remote_port, const boost::asio::ip::udp::endpoint& sourceEP, Byte* packet, int packet_length, YieldContext& y) noexcept
             {
                 if (NULLPTR == packet || packet_length < 1) {
                     return false;
@@ -1337,7 +1341,7 @@ namespace ppp {
             // Send FRP connection request.
             // ---------------------------------------------------------------------
             /** @brief Sends FRP connect request packet. */
-            bool VirtualEthernetLinklayer::DoFrpConnect(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoFrpConnect(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, YieldContext& y) noexcept
             {
                 MemoryStream ms;
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_FRP_CONNECT))) {
@@ -1359,7 +1363,7 @@ namespace ppp {
             // Send FRP connection acknowledgment.
             // ---------------------------------------------------------------------
             /** @brief Sends FRP connect acknowledgment packet. */
-            bool VirtualEthernetLinklayer::DoFrpConnectOK(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, Byte error_code, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoFrpConnectOK(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, Byte error_code, YieldContext& y) noexcept
             {
                 MemoryStream ms;
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_FRP_CONNECTOK))) {
@@ -1383,7 +1387,7 @@ namespace ppp {
             // Send FRP disconnection notification.
             // ---------------------------------------------------------------------
             /** @brief Sends FRP disconnect packet. */
-            bool VirtualEthernetLinklayer::DoFrpDisconnect(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoFrpDisconnect(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, YieldContext& y) noexcept
             {
                 MemoryStream ms;
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_FRP_DISCONNECT))) {
@@ -1397,7 +1401,7 @@ namespace ppp {
                         }
                     }
                 }
-                
+
                 return false;
             }
 
@@ -1405,7 +1409,7 @@ namespace ppp {
             // Send FRP data push.
             // ---------------------------------------------------------------------
             /** @brief Sends FRP stream data packet. */
-            bool VirtualEthernetLinklayer::DoFrpPush(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, const void* packet,  int packet_length, YieldContext& y) noexcept 
+            bool VirtualEthernetLinklayer::DoFrpPush(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, const void* packet,  int packet_length, YieldContext& y) noexcept
             {
                 if (NULLPTR == packet || packet_length < 1) {
                     return false;

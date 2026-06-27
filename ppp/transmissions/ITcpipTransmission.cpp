@@ -20,21 +20,65 @@ using ppp::net::IPEndPoint;
 namespace ppp {
     namespace transmissions {
         using ppp::telemetry::Level;
+
+        namespace {
+            const char* TcpTransmissionRoleName(TcpTransmissionRole role) noexcept {
+                switch (role) {
+                case TcpTransmissionRole::Main:
+                    return "main";
+                case TcpTransmissionRole::Server:
+                    return "server";
+                case TcpTransmissionRole::Child:
+                default:
+                    return "child";
+                }
+            }
+
+            const char* TcpTransmissionConnectMetric(TcpTransmissionRole role) noexcept {
+                switch (role) {
+                case TcpTransmissionRole::Main:
+                    return "tcpip.connect.main";
+                case TcpTransmissionRole::Server:
+                    return "tcpip.connect.server";
+                case TcpTransmissionRole::Child:
+                default:
+                    return "tcpip.connect.child";
+                }
+            }
+
+            const char* TcpTransmissionCloseMetric(TcpTransmissionRole role) noexcept {
+                switch (role) {
+                case TcpTransmissionRole::Main:
+                    return "tcpip.close.main";
+                case TcpTransmissionRole::Server:
+                    return "tcpip.close.server";
+                case TcpTransmissionRole::Child:
+                default:
+                    return "tcpip.close.child";
+                }
+            }
+        }
+
         /**
          * @brief Constructs a TCP/IP transmission and caches the remote endpoint.
          */
         ITcpipTransmission::ITcpipTransmission(
-            const ContextPtr&                                       context, 
+            const ContextPtr&                                       context,
             const StrandPtr&                                        strand,
-            const std::shared_ptr<boost::asio::ip::tcp::socket>&    socket, 
-            const AppConfigurationPtr&                              configuration) noexcept 
+            const std::shared_ptr<boost::asio::ip::tcp::socket>&    socket,
+            const AppConfigurationPtr&                              configuration,
+            TcpTransmissionRole                                     role) noexcept
             : ITransmission(context, strand, configuration)
             , disposed_(FALSE)
-            , socket_(socket) {
+            , socket_(socket)
+            , role_(role) {
             boost::system::error_code ec;
             remoteEP_ = ppp::net::Ipep::V6ToV4(socket->remote_endpoint(ec));
-            ppp::telemetry::Log(Level::kInfo, "tcpip", "socket established remote=%s:%u", remoteEP_.address().to_string().c_str(), remoteEP_.port());
-            ppp::telemetry::Count("tcpip.connect", 1);
+            ppp::telemetry::Log(Level::kInfo, "tcpip", "socket established role=%s remote=%s:%u",
+                TcpTransmissionRoleName(role_),
+                remoteEP_.address().to_string().c_str(),
+                remoteEP_.port());
+            ppp::telemetry::Count(TcpTransmissionConnectMetric(role_), 1);
 
 #if defined(_WIN32)
             if (ppp::net::Socket::IsDefaultFlashTypeOfService()) {
@@ -46,7 +90,7 @@ namespace ppp {
         ITcpipTransmission::~ITcpipTransmission() noexcept {
             Finalize();
         }
- 
+
         /**
          * @brief Finalizes the transmission by closing the socket and releasing QoS state.
          * @note Uses atomic exchange to prevent data races - returns previous value to detect double-dispose.
@@ -57,7 +101,11 @@ namespace ppp {
                 return;  // Already disposed, avoid double cleanup
             }
 
-            ppp::telemetry::Log(Level::kInfo, "tcpip", "socket closed remote=%s:%u", remoteEP_.address().to_string().c_str(), remoteEP_.port());
+            ppp::telemetry::Log(Level::kInfo, "tcpip", "socket closed role=%s remote=%s:%u",
+                TcpTransmissionRoleName(role_),
+                remoteEP_.address().to_string().c_str(),
+                remoteEP_.port());
+            ppp::telemetry::Count(TcpTransmissionCloseMetric(role_), 1);
 
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::atomic_load(&socket_);
             std::atomic_store(&socket_, std::shared_ptr<boost::asio::ip::tcp::socket>());
@@ -171,13 +219,33 @@ namespace ppp {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, NULLPTR);
             }
 
-            bool ok = ppp::coroutines::asio::async_read(*socket, boost::asio::buffer(packet.get(), length), y);
+            boost::system::error_code read_ec;
+            std::size_t bytes_transferred = 0;
+            auto buffer = boost::asio::buffer(packet.get(), length);
+            boost::asio::post(socket->get_executor(),
+                [socket, buffer, &y, &read_ec, &bytes_transferred]() noexcept {
+                    boost::asio::async_read(*socket, buffer,
+                        [&y, &read_ec, &bytes_transferred](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                            read_ec = ec;
+                            bytes_transferred = sz;
+                            y.R();
+                        });
+                });
+
+            y.Suspend();
+            bool ok = !read_ec && bytes_transferred == (std::size_t)length;
             if (!ok) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketReadFailed);
                 ppp::telemetry::Log(Level::kInfo,
                     "tcpip",
-                    "ReadBytes failed length=%d disposed=%s",
+                    "ReadBytes failed role=%s length=%d transferred=%zu disposed=%s error=%d asio_ec=%d asio_message=%s",
+                    TcpTransmissionRoleName(role_),
                     length,
-                    disposed_.load() != FALSE ? "yes" : "no");
+                    bytes_transferred,
+                    disposed_.load() != FALSE ? "yes" : "no",
+                    (int)ppp::diagnostics::GetLastErrorCode(),
+                    read_ec.value(),
+                    read_ec.message().c_str());
                 Dispose();
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketReadFailed, NULLPTR);
             }
@@ -227,7 +295,8 @@ namespace ppp {
 	                        else {
 	                            ppp::telemetry::Log(Level::kInfo,
 	                                "tcpip",
-	                                "DoWriteBytes failed ec=%d msg=%s requested=%d transferred=%zu",
+	                                "DoWriteBytes failed role=%s ec=%d msg=%s requested=%d transferred=%zu",
+	                                TcpTransmissionRoleName(role_),
 	                                ec.value(),
 	                                ec.message().c_str(),
 	                                packet_length,

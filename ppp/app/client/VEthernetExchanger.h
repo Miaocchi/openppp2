@@ -35,6 +35,7 @@
  */
 
 #include <atomic>
+#include <mutex>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetMappingPort.h>
 #include <ppp/app/protocol/VirtualEthernetPacket.h>
@@ -50,6 +51,7 @@
 #include <ppp/net/packet/IcmpFrame.h>
 #include <ppp/threading/Timer.h>
 #include <ppp/auxiliary/UriAuxiliary.h>
+#include <ppp/transmissions/ITcpipTransmission.h>
 
 namespace ppp {
     namespace app {
@@ -260,14 +262,14 @@ namespace ppp {
                  * @return Shared ITransmission on success; null on failure.
                  * @note Called from vmux internal machinery to establish multiplexed sub-connections.
                  */
-                virtual ITransmissionPtr                                                ConnectTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y) noexcept;
+                virtual ITransmissionPtr                                                ConnectTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, uint64_t* ios_child_slot_generation = NULLPTR) noexcept;
 
 #if defined(_IPHONE)
-                /** @brief True when ctcp peer-connect backlog should defer new SYN accepts. */
-                bool                                                                    IosPeerConnectBacklogged() const noexcept;
+                /** @brief True when ctcp peer-connect backlog is above the soft backpressure threshold. */
+                bool                                                                    IosPeerConnectBackpressured() const noexcept;
 
                 /** @brief Releases one iOS child-transmission slot (mux=0 per-flow server TCP). */
-                void                                                                    ReleaseIosChildTransmissionSlot() noexcept;
+                void                                                                    ReleaseIosChildTransmissionSlot(uint64_t generation) noexcept;
 #endif
 
             public:
@@ -290,7 +292,7 @@ namespace ppp {
                     auto context = GetContext();
                     if (context) {
                         auto self = shared_from_this();
-                        boost::asio::post(*context, 
+                        boost::asio::post(*context,
                             [self, f]() noexcept {
                                 f();
                             });
@@ -604,7 +606,8 @@ namespace ppp {
                     const std::shared_ptr<boost::asio::ip::tcp::socket>&                socket,
                     ProtocolType                                                        protocol_type,
                     const ppp::string&                                                  host,
-                    const ppp::string&                                                  path) noexcept;
+                    const ppp::string&                                                  path,
+                    ppp::transmissions::TcpTransmissionRole                             role = ppp::transmissions::TcpTransmissionRole::Child) noexcept;
 
                 /**
                  * @brief Opens a transport channel to the cached remote endpoint.
@@ -612,9 +615,10 @@ namespace ppp {
                  * @param context  IO context.
                  * @param strand   Optional strand.
                  * @param y        Coroutine yield context; blocks until connected or failed.
+                 * @param role     Main VPN session or per-flow child transmission.
                  * @return Shared ITransmission on success; null on failure.
                  */
-                virtual ITransmissionPtr                                                OpenTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y) noexcept;
+                virtual ITransmissionPtr                                                OpenTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, ppp::transmissions::TcpTransmissionRole role = ppp::transmissions::TcpTransmissionRole::Child) noexcept;
 
             protected:
                 /**
@@ -657,9 +661,9 @@ namespace ppp {
                  * @param y        Coroutine yield context.
                  * @return Shared ITransmission on success; null on failure.
                  */
-                ITransmissionPtr                                                        OpenTransmission(const ContextPtr& context, YieldContext& y) noexcept {
+                ITransmissionPtr                                                        OpenTransmission(const ContextPtr& context, YieldContext& y, ppp::transmissions::TcpTransmissionRole role = ppp::transmissions::TcpTransmissionRole::Child) noexcept {
                     StrandPtr strand;
-                    return OpenTransmission(context, strand, y);
+                    return OpenTransmission(context, strand, y, role);
                 }
 
                 /** @brief Releases all owned resources and marks the exchanger disposed. */
@@ -736,7 +740,7 @@ namespace ppp {
                     if (NULLPTR == transmission) {
                         return NULLPTR;
                     }
-                    
+
                     if (host.size() > 0 && path.size() > 0) {
                         transmission->Host = host;
                         transmission->Path = path;
@@ -869,7 +873,7 @@ namespace ppp {
                      * @brief Constructs the socket wrapper and resets the opened flag.
                      * @param context  Boost.Asio io_context to bind the socket to.
                      */
-                    StaticEchoDatagarmSocket(boost::asio::io_context& context) noexcept 
+                    StaticEchoDatagarmSocket(boost::asio::io_context& context) noexcept
                         : basic_datagram_socket(context)
                         , opened(false) {
 
@@ -1072,7 +1076,7 @@ namespace ppp {
                 bool                                                                    static_echo_input_  = false;
 
                 /** @brief Shared receive buffer allocated once and reused across async reads. */
-                std::shared_ptr<Byte>                                                   buffer_;            
+                std::shared_ptr<Byte>                                                   buffer_;
 
                 /** @brief Tick count at which last static-echo keepalive packet was sent. */
                 UInt64                                                                  sekap_last_         = 0;
@@ -1100,7 +1104,7 @@ namespace ppp {
                 std::shared_ptr<vmux::vmux_net>                                         mux_;
                 /** @brief VLAN identifier assigned during VMUX negotiation. */
                 uint16_t                                                                mux_vlan_           = 0;
-                
+
                 /** @brief Number of reconnect attempts since the last established state. */
                 int                                                                     reconnection_count_ = 0;
 
@@ -1130,7 +1134,7 @@ namespace ppp {
                 ppp::list<boost::asio::ip::udp::endpoint>                               static_echo_server_ep_balances_;
                 /** @brief Set for deduplication of static-echo server endpoints. */
                 ppp::unordered_set<boost::asio::ip::udp::endpoint>                      static_echo_server_ep_set_;
-                
+
                 /** @brief Tick count at which static-echo socket rotation is due. */
                 uint64_t                                                                static_echo_timeout_     = 0;
                 /** @brief Session identifier assigned by the server for static-echo. */
@@ -1143,8 +1147,13 @@ namespace ppp {
                 std::atomic<int>                                                        ios_child_transmission_active_{0};
                 /** @brief Coroutines blocked waiting for a child-transmission slot. */
                 std::atomic<int>                                                        ios_child_connect_waiters_{0};
+                /** @brief Generation token invalidating stale child slot releases after reset. */
+                std::atomic<uint64_t>                                                   ios_child_slot_generation_{1};
+                /** @brief Serializes active/generation updates for iOS child slots. */
+                mutable std::mutex                                                      ios_child_slots_mutex_;
 
-                bool                                                                    TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y) noexcept;
+                bool                                                                    TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y, uint64_t& generation) noexcept;
+                void                                                                    ResetIosChildTransmissionSlots(const char* reason) noexcept;
 #endif
             };
         }

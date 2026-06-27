@@ -77,6 +77,17 @@ namespace ppp {
                         std::shared_ptr<RinetdConnection> connection_rinetd = std::move(connection_rinetd_);
                         std::shared_ptr<vmux::vmux_skt> connection_mux = std::move(connection_mux_);
 
+#if defined(_IPHONE)
+                        if (ios_child_transmission_slot_held_) {
+                            ios_child_transmission_slot_held_ = false;
+                            uint64_t slot_generation = ios_child_transmission_slot_generation_;
+                            ios_child_transmission_slot_generation_ = 0;
+                            if (NULLPTR != exchanger_) {
+                                exchanger_->ReleaseIosChildTransmissionSlot(slot_generation);
+                            }
+                        }
+#endif
+
                         if (NULLPTR != connection) {
                             connection->Dispose();
                         }
@@ -251,7 +262,14 @@ namespace ppp {
                         return mux_status == 0;
                     }
 
-                    std::shared_ptr<ppp::transmissions::ITransmission> transmission = exchanger_->ConnectTransmission(context_, strand_, y);
+#if defined(_IPHONE)
+                    uint64_t ios_child_slot_generation = 0;
+                    std::shared_ptr<ppp::transmissions::ITransmission> transmission =
+                        exchanger_->ConnectTransmission(context_, strand_, y, &ios_child_slot_generation);
+#else
+                    std::shared_ptr<ppp::transmissions::ITransmission> transmission =
+                        exchanger_->ConnectTransmission(context_, strand_, y);
+#endif
                     if (NULLPTR == transmission) {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionTransportMissing);
                     }
@@ -261,6 +279,9 @@ namespace ppp {
                     if (NULLPTR == connection) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                         IDisposable::DisposeReferences(transmission);
+#if defined(_IPHONE)
+                        exchanger_->ReleaseIosChildTransmissionSlot(ios_child_slot_generation);
+#endif
                         return false;
                     }
 
@@ -275,9 +296,18 @@ namespace ppp {
                     if (!ok) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpConnectFailed);
                         IDisposable::DisposeReferences(connection, transmission);
+#if defined(_IPHONE)
+                        exchanger_->ReleaseIosChildTransmissionSlot(ios_child_slot_generation);
+#endif
                         return false;
                     }
 
+#if defined(_IPHONE)
+                    if (ios_child_slot_generation != 0) {
+                        ios_child_transmission_slot_held_ = true;
+                        ios_child_transmission_slot_generation_ = ios_child_slot_generation;
+                    }
+#endif
                     this->connection_ = std::move(connection);
                     return true;
                 }

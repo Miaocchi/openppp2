@@ -222,7 +222,7 @@ namespace ppp {
                 , tun_ssmt_mq_(tun_ssmt_mq)
                 , static_echo_socket_(*context_)
                 , static_echo_bind_port_(IPEndPoint::MinPort) {
-                
+
                 boost::asio::ip::udp::endpoint dnsserverEP = ParseDNSEndPoint(configuration_->udp.dns.redirect);
                 dnsserverEP_ = dnsserverEP;
 
@@ -727,14 +727,14 @@ namespace ppp {
                         bool committed = false;
 
                         static constexpr unsigned char retry_masks[] = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80 };
-                        
+
                         for (unsigned char retry_mask : retry_masks) {
                             boost::asio::ip::address_v6 candidate = boost::asio::ip::address_v6(candidate_bytes);
                             if (try_commit_ipv6_lease(candidate, false, VirtualEthernetInformationExtensions::IPv6Status_ServerAssigned, request_entry.RequestedAddress.is_v6() ? "client-request-replaced" : "server-auto-assigned")) {
                                 committed = true;
                                 break;
                             }
-                            
+
                             candidate_bytes[15] ^= retry_mask;
                         }
 
@@ -1395,7 +1395,7 @@ namespace ppp {
                         continue;
                     }
 
-                    bool bok = Socket::AcceptLoopbackAsync(acceptor, 
+                    bool bok = Socket::AcceptLoopbackAsync(acceptor,
                         [self, this, acceptor, categories](const Socket::AsioContext& context, const Socket::AsioTcpSocket& socket) noexcept {
                             if (NULLPTR == socket || !socket->is_open()) {
                                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketNotOpen);
@@ -1448,7 +1448,7 @@ namespace ppp {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionDisposed);
                     return STATUS_ERROR;
                 }
-        
+
                 bool mux = false;
                 Int128 session_id = transmission->HandshakeClient(y, mux);
                 if (session_id == 0) {
@@ -1492,8 +1492,8 @@ namespace ppp {
                 if (NULLPTR == managed_server) {
                     return Establish(transmission, session_id, NULLPTR, y) ? STATUS_RUNING : STATUS_ERROR;
                 }
-                
-                VirtualEthernetExchanger* exchanger = GetExchanger(session_id).get(); 
+
+                VirtualEthernetExchanger* exchanger = GetExchanger(session_id).get();
                 if (NULLPTR != exchanger) {
                     return Establish(transmission, session_id, NULLPTR, y) ? STATUS_RUNING : STATUS_ERROR;
                 }
@@ -1580,7 +1580,7 @@ namespace ppp {
                 if (NULLPTR == transmission) {
                     return false;
                 }
-                
+
                 return ppp::transmissions::Transmission_Handshake_Nop(configuration_, transmission.get(), y);
             }
 
@@ -1785,7 +1785,7 @@ namespace ppp {
                 }
 
                 if (run) {
-                    VirtualEthernetLoggerPtr logger = GetLogger(); 
+                    VirtualEthernetLoggerPtr logger = GetLogger();
                     if (NULLPTR != logger) {
                         logger->Vpn(session_id, transmission);
                     }
@@ -2036,7 +2036,7 @@ namespace ppp {
                         }
                     }
                 }
-                
+
                 return bany;
             }
 
@@ -2698,11 +2698,11 @@ namespace ppp {
                             std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = configuration_->GetBufferAllocator();
                             VirtualEthernetStaticEchoAllocatedContextPtr allocated_context;
 
-                            std::shared_ptr<VirtualEthernetPacket> packet = 
-                                VirtualEthernetPacket::Unpack(configuration_, allocator, 
+                            std::shared_ptr<VirtualEthernetPacket> packet =
+                                VirtualEthernetPacket::Unpack(configuration_, allocator,
                                     [this, &allocated_context](int session_id) noexcept {
                                         return StaticEchoSelectCiphertext(session_id, true, allocated_context);
-                                    }, 
+                                    },
                                     [this, &allocated_context](int session_id) noexcept {
                                         return StaticEchoSelectCiphertext(session_id, false, allocated_context);
                                     }, static_echo_buffers_.get(), sz);
@@ -2710,7 +2710,7 @@ namespace ppp {
                                 StaticEchoPacketInput(allocated_context, allocator, packet, sz, static_echo_source_ep_);
                             }
                         }
-                        
+
                         return LoopbackDatagramSocket();
                     });
                 return true;
@@ -2756,7 +2756,7 @@ namespace ppp {
                     return false;
                 }
 
-                auto statistics = exchanger->GetStatistics(); 
+                auto statistics = exchanger->GetStatistics();
                 if (NULLPTR != statistics) {
                     statistics->AddIncomingTraffic(packet_length);
                 }
@@ -2819,7 +2819,7 @@ namespace ppp {
                 }
 
                 Dictionary::TryRemove(static_echo_allocateds_, allocated_id);
-                return false; 
+                return false;
             }
 
             /**
@@ -2973,7 +2973,12 @@ namespace ppp {
                 std::shared_ptr<ppp::transmissions::ITransmission> transmission;
                 if (categories == NetworkAcceptorCategories_Tcpip) {
                     ppp::threading::Executors::StrandPtr strand;
-                    transmission = make_shared_object<ppp::transmissions::ITcpipTransmission>(context, strand, socket, configuration_);
+                    transmission = make_shared_object<ppp::transmissions::ITcpipTransmission>(
+                        context,
+                        strand,
+                        socket,
+                        configuration_,
+                        ppp::transmissions::TcpTransmissionRole::Server);
                 }
                 elif(categories == NetworkAcceptorCategories_WebSocket) {
                     transmission = NewWebsocketTransmission<ppp::transmissions::IWebsocketTransmission>(context, socket);
@@ -2996,7 +3001,7 @@ namespace ppp {
             void VirtualEthernetSwitcher::Dispose() noexcept {
                 auto self = shared_from_this();
                 std::shared_ptr<boost::asio::io_context> context = GetContext();
-                boost::asio::post(*context, 
+                boost::asio::post(*context,
                     [self, this]() noexcept {
                         Finalize();
                     });
@@ -3022,7 +3027,7 @@ namespace ppp {
 
                 return make_shared_object<VirtualEthernetNamespaceCache>(ttl);
             }
-            
+
             /**
              * @brief Creates a statistics object optionally chained to global totals.
              * @return Shared statistics collector.
@@ -3197,7 +3202,7 @@ namespace ppp {
                 if (NULLPTR != cache) {
                     cache->Clear();
                 }
-                
+
                 if (NULLPTR != logger) {
                     IDisposable::Dispose(logger);
                 }
@@ -3282,7 +3287,7 @@ namespace ppp {
                 }
 
                 auto self = shared_from_this();
-                timeout->TickEvent = 
+                timeout->TickEvent =
                     [self, this](Timer* sender, Timer::TickEventArgs& e) noexcept {
                         UInt64 now = Executors::GetTickCount();
                         OnTick(now);
@@ -3293,7 +3298,7 @@ namespace ppp {
                     timeout_ = timeout;
                     return true;
                 }
-                
+
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTimerStartFailed);
                 timeout->Dispose();
                 return false;
@@ -3519,7 +3524,7 @@ namespace ppp {
                     cache->Update();
                 }
 
-                VirtualEthernetManagedServerPtr server = managed_server_; 
+                VirtualEthernetManagedServerPtr server = managed_server_;
                 if (NULLPTR != server) {
                     server->Update(now);
                 }
@@ -3574,7 +3579,7 @@ namespace ppp {
                 if (!bok) {
                     transmission->Dispose();
                 }
-                
+
                 return bok;
             }
 
@@ -3839,7 +3844,7 @@ namespace ppp {
                     return NULLPTR;
                 }
 
-                // If ip addresses conflict, do not directly conflict like traditional routers, 
+                // If ip addresses conflict, do not directly conflict like traditional routers,
                 // And abandon the mapping between IP and Ethernet electrical ports.
                 auto kv = nats_.emplace(ip, nat);
                 if (kv.second) {

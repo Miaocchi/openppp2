@@ -52,17 +52,17 @@ namespace ppp {
                 }
 
 #if defined(_IPHONE)
-                if (exchanger->IosPeerConnectBacklogged()) {
-                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip_stack",
-                        "begin accept deferred: ios child slots full local=%s:%u remote=%s:%u",
+                if (exchanger->IosPeerConnectBackpressured()) {
+                    ppp::telemetry::Count("tcpip_stack.begin_accept.backpressure", 1);
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip_stack", "begin accept rejected under iOS child slot backpressure local=%s:%u remote=%s:%u",
                         localEP.address().to_string().c_str(),
                         localEP.port(),
                         remoteEP.address().to_string().c_str(),
                         remoteEP.port());
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionNotFound, std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionQuotaExceeded, std::shared_ptr<VEthernetNetworkTcpipStack::TapTcpClient>(NULLPTR));
                 }
 #endif
-                
+
                 ppp::threading::Executors::ContextPtr context;
                 ppp::threading::Executors::StrandPtr strand;
                 context = ppp::threading::Executors::SelectScheduler(strand);

@@ -14,6 +14,13 @@
 
 namespace ppp {
     namespace transmissions {
+        /** @brief Distinguishes the VPN main session TCP from per-flow ctcp child TCPs. */
+        enum class TcpTransmissionRole {
+            Main,
+            Child,
+            Server,
+        };
+
         /**
          * @brief Implements transmission I/O over a Boost.Asio TCP socket.
          */
@@ -30,10 +37,11 @@ namespace ppp {
              * @param configuration Application transmission configuration.
              */
             ITcpipTransmission(
-                const ContextPtr&                                                               context, 
+                const ContextPtr&                                                               context,
                 const StrandPtr&                                                                strand,
-                const std::shared_ptr<boost::asio::ip::tcp::socket>&                            socket, 
-                const AppConfigurationPtr&                                                      configuration) noexcept;
+                const std::shared_ptr<boost::asio::ip::tcp::socket>&                            socket,
+                const AppConfigurationPtr&                                                      configuration,
+                TcpTransmissionRole                                                             role = TcpTransmissionRole::Child) noexcept;
             /** @brief Releases transmission resources. */
             virtual ~ITcpipTransmission()                                                                      noexcept;
 
@@ -67,7 +75,7 @@ namespace ppp {
              * @return true if write is scheduled; otherwise false.
              */
             virtual bool                                                                        DoWriteBytes(std::shared_ptr<Byte> packet, int offset, int packet_length, const AsynchronousWriteBytesCallback& cb) noexcept;
-        
+
         private:
             /** @brief Performs one-time cleanup of socket-related resources. */
             void                                                                                Finalize() noexcept;
@@ -85,6 +93,8 @@ namespace ppp {
             std::shared_ptr<boost::asio::ip::tcp::socket>                                       socket_;
             /** @brief Cached peer endpoint captured at construction. */
             boost::asio::ip::tcp::endpoint                                                      remoteEP_;
+            /** @brief Main VPN session vs mux=0 per-flow child transmission. */
+            TcpTransmissionRole                                                                 role_ = TcpTransmissionRole::Child;
         };
     }
 }

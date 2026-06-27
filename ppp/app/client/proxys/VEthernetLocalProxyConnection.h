@@ -154,6 +154,10 @@ namespace ppp {
                     std::shared_ptr<ppp::threading::BufferswapAllocator>                allocator_;
                     std::shared_ptr<RinetdConnection>                                   connection_rinetd_;
                     std::shared_ptr<vmux::vmux_skt>                                     connection_mux_;
+#if defined(_IPHONE)
+                    bool                                                                ios_child_transmission_slot_held_ = false;
+                    uint64_t                                                            ios_child_transmission_slot_generation_ = 0;
+#endif
                 };
             }
         }

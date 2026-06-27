@@ -48,13 +48,8 @@ namespace ppp {
                 std::shared_ptr<RinetdConnection> connection_rinetd = std::move(connection_rinetd_);
                 std::shared_ptr<vmux::vmux_skt> connection_mux = std::move(connection_mux_);
 
-#if defined(_IPHONE)
-                if (ios_child_transmission_slot_held_) {
-                    ios_child_transmission_slot_held_ = false;
-                    if (std::shared_ptr<VEthernetExchanger> exchanger = exchanger_) {
-                        exchanger->ReleaseIosChildTransmissionSlot();
-                    }
-                }
+#if defined(_IPHONE) || defined(IPHONE)
+                ReleaseIosChildTransmissionSlot();
 #endif
 
                 if (NULLPTR != connection) {
@@ -100,6 +95,21 @@ namespace ppp {
                 TapTcpClient::Dispose();
             }
 
+#if defined(_IPHONE) || defined(IPHONE)
+            void VEthernetNetworkTcpipConnection::ReleaseIosChildTransmissionSlot() noexcept {
+                if (!ios_child_transmission_slot_held_) {
+                    return;
+                }
+
+                ios_child_transmission_slot_held_ = false;
+                uint64_t slot_generation = ios_child_transmission_slot_generation_;
+                ios_child_transmission_slot_generation_ = 0;
+                if (std::shared_ptr<VEthernetExchanger> exchanger = exchanger_) {
+                    exchanger->ReleaseIosChildTransmissionSlot(slot_generation);
+                }
+            }
+#endif
+
             /**
              * @brief Runs whichever forwarding path is currently active.
              * @return true when forwarding loop runs successfully.
@@ -120,9 +130,20 @@ namespace ppp {
 
                 // If the link is relayed through the VPN remote switcher, then run the VPN link relay subroutine.
                 if (std::shared_ptr<VirtualEthernetTcpipConnection> connection = connection_; NULLPTR != connection) {
+#if defined(_IPHONE)
+                    // iOS ctcp: AckAccept() already starts StartNativeTapRelay() on the child
+                    // transmission for download; upload uses native_upload_queue_. Run() would
+                    // also read that transmission (EVP 3-byte header first) and race.
+                    while (!IsDisposed() && connection->IsLinked()) {
+                        connection->Update();
+                        ppp::coroutines::asio::async_sleep(y, 100);
+                    }
+                    return !IsDisposed();
+#else
                     bool ok = connection->Run(y);
                     IDisposable::DisposeReferences(connection);
                     return ok;
+#endif
                 }
 
                 if (std::shared_ptr<vmux::vmux_skt> connection_mux = connection_mux_; NULLPTR != connection_mux) {
@@ -203,11 +224,21 @@ namespace ppp {
                         return mux_status == 0;
                     }
 
-                    std::shared_ptr<ppp::transmissions::ITransmission> transmission = exchanger->ConnectTransmission(context, strand, y);
+#if defined(_IPHONE)
+                    uint64_t ios_child_slot_generation = 0;
+                    std::shared_ptr<ppp::transmissions::ITransmission> transmission =
+                        exchanger->ConnectTransmission(context, strand, y, &ios_child_slot_generation);
+#else
+                    std::shared_ptr<ppp::transmissions::ITransmission> transmission =
+                        exchanger->ConnectTransmission(context, strand, y);
+#endif
                     if (NULLPTR == transmission) {
+                        ppp::diagnostics::ErrorCode code = ppp::diagnostics::GetLastErrorCode();
                         ppp::telemetry::Count("tcpip.peer_connect.fail.transport", 1);
-                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "peer connect failed: stage=transport remote=%s:%u error=%d", remoteEP.address().to_string().c_str(), remoteEP.port(), (int)ppp::diagnostics::GetLastErrorCode());
-                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionTransportMissing);
+                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "peer connect failed: stage=transport remote=%s:%u error=%d", remoteEP.address().to_string().c_str(), remoteEP.port(), (int)code);
+                        if (code == ppp::diagnostics::ErrorCode::Success) {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionTransportMissing);
+                        }
                         return false;
                     }
 
@@ -216,7 +247,7 @@ namespace ppp {
                     if (NULLPTR == connection) {
                         IDisposable::DisposeReferences(transmission);
 #if defined(_IPHONE)
-                        exchanger->ReleaseIosChildTransmissionSlot();
+                        exchanger->ReleaseIosChildTransmissionSlot(ios_child_slot_generation);
 #endif
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                         return false;
@@ -235,15 +266,18 @@ namespace ppp {
                         ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "peer connect failed: stage=vpn remote=%s:%u error=%d", remoteEP.address().to_string().c_str(), remoteEP.port(), (int)ppp::diagnostics::GetLastErrorCode());
                         IDisposable::DisposeReferences(connection, transmission);
 #if defined(_IPHONE)
-                        exchanger->ReleaseIosChildTransmissionSlot();
+                        exchanger->ReleaseIosChildTransmissionSlot(ios_child_slot_generation);
 #endif
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionOpenFailed);
                         return false;
                     }
 
-                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "peer connect ok remote=%s:%u", remoteEP.address().to_string().c_str(), remoteEP.port());
+                    ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "tcpip", "peer connect ok remote=%s:%u", remoteEP.address().to_string().c_str(), remoteEP.port());
 #if defined(_IPHONE)
-                    ios_child_transmission_slot_held_ = true;
+                    if (ios_child_slot_generation != 0) {
+                        ios_child_transmission_slot_held_ = true;
+                        ios_child_transmission_slot_generation_ = ios_child_slot_generation;
+                    }
 #endif
                     connection_ = std::move(connection);
                 } while (false);
@@ -282,18 +316,19 @@ namespace ppp {
 
             /** @brief Starts peer setup coroutine before accept acknowledgement. */
             bool VEthernetNetworkTcpipConnection::BeginAccept() noexcept {
-                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "begin accept coroutine post remote=%s:%u", GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
+                ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "tcpip", "begin accept coroutine post remote=%s:%u", GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
                 // mux=0: let ConnectTransmission queue for an iOS child slot instead of
                 // rejecting SYN here (speed tests open 16+ parallel flows to CDN edges).
                 return Spawn(
                     [this](ppp::coroutines::YieldContext& y) noexcept {
                         bool connected = ConnectToPeer(y);
-                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "connect peer result=%d remote=%s:%u", connected ? 1 : 0, GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
+                        ppp::diagnostics::ErrorCode code = ppp::diagnostics::GetLastErrorCode();
+                        ppp::telemetry::Log(connected ? ppp::telemetry::Level::kDebug : ppp::telemetry::Level::kInfo, "tcpip", "connect peer result=%d remote=%s:%u error=%d", connected ? 1 : 0, GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port(), connected ? 0 : (int)code);
                         if (!connected) {
                             return false;
                         }
                         bool acked = AckAccept();
-                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "ack accept result=%d remote=%s:%u", acked ? 1 : 0, GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
+                        ppp::telemetry::Log(acked ? ppp::telemetry::Level::kDebug : ppp::telemetry::Level::kInfo, "tcpip", "ack accept result=%d remote=%s:%u", acked ? 1 : 0, GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
                         return acked;
                     });
             }
@@ -417,7 +452,7 @@ namespace ppp {
                     std::shared_ptr<boost::asio::ip::tcp::socket> remote = rinetd->GetRemoteSocket();
                     if (NULLPTR != remote && remote->is_open() && NULLPTR != owner_.lock()) {
                         rinetd->StartRemoteToTapRelay(relay_callback);
-                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "native inject ready mode=rinetd remote=%s:%u",
+                        ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "tcpip", "native inject ready mode=rinetd remote=%s:%u",
                             GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
                         return true;
                     }
@@ -425,8 +460,33 @@ namespace ppp {
 
                 std::shared_ptr<VirtualEthernetTcpipConnection> vpn = connection_;
                 if (NULLPTR != vpn && vpn->IsLinked() && NULLPTR != owner_.lock()) {
-                    if (vpn->StartNativeTapRelay(relay_callback)) {
-                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip", "native inject ready mode=vpn remote=%s:%u",
+                    std::shared_ptr<VEthernetNetworkTcpipConnection> self =
+                        std::static_pointer_cast<VEthernetNetworkTcpipConnection>(shared_from_this());
+                    std::weak_ptr<VEthernetNetworkTcpipConnection> weak_self = self;
+                    auto shutdown_callback =
+                        [weak_self]() noexcept {
+                            std::shared_ptr<VEthernetNetworkTcpipConnection> self = weak_self.lock();
+                            if (NULLPTR != self) {
+                                bool fin_ok = self->EmitNativeToClient(NULLPTR, 0,
+                                    ppp::ethernet::VNetstack::tcp_hdr::TCP_FIN |
+                                    ppp::ethernet::VNetstack::tcp_hdr::TCP_ACK);
+                                ppp::telemetry::Log(fin_ok ? ppp::telemetry::Level::kDebug : ppp::telemetry::Level::kInfo,
+                                    "tcpip",
+                                    "native inject remote fin emitted ok=%d remote=%s:%u",
+                                    fin_ok ? 1 : 0,
+                                    self->GetRemoteEndPoint().address().to_string().c_str(),
+                                    self->GetRemoteEndPoint().port());
+
+                                self->ReleaseIosChildTransmissionSlot();
+                                std::shared_ptr<VirtualEthernetTcpipConnection> vpn = self->connection_;
+                                if (NULLPTR != vpn) {
+                                    vpn->DisposeNativeTransportOnly();
+                                }
+                            }
+                        };
+
+                    if (vpn->StartNativeTapRelay(relay_callback, shutdown_callback)) {
+                        ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "tcpip", "native inject ready mode=vpn remote=%s:%u",
                             GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
                         return true;
                     }
@@ -448,38 +508,34 @@ namespace ppp {
                 const int payload_len = tcp_len - (int)hdrlen_bytes;
                 const uint8_t* payload = (const uint8_t*)tcp + hdrlen_bytes;
                 const uint8_t tcp_flags = ppp::ethernet::VNetstack::tcp_hdr::TCPH_FLAGS(tcp);
-                if (!UpdateNativeClientAck(tcp, tcp_len)) {
-                    return false;
-                }
 
                 if (payload_len < 1) {
-                    if (tcp_flags & (ppp::ethernet::VNetstack::tcp_hdr::TCP_FIN | ppp::ethernet::VNetstack::tcp_hdr::TCP_RST)) {
+                    if (!UpdateNativeClientAck(tcp, tcp_len)) {
+                        return false;
+                    }
+
+                    if (tcp_flags & ppp::ethernet::VNetstack::tcp_hdr::TCP_RST) {
                         std::shared_ptr<VirtualEthernetTcpipConnection> vpn = connection_;
                         if (NULLPTR != vpn) {
-                            ppp::threading::Executors::ContextPtr context = GetContext();
-                            ppp::threading::Executors::StrandPtr strand = GetStrand();
-                            std::shared_ptr<VirtualEthernetTcpipConnection> relay = vpn;
-                            auto post_work =
-                                [relay]() noexcept {
-                                    relay->Dispose();
-                                };
-
-                            if (NULLPTR != context) {
-                                if (NULLPTR != strand) {
-                                    ppp::threading::Executors::Post(context, strand, post_work);
-                                }
-                                else {
-                                    boost::asio::post(*context, post_work);
-                                }
-                            }
+                            vpn->DisposeNativeTransportOnly();
                         }
+                        ReleaseIosChildTransmissionSlot();
+                        Dispose();
+                        return true;
+                    }
+
+                    if (tcp_flags & ppp::ethernet::VNetstack::tcp_hdr::TCP_FIN) {
+                        EmitNativeToClient(NULLPTR, 0);
+                        std::shared_ptr<VirtualEthernetTcpipConnection> vpn = connection_;
+                        if (NULLPTR != vpn) {
+                            vpn->DisposeNativeTransportOnly();
+                        }
+                        ReleaseIosChildTransmissionSlot();
+                        Dispose();
+                        return true;
                     }
                     return true;
                 }
-
-                // ACK upload segments back to the TUN client; without this the local TCP
-                // stack never advances snd_wnd and upload (speed test) stalls.
-                EmitNativeToClient(nullptr, 0);
 
                 std::shared_ptr<std::vector<Byte>> payload_copy = std::make_shared<std::vector<Byte>>((size_t)payload_len);
                 if (NULLPTR == payload_copy) {
@@ -501,10 +557,21 @@ namespace ppp {
                         };
 
                     if (NULLPTR != strand) {
-                        return ppp::threading::Executors::Post(context, strand, post_work);
+                        bool posted = ppp::threading::Executors::Post(context, strand, post_work);
+                        if (posted) {
+                            if (!UpdateNativeClientAck(tcp, tcp_len)) {
+                                return false;
+                            }
+                            EmitNativeToClient(nullptr, 0);
+                        }
+                        return posted;
                     }
 
                     boost::asio::post(*context, post_work);
+                    if (!UpdateNativeClientAck(tcp, tcp_len)) {
+                        return false;
+                    }
+                    EmitNativeToClient(nullptr, 0);
                     return true;
                 }
 
@@ -513,7 +580,26 @@ namespace ppp {
                     return false;
                 }
 
-                return vpn->SendBufferToPeerAsync(payload_copy);
+                if (!vpn->IsLinked()) {
+                    if (!UpdateNativeClientAck(tcp, tcp_len)) {
+                        return false;
+                    }
+
+                    EmitNativeToClient(nullptr, 0);
+                    ppp::telemetry::Count("tcpip.native_payload.after_remote_fin", 1);
+                    return true;
+                }
+
+                bool queued = vpn->SendBufferToPeerAsync(payload_copy);
+                if (queued) {
+                    if (!UpdateNativeClientAck(tcp, tcp_len)) {
+                        return false;
+                    }
+                    // ACK upload segments only after enqueue succeeds; otherwise iOS will
+                    // retransmit and naturally slow down instead of us silently dropping data.
+                    EmitNativeToClient(nullptr, 0);
+                }
+                return queued;
             }
 #endif
         }

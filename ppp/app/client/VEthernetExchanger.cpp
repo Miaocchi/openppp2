@@ -62,11 +62,28 @@ namespace ppp {
             // loop for tens of seconds while hundreds of per-flow handshakes run.
             static constexpr int SEND_ECHO_KEEP_ALIVE_PACKET_MMX_TIMEOUT = 120000;
             // mux=0 opens one server TCP+handshake per TUN flow; cap to stay inside NE memory.
-            static constexpr int IOS_CHILD_TRANSMISSION_LIMIT = 24;
-            static constexpr int IOS_CHILD_CONNECT_WAITER_LIMIT = 64;
+            static constexpr int IOS_CHILD_TRANSMISSION_LIMIT = 96;
+            // Soft mark for telemetry only; uploads can legitimately queue above this.
+            static constexpr int IOS_CHILD_CONNECT_WAITER_SOFT_LIMIT = 96;
+            // Absolute emergency cap for callers that bypass BeginAcceptClient() backpressure.
+            static constexpr int IOS_CHILD_CONNECT_WAITER_BURST_LIMIT = 192;
+            static constexpr int IOS_CHILD_SLOT_WAIT_INTERVAL_MS = 25;
+            static constexpr int IOS_CHILD_SLOT_WAIT_MAX_MS = 15000;
 #else
             static constexpr int SEND_ECHO_KEEP_ALIVE_PACKET_MMX_TIMEOUT = SEND_ECHO_KEEP_ALIVE_PACKET_MAX_TIMEOUT << 2;
 #endif
+            const char* TransmissionRoleName(ppp::transmissions::TcpTransmissionRole role) noexcept {
+                switch (role) {
+                case ppp::transmissions::TcpTransmissionRole::Main:
+                    return "main";
+                case ppp::transmissions::TcpTransmissionRole::Server:
+                    return "server";
+                case ppp::transmissions::TcpTransmissionRole::Child:
+                default:
+                    return "child";
+                }
+            }
+
             /** @brief Reserved ACK identifier used for static-echo keepalive signaling. */
             static constexpr int STATIC_ECHO_KEEP_ALIVED_ID              = IPEndPoint::NoneAddress - 1;
 
@@ -247,7 +264,8 @@ namespace ppp {
                 const std::shared_ptr<boost::asio::ip::tcp::socket>&                socket,
                 ProtocolType                                                        protocol_type,
                 const ppp::string&                                                  host,
-                const ppp::string&                                                  path) noexcept {
+                const ppp::string&                                                  path,
+                ppp::transmissions::TcpTransmissionRole                             role) noexcept {
 
                 ITransmissionPtr transmission;
                 if (protocol_type == ProtocolType::ProtocolType_Http ||
@@ -260,13 +278,15 @@ namespace ppp {
                 }
                 else {
                     std::shared_ptr<ppp::configurations::AppConfiguration> configuration = GetConfiguration();
-                    transmission = make_shared_object<ITcpipTransmission>(context, strand, socket, configuration);
+                    transmission = make_shared_object<ITcpipTransmission>(context, strand, socket, configuration, role);
                 }
 
                 if (NULLPTR != transmission) {
                     transmission->QoS = switcher_->GetQoS();
                     transmission->Statistics = switcher_->GetStatistics();
-                    ppp::telemetry::Log(Level::kDebug, "client_exchanger", "transmission created: protocol=%d", (int)protocol_type);
+                    ppp::telemetry::Log(Level::kDebug, "client_exchanger", "transmission created: protocol=%d role=%s",
+                        (int)protocol_type,
+                        TransmissionRoleName(role));
                 }
 
                 return transmission;
@@ -397,7 +417,7 @@ namespace ppp {
             }
 
             /** @brief Opens a transport connection to current remote endpoint. */
-            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::OpenTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y) noexcept {
+            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::OpenTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, ppp::transmissions::TcpTransmissionRole role) noexcept {
                 boost::asio::ip::tcp::endpoint remoteEP;
                 ppp::string hostname;
                 ppp::string address;
@@ -450,8 +470,8 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TcpConnectFailed, VEthernetExchanger::ITransmissionPtr(NULLPTR));
                 }
 
-                ppp::telemetry::Log(Level::kInfo, "client_exchanger", "tcp connected: %s:%d", hostname.c_str(), remotePort);
-                return NewTransmission(context, strand, socket, protocol_type, hostname, path);
+                ppp::telemetry::Log(Level::kInfo, "client_exchanger", "tcp connected: %s:%d role=%s", hostname.c_str(), remotePort, TransmissionRoleName(role));
+                return NewTransmission(context, strand, socket, protocol_type, hostname, path, role);
             }
 
             /** @brief Starts main asynchronous exchanger loop. */
@@ -611,7 +631,7 @@ namespace ppp {
             }
 
             /** @brief Connects and handshakes a child transmission for mux use. */
-            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::ConnectTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y) noexcept {
+            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::ConnectTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, uint64_t* ios_child_slot_generation) noexcept {
                 if (NULLPTR == context) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeIoContextMissing, VEthernetExchanger::ITransmissionPtr(NULLPTR));
                 }
@@ -627,19 +647,32 @@ namespace ppp {
                 }
 
 #if defined(_IPHONE)
-                const bool ios_child_slot = (NULLPTR == mux_);
+                const bool ios_child_slot = (NULLPTR != ios_child_slot_generation);
+                uint64_t ios_reserved_generation = 0;
+                if (NULLPTR != ios_child_slot_generation) {
+                    *ios_child_slot_generation = 0;
+                }
                 if (ios_child_slot) {
-                    if (!TryReserveIosChildTransmissionSlot(context, y)) {
-                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed, VEthernetExchanger::ITransmissionPtr(NULLPTR));
+                    if (!TryReserveIosChildTransmissionSlot(context, y, ios_reserved_generation)) {
+                        if (disposed_.load(std::memory_order_acquire)) {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed, VEthernetExchanger::ITransmissionPtr(NULLPTR));
+                        }
+
+                        ppp::diagnostics::ErrorCode code = ppp::diagnostics::GetLastErrorCode();
+                        if (code == ppp::diagnostics::ErrorCode::Success) {
+                            code = ppp::diagnostics::ErrorCode::SessionQuotaExceeded;
+                        }
+
+                        return ppp::diagnostics::SetLastError(code, VEthernetExchanger::ITransmissionPtr(NULLPTR));
                     }
                 }
 #endif
 
-                ITransmissionPtr transmission = OpenTransmission(context, strand, y);
+                ITransmissionPtr transmission = OpenTransmission(context, strand, y, ppp::transmissions::TcpTransmissionRole::Child);
                 if (NULLPTR == transmission) {
 #if defined(_IPHONE)
                     if (ios_child_slot) {
-                        ReleaseIosChildTransmissionSlot();
+                        ReleaseIosChildTransmissionSlot(ios_reserved_generation);
                     }
 #endif
                     return NULLPTR;
@@ -647,6 +680,11 @@ namespace ppp {
 
                 bool noerror = transmission->HandshakeServer(y, GetId(), false);
                 if (noerror) {
+#if defined(_IPHONE)
+                    if (ios_child_slot && NULLPTR != ios_child_slot_generation) {
+                        *ios_child_slot_generation = ios_reserved_generation;
+                    }
+#endif
                     return transmission;
                 }
                 else {
@@ -654,7 +692,7 @@ namespace ppp {
                     transmission->Dispose();
 #if defined(_IPHONE)
                     if (ios_child_slot) {
-                        ReleaseIosChildTransmissionSlot();
+                        ReleaseIosChildTransmissionSlot(ios_reserved_generation);
                     }
 #endif
                     return NULLPTR;
@@ -662,31 +700,58 @@ namespace ppp {
             }
 
 #if defined(_IPHONE)
-            bool VEthernetExchanger::IosPeerConnectBacklogged() const noexcept {
-                if (NULLPTR != mux_) {
+            bool VEthernetExchanger::IosPeerConnectBackpressured() const noexcept {
+                std::shared_ptr<vmux::vmux_net> mux = mux_;
+                if (NULLPTR != mux && mux->is_established()) {
                     return false;
                 }
 
-                int active = ios_child_transmission_active_.load(std::memory_order_acquire);
-                return active >= IOS_CHILD_TRANSMISSION_LIMIT;
+                return ios_child_connect_waiters_.load(std::memory_order_relaxed) >= IOS_CHILD_CONNECT_WAITER_BURST_LIMIT;
             }
 
-            void VEthernetExchanger::ReleaseIosChildTransmissionSlot() noexcept {
-                if (NULLPTR != mux_) {
+            void VEthernetExchanger::ResetIosChildTransmissionSlots(const char* reason) noexcept {
+                int stale_active = 0;
+                uint64_t generation = 0;
+                {
+                    std::lock_guard<std::mutex> lock(ios_child_slots_mutex_);
+                    stale_active = ios_child_transmission_active_.exchange(0, std::memory_order_acq_rel);
+                    generation = ios_child_slot_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
+                }
+                if (stale_active > 0) {
+                    ppp::telemetry::Log(Level::kInfo, "client_exchanger",
+                        "ios child slots reset reason=%s stale_active=%d generation=%llu",
+                        (NULLPTR != reason && reason[0] != '\0') ? reason : "unknown",
+                        stale_active,
+                        (unsigned long long)generation);
+                }
+            }
+
+            void VEthernetExchanger::ReleaseIosChildTransmissionSlot(uint64_t generation) noexcept {
+                if (generation == 0) {
                     return;
                 }
 
-                int prev = ios_child_transmission_active_.fetch_sub(1, std::memory_order_acq_rel);
-                if (prev <= 0) {
-                    ios_child_transmission_active_.store(0, std::memory_order_release);
+                std::lock_guard<std::mutex> lock(ios_child_slots_mutex_);
+                uint64_t current_generation = ios_child_slot_generation_.load(std::memory_order_acquire);
+                if (generation != current_generation) {
+                    ppp::telemetry::Log(Level::kDebug, "client_exchanger",
+                        "ios child slot stale release ignored generation=%llu current=%llu active=%d",
+                        (unsigned long long)generation,
+                        (unsigned long long)current_generation,
+                        ios_child_transmission_active_.load(std::memory_order_acquire));
+                    return;
                 }
+
+                int active = ios_child_transmission_active_.load(std::memory_order_acquire);
+                if (active <= 0) {
+                    ios_child_transmission_active_.store(0, std::memory_order_release);
+                    return;
+                }
+                ios_child_transmission_active_.store(active - 1, std::memory_order_release);
             }
 
-            bool VEthernetExchanger::TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y) noexcept {
-                if (NULLPTR != mux_) {
-                    return true;
-                }
-
+            bool VEthernetExchanger::TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y, uint64_t& generation) noexcept {
+                generation = 0;
                 ios_child_connect_waiters_.fetch_add(1, std::memory_order_relaxed);
                 struct WaiterGuard final {
                     std::atomic<int>& counter;
@@ -698,27 +763,77 @@ namespace ppp {
                     }
                 } waiter_guard{ios_child_connect_waiters_};
 
-                if (ios_child_connect_waiters_.load(std::memory_order_relaxed) > IOS_CHILD_CONNECT_WAITER_LIMIT) {
-                    ppp::telemetry::Count("client_exchanger.ios_child_slot.waiter_rejected", 1);
-                    return false;
-                }
-
+                int waited_ms = 0;
                 for (;;) {
                     if (disposed_.load(std::memory_order_acquire)) {
                         return false;
                     }
 
-                    int active = ios_child_transmission_active_.load(std::memory_order_acquire);
-                    if (active < IOS_CHILD_TRANSMISSION_LIMIT) {
-                        ios_child_transmission_active_.fetch_add(1, std::memory_order_acq_rel);
-                        waiter_guard.released = true;
-                        ios_child_connect_waiters_.fetch_sub(1, std::memory_order_relaxed);
-                        ppp::telemetry::Histogram("client_exchanger.ios_child_slot.active", active + 1);
-                        return true;
+                    if (GetNetworkState() != NetworkState_Established) {
+                        return false;
                     }
 
-                    ppp::telemetry::Count("client_exchanger.ios_child_slot.wait", 1);
-                    if (!Sleep(5, context, y)) {
+                    if (NULLPTR == transmission_) {
+                        return false;
+                    }
+
+                    const int waiters = ios_child_connect_waiters_.load(std::memory_order_relaxed);
+                    int active = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(ios_child_slots_mutex_);
+                        active = ios_child_transmission_active_.load(std::memory_order_acquire);
+                        if (active < IOS_CHILD_TRANSMISSION_LIMIT) {
+                            ios_child_transmission_active_.store(active + 1, std::memory_order_release);
+                            generation = ios_child_slot_generation_.load(std::memory_order_acquire);
+                            waiter_guard.released = true;
+                            ios_child_connect_waiters_.fetch_sub(1, std::memory_order_relaxed);
+                            ppp::telemetry::Histogram("client_exchanger.ios_child_slot.active", active + 1);
+                            if (waited_ms > 0) {
+                                ppp::telemetry::Histogram("client_exchanger.ios_child_slot.wait_ms", waited_ms);
+                            }
+                            return true;
+                        }
+                    }
+
+                    if (waiters > IOS_CHILD_CONNECT_WAITER_BURST_LIMIT) {
+                        ppp::telemetry::Count("client_exchanger.ios_child_slot.waiter_rejected", 1);
+                        ppp::telemetry::Log(Level::kInfo, "client_exchanger",
+                            "ios child slot waiter burst rejected waiters=%d active=%d active_limit=%d burst_limit=%d",
+                            waiters,
+                            active,
+                            IOS_CHILD_TRANSMISSION_LIMIT,
+                            IOS_CHILD_CONNECT_WAITER_BURST_LIMIT);
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionQuotaExceeded);
+                        return false;
+                    }
+
+                    if (waiters > IOS_CHILD_CONNECT_WAITER_SOFT_LIMIT) {
+                        ppp::telemetry::Count("client_exchanger.ios_child_slot.wait.backpressure", 1);
+                    }
+                    else {
+                        ppp::telemetry::Count("client_exchanger.ios_child_slot.wait", 1);
+                    }
+
+                    if (!Sleep(IOS_CHILD_SLOT_WAIT_INTERVAL_MS, context, y)) {
+                        if (!disposed_.load(std::memory_order_acquire)
+                            && GetNetworkState() == NetworkState_Established
+                            && NULLPTR != transmission_
+                            && ppp::diagnostics::GetLastErrorCode() == ppp::diagnostics::ErrorCode::Success) {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionQuotaExceeded);
+                        }
+                        return false;
+                    }
+
+                    waited_ms += IOS_CHILD_SLOT_WAIT_INTERVAL_MS;
+                    if (waited_ms >= IOS_CHILD_SLOT_WAIT_MAX_MS) {
+                        ppp::telemetry::Count("client_exchanger.ios_child_slot.wait_timeout", 1);
+                        ppp::telemetry::Log(Level::kInfo, "client_exchanger",
+                            "ios child slot wait timeout waiters=%d active=%d active_limit=%d waited_ms=%d",
+                            waiters,
+                            active,
+                            IOS_CHILD_TRANSMISSION_LIMIT,
+                            waited_ms);
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionQuotaExceeded);
                         return false;
                     }
                 }
@@ -765,7 +880,7 @@ namespace ppp {
                 /** @brief Main lifecycle loop for connection establishment and reconnection. */
                 while (!disposed_.load(std::memory_order_acquire)) {
                     ExchangeToConnectingState(); {
-                        ITransmissionPtr transmission = OpenTransmission(context, y);
+                        ITransmissionPtr transmission = OpenTransmission(context, y, ppp::transmissions::TcpTransmissionRole::Main);
                         if (transmission) {
                             bool established = transmission->HandshakeServer(y, GetId(), true) && EchoLanToRemoteExchanger(transmission, y) > -1;
                             if (established) {
@@ -786,10 +901,17 @@ namespace ppp {
                                         continue;
                                     }
                                     RegisterAllMappingPorts();
+                                    ppp::telemetry::Log(Level::kInfo, "protocol", "session established role=main");
+                                    bool main_run_ok = false;
                                     if (StaticEchoAllocatedToRemoteExchanger(y) && Run(transmission, y)) {
+                                        main_run_ok = true;
                                         run_once = true;
                                         StaticEchoClean();
                                     }
+                                    ppp::telemetry::Log(Level::kInfo, "protocol",
+                                        "session disposed role=main reason=loop_end ok=%d error=%d",
+                                        main_run_ok ? 1 : 0,
+                                        (int)ppp::diagnostics::GetLastErrorCode());
 
                                     /**
                                      * @brief Link telemetry: the connection was established but has now ended.
@@ -810,6 +932,9 @@ namespace ppp {
                                     UnregisterAllMappingPorts();
                                 }
                                 transmission_.reset();
+#if defined(_IPHONE)
+                                ResetIosChildTransmissionSlots("main_transmission_end");
+#endif
                             }
                             else {
                                 ppp::telemetry::Count("client_exchanger.connect.fail.handshake", 1);
@@ -1233,6 +1358,9 @@ namespace ppp {
                 sekap_next_ = 0;
                 network_state_.exchange(NetworkState_Reconnecting);
                 reconnection_count_++;
+#if defined(_IPHONE)
+                ResetIosChildTransmissionSlots("reconnecting");
+#endif
             }
 
             /** @brief Registers all configured FRP mapping ports. */
@@ -1710,6 +1838,9 @@ namespace ppp {
                             (unsigned long long)(now - sekap_last_),
                             SEND_ECHO_KEEP_ALIVE_PACKET_MMX_TIMEOUT);
                         transmission->Dispose();
+#if defined(_IPHONE)
+                        ResetIosChildTransmissionSlots("keepalive_stale");
+#endif
                         return false;
                     }
                 }

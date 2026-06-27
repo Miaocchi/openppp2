@@ -16,6 +16,7 @@
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 
 #if defined(_IPHONE) || defined(IPHONE)
+#include <atomic>
 #include <deque>
 #endif
 
@@ -191,9 +192,13 @@ namespace ppp {
                 bool                                                            SendBufferToPeerAsync(const void* packet, int packet_length) noexcept;
                 bool                                                            SendBufferToPeerAsync(const std::shared_ptr<std::vector<Byte>>& payload) noexcept;
                 /**
+                 * @brief Disposes only this child transport without cascading into the owning TapTcpClient.
+                 */
+                void                                                            DisposeNativeTransportOnly() noexcept;
+                /**
                  * @brief Reads VPN responses and forwards them through the supplied callback.
                  */
-                bool                                                            StartNativeTapRelay(const ppp::function<void(const void*, size_t)>& on_data) noexcept;
+                bool                                                            StartNativeTapRelay(const ppp::function<void(const void*, size_t)>& on_data, const ppp::function<void()>& on_shutdown = ppp::function<void()>()) noexcept;
 #endif
 
             private:
@@ -266,10 +271,10 @@ namespace ppp {
                  * @note Handles both connect and mux acceptance entry points.
                  */
                 bool                                                            MuxOrAccept(
-                    YieldContext&                                               y, 
-                    ITransmissionPtr&                                           transmission, 
+                    YieldContext&                                               y,
+                    ITransmissionPtr&                                           transmission,
                     const VirtualEthernetLoggerPtr&                             logger,
-                    const AcceptMuxAsynchronousCallback&                        accept_mux_ac, 
+                    const AcceptMuxAsynchronousCallback&                        accept_mux_ac,
                     bool                                                        mux_or_connect) noexcept;
                 /**
                  * @brief Shared connect-side negotiation helper.
@@ -285,13 +290,13 @@ namespace ppp {
                  * @note Handles both connect and mux active entry points.
                  */
                 bool                                                            MuxOrConnect(
-                    YieldContext&                                               y, 
-                    ITransmissionPtr&                                           transmission, 
-                    const ppp::string&                                          host, 
-                    int                                                         port, 
-                    uint32_t                                                    vlan, 
-                    uint32_t                                                    seq, 
-                    uint32_t                                                    ack, 
+                    YieldContext&                                               y,
+                    ITransmissionPtr&                                           transmission,
+                    const ppp::string&                                          host,
+                    int                                                         port,
+                    uint32_t                                                    vlan,
+                    uint32_t                                                    seq,
+                    uint32_t                                                    ack,
                     bool                                                        mux_or_connect) noexcept;
 
             private:
@@ -312,10 +317,14 @@ namespace ppp {
                 bool                                                            EnsureNativeUploadWriter() noexcept;
                 bool                                                            RunNativeUploadWriter(YieldContext& y) noexcept;
 
-                static constexpr size_t                                         kNativeUploadQueueMax = 64;
+                static constexpr size_t                                         kNativeUploadQueueMaxPackets = 1024;
+                static constexpr size_t                                         kNativeUploadQueueMaxBytes = 1024 * 1024;
+                static constexpr size_t                                         kNativeUploadCoalesceMaxBytes = 16 * 1024;
                 std::mutex                                                      native_upload_mutex_;
                 std::deque<std::shared_ptr<std::vector<Byte>>>                  native_upload_queue_;
+                size_t                                                          native_upload_queued_bytes_ = 0;
                 bool                                                            native_upload_writer_started_ = false;
+                std::atomic_bool                                                native_tap_relay_started_ = { false };
 #endif
             };
         }

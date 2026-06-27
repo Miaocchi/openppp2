@@ -201,11 +201,11 @@ namespace ppp {
              * @note Delegates to common `MuxOrConnect` path with connect mode.
              */
             bool VirtualEthernetTcpipConnection::Connect(
-                YieldContext&       y, 
-                ITransmissionPtr&   transmission, 
-                const ppp::string&  host, 
+                YieldContext&       y,
+                ITransmissionPtr&   transmission,
+                const ppp::string&  host,
                 int                 port) noexcept {
-                    
+
                 return MuxOrConnect(y, transmission, host, port, 0, 0, 0, false);
             }
 
@@ -220,10 +220,10 @@ namespace ppp {
              * @note Delegates to common `MuxOrConnect` path with mux mode.
              */
             bool VirtualEthernetTcpipConnection::ConnectMux(
-                YieldContext&       y, 
-                ITransmissionPtr&   transmission, 
-                uint32_t            vlan, 
-                uint32_t            seq, 
+                YieldContext&       y,
+                ITransmissionPtr&   transmission,
+                uint32_t            vlan,
+                uint32_t            seq,
                 uint32_t            ack) noexcept {
 
                 ppp::string default_host;
@@ -246,13 +246,13 @@ namespace ppp {
              * @note This routine sends one request and validates one peer response packet.
              */
             bool VirtualEthernetTcpipConnection::MuxOrConnect(
-                YieldContext&       y, 
-                ITransmissionPtr&   transmission, 
-                const ppp::string&  host, 
-                int                 port, 
-                uint32_t            vlan, 
-                uint32_t            seq, 
-                uint32_t            ack, 
+                YieldContext&       y,
+                ITransmissionPtr&   transmission,
+                const ppp::string&  host,
+                int                 port,
+                uint32_t            vlan,
+                uint32_t            seq,
+                uint32_t            ack,
                 bool                mux_or_connect) noexcept {
 
                 typedef VirtualEthernetLinklayer::ERROR_CODES ERROR_CODES;
@@ -364,8 +364,8 @@ namespace ppp {
              * @note Delegates to common `MuxOrAccept` path with connect mode.
              */
             bool VirtualEthernetTcpipConnection::Accept(
-                YieldContext&                                           y, 
-                ITransmissionPtr&                                       transmission, 
+                YieldContext&                                           y,
+                ITransmissionPtr&                                       transmission,
                 const VirtualEthernetLoggerPtr&                         logger,
                 const AcceptMuxAsynchronousCallback&                    mux) noexcept {
 
@@ -381,8 +381,8 @@ namespace ppp {
              * @note Delegates to common `MuxOrAccept` path with mux mode.
              */
             bool VirtualEthernetTcpipConnection::AcceptMux(
-                YieldContext&                           y, 
-                ITransmissionPtr&                       transmission, 
+                YieldContext&                           y,
+                ITransmissionPtr&                       transmission,
                 const AcceptMuxAsynchronousCallback&    ac) noexcept {
 
                 if (NULLPTR == ac) {
@@ -404,10 +404,10 @@ namespace ppp {
              * @note In connect mode this function opens/connects the local socket and returns CONNECT_OK.
              */
             bool VirtualEthernetTcpipConnection::MuxOrAccept(
-                YieldContext&                                           y, 
-                ITransmissionPtr&                                       transmission, 
+                YieldContext&                                           y,
+                ITransmissionPtr&                                       transmission,
                 const VirtualEthernetLoggerPtr&                         logger,
-                const AcceptMuxAsynchronousCallback&                    accept_mux_ac, 
+                const AcceptMuxAsynchronousCallback&                    accept_mux_ac,
                 bool                                                    mux_or_connect) noexcept {
 
                 typedef VirtualEthernetLinklayer::ERROR_CODES ERROR_CODES;
@@ -495,8 +495,8 @@ namespace ppp {
                         qoss_ = ppp::net::QoSS::New(socket_->native_handle(), destinationIP, destinationPort);
                     }
 #elif defined(_LINUX)
-                    // If IPV4 is not a loop IP address, it needs to be linked to a physical network adapter. 
-                    // IPV6 does not need to be linked, because VPN is IPV4, 
+                    // If IPV4 is not a loop IP address, it needs to be linked to a physical network adapter.
+                    // IPV6 does not need to be linked, because VPN is IPV4,
                     // And IPV6 does not affect the physical layer network communication of the VPN.
                     if (!destinationIP.is_loopback()) {
                         auto protector_network = ProtectorNetwork;
@@ -552,7 +552,7 @@ namespace ppp {
              * @note Closes transmission and socket; resets connected/disposed flags.
              */
             void VirtualEthernetTcpipConnection::Finalize() noexcept {
-                ITransmissionPtr transmission = std::move(transmission_); 
+                ITransmissionPtr transmission = std::move(transmission_);
                 if (NULLPTR != transmission) {
                     transmission->Dispose();
                 }
@@ -565,9 +565,11 @@ namespace ppp {
                 connected_ = false;
 
 #if defined(_IPHONE) || defined(IPHONE)
+                native_tap_relay_started_.store(false, std::memory_order_release);
                 {
                     std::lock_guard<std::mutex> lock(native_upload_mutex_);
                     native_upload_queue_.clear();
+                    native_upload_queued_bytes_ = 0;
                     native_upload_writer_started_ = false;
                 }
 #endif
@@ -908,6 +910,38 @@ namespace ppp {
             }
 
 #if defined(_IPHONE) || defined(IPHONE)
+            namespace {
+                bool IsNativeUploadWriteTerminal(ppp::diagnostics::ErrorCode error) noexcept {
+                    using ppp::diagnostics::ErrorCode;
+                    switch (error) {
+                    case ErrorCode::SessionDisposed:
+                    case ErrorCode::SocketReadFailed:
+                    case ErrorCode::SessionTransportMissing:
+                    case ErrorCode::TunnelWriteFailed:
+                    case ErrorCode::TcpipConnectionSendPeerNotConnected:
+                        return true;
+                    default:
+                        return false;
+                    }
+                }
+            }
+
+            void VirtualEthernetTcpipConnection::DisposeNativeTransportOnly() noexcept {
+                ITransmissionPtr transmission = std::move(transmission_);
+                if (NULLPTR != transmission) {
+                    transmission->Dispose();
+                }
+
+                connected_ = false;
+                native_tap_relay_started_.store(false, std::memory_order_release);
+                {
+                    std::lock_guard<std::mutex> lock(native_upload_mutex_);
+                    native_upload_queue_.clear();
+                    native_upload_queued_bytes_ = 0;
+                    native_upload_writer_started_ = false;
+                }
+            }
+
             bool VirtualEthernetTcpipConnection::EnsureNativeUploadWriter() noexcept {
                 if (disposed_ || !connected_) {
                     return false;
@@ -947,38 +981,46 @@ namespace ppp {
                         }
 
                         payload = native_upload_queue_.front();
+                        native_upload_queue_.pop_front();
+                        size_t payload_size = NULLPTR != payload ? payload->size() : 0;
+                        native_upload_queued_bytes_ = payload_size >= native_upload_queued_bytes_
+                            ? 0
+                            : native_upload_queued_bytes_ - payload_size;
                     }
 
                     if (NULLPTR == payload || payload->empty()) {
-                        std::lock_guard<std::mutex> lock(native_upload_mutex_);
-                        if (!native_upload_queue_.empty()) {
-                            native_upload_queue_.pop_front();
-                        }
                         continue;
                     }
 
                     if (!SendBufferToPeer(y, payload->data(), (int)payload->size())) {
+                        const auto error = ppp::diagnostics::GetLastErrorCode();
                         size_t queue_depth = 0;
+                        bool terminal = IsNativeUploadWriteTerminal(error);
                         {
                             std::lock_guard<std::mutex> lock(native_upload_mutex_);
                             queue_depth = native_upload_queue_.size();
+                            if (terminal) {
+                                native_upload_queue_.clear();
+                                native_upload_queued_bytes_ = 0;
+                                native_upload_writer_started_ = false;
+                            }
                         }
                         ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip",
-                            "native upload write failed len=%d error=%d queue=%zu disposed=%s connected=%s",
+                            "native upload write failed len=%d error=%d queue=%zu disposed=%s connected=%s terminal=%s",
                             (int)payload->size(),
-                            (int)ppp::diagnostics::GetLastErrorCode(),
+                            (int)error,
                             queue_depth,
                             disposed_ ? "yes" : "no",
-                            connected_ ? "yes" : "no");
-                        break;
+                            connected_ ? "yes" : "no",
+                            terminal ? "yes" : "no");
+                        if (terminal) {
+                            Dispose();
+                            return true;
+                        }
+                        continue;
                     }
 
-                    {
-                        std::lock_guard<std::mutex> lock(native_upload_mutex_);
-                        if (!native_upload_queue_.empty()) {
-                            native_upload_queue_.pop_front();
-                        }
-                    }
+                    Update();
                 }
 
                 bool restart_writer = false;
@@ -1011,18 +1053,30 @@ namespace ppp {
                     return false;
                 }
 
+                const size_t payload_size = payload->size();
                 {
                     std::lock_guard<std::mutex> lock(native_upload_mutex_);
-                    if (native_upload_queue_.size() >= kNativeUploadQueueMax) {
+                    if (native_upload_queued_bytes_ + payload_size > kNativeUploadQueueMaxBytes ||
+                        native_upload_queue_.size() >= kNativeUploadQueueMaxPackets) {
                         ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "tcpip",
-                            "native upload queue full drop len=%zu depth=%zu",
-                            payload->size(),
-                            native_upload_queue_.size());
-                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionSendPeerInvalidPayload);
+                            "native upload queue full drop len=%zu depth=%zu bytes=%zu max_bytes=%zu",
+                            payload_size,
+                            native_upload_queue_.size(),
+                            native_upload_queued_bytes_,
+                            kNativeUploadQueueMaxBytes);
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AsyncWriteQueueBackpressure);
                         return false;
                     }
 
-                    native_upload_queue_.push_back(payload);
+                    std::shared_ptr<std::vector<Byte>> tail =
+                        native_upload_queue_.empty() ? std::shared_ptr<std::vector<Byte>>() : native_upload_queue_.back();
+                    if (NULLPTR != tail && tail->size() + payload_size <= kNativeUploadCoalesceMaxBytes) {
+                        tail->insert(tail->end(), payload->begin(), payload->end());
+                    }
+                    else {
+                        native_upload_queue_.push_back(payload);
+                    }
+                    native_upload_queued_bytes_ += payload_size;
                 }
 
                 return EnsureNativeUploadWriter();
@@ -1044,13 +1098,20 @@ namespace ppp {
                 return SendBufferToPeerAsync(payload);
             }
 
-            bool VirtualEthernetTcpipConnection::StartNativeTapRelay(const ppp::function<void(const void*, size_t)>& on_data) noexcept {
+            bool VirtualEthernetTcpipConnection::StartNativeTapRelay(const ppp::function<void(const void*, size_t)>& on_data, const ppp::function<void()>& on_shutdown) noexcept {
                 if (disposed_ || !connected_ || !on_data) {
                     return false;
                 }
 
+                bool relay_started = false;
+                if (!native_tap_relay_started_.compare_exchange_strong(relay_started, true, std::memory_order_acq_rel)) {
+                    ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "tcpip", "vpn native inject relay already started");
+                    return true;
+                }
+
                 ITransmissionPtr transmission = transmission_;
                 if (NULLPTR == transmission) {
+                    native_tap_relay_started_.store(false, std::memory_order_release);
                     return false;
                 }
 
@@ -1058,7 +1119,7 @@ namespace ppp {
                 ppp::function<void(const void*, size_t)> relay = on_data;
                 auto allocator = configuration_->GetBufferAllocator();
                 auto spawn_work =
-                    [self, this, relay](YieldContext& y) noexcept {
+                    [self, this, relay, on_shutdown](YieldContext& y) noexcept {
                         while (!disposed_ && connected_) {
                             ITransmissionPtr active = transmission_;
                             if (NULLPTR == active) {
@@ -1084,10 +1145,24 @@ namespace ppp {
                             Update();
                         }
 
+                        native_tap_relay_started_.store(false, std::memory_order_release);
+                        connected_ = false;
+                        if (on_shutdown) {
+                            on_shutdown();
+                        }
+                        else {
+                            Dispose();
+                        }
+
                         return true;
                     };
 
-                return YieldContext::Spawn(allocator.get(), *context_, strand_.get(), spawn_work);
+                if (!YieldContext::Spawn(allocator.get(), *context_, strand_.get(), spawn_work)) {
+                    native_tap_relay_started_.store(false, std::memory_order_release);
+                    return false;
+                }
+
+                return true;
             }
 #endif
         }

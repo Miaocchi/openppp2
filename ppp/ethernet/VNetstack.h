@@ -141,7 +141,7 @@ namespace ppp {
             typedef ppp::coroutines::YieldContext                           YieldContext;
             typedef std::mutex                                              SynchronizedObject;
             typedef std::lock_guard<SynchronizedObject>                     SynchronizedObjectScope;
-            
+
         public:
             /**
              * @brief Represents one accepted TCP transport bound to a TapTcpLink.
@@ -197,6 +197,8 @@ namespace ppp {
                 bool                                                        UpdateNativeClientAck(tcp_hdr* tcp, int tcp_len) noexcept;
                 /** @brief Emits upstream payload back to the TUN client. */
                 bool                                                        EmitNativeToClient(const void* payload, int payload_len) noexcept;
+                /** @brief Emits upstream payload/control flags back to the TUN client. */
+                bool                                                        EmitNativeToClient(const void* payload, int payload_len, int tcp_flags) noexcept;
 #endif
 
                 /** @brief Owning NAT flow link entry. */
@@ -299,6 +301,8 @@ namespace ppp {
 #if defined(_IPHONE) || defined(IPHONE)
             /** @brief Emits server payload to the TUN client as a TCP segment (iOS ctcp). */
             bool                                                            EmitNativeToClient(const std::shared_ptr<TapTcpLink>& link, const void* payload, int payload_len) noexcept;
+            /** @brief Emits server payload/control flags to the TUN client as TCP segment(s). */
+            bool                                                            EmitNativeToClient(const std::shared_ptr<TapTcpLink>& link, const void* payload, int payload_len, int tcp_flags) noexcept;
 #endif
 
         protected:
@@ -324,10 +328,10 @@ namespace ppp {
         private:
             /** @brief Handles lwIP callback for starting accept path. */
             int                                                             LwIpBeginAccept(
-                boost::asio::ip::tcp::endpoint&                             dest, 
+                boost::asio::ip::tcp::endpoint&                             dest,
                 boost::asio::ip::tcp::endpoint&                             src,
                 uint32_t                                                    seq,
-                uint32_t                                                    ack,    
+                uint32_t                                                    ack,
                 uint16_t                                                    wnd) noexcept;
             /** @brief Finds or creates a lwIP flow link entry. */
             std::shared_ptr<TapTcpLink>                                     LwIpAcceptLink(uint32_t srcAddr, uint32_t dstAddr, int srcPort, int dstPort) noexcept;
