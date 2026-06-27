@@ -9,9 +9,8 @@
 
 #include <common/chnroutes2/chnroutes2.h>
 
-#include <chrono>
 #include <ctime>
-#include <filesystem>
+#include <boost/filesystem.hpp>
 
 /**
  * @file GeoRuleGenerator.cpp
@@ -121,14 +120,12 @@ namespace ppp {
                  *          the download path so behaviour is at worst unchanged.
                  */
                 {
-                    namespace fs = std::filesystem;
-                    std::error_code ec;
-                    if (fs::exists(full_path, ec) && fs::is_regular_file(full_path, ec)) {
-                        const auto ftime = fs::last_write_time(full_path, ec);
+                    namespace fs = boost::filesystem;
+                    const fs::path cache_path(full_path.data());
+                    boost::system::error_code ec;
+                    if (fs::exists(cache_path, ec) && !ec && fs::is_regular_file(cache_path, ec) && !ec) {
+                        const std::time_t mtime = fs::last_write_time(cache_path, ec);
                         if (!ec) {
-                            const auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                                ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
-                            const std::time_t mtime = std::chrono::system_clock::to_time_t(sctp);
                             if (mtime > 0) {
                                 constexpr std::time_t kCacheTtlSeconds = 30 * 24 * 60 * 60; // 30 days
                                 const std::time_t now = std::time(nullptr);

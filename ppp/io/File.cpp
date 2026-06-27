@@ -13,10 +13,10 @@
 #endif
 
 #include <fstream>
-#include <filesystem>
 #include <sstream>
 #include <iostream>
 #include <limits.h>
+#include <boost/filesystem.hpp>
 
 namespace ppp {
     namespace io {
@@ -53,8 +53,8 @@ namespace ppp {
                 return false;
             }
 
-            std::error_code ec;
-            if (std::filesystem::is_directory(std::filesystem::path(path), ec)) {
+            boost::system::error_code ec;
+            if (boost::filesystem::is_directory(boost::filesystem::path(path), ec)) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::FileIsDirectory);
                 return false;
             }
@@ -473,19 +473,24 @@ namespace ppp {
             }
 
             try {
-                std::filesystem::path dir(path);
-                std::error_code ec;
+                boost::filesystem::path dir(path);
+                boost::system::error_code ec;
                 TDirectoryIterator endl{};
                 TDirectoryIterator tail(dir, ec);
                 if (ec) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FileDirectoryEnumerateFailed);
                 }
                 /** Iterate each entry and keep regular files only. */
-                for (; tail != endl; tail++) {
+                for (; tail != endl; tail.increment(ec)) {
+                    if (ec) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FileDirectoryEnumerateFailed);
+                    }
+
                     auto& entry = *tail;
-                    if (entry.is_regular_file(ec) && !ec) {
+                    if (boost::filesystem::is_regular_file(entry.path(), ec) && !ec) {
                         out.emplace_back(entry.path().string());
                     }
+                    ec.clear();
                 }
                 
                 return true;
@@ -504,10 +509,10 @@ namespace ppp {
          */
         bool File::GetAllFileNames(const char* path, bool recursion, ppp::vector<ppp::string>& out) noexcept {
             if (recursion) {
-                return FILE_GetAllFileNames<std::filesystem::recursive_directory_iterator>(path, out);
+                return FILE_GetAllFileNames<boost::filesystem::recursive_directory_iterator>(path, out);
             }
             else {
-                return FILE_GetAllFileNames<std::filesystem::directory_iterator>(path, out);
+                return FILE_GetAllFileNames<boost::filesystem::directory_iterator>(path, out);
             }
         }
 
@@ -521,14 +526,14 @@ namespace ppp {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FilePathInvalid);
             }
 
-            std::filesystem::path dir(path);
-            std::error_code ec;
+            boost::filesystem::path dir(path);
+            boost::system::error_code ec;
             try {
-                if (std::filesystem::is_directory(dir, ec)) {
+                if (boost::filesystem::is_directory(dir, ec)) {
                     return !ec;
                 }
 
-                if (std::filesystem::create_directories(dir, ec)) {
+                if (boost::filesystem::create_directories(dir, ec)) {
                     return !ec;
                 }
             }
