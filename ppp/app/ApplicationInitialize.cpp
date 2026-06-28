@@ -72,7 +72,7 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
     ppp::win32::network::Fw::NetFirewallAddAllApplication(PPP_APPLICATION_NAME, executable_path.data());
 
     if (client_mode_) {
-        if (network_interface->HostedNetwork && configuration->client.paper_airplane.tcp) {
+        if (!proxy_mode_ && network_interface->HostedNetwork && configuration->client.paper_airplane.tcp) {
             if (ppp::app::client::lsp::PaperAirplaneController::Install() < 0) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
                 return false;
@@ -95,6 +95,14 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
          * opens the virtual ethernet path. Any failure breaks out to centralized cleanup.
          */
         do {
+            const bool proxy_only_runtime = proxy_mode_ || configuration->client.proxy_only;
+
+#if !defined(_ANDROID) && !defined(_IPHONE)
+            if (proxy_only_runtime) {
+                tap = ppp::tap::TapStub::Create(context);
+            }
+            else {
+#endif
 #if defined(_WIN32)
             tap = ITap::Create(context,
                 network_interface->ComponentId,
@@ -113,6 +121,9 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
                 network_interface->Promisc,
                 network_interface->HostedNetwork,
                 Ipep::AddressesTransformToStrings(network_interface->DnsAddresses));
+#endif
+#if !defined(_ANDROID) && !defined(_IPHONE)
+            }
 #endif
             if (NULLPTR == tap) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelOpenFailed);
@@ -147,40 +158,48 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
             ethernet->Mux(&network_interface->Mux);
             ethernet->MuxAcceleration(&network_interface->MuxAcceleration);
             ethernet->StaticMode(&network_interface->StaticMode);
+            {
+                bool proxy_only_flag = proxy_only_runtime;
+                ethernet->ProxyOnly(&proxy_only_flag);
+            }
 #if !defined(_ANDROID) && !defined(_IPHONE)
+            if (!proxy_only_runtime) {
             ethernet->PreferredNgw(network_interface->Ngw);
             ethernet->PreferredNic(network_interface->Nic);
+            }
 #endif
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
+            if (!proxy_only_runtime) {
 #if defined(_LINUX)
-            if (!configuration->geo_rules.enabled) {
-                for (auto&& bypass_path : *network_interface->Bypass) {
-                    ethernet->AddLoadIPList(bypass_path, network_interface->BypassNic, network_interface->BypassNgw, ppp::string());
+                if (!configuration->geo_rules.enabled) {
+                    for (auto&& bypass_path : *network_interface->Bypass) {
+                        ethernet->AddLoadIPList(bypass_path, network_interface->BypassNic, network_interface->BypassNgw, ppp::string());
+                    }
                 }
-            }
 #else
-            if (!configuration->geo_rules.enabled) {
-                for (auto&& bypass_path : *network_interface->Bypass) {
-                    ethernet->AddLoadIPList(bypass_path, network_interface->BypassNgw, ppp::string());
+                if (!configuration->geo_rules.enabled) {
+                    for (auto&& bypass_path : *network_interface->Bypass) {
+                        ethernet->AddLoadIPList(bypass_path, network_interface->BypassNgw, ppp::string());
+                    }
                 }
-            }
 #endif
-            for (auto&& route : configuration->client.routes) {
-                ppp::string path = File::GetFullPath(File::RewritePath(route.path.data()).data());
-                if (path.empty()) {
-                    continue;
-                }
+                for (auto&& route : configuration->client.routes) {
+                    ppp::string path = File::GetFullPath(File::RewritePath(route.path.data()).data());
+                    if (path.empty()) {
+                        continue;
+                    }
 
 #if defined(_LINUX)
-                ethernet->AddLoadIPList(path, route.nic, Ipep::ToAddress(route.ngw), route.vbgp);
+                    ethernet->AddLoadIPList(path, route.nic, Ipep::ToAddress(route.ngw), route.vbgp);
 #else
-                ethernet->AddLoadIPList(path, Ipep::ToAddress(route.ngw), route.vbgp);
+                    ethernet->AddLoadIPList(path, Ipep::ToAddress(route.ngw), route.vbgp);
 #endif
+                }
             }
 #endif
 
-            if (!network_interface->DNSRules.empty()) {
+            if (!proxy_only_runtime && !network_interface->DNSRules.empty()) {
                 ppp::string dns_rules_path = File::GetFullPath(File::RewritePath(network_interface->DNSRules.data()).data());
                 if (!dns_rules_path.empty() && File::Exists(dns_rules_path.data())) {
                     ppp::string dns_rules_text = File::ReadAllText(dns_rules_path.data());
@@ -192,7 +211,7 @@ bool PppApplication::PreparedLoopbackEnvironment(const std::shared_ptr<NetworkIn
             }
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
-            if (configuration->geo_rules.enabled) {
+            if (!proxy_only_runtime && configuration->geo_rules.enabled) {
                 ppp::vector<ppp::string> bypass_sources;
                 for (auto&& bypass_path : *network_interface->Bypass) {
                     bypass_sources.emplace_back(bypass_path);
@@ -334,12 +353,19 @@ bool Windows_PreparedEthernetEnvironment(const std::shared_ptr<NetworkInterface>
 int PppApplication::Main(int argc, const char* argv[]) noexcept {
     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Success);
 
-    if (!ppp::IsUserAnAdministrator()) {
+    if (!proxy_mode_ && !ppp::IsUserAnAdministrator()) {
         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AppPrivilegeRequired);
         return -1;
     }
 
-    ppp::string rerun_name = (client_mode_ ? "client://" : "server://") + configuration_path_;
+    ppp::string rerun_prefix = "server://";
+    if (proxy_mode_) {
+        rerun_prefix = "proxy://";
+    }
+    elif(client_mode_) {
+        rerun_prefix = "client://";
+    }
+    ppp::string rerun_name = rerun_prefix + configuration_path_;
     if (prevent_rerun_.Exists(rerun_name.data())) {
         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AppAlreadyRunning);
         return -1;
@@ -351,7 +377,7 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept {
     }
 
 #if defined(_WIN32)
-    if (client_mode_) {
+    if (client_mode_ && !proxy_mode_) {
         if (!Windows_PreparedEthernetEnvironment(network_interface_)) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
             return -1;
@@ -405,7 +431,7 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept {
             PPP_APPLICATION_VERSION);
         ppp::ConsoleFormat(
             "Mode    : %s\n",
-            client_mode_ ? "client" : "server");
+            ApplicationModeName(application_mode_));
         ppp::ConsoleFormat(
             "Process : %d\n",
             static_cast<int>(ppp::GetCurrentProcessId()));
@@ -428,7 +454,7 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept {
         client->BlockQUIC(network_interface_->BlockQUIC);
 
 #if defined(_WIN32)
-        if (network_interface_->SetHttpProxy) {
+        if (!proxy_mode_ && network_interface_->SetHttpProxy) {
             client->SetHttpProxyToSystemEnv();
         }
 #endif

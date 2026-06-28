@@ -80,7 +80,23 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
         }
     }
 
-    client_mode_ = IsModeClientOrServer(argc, argv);
+    application_mode_ = ResolveApplicationModeFromArgv(argc, argv);
+    client_mode_ = IsClientRuntimeMode(application_mode_);
+    proxy_mode_ = ApplicationMode::Proxy == application_mode_;
+
+    if (proxy_mode_ || configuration->client.proxy_only) {
+        configuration->ApplyProxyModeDefaults();
+    }
+
+    if (ppp::HasCommandArgument("--proxy-http-port", argc, argv)) {
+        ppp::string port_arg = ppp::GetCommandArgument("--proxy-http-port", argc, argv);
+        configuration->client.http_proxy.port = static_cast<int>(strtol(port_arg.data(), NULLPTR, 10));
+    }
+
+    if (ppp::HasCommandArgument("--proxy-socks-port", argc, argv)) {
+        ppp::string port_arg = ppp::GetCommandArgument("--proxy-socks-port", argc, argv);
+        configuration->client.socks_proxy.port = static_cast<int>(strtol(port_arg.data(), NULLPTR, 10));
+    }
 
     int max_concurrent = configuration->concurrent - 1;
     if (max_concurrent > 0) {
@@ -514,29 +530,9 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
 
 /**
  * @brief Determines whether process should run in client mode.
- * @param argc Argument count.
- * @param argv Argument vector.
- * @return True for client mode, false for server mode.
  */
 bool PppApplication::IsModeClientOrServer(int argc, const char* argv[]) noexcept {
-    static constexpr const char* keys[] = {"--mode", "--m", "-mode", "-m"};
-
-    ppp::string mode_string;
-    for (const char* key : keys) {
-        mode_string = ppp::GetCommandArgument(key, argc, argv);
-        if (mode_string.size() > 0) {
-            break;
-        }
-    }
-
-    if (mode_string.empty()) {
-        mode_string = "server";
-    }
-
-    mode_string = ppp::ToLower<ppp::string>(mode_string);
-    mode_string = ppp::LTrim<ppp::string>(mode_string);
-    mode_string = ppp::RTrim<ppp::string>(mode_string);
-    return mode_string.empty() ? false : mode_string[0] == 'c';
+    return IsClientRuntimeMode(ResolveApplicationModeFromArgv(argc, argv));
 }
 
 /**

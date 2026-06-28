@@ -1793,14 +1793,13 @@ namespace ppp {
                 } connect_histogram;
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                // Get and retrieve the current underlying Ethernet interface information!
+                if (!proxy_only_) {
 #if defined(_WIN32)
                 underlying_ni_ = Windows_GetUnderlyingNetowrkInterface(tap, preferred_nic_);
 #else
                 underlying_ni_ = Unix_GetUnderlyingNetowrkInterface(tap, preferred_nic_);
 #endif
 
-                // The physical hosting network interface required for the VPN overlap network is not allowed to construct and turn on the VPN service.
                 if (auto underlying_ni = underlying_ni_; NULLPTR != underlying_ni) {
                     boost::asio::ip::address& ngw = preferred_ngw_;
                     if (!IPEndPoint::IsInvalid(ngw)) {
@@ -1811,9 +1810,8 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
                 }
 
-                // Compatibility by all means try to check and fix the gateway route of the physical network card once,
-                // Otherwise there will be no network with all kinds of chain problems!
                 FixUnderlyingNgw();
+                }
 #endif
                 // Construction of VEtherent virtual Ethernet switcher processing framework.
                 /** @brief Creates base VEthernet framework before higher-level services. */
@@ -1821,21 +1819,20 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionOpenFailed);
                 }
 
-                ppp::telemetry::Log(Level::kInfo, "client", "TUN attached");
-                ppp::telemetry::Count("client.tun.attach", 1);
+                ppp::telemetry::Log(Level::kInfo, "client", proxy_only_ ? "proxy-only session starting" : "TUN attached");
+                ppp::telemetry::Count(proxy_only_ ? "client.proxy.attach" : "client.tun.attach", 1);
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
+                if (!proxy_only_) {
 #if defined(_WIN32)
-                // Get network interface information for TAP-Windows virtual Ethernet devices!
                 tun_ni_ = Windows_GetTapNetworkInterface(tap);
 #else
-                // Get network interface information for Linux tun/tap virtual Ethernet devices!
                 tun_ni_ = Unix_GetTapNetworkInterface(tap);
 #endif
 
-                // The vEthernet network switcher cannot be opened when the virtual network adapter device interface for the VPN startup link cannot be found!
                 if (NULLPTR == tun_ni_) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TunnelDeviceMissing);
+                }
                 }
 #endif
 
@@ -1849,8 +1846,6 @@ namespace ppp {
                 }
 
 #if defined(_LINUX)
-                // This section describes how to instantiate the physical network instance protector required by ppp to
-                // Prevent VPN virtual switcher crashes caused by IP route loopback.
                 ProtectorNetworkPtr protector_network;
 #if defined(_ANDROID)
                 protector_network = NewProtectorNetwork();
@@ -1858,7 +1853,7 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TunnelProtectionConfigureFailed);
                 }
 #else
-                if (protect_mode_) {
+                if (!proxy_only_ && protect_mode_) {
                     protector_network = NewProtectorNetwork();
                 }
 #endif
@@ -1906,6 +1901,16 @@ namespace ppp {
 #if defined(_LINUX)
                 protect_network_ = std::move(protector_network);
 #endif
+
+                if (proxy_only_) {
+                    if (NULLPTR == http_proxy_ && NULLPTR == socks_proxy_) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketBindFailed);
+                    }
+
+                    ppp::telemetry::Log(Level::kInfo, "client", "proxy-only connected");
+                    ppp::telemetry::Count("client.proxy.connect", 1);
+                    return true;
+                }
 
                 // Create the multi-protocol DNS resolver for provider-based rules.
                 // The resolver is used when dns-rules.txt contains provider short names
@@ -2001,7 +2006,7 @@ namespace ppp {
                 }
 
 #if defined(_ANDROID) || defined(_IPHONE)
-                if (!AddAllRoute(tap)) {
+                if (!proxy_only_ && !AddAllRoute(tap)) {
                     IDisposable::DisposeReferences(qos, exchanger, http_proxy);
                     return false;
                 }
@@ -3822,6 +3827,17 @@ namespace ppp {
                 }
 
                 return snow;
+            }
+
+            /** @brief Gets current proxy-only mode and optionally updates it. */
+            bool VEthernetNetworkSwitcher::ProxyOnly(bool* proxy_only) noexcept {
+                SynchronizedObjectScope scope(GetSynchronizedObject());
+                bool previous = proxy_only_;
+                if (NULLPTR != proxy_only) {
+                    proxy_only_ = *proxy_only;
+                }
+
+                return previous;
             }
 
             /** @brief Gets current mux size and optionally updates it. */

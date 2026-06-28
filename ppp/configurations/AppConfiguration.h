@@ -249,6 +249,7 @@ namespace ppp {
                     ppp::string                                             username;       ///< SOCKS5 authentication username; empty = no authentication.
                     ppp::string                                             password;       ///< SOCKS5 authentication password; empty = no authentication.
                 }                                                           socks_proxy;
+                bool                                                        proxy_only;     ///< Local HTTP/SOCKS only; skip TUN routes (also implied by --mode=proxy).
             }                                                               client;         ///< Client-mode specific parameters.
             struct {
                 int                                                         update_interval; ///< VIRR (virtual interface routing refresh) update interval in seconds.
@@ -436,6 +437,12 @@ namespace ppp {
              *       configured.  Safe to call multiple times (idempotent).
              */
             void                                                            EmitMuxDiagnostics() noexcept;
+
+            /**
+             * @brief Applies proxy-only defaults (local bind addresses and listen ports).
+             */
+            void                                                            ApplyProxyModeDefaults() noexcept;
+
             /**
              * @brief Re-runs configuration normalization after runtime CLI overrides.
              * @return True when normalization completes.

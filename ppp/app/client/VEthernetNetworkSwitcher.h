@@ -426,6 +426,11 @@ namespace ppp {
                 bool                                                                StaticMode(bool* static_mode) noexcept;
 
                 /**
+                 * @brief Gets or sets proxy-only mode (local HTTP/SOCKS without OS routes).
+                 */
+                bool                                                                ProxyOnly(bool* proxy_only) noexcept;
+
+                /**
                  * @brief Gets or sets the VMUX connection count.
                  *
                  * @param mux  Pointer to new count; pass null to query only.
@@ -1014,6 +1019,7 @@ namespace ppp {
                     int                                                             icmppackets_aid_  = 0;   ///< Auto-increment counter for ICMP probe keys.
                     bool                                                            block_quic_       = false;///< QUIC blocking state.
                     bool                                                            static_mode_      = false;///< Static (aggligator) mode flag.
+                    bool                                                            proxy_only_       = false;///< Proxy-only mode skips TUN routes/DNS.
                     uint16_t                                                        mux_              = 0;   ///< VMUX sub-connection count.
                     uint8_t                                                         mux_acceleration_ = 0;   ///< VMUX acceleration flags.
                 };

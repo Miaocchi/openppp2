@@ -21,6 +21,9 @@
     <ClCompile Include="ppp\app\ApplicationConfig.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\app\ApplicationMode.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\app\ApplicationHelp.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -55,6 +58,9 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\tap\ITap.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\tap\TapStub.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\threading\Thread.cpp">
