@@ -9,6 +9,7 @@
 #include <common/chnroutes2/chnroutes2.h>
 
 #include <memory>
+#include <new>
 
 #include <Windows.h>
 #include <process.h>
@@ -177,9 +178,9 @@ namespace ppp
             return Seh_UnhandledExceptionFilter(&exception_ptrs);
         }
 
-        static int __CRTDECL Crt_NewHandler(size_t) noexcept
+        static void __CRTDECL Crt_NewHandler()
         {
-            return Seh_NoncontinuableException();
+            Seh_NoncontinuableException();
         }
 
         static void __CRTDECL Crt_HandlePureVirtualCall() noexcept
@@ -237,7 +238,7 @@ namespace ppp
             ::_set_abort_behavior(_CALL_REPORTFAULT, _CALL_REPORTFAULT);
 
             ::_set_purecall_handler(Crt_HandlePureVirtualCall);
-            ::_set_new_handler(Crt_NewHandler); /* std::set_new_handler(...) */
+            std::set_new_handler(Crt_NewHandler);
 
 #if _MSC_VER >= 1400 
             ::_set_invalid_parameter_handler(Crt_InvalidParameterHandler);
