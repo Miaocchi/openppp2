@@ -16,6 +16,7 @@ on:
       - "Build · Windows ARM64"
       - "Build · macOS"
       - "Build · Android"
+      - "Test · Unit"
       - "Build · Go Guardian"
     types: [completed]
 
@@ -36,6 +37,7 @@ jobs:
           REPO="${{ github.repository }}"
 
           EXPECTED_WORKFLOWS=(
+            "Test · Unit"
             "Build · Linux amd64"
             "Build · Linux Cross"
             "Build · Windows x64"

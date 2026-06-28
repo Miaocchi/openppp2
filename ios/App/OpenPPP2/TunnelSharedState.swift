@@ -4,16 +4,10 @@ import Foundation
 /// `openppp2-linkstate.txt` + `PppStateStore`).
 enum TunnelSharedState {
     static var appGroupIdentifier: String {
-        if let configured = Bundle.main.object(forInfoDictionaryKey: "OpenPPP2AppGroupIdentifier") as? String {
-            let trimmed = configured.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                return trimmed
-            }
-        }
-        if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
-            return "group." + bundleId
-        }
-        return "group.openppp2"
+        AppGroupResolver.resolve(
+            configured: Bundle.main.object(forInfoDictionaryKey: "OpenPPP2AppGroupIdentifier") as? String,
+            bundleIdentifier: Bundle.main.bundleIdentifier
+        )
     }
     static let heartbeatStaleMilliseconds: Int64 = 30_000
     static let connectWatchdogMaxSeconds = 180

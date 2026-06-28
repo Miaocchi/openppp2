@@ -103,7 +103,7 @@ func (m *Manager) Validate(content []byte) error {
 	if len(strings.TrimSpace(string(content))) == 0 {
 		return errors.New("profile content is empty")
 	}
-	return nil
+	return validateProfile(content)
 }
 
 func (m *Manager) Backups(name string) ([]BackupInfo, error) {

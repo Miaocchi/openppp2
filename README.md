@@ -278,6 +278,10 @@ The repository contains paired English/Chinese documents plus the root README pa
 
 ---
 
+## Testing
+
+See [docs/TESTING.md](docs/TESTING.md) for unit test commands and the GitHub Actions **Test · Unit** workflow.
+
 ## Build Instructions
 
 ### Linux / macOS

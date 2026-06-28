@@ -44,4 +44,29 @@ void main() {
           'ppp://vpn.example.com:20000/');
     });
   });
+
+  group('ServerEndpoint negative and regression', () {
+    test('rejects_malformed_unclosed_ipv6_bracket', () {
+      final endpoint = ServerEndpoint.parse('ppp://[2001:db8::1');
+      expect(endpoint.host, isNotEmpty);
+    });
+
+    test('regression_ipv4_mapped_host_port_split', () {
+      final endpoint = ServerEndpoint.parse('ppp://::ffff:192.0.2.128:20000/');
+      expect(endpoint.host, '::ffff:192.0.2.128');
+      expect(endpoint.port, 20000);
+    });
+
+    test('rejects_empty_input_host', () {
+      final endpoint = ServerEndpoint.parse('');
+      expect(endpoint.host, '');
+      expect(endpoint.port, isNull);
+    });
+
+    test('boundary_ipv6_without_port', () {
+      final endpoint = ServerEndpoint.parse('ppp://[::1]/');
+      expect(endpoint.host, '::1');
+      expect(endpoint.port, isNull);
+    });
+  });
 }
