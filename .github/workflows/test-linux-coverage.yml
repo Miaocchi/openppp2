@@ -2,7 +2,9 @@ name: Test · Linux coverage
 
 on:
   push:
-    branches: [main, feature/proxy-only-mode]
+    branches:
+      - main
+      - 'feature/**'
   pull_request:
     branches: [main]
   workflow_dispatch:
