@@ -240,7 +240,7 @@ namespace ppp
             ::_set_purecall_handler(Crt_HandlePureVirtualCall);
             std::set_new_handler(Crt_NewHandler);
 
-#if _MSC_VER >= 1400 
+#if _MSC_VER >= 1400
             ::_set_invalid_parameter_handler(Crt_InvalidParameterHandler);
 #endif
 
