@@ -43,6 +43,28 @@ static WintunReleaseReceivePacketFunc       WintunReleaseReceivePacket = NULL;
 static WintunAllocateSendPacketFunc         WintunAllocateSendPacket = NULL;
 static WintunSendPacketFunc                 WintunSendPacket = NULL;
 
+namespace {
+    HMODULE LoadWintunFromApplicationDirectory(LPCWSTR relative_path) noexcept {
+        WCHAR module_path[MAX_PATH];
+        DWORD length = GetModuleFileNameW(NULL, module_path, ARRAYSIZE(module_path));
+        if (length == 0 || length == ARRAYSIZE(module_path)) {
+            return NULL;
+        }
+
+        WCHAR* file_name = wcsrchr(module_path, L'\\');
+        if (!file_name) {
+            return NULL;
+        }
+
+        *(file_name + 1) = L'\0';
+        if (wcscat_s(module_path, relative_path) != 0) {
+            return NULL;
+        }
+
+        return LoadLibraryExW(module_path, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }
+}
+
 // Helper: load/unload Wintun DLL
 struct ReadyWintunAdapter
 {
@@ -52,11 +74,11 @@ struct ReadyWintunAdapter
     bool                                    LoadWintun() noexcept {
         if (DLL_HANDLE) return true;
 
-        // Search for wintun.dll from multiple local or system directories; 
-        // if this driver exists, use Wintun, otherwise fall back to TAP-Windows as originally designed, ensuring deployment flexibility.
-        DLL_HANDLE = LoadLibraryW(L"wintun.dll");
+        // Search only the application directory, bundled Driver directory, and System32.
+        // Avoid bare or relative LoadLibraryW calls so the current directory and PATH cannot hijack wintun.dll.
+        DLL_HANDLE = LoadLibraryExW(L"wintun.dll", NULL, LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!DLL_HANDLE) {
-            DLL_HANDLE = LoadLibraryW(L"Driver\\wintun.dll");
+            DLL_HANDLE = LoadWintunFromApplicationDirectory(L"Driver\\wintun.dll");
             if (!DLL_HANDLE) {
 #ifdef _M_ARM64
                 LPCWSTR wzDllPath = L"Driver\\arm64\\wintun.dll";
@@ -65,10 +87,10 @@ struct ReadyWintunAdapter
 #else
                 LPCWSTR wzDllPath = L"Driver\\x86\\wintun.dll";
 #endif
-                DLL_HANDLE = LoadLibraryW(wzDllPath);
+                DLL_HANDLE = LoadWintunFromApplicationDirectory(wzDllPath);
                 if (!DLL_HANDLE) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::WindowsWintunCreateFailed);
-                    return false; // LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32
+                    return false;
                 }
             }
         }
