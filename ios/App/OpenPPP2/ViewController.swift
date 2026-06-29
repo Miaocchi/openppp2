@@ -1164,6 +1164,7 @@ final class HomeViewController: UIViewController {
     private let subtitleLabel = UILabel()
     private let durationLabel = UILabel()
     private let profileButton = UIButton(type: .system)
+    private let lanAccessLabel = PaddingLabel()
     private let uploadCard = StatCard(title: "上行", symbol: "arrow.up", tint: .systemOrange)
     private let downloadCard = StatCard(title: "下行", symbol: "arrow.down", tint: .systemBlue)
     private let diagnosticLabel = PaddingLabel()
@@ -1261,6 +1262,13 @@ final class HomeViewController: UIViewController {
         content.addArrangedSubview(profileButton)
         profileButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 76).isActive = true
 
+        lanAccessLabel.font = .preferredFont(forTextStyle: .footnote)
+        lanAccessLabel.textAlignment = .center
+        lanAccessLabel.numberOfLines = 1
+        lanAccessLabel.layer.cornerRadius = 10
+        lanAccessLabel.clipsToBounds = true
+        content.addArrangedSubview(lanAccessLabel)
+
         let stats = UIStackView(arrangedSubviews: [uploadCard, downloadCard])
         stats.axis = .horizontal
         stats.spacing = 12
@@ -1334,6 +1342,7 @@ final class HomeViewController: UIViewController {
         let title = "  \(profile?.flag.isEmpty == false ? profile!.flag : "◎")  \(name)\n  \(endpoint)"
         profileButton.setTitle(title, for: .normal)
         profileButton.setTitleColor(.label, for: .normal)
+        applyLanAccessState(profile?.options.allowLan ?? false)
 
         uploadCard.set(value: "\(formatBytes(statistics.txSpeedBytes))/s", subtitle: "总 \(formatBytes(statistics.outBytes))")
         downloadCard.set(value: "\(formatBytes(statistics.rxSpeedBytes))/s", subtitle: "总 \(formatBytes(statistics.inBytes))")
@@ -1499,6 +1508,12 @@ final class HomeViewController: UIViewController {
         if value < 1024 * 1024 { return String(format: "%.1f KB", value / 1024) }
         if value < 1024 * 1024 * 1024 { return String(format: "%.1f MB", value / (1024 * 1024)) }
         return String(format: "%.2f GB", value / (1024 * 1024 * 1024))
+    }
+
+    private func applyLanAccessState(_ enabled: Bool) {
+        lanAccessLabel.text = enabled ? "局域网访问已开启 · HTTP/SOCKS 监听 0.0.0.0" : "局域网访问已关闭 · 仅本机 127.0.0.1"
+        lanAccessLabel.textColor = enabled ? .systemOrange : .secondaryLabel
+        lanAccessLabel.backgroundColor = (enabled ? UIColor.systemOrange : UIColor.systemBlue).withAlphaComponent(0.10)
     }
 }
 
@@ -1788,7 +1803,8 @@ final class ProfileCell: UITableViewCell {
         badge.text = profile.flag.isEmpty ? "◎" : profile.flag
         nameLabel.text = profile.name
         let sub = profile.subtitle.isEmpty ? (profile.serverEndpoint ?? "未配置服务器") : profile.subtitle
-        subtitleLabel.text = sub
+        let lanText = profile.options.allowLan ? "LAN 开启" : "LAN 关闭"
+        subtitleLabel.text = "\(sub) · \(lanText)"
         activeBadge.isHidden = !isActive
     }
 }
