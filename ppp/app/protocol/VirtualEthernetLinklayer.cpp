@@ -184,7 +184,14 @@ namespace ppp {
                         // async DNS resolution (only if coroutine context is available)
                         if (y) {
                             try {
-                                return ppp::coroutines::asio::GetAddressByHostName<TProtocol>(hostname.data(), port, y);
+                                const boost::asio::ip::basic_endpoint<TProtocol> endpoint =
+                                    ppp::coroutines::asio::GetAddressByHostName<TProtocol>(hostname.data(), port, y);
+                                // DNS-resolved hosts must obey the same segment rules as IP literals.
+                                if (NULLPTR != firewall && firewall->IsDropNetworkSegment(endpoint.address())) {
+                                    return boost::asio::ip::basic_endpoint<TProtocol>(boost::asio::ip::address_v4::any(), 0);
+                                }
+
+                                return endpoint;
                             } catch (...) {
                                 // DNS resolution failed; record error and return empty endpoint.
                                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsResolveFailed);
