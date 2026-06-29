@@ -42,10 +42,10 @@ namespace ppp {
         ApplicationMode ResolveApplicationModeFromArgv(int argc, const char* argv[]) noexcept;
 
         /**
-         * @brief Applies proxy-only listener defaults (loopback bind + standard ports).
-         * @param http_bind HTTP proxy bind address (filled when empty).
+         * @brief Applies proxy-only listener defaults (forced loopback bind + standard ports).
+         * @param http_bind HTTP proxy bind address (forced to loopback).
          * @param http_port HTTP proxy port (filled when invalid).
-         * @param socks_bind SOCKS proxy bind address (filled when empty).
+         * @param socks_bind SOCKS proxy bind address (forced to loopback).
          * @param socks_port SOCKS proxy port (filled when invalid).
          */
         void ApplyProxyOnlyListenerDefaults(

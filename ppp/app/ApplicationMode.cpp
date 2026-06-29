@@ -63,12 +63,8 @@ namespace ppp {
             ppp::string& socks_bind,
             int& socks_port) noexcept {
             static constexpr const char* kLoopbackBind = "127.0.0.1";
-            if (http_bind.empty()) {
-                http_bind = kLoopbackBind;
-            }
-            if (socks_bind.empty()) {
-                socks_bind = kLoopbackBind;
-            }
+            http_bind = kLoopbackBind;
+            socks_bind = kLoopbackBind;
             if (http_port <= ppp::net::IPEndPoint::MinPort) {
                 http_port = PPP_DEFAULT_HTTP_PROXY_PORT;
             }
