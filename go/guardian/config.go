@@ -138,10 +138,26 @@ func SaveConfigFile(path string, cfg *GuardianConfig) error {
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return fmt.Errorf("ensure config directory: %w", err)
 	}
-	if err := os.WriteFile(absPath, data, 0o600); err != nil {
+	if err := writeConfigFile0600(absPath, data); err != nil {
 		return fmt.Errorf("write guardian config: %w", err)
 	}
 	return nil
+}
+
+func writeConfigFile0600(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	if err := file.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Sync()
 }
 
 func LoadConfig(path string) (*GuardianConfig, error) {
