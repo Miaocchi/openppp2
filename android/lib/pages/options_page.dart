@@ -74,6 +74,7 @@ class _OptionsPageState extends State<OptionsPage> {
   List<String> _perAppProxyApps = const <String>[];
   bool _autoAppendApps = false;
   bool _allowLan = true;
+  bool _proxyOnly = false;
 
   ConfigProfile? _profile;
   bool _loading = true;
@@ -171,6 +172,7 @@ class _OptionsPageState extends State<OptionsPage> {
         : const <String>[];
     _autoAppendApps = m['autoAppendApps'] == true;
     _allowLan = m['allowLan'] == true;
+    _proxyOnly = m['proxyOnly'] == true;
   }
 
   Map<String, dynamic> _readForm() => {
@@ -218,6 +220,7 @@ class _OptionsPageState extends State<OptionsPage> {
         'perAppProxyApps': List<String>.from(_perAppProxyApps),
         'autoAppendApps': _autoAppendApps,
         'allowLan': _allowLan,
+        'proxyOnly': _proxyOnly,
       };
 
   void _markDirty() {
@@ -420,6 +423,20 @@ class _OptionsPageState extends State<OptionsPage> {
                       icon: Icons.account_tree_rounded,
                       tint: Colors.cyan,
                       children: [
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          value: _proxyOnly,
+                          title: const Text('仅代理模式'),
+                          subtitle: const Text(
+                              '只连远端并暴露本机 HTTP/SOCKS，不改系统路由 · 推荐配合 curl/浏览器代理使用'),
+                          onChanged: (v) => setState(() {
+                            _proxyOnly = v;
+                            if (v) {
+                              _allowLan = false;
+                            }
+                            _markDirty();
+                          }),
+                        ),
                         ListTile(
                           contentPadding: EdgeInsets.zero,
                           leading: const Icon(Icons.apps_rounded),

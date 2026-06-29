@@ -53,24 +53,28 @@ The CLI surface splits into:
 
 ## Role Selection
 
-### `--mode=[client|server]`
+### `--mode=[client|server|proxy]`
 
 - **Default:** `server`
 - **Aliases:** `--m`, `-mode`, `-m`
-- Any value beginning with `c` (case-insensitive) selects client mode.
+- Values `client` (or any string beginning with `c`) select full-tunnel client mode.
+- Value `proxy` selects **proxy-only** mode: local HTTP/SOCKS listeners only, no OS routes/TUN on desktop.
 
 This choice changes the entire startup branch:
 
 - **client mode** creates/uses the virtual adapter path (`VEthernetNetworkSwitcher`,
   `VEthernetExchanger`, virtual TUN/TAP NIC)
+- **proxy mode** connects to the server and exposes local HTTP/SOCKS proxies without changing OS routes (desktop uses `TapStub`; no root required)
 - **server mode** opens the server-side listener/switcher path
   (`VirtualEthernetSwitcher`, `VirtualEthernetExchanger`)
 
 ```mermaid
 flowchart TD
-    A["--mode=<value>"] --> B{"value[0] == 'c'?"}
-    B -->|"yes: client"| C["Create virtual NIC\nStart VEthernetNetworkSwitcher\nConnect to server"]
-    B -->|"no: server"| D["Open listener\nStart VirtualEthernetSwitcher\nAccept clients"]
+    A["--mode=<value>"] --> B{"value == proxy?"}
+    B -->|yes| P["TapStub + local HTTP/SOCKS\nNo OS route changes"]
+    B -->|no| C{"value[0] == 'c'?"}
+    C -->|"yes: client"| D["Create virtual NIC\nStart VEthernetNetworkSwitcher\nConnect to server"]
+    C -->|"no: server"| E["Open listener\nStart VirtualEthernetSwitcher\nAccept clients"]
 ```
 
 **Examples:**
@@ -78,8 +82,17 @@ flowchart TD
 ```bash
 ppp --mode=server --config=./server.json
 ppp --mode=client --config=./client.json
+ppp --mode=proxy --config=./client.json
 ppp -m=client -c=./client.json
 ```
+
+### `--proxy-http-port=<port>`
+
+Local HTTP proxy listen port in proxy mode (overrides `client.http-proxy.port`).
+
+### `--proxy-socks-port=<port>`
+
+Local SOCKS5 proxy listen port in proxy mode (overrides `client.socks-proxy.port`).
 
 ---
 

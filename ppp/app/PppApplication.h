@@ -32,6 +32,7 @@
 #pragma once
 
 #include <ppp/stdafx.h>
+#include <ppp/app/ApplicationMode.h>
 #include <ppp/diagnostics/PreventReturn.h>
 #include <ppp/diagnostics/Stopwatch.h>
 #include <ppp/transmissions/ITransmissionStatistics.h>
@@ -284,11 +285,14 @@ private:
     std::shared_ptr<ppp::configurations::AppConfiguration> LoadConfiguration(int argc, const char* argv[], ppp::string& path) noexcept;
 
     /**
-     * @brief Returns true when `--mode=client` or `--mode=server` is present in argv.
-     *
-     * @param argc Argument count.
-     * @param argv Argument vector.
-     * @return True if a recognized mode flag is found.
+     * @brief Parses `--mode=client|server|proxy` from argv.
+     */
+    ApplicationMode ResolveApplicationMode(int argc, const char* argv[]) noexcept {
+        return ResolveApplicationModeFromArgv(argc, argv);
+    }
+
+    /**
+     * @brief Returns true when `--mode=client` or `--mode=proxy` is present in argv.
      */
     bool IsModeClientOrServer(int argc, const char* argv[]) noexcept;
 
@@ -377,7 +381,9 @@ private:
     bool GetTransmissionStatistics(uint64_t& incoming_traffic, uint64_t& outgoing_traffic, std::shared_ptr<ppp::transmissions::ITransmissionStatistics>& statistics_snapshot) noexcept;
 
 private:
-    bool                                                                    client_mode_ = false;         ///< True when running in client mode.
+    bool                                                                    client_mode_ = false;         ///< True when running in client or proxy mode.
+    bool                                                                    proxy_mode_ = false;          ///< True when running in proxy-only mode.
+    ApplicationMode                                                         application_mode_ = ApplicationMode::Server;
     bool                                                                    quic_        = false;         ///< True when QUIC transport is enabled.
     std::shared_ptr<ppp::configurations::AppConfiguration>                  configuration_;               ///< Loaded application configuration.
     std::shared_ptr<ppp::app::server::VirtualEthernetSwitcher>              server_;                      ///< Server runtime (null in client mode).

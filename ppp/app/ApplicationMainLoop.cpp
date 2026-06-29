@@ -41,13 +41,20 @@ static ppp::string BuildSectionSeparator(std::size_t width) noexcept {
  * @param client_mode Whether process currently runs in client mode.
  * @return String in format "client:production" / "server:development".
  */
-static ppp::string BuildHostingEnvironmentText(bool client_mode) noexcept {
+static ppp::string BuildHostingEnvironmentText(ApplicationMode mode) noexcept {
 #if defined(_DEBUG)
     ppp::string env = "development";
 #else
     ppp::string env = "production";
 #endif
-    return (client_mode ? ppp::string("client:") : ppp::string("server:")) + env;
+    ppp::string prefix = "server:";
+    if (ApplicationMode::Client == mode) {
+        prefix = "client:";
+    }
+    else if (ApplicationMode::Proxy == mode) {
+        prefix = "proxy:";
+    }
+    return prefix + env;
 }
 
 /**
@@ -80,13 +87,13 @@ void PppApplication::GetEnvironmentInformationLines(ppp::vector<ppp::string>& li
     static constexpr std::size_t kSectionSeparatorWidth = 96u;
     ppp::string section_separator = BuildSectionSeparator(kSectionSeparatorWidth);
 
-    ppp::string hosting_environment = BuildHostingEnvironmentText(client_mode_);
+    ppp::string hosting_environment = BuildHostingEnvironmentText(application_mode_);
 
     ppp::string app_label = PPP_APPLICATION_NAME;
     app_label += " v";
     app_label += PPP_APPLICATION_VERSION;
     app_label += " (";
-    app_label += client_mode_ ? "client" : "server";
+    app_label += ApplicationModeName(application_mode_);
     app_label += ")";
 
     AppendEnvLine(lines, "Application", app_label);

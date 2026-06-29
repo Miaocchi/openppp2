@@ -11,6 +11,7 @@
 #include <ppp/Int128.h>
 #include <ppp/io/File.h>
 #include <ppp/tap/ITap.h>
+#include <ppp/tap/TapStub.h>
 #include <ppp/net/http/HttpClient.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/Socket.h>

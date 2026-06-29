@@ -1349,6 +1349,14 @@ static int                                                                      
         client->StaticMode(&network_interface->StaticMode);
     }
 
+    const bool proxy_only_runtime = configuration->client.proxy_only;
+    if (proxy_only_runtime) {
+        configuration->ApplyProxyModeDefaults();
+        bool proxy_only_flag = true;
+        client->ProxyOnly(&proxy_only_flag);
+        __android_log_print(ANDROID_LOG_INFO, "libopenppp2", "open_switcher: proxy-only mode enabled");
+    }
+
     // Collect the user-provided bypass list text. We may merge GeoIP-generated
     // CIDRs into it below so a single SetBypassIpList() call carries both
     // sources to the client.
@@ -1366,7 +1374,7 @@ static int                                                                      
     // Apply user-provided DNS rule lines first; the GeoRuleGenerator output
     // file (if any) is loaded afterwards via LoadAllDnsRules(path, true).
     std::shared_ptr<ppp::string> dns_rules_list = std::move(app->dns_rules_list_);
-    if (NULLPTR != dns_rules_list) {
+    if (!proxy_only_runtime && NULLPTR != dns_rules_list) {
         bool dns_ok = client->LoadAllDnsRules(*dns_rules_list, false);
         __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
             "open_switcher: user dns rules applied len=%d ok=%d",
@@ -1383,7 +1391,7 @@ static int                                                                      
     //   - output_bypass:    newline-separated CIDR list
     //   - output_dns_rules: newline-separated DNS redirect rules
     // We then feed those files back into the client.
-    if (configuration->geo_rules.enabled) {
+    if (!proxy_only_runtime && configuration->geo_rules.enabled) {
         __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
             "open_switcher: geo-rules enabled country=%s geoip_dat=%s geosite_dat=%s",
             configuration->geo_rules.country.data(),
@@ -1419,7 +1427,7 @@ static int                                                                      
         }
     }
 
-    if (!user_bypass_text.empty()) {
+    if (!proxy_only_runtime && !user_bypass_text.empty()) {
         int bypass_len = (int)user_bypass_text.size();
         client->SetBypassIpList(std::move(user_bypass_text));
         __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
