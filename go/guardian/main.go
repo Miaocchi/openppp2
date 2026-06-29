@@ -49,6 +49,7 @@ func main() {
 		GuardianBinary:   execPath,
 		GuardianWorkDir:  workDir,
 		OnConfigChanged:  guardian.SaveConfig,
+		OnAuthChanged:    guardian.UpdateAuthConfig,
 	}
 	server := api.NewServer(cfg.Listen, guardian.InstanceManager(), guardian.ProfileManager(), guardian.BinaryManager(), serverCfg, webuiFS)
 

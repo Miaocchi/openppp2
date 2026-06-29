@@ -133,6 +133,15 @@ func (g *Guardian) Config() *GuardianConfig {
 	return g.cfg
 }
 
+func (g *Guardian) UpdateAuthConfig(enabled bool, jwtSecret string) error {
+	if g.cfg == nil {
+		return fmt.Errorf("guardian config is nil")
+	}
+	g.cfg.Auth.Enabled = enabled
+	g.cfg.Auth.JWTSecret = jwtSecret
+	return g.SaveConfig()
+}
+
 func (g *Guardian) SaveConfig() error {
 	if g.configPath == "" {
 		return fmt.Errorf("guardian config path is empty")

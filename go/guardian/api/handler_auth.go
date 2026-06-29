@@ -98,11 +98,16 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusUnauthorized, "invalid current password")
 		return
 	}
+	authEnabled := s.authCfg.AuthEnabled || req.NewPassword != ""
+	if s.authCfg.OnAuthChanged != nil {
+		if err := s.authCfg.OnAuthChanged(authEnabled, req.NewPassword); err != nil {
+			Error(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	s.jwtSecret = req.NewPassword
 	s.authCfg.JWTSecret = req.NewPassword
-	if !s.authCfg.AuthEnabled && req.NewPassword != "" {
-		s.authCfg.AuthEnabled = true
-	}
+	s.authCfg.AuthEnabled = authEnabled
 	s.tokenStore.Clear()
 	Success(w, map[string]any{"ok": true, "message": "password updated, all tokens invalidated"})
 }
