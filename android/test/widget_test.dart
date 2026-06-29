@@ -21,7 +21,7 @@ void main() {
 
     // Switch to the settings tab from the bottom navigation.
     await tester.tap(find.text('设置'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 300));
 
     // Verify that the settings page is displayed.
     expect(find.text('OPENPPP2'), findsOneWidget);
