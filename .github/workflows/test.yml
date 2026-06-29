@@ -39,7 +39,7 @@ jobs:
       - name: Run tests
         run: |
           mkdir -p build/coverage
-          LLVM_PROFILE_FILE=build/coverage/%p-%m.profraw \
+          LLVM_PROFILE_FILE="$PWD/build/coverage/%p-%m.profraw" \
             ctest --test-dir build/test --output-on-failure
 
       - name: Coverage report
