@@ -47,6 +47,99 @@ typedef ppp::collections::Dictionary                                Dictionary;
 
 namespace {
     /**
+     * @brief Extracts the destination port from a first-fragment IPv6 TCP/UDP packet.
+     * @param packet Raw IPv6 packet buffer.
+     * @param packet_length Packet length in bytes.
+     * @param next_header Parsed IPv6 next-header protocol value.
+     * @param payload_length Parsed IPv6 payload length in bytes.
+     * @param destination_port Output destination TCP/UDP port.
+     * @param transport_protocol Output TCP/UDP protocol value found after IPv6 extension headers.
+     * @param reject Output flag set when malformed or non-initial fragmented traffic cannot be safely filtered.
+     * @return True when the packet carries enough TCP/UDP bytes to read the destination port.
+     */
+    static bool TryGetIPv6TransportDestinationPort(const ppp::Byte* packet, int packet_length, ppp::Byte next_header, int payload_length, int& destination_port, ppp::Byte& transport_protocol, bool& reject) noexcept {
+        reject = false;
+        transport_protocol = 0;
+        if (NULLPTR == packet || packet_length < ppp::ipv6::IPv6_HEADER_MIN_SIZE) {
+            return false;
+        }
+
+        int offset = ppp::ipv6::IPv6_HEADER_MIN_SIZE;
+        int remaining = std::min<int>(payload_length, packet_length - ppp::ipv6::IPv6_HEADER_MIN_SIZE);
+        for (;;) {
+            if (next_header == IPPROTO_TCP || next_header == IPPROTO_UDP) {
+                break;
+            }
+
+            if (next_header == IPPROTO_HOPOPTS || next_header == IPPROTO_ROUTING || next_header == IPPROTO_DSTOPTS) {
+                if (remaining < 2) {
+                    reject = true;
+                    return false;
+                }
+
+                int header_length = (static_cast<int>(packet[offset + 1]) + 1) * 8;
+                if (header_length < 8 || remaining < header_length) {
+                    reject = true;
+                    return false;
+                }
+
+                next_header = packet[offset];
+                offset += header_length;
+                remaining -= header_length;
+                continue;
+            }
+
+            if (next_header == IPPROTO_FRAGMENT) {
+                if (remaining < 8) {
+                    reject = true;
+                    return false;
+                }
+
+                int fragment_offset_and_flags = (static_cast<int>(packet[offset + 2]) << 8) | static_cast<int>(packet[offset + 3]);
+                if ((fragment_offset_and_flags & 0xfff8) != 0) {
+                    reject = true;
+                    return false;
+                }
+
+                next_header = packet[offset];
+                offset += 8;
+                remaining -= 8;
+                continue;
+            }
+
+            if (next_header == IPPROTO_AH) {
+                if (remaining < 2) {
+                    reject = true;
+                    return false;
+                }
+
+                int header_length = (static_cast<int>(packet[offset + 1]) + 2) * 4;
+                if (header_length < 8 || remaining < header_length) {
+                    reject = true;
+                    return false;
+                }
+
+                next_header = packet[offset];
+                offset += header_length;
+                remaining -= header_length;
+                continue;
+            }
+
+            return false;
+        }
+
+        transport_protocol = next_header;
+        if (remaining < 4) {
+            reject = true;
+            return false;
+        }
+
+        const ppp::Byte* transport = packet + offset;
+        destination_port = (static_cast<int>(transport[2]) << 8) | static_cast<int>(transport[3]);
+        return destination_port > IPEndPoint::MinPort && destination_port <= IPEndPoint::MaxPort;
+    }
+
+    /**
      * @brief Converts matching ICMPv6 gateway echo requests into echo replies in-place.
      * @param packet Raw IPv6 packet buffer.
      * @param packet_length Packet length in bytes.
@@ -518,7 +611,9 @@ namespace ppp {
 
                 boost::asio::ip::address_v6 source;
                 boost::asio::ip::address_v6 destination;
-                if (!ppp::ipv6::TryParsePacket(packet, packet_length, source, destination)) {
+                Byte next_header = 0;
+                int payload_length = 0;
+                if (!ppp::ipv6::TryParsePacket(packet, packet_length, source, destination, &next_header, &payload_length)) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6PacketRejected);
                     return false;
                 }
@@ -547,6 +642,28 @@ namespace ppp {
                 if (destination.is_loopback() || destination.is_multicast()) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6PacketRejected);
                     return false;
+                }
+
+                FirewallPtr firewall = firewall_;
+                if (NULLPTR != firewall) {
+                    if (firewall->IsDropNetworkSegment(boost::asio::ip::address(destination))) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkFirewallBlocked);
+                        return false;
+                    }
+
+                    int destination_port = IPEndPoint::MinPort;
+                    Byte transport_protocol = 0;
+                    bool reject = false;
+                    if (TryGetIPv6TransportDestinationPort(packet, packet_length, next_header, payload_length, destination_port, transport_protocol, reject) &&
+                        firewall->IsDropNetworkPort(destination_port, transport_protocol == IPPROTO_TCP)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkFirewallBlocked);
+                        return false;
+                    }
+
+                    if (reject) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6PacketRejected);
+                        return false;
+                    }
                 }
 
                 VirtualEthernetSwitcher::VirtualEthernetExchangerPtr exchanger = switcher_->FindIPv6Exchanger(destination);
