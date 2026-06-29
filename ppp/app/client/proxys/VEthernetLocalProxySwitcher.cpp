@@ -142,8 +142,12 @@ namespace ppp {
 
                         /**
                          * @brief Try preferred bind address first, then IPv6/IPv4 any-address fallbacks.
+                         *        Proxy-only mode is intentionally local-only, so it must fail closed
+                         *        instead of falling back to any-address listeners.
                          */
-                        for (boost::asio::ip::address& interfaceIP : bind_ips) {
+                        const int bind_ip_count = configuration_->client.proxy_only ? 1 : arraysizeof(bind_ips);
+                        for (int bind_ip_index = 0; bind_ip_index < bind_ip_count; ++bind_ip_index) {
+                            boost::asio::ip::address& interfaceIP = bind_ips[bind_ip_index];
                             if (interfaceIP.is_multicast()) {
                                 continue;
                             }

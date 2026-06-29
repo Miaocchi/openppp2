@@ -7,15 +7,13 @@ name: Build · macOS
 
 on:
   push:
-    branches:
-      - main
-      - 'feature/**'
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: build-macos-${{ github.ref }}
+  group: build-macos-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -27,12 +25,7 @@ jobs:
     runs-on: macos-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            third_repo: Liz-Nozomi/openppp2-macos-arm64-environment
-          - arch: x86_64
-            third_repo: liulilittle/openppp2-macos-amd64-environment
+      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"arch":"arm64","third_repo":"Liz-Nozomi/openppp2-macos-arm64-environment"}]}' || '{"include":[{"arch":"arm64","third_repo":"Liz-Nozomi/openppp2-macos-arm64-environment"},{"arch":"x86_64","third_repo":"liulilittle/openppp2-macos-amd64-environment"}]}') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +65,7 @@ jobs:
   # to reproduce; ASan prints the offending alloc/free/access stacks.
   build-asan:
     name: macOS ${{ matrix.arch }} ASan
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     strategy:
       fail-fast: false

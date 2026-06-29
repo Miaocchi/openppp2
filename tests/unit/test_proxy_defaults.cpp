@@ -20,7 +20,7 @@ TEST(ProxyDefaults, ApplyProxyOnlyListenerDefaults) {
     EXPECT_EQ(PPP_DEFAULT_SOCKS_PROXY_PORT, socks_port);
 }
 
-TEST(ProxyDefaults, ApplyProxyOnlyListenerDefaultsPreservesExisting) {
+TEST(ProxyDefaults, ApplyProxyOnlyListenerDefaultsForcesLoopback) {
     using ppp::app::ApplyProxyOnlyListenerDefaults;
 
     ppp::string http_bind = "192.168.1.1";
@@ -30,8 +30,8 @@ TEST(ProxyDefaults, ApplyProxyOnlyListenerDefaultsPreservesExisting) {
 
     ApplyProxyOnlyListenerDefaults(http_bind, http_port, socks_bind, socks_port);
 
-    EXPECT_EQ("192.168.1.1", http_bind);
-    EXPECT_EQ("10.0.0.5", socks_bind);
+    EXPECT_EQ("127.0.0.1", http_bind);
+    EXPECT_EQ("127.0.0.1", socks_bind);
     EXPECT_EQ(9090, http_port);
     EXPECT_EQ(9050, socks_port);
 }
