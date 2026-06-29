@@ -10,6 +10,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(openppp2_tests
     unit/test_application_mode.cpp
+    unit/test_firewall_domains.cpp
     unit/test_tap_stub.cpp
     unit/test_proxy_defaults.cpp
 )
