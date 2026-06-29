@@ -613,7 +613,9 @@ namespace vmux {
 
                 remote_ip = ppp::coroutines::asio::GetAddressByHostName<boost::asio::ip::tcp>(host.data(), remote_port, y).address();
             }
-            elif(NULLPTR != firewall && firewall->IsDropNetworkSegment(remote_ip)) {
+
+            // Apply segment filtering after both IP-literal parsing and DNS resolution.
+            if (NULLPTR != firewall && firewall->IsDropNetworkSegment(remote_ip)) {
                 err = 'F'; // Firewall limits.
                 break;
             }
