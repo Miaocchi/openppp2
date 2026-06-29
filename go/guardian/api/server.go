@@ -22,6 +22,7 @@ type GuardianServerConfig struct {
 	GuardianBinary   string
 	GuardianWorkDir  string
 	OnConfigChanged  func() error
+	OnAuthChanged    func(enabled bool, jwtSecret string) error
 }
 
 type Server struct {
