@@ -140,7 +140,7 @@ class ProfileStore {
     // When true, the openppp2 local http/socks proxy listeners bind to
     // 0.0.0.0 so other LAN devices can use this device as a proxy. When
     // false they stay on 127.0.0.1 (the default).
-    'allowLan': true,
+    'allowLan': false,
     // When true, connect in proxy-only mode: minimal VPN route on Android,
     // local HTTP/SOCKS only (no full TUN routing / DNS hijack).
     'proxyOnly': false,

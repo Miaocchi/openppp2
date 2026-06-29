@@ -73,7 +73,7 @@ class _OptionsPageState extends State<OptionsPage> {
   String _perAppProxyMode = 'allow';
   List<String> _perAppProxyApps = const <String>[];
   bool _autoAppendApps = false;
-  bool _allowLan = true;
+  bool _allowLan = false;
   bool _proxyOnly = false;
 
   ConfigProfile? _profile;
