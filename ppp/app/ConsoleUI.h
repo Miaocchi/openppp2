@@ -212,16 +212,10 @@ private:
     // -----------------------------------------------------------------------
 
     /**
-     * @brief Dispatches a complete command line to built-in or shell execution.
+     * @brief Dispatches a complete command line to built-in command execution.
      * @param command_line Raw input string (trimmed by caller).
      */
     void                    ExecuteCommand(const ppp::string& command_line) noexcept;
-
-    /**
-     * @brief Forks a shell subprocess and captures its output into cmd_lines_.
-     * @param cmd Shell command to execute.
-     */
-    void                    ExecuteSystemCommand(const ppp::string& cmd) noexcept;
 
     // -----------------------------------------------------------------------
     // Scroll handlers
@@ -383,15 +377,6 @@ private:
      * notifies it immediately.  Stop() also notifies to unblock the thread.
      */
     std::condition_variable     render_cv_;
-
-    /**
-     * @brief Reference count of detached shell threads spawned by ExecuteSystemCommand().
-     *
-     * Incremented before each thread starts, decremented when it exits.
-     * Stop() spins (bounded) until this counter reaches zero so that the
-     * singleton's AppendLine() is never called after the TUI has torn down.
-     */
-    std::atomic<int>            pending_shell_threads_{0};
 
     /**
      * @brief Last monotonic millisecond timestamp when telemetry woke renderer.
