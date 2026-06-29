@@ -77,3 +77,24 @@ func TestSaveConfigFilePersistsSecretWithoutDroppingInstances(t *testing.T) {
 		t.Fatalf("Instances = %+v, want disabled instance preserved", saved.Instances)
 	}
 }
+
+func TestSaveConfigFileRestrictsExistingFilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guardian.json")
+	if err := os.WriteFile(path, []byte(`{"auth":{"enabled":true}}`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Auth.JWTSecret = "generated-secret"
+	if err := SaveConfigFile(path, cfg); err != nil {
+		t.Fatalf("SaveConfigFile() error = %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %o, want 600", got)
+	}
+}
