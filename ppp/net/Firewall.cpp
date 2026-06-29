@@ -394,6 +394,17 @@ namespace ppp
                 return false;
             }
 
+            /**
+             * @brief Match the same hostname view that downstream C-string DNS resolution uses.
+             * @note Protocol hostnames are length-delimited and may contain embedded NUL bytes,
+             *       while the resolver consumes a C string and stops at the first NUL.
+             */
+            ppp::string cstr_host = host.c_str();
+            if (cstr_host.size() != host.size())
+            {
+                return IsSameNetworkDomains(cstr_host, contains);
+            }
+
             /** @brief Fast path for exact domain match. */
             if (contains(host))
             {
