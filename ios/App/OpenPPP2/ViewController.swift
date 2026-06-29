@@ -96,7 +96,7 @@ struct LaunchOptions: Codable, Equatable {
     var staticMode: Bool = true
     var bypassIpList: String = "10.0.0.0/8\n172.16.0.0/12\n192.168.0.0/16\n169.254.0.0/16\n100.64.0.0/10"
     var dnsRulesList: String = ""
-    var allowLan: Bool = true
+    var allowLan: Bool = false
     var dnsDomestic: String = "doh.pub"
     var dnsForeign: String = "cloudflare"
     var dnsInterceptUnmatched: Bool = true
