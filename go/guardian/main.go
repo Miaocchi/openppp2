@@ -26,6 +26,13 @@ func main() {
 		log.Fatalf("load config failed: %v", err)
 	}
 
+	if cfg.GeneratedJWTSecret {
+		if err := SaveConfigFile(resolvedConfigPath, cfg); err != nil {
+			log.Fatalf("persist generated auth secret failed: %v", err)
+		}
+		log.Printf("guardian generated and persisted an auth jwtSecret in %s", resolvedConfigPath)
+	}
+
 	guardian, err := NewGuardian(cfg, resolvedConfigPath)
 	if err != nil {
 		log.Fatalf("create guardian failed: %v", err)

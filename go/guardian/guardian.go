@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -85,7 +84,7 @@ func NewGuardian(cfg *GuardianConfig, configPath string) (*Guardian, error) {
 				TCPPort:      inst.HealthCheck.TCPPort,
 				HTTPEndpoint: inst.HealthCheck.HTTPEndpoint,
 			},
-			LogLines: inst.LogLines,
+			LogLines:   inst.LogLines,
 			TUIEnabled: inst.TUIEnabled,
 		}); err != nil {
 			return nil, fmt.Errorf("add instance %s: %w", inst.Name, err)
@@ -164,26 +163,14 @@ func (g *Guardian) SaveConfig() error {
 				TCPPort:      inst.HealthCheck.TCPPort,
 				HTTPEndpoint: inst.HealthCheck.HTTPEndpoint,
 			},
-			LogLines: inst.LogLines,
+			LogLines:   inst.LogLines,
 			TUIEnabled: inst.TUIEnabled,
 		})
 	}
 
 	g.cfg.Instances = savedInstances
 
-	data, err := json.MarshalIndent(g.cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal guardian config: %w", err)
-	}
-	data = append(data, '\n')
-
-	if err := os.MkdirAll(filepath.Dir(g.configPath), 0o755); err != nil {
-		return fmt.Errorf("ensure config directory: %w", err)
-	}
-	if err := os.WriteFile(g.configPath, data, 0o644); err != nil {
-		return fmt.Errorf("write guardian config: %w", err)
-	}
-	return nil
+	return SaveConfigFile(g.configPath, g.cfg)
 }
 
 func cloneStringMap(src map[string]string) map[string]string {
