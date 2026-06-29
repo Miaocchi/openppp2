@@ -5,6 +5,7 @@
 
 #include "buffer.h"
 
+// Aim: encode then decode a simple domain name without corruption.
 BOOST_AUTO_TEST_CASE(dns_buffer_roundtrip_domain) {
     std::vector<uint8_t> storage(512);
     dns::Buffer encoder(storage.data(), storage.size());
@@ -17,6 +18,7 @@ BOOST_AUTO_TEST_CASE(dns_buffer_roundtrip_domain) {
     BOOST_TEST(decoded == "example.com");
 }
 
+// Aim: truncated label length byte marks the decoder as broken.
 BOOST_AUTO_TEST_CASE(dns_buffer_rejects_truncated_label) {
     uint8_t raw[] = {0x10, 'e', 'x', 'a'};
     dns::Buffer decoder(raw, sizeof(raw));
@@ -24,6 +26,7 @@ BOOST_AUTO_TEST_CASE(dns_buffer_rejects_truncated_label) {
     BOOST_TEST(decoder.isBroken());
 }
 
+// Aim: encoding a long domain into a tiny buffer sets overflow/broken state.
 BOOST_AUTO_TEST_CASE(dns_buffer_rejects_overflow_on_encode) {
     uint8_t storage[4] = {};
     dns::Buffer encoder(storage, sizeof(storage));
