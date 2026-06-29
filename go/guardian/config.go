@@ -61,7 +61,7 @@ type BackupConfig struct {
 
 func DefaultConfig() *GuardianConfig {
 	return &GuardianConfig{
-		Listen:      ":18080",
+		Listen:      "127.0.0.1:18080",
 		ProfilesDir: "./profiles",
 		BinariesDir: "./binaries",
 		Backup: BackupConfig{
@@ -71,7 +71,7 @@ func DefaultConfig() *GuardianConfig {
 		},
 		LogLines: 2000,
 		Auth: AuthConfig{
-			Enabled:          false,
+			Enabled:          true,
 			TokenExpiryHours: 24,
 		},
 	}
@@ -135,7 +135,7 @@ func LoadConfig(path string) (*GuardianConfig, error) {
 	}
 
 	if cfg.Listen == "" {
-		cfg.Listen = ":18080"
+		cfg.Listen = "127.0.0.1:18080"
 	}
 	if cfg.LogLines <= 0 {
 		cfg.LogLines = 2000
