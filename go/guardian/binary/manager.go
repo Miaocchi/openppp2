@@ -130,12 +130,8 @@ func (m *Manager) Discover(dir string) ([]DiscoveredBinary, error) {
 		if info.Mode().IsDir() {
 			continue
 		}
-		// Auto-fix missing execute permission on ppp binaries (e.g. after scp/cp without -p)
 		if info.Mode()&0o111 == 0 {
-			if err := os.Chmod(path, info.Mode()|0o111); err != nil {
-				continue // can't fix, skip
-			}
-			info, _ = entry.Info() // re-read updated mode
+			continue
 		}
 
 		sha, err := computeSHA256(path)
