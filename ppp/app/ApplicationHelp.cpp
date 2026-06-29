@@ -72,7 +72,9 @@ void PppApplication::PrintHelpInformation() noexcept {
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "OPTION", col_description_width, "DESCRIPTION", col_default_width, "DEFAULT");
     ppp::ConsoleWrite("├──────────────────────────────────────────┼──────────────────────────────────────────────────┼─────────────────────────┤\n");
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--rt=[yes|no]", col_description_width, "Enable real-time mode", col_default_width, "yes");
-    ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--mode=[client|server]", col_description_width, "Set running mode", col_default_width, "server");
+    ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--mode=[client|server|proxy]", col_description_width, "Set running mode", col_default_width, "server");
+    ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--proxy-http-port=<port>", col_description_width, "Local HTTP proxy listen port (proxy mode)", col_default_width, "8080");
+    ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--proxy-socks-port=<port>", col_description_width, "Local SOCKS5 proxy listen port (proxy mode)", col_default_width, "1080");
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--config=<path>", col_description_width, "Configuration file path", col_default_width, "./appsettings.json");
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--dns=<ip-list>", col_description_width, "DNS server addresses", col_default_width, "8.8.8.8,8.8.4.4");
     ppp::ConsoleFormat("│ %-*s │ %-*s │ %-*s │\n", col_option_width, "--tun-flash=[yes|no]", col_description_width, "Enable advanced QoS policy", col_default_width, "no");

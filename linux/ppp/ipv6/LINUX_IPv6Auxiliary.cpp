@@ -147,6 +147,26 @@ namespace {
         return true;
     }
 
+    static bool IsAllowedSysctlSnapshotKey(const ppp::string& key) noexcept {
+        if (key == "net.ipv6.conf.all.forwarding" || key == "net.ipv6.conf.default.forwarding") {
+            return true;
+        }
+
+        static const char prefix[] = "net.ipv6.conf.";
+        static const char suffix[] = ".accept_ra";
+        constexpr std::size_t prefix_length = sizeof(prefix) - 1;
+        constexpr std::size_t suffix_length = sizeof(suffix) - 1;
+
+        if (key.size() <= prefix_length + suffix_length ||
+            key.compare(0, prefix_length, prefix) != 0 ||
+            key.compare(key.size() - suffix_length, suffix_length, suffix) != 0) {
+            return false;
+        }
+
+        ppp::string interface_name = key.substr(prefix_length, key.size() - prefix_length - suffix_length);
+        return IsSafeShellToken(interface_name);
+    }
+
     /**
      * @brief Reads a sysctl value by key using `sysctl -n`.
      *
@@ -198,7 +218,7 @@ namespace {
      * @return true when the command succeeds; otherwise false.
      */
     static bool ApplySysctlValue(const ppp::string& key, const ppp::string& value) noexcept {
-        if (!IsSafeSysctlKey(key) || !IsSafeSysctlValue(value)) {
+        if (!IsSafeSysctlKey(key) || !IsAllowedSysctlSnapshotKey(key) || !IsSafeSysctlValue(value)) {
             return false;
         }
 
@@ -239,7 +259,7 @@ namespace {
             Json::String key_json = it.name();
             ppp::string key(key_json.data(), key_json.size());
             ppp::string value = ppp::auxiliary::JsonAuxiliary::AsString(*it);
-            if (!IsSafeSysctlKey(key) || !IsSafeSysctlValue(value)) {
+            if (!IsSafeSysctlKey(key) || !IsAllowedSysctlSnapshotKey(key) || !IsSafeSysctlValue(value)) {
                 continue;
             }
             snapshot[key] = value;
@@ -263,7 +283,7 @@ namespace {
 
         Json::Value sysctl(Json::objectValue);
         for (const auto& kv : snapshot) {
-            if (!IsSafeSysctlKey(kv.first) || !IsSafeSysctlValue(kv.second)) {
+            if (!IsSafeSysctlKey(kv.first) || !IsAllowedSysctlSnapshotKey(kv.first) || !IsSafeSysctlValue(kv.second)) {
                 continue;
             }
             sysctl[kv.first] = kv.second;
@@ -387,12 +407,8 @@ namespace {
             snprintf(command, sizeof(command),
                 "ip6tables -C FORWARD -s %s/%d -j ACCEPT >/dev/null 2>&1 || "
                 "ip6tables -A FORWARD -s %s/%d -j ACCEPT >/dev/null 2>&1; "
-                "ip6tables -C FORWARD -d %s/%d -j ACCEPT >/dev/null 2>&1 || "
-                "ip6tables -A FORWARD -d %s/%d -j ACCEPT >/dev/null 2>&1; "
                 "ip6tables -C FORWARD -d %s/%d -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1 || "
                 "ip6tables -A FORWARD -d %s/%d -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1",
-                prefix.data(), prefix_length,
-                prefix.data(), prefix_length,
                 prefix.data(), prefix_length,
                 prefix.data(), prefix_length,
                 prefix.data(), prefix_length,
@@ -401,9 +417,7 @@ namespace {
         else {
             snprintf(command, sizeof(command),
                 "ip6tables -D FORWARD -s %s/%d -j ACCEPT >/dev/null 2>&1; "
-                "ip6tables -D FORWARD -d %s/%d -j ACCEPT >/dev/null 2>&1; "
                 "ip6tables -D FORWARD -d %s/%d -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1",
-                prefix.data(), prefix_length,
                 prefix.data(), prefix_length,
                 prefix.data(), prefix_length);
         }

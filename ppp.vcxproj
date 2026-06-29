@@ -380,6 +380,7 @@
     <ClCompile Include="common\lwip\my\sys_arch.c" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="ppp\app\ApplicationConfig.cpp" />
+    <ClCompile Include="ppp\app\ApplicationMode.cpp" />
     <ClCompile Include="ppp\app\ApplicationHelp.cpp" />
     <ClCompile Include="ppp\app\ApplicationInitialize.cpp" />
     <ClCompile Include="ppp\app\ApplicationMainLoop.cpp" />
@@ -499,6 +500,7 @@
     <ClCompile Include="ppp\net\Socket.cpp" />
     <ClCompile Include="ppp\stdafx.cpp" />
     <ClCompile Include="ppp\tap\ITap.cpp" />
+    <ClCompile Include="ppp\tap\TapStub.cpp" />
     <ClCompile Include="windows\ppp\tap\WintunAdapter.cpp" />
     <ClCompile Include="windows\ppp\win32\network\NetworkInterface.cpp" />
     <ClCompile Include="windows\ppp\win32\network\Win32Firewall.cpp" />

@@ -49,7 +49,7 @@ The project keeps signing manual and allows `CODE_SIGNING_ALLOWED=NO` for unsign
 After signing in to Xcode with a paid Apple Developer account, create or verify an Apple Development certificate in Xcode Settings, then build with a unique bundle id:
 
 ```sh
-DEVELOPMENT_TEAM=ABCDE12345 \
+DEVELOPMENT_TEAM=6YS5L5WRBR \
 OPENPPP2_BUNDLE_ID=com.example.openppp2 \
 SDK=iphoneos \
 CONFIGURATION=Release \

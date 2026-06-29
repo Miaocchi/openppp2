@@ -1,4 +1,5 @@
 #include <ppp/configurations/AppConfiguration.h>
+#include <ppp/app/ApplicationMode.h>
 #include <ppp/cryptography/Ciphertext.h>
 #include <ppp/cryptography/ssea.h>
 #include <ppp/threading/Thread.h>
@@ -357,6 +358,7 @@ namespace ppp {
             config.client.socks_proxy.port = PPP_DEFAULT_SOCKS_PROXY_PORT;
             config.client.socks_proxy.password = "";
             config.client.socks_proxy.username = "";
+            config.client.proxy_only = false;
 #if defined(_WIN32)
             config.client.paper_airplane.tcp = true;
 #endif
@@ -1702,6 +1704,7 @@ namespace ppp {
             config.client.socks_proxy.bind = JsonAuxiliary::AsValue<ppp::string>(json["client"]["socks-proxy"]["bind"]);
             config.client.socks_proxy.username = JsonAuxiliary::AsValue<ppp::string>(json["client"]["socks-proxy"]["username"]);
             config.client.socks_proxy.password = JsonAuxiliary::AsValue<ppp::string>(json["client"]["socks-proxy"]["password"]);
+            AssignBoolIfPresent(config.client.proxy_only, json["client"]["proxy-only"]);
 #if defined(_WIN32)
             AssignBoolIfPresent(config.client.paper_airplane.tcp, json["client"]["paper-airplane"]["tcp"]);
 #endif
@@ -2050,6 +2053,7 @@ namespace ppp {
             client["socks-proxy"]["port"] = config.client.socks_proxy.port;
             client["socks-proxy"]["password"] = config.client.socks_proxy.password;
             client["socks-proxy"]["username"] = config.client.socks_proxy.username;
+            client["proxy-only"] = config.client.proxy_only;
             client["reconnections"]["timeout"] = config.client.reconnections.timeout;
             client["guid"] = config.client.guid;
             client["server"] = config.client.server;
@@ -2265,6 +2269,15 @@ namespace ppp {
                 ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "mux", "%s", config._mux_mode_diagnostic.c_str());
                 ppp::ConsoleFormat("[mux] WARN: %s - startup continues (non-fatal)\n", config._mux_mode_diagnostic.c_str());
             }
+        }
+
+        void AppConfiguration::ApplyProxyModeDefaults() noexcept {
+            client.proxy_only = true;
+            ppp::app::ApplyProxyOnlyListenerDefaults(
+                client.http_proxy.bind,
+                client.http_proxy.port,
+                client.socks_proxy.bind,
+                client.socks_proxy.port);
         }
 
         /**

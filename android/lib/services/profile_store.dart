@@ -141,6 +141,9 @@ class ProfileStore {
     // 0.0.0.0 so other LAN devices can use this device as a proxy. When
     // false they stay on 127.0.0.1 (the default).
     'allowLan': true,
+    // When true, connect in proxy-only mode: minimal VPN route on Android,
+    // local HTTP/SOCKS only (no full TUN routing / DNS hijack).
+    'proxyOnly': false,
     // Native AppConfiguration `dns` block (spliced into profile.json at
     // connect time by [effectiveJson]). See openppp2/ppp/configurations
     // /AppConfiguration.h for the full schema.
@@ -288,12 +291,17 @@ class ProfileStore {
     // When [allowLan] is true, force the local http/socks proxy listeners to
     // bind on 0.0.0.0 so other devices on the same Wi-Fi can use this device
     // as a proxy. When false, lock them back onto loopback (127.0.0.1).
+    // In proxy-only mode, always use loopback unless allowLan is explicitly set.
     {
-      final allowLan = options['allowLan'] == true;
+      final proxyOnly = options['proxyOnly'] == true;
+      final allowLan = !proxyOnly && options['allowLan'] == true;
       final bindAddr = allowLan ? '0.0.0.0' : '127.0.0.1';
       final client = (root['client'] is Map)
           ? Map<String, dynamic>.from(root['client'] as Map)
           : <String, dynamic>{};
+      if (proxyOnly) {
+        client['proxy-only'] = true;
+      }
       final hp = (client['http-proxy'] is Map)
           ? Map<String, dynamic>.from(client['http-proxy'] as Map)
           : <String, dynamic>{'port': 8080};

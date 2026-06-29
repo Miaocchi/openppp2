@@ -250,7 +250,8 @@ Defines client-side identity, target server, and traffic policy:
 - `client.bandwidth` — upload/download bandwidth cap in bytes/second (0 = unlimited).
 - `client.server` — VPN server URI (e.g. `ppp://host:port/`, `ppp://ws/host:port/`, `ppp://wss/host:port/`).
 - `client.server-proxy` — HTTP/SOCKS proxy used to reach the VPN server (empty = direct).
-- `client.http.proxy.*` — Local HTTP proxy listener settings (bind address and port).
+- `client.proxy-only` — When `true`, skip OS routes/TUN on desktop; only local HTTP/SOCKS (also implied by `--mode=proxy`).
+- `client.http-proxy.*` — Local HTTP proxy listener settings (bind address and port).
 - `client.socks-proxy.*` — Local SOCKS5 proxy listener settings (bind address, port, username, password). The listener supports TCP `CONNECT` and SOCKS5 `UDP ASSOCIATE`; UDP datagrams are relayed through the client datagram tunnel path.
 - `client.routes` — static routes to inject into the OS routing table.
 - `client.mappings` — static port mapping declarations (array of `{local, remote}` endpoint pairs).
@@ -570,6 +571,7 @@ The configuration decides the shape of the runtime:
       "username": "",
       "password": ""
     },
+    "proxy-only": false,
     "routes": [],
     "mappings": [],
     "dns-rules": ""

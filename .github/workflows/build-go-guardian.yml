@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-go-guardian-${{ github.ref }}
+  group: build-go-guardian-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -26,18 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
+      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"goos":"linux","goarch":"amd64"}]}' || '{"include":[{"goos":"linux","goarch":"amd64"},{"goos":"linux","goarch":"arm64"},{"goos":"darwin","goarch":"amd64"},{"goos":"darwin","goarch":"arm64"},{"goos":"windows","goarch":"amd64"}]}') }}
 
     steps:
       - uses: actions/checkout@v4

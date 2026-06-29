@@ -245,11 +245,12 @@ class PppVpnService : VpnService() {
             val vnet = options.optBoolean("vnet", false)
             val blockQuic = options.optBoolean("blockQuic", false)
             val staticMode = options.optBoolean("staticMode", false)
+            val proxyOnly = options.optBoolean("proxyOnly", false)
             val bypassIpList = options.optString("bypassIpList", "")
             val dnsRulesList = options.optString("dnsRulesList", "")
             PppLog.write(
                 this,
-                "vpn options tunIp=$vpnIp tunMask=$vpnMask tunPrefix=$vpnPrefix route=$route/$routePrefix dns1=$dns1 dns2=$dns2 mtu=$mtu mark=$mark mux=$mux vnet=$vnet blockQuic=$blockQuic staticMode=$staticMode bypassIpList=${bypassIpList.isNotBlank()} dnsRulesList=${dnsRulesList.isNotBlank()}"
+                "vpn options tunIp=$vpnIp tunMask=$vpnMask tunPrefix=$vpnPrefix route=$route/$routePrefix dns1=$dns1 dns2=$dns2 mtu=$mtu mark=$mark mux=$mux vnet=$vnet blockQuic=$blockQuic staticMode=$staticMode proxyOnly=$proxyOnly bypassIpList=${bypassIpList.isNotBlank()} dnsRulesList=${dnsRulesList.isNotBlank()}"
             )
 
             // Anchor relative paths inside the AppConfiguration JSON
@@ -277,11 +278,11 @@ class PppVpnService : VpnService() {
             }
 
             // Set bypass IP list and DNS rules if provided
-            if (bypassIpList.isNotBlank()) {
+            if (!proxyOnly && bypassIpList.isNotBlank()) {
                 val bypassResult = libopenppp2.set_bypass_ip_list(bypassIpList)
                 PppLog.write(this, "set_bypass_ip_list result=$bypassResult")
             }
-            if (dnsRulesList.isNotBlank()) {
+            if (!proxyOnly && dnsRulesList.isNotBlank()) {
                 val dnsResult = libopenppp2.set_dns_rules_list(dnsRulesList)
                 PppLog.write(this, "set_dns_rules_list result=$dnsResult")
             }
@@ -289,10 +290,15 @@ class PppVpnService : VpnService() {
             val builder = Builder()
                 .setSession("OpenPPP2")
                 .addAddress(vpnIp, vpnPrefix)
-                .addRoute(route, routePrefix)
                 .allowFamily(OsConstants.AF_INET)
                 .setMtu(mtu)
                 .setBlocking(true)
+
+            if (proxyOnly) {
+                builder.addRoute(vpnIp, vpnPrefix)
+            } else {
+                builder.addRoute(route, routePrefix)
+            }
 
             if (dns1.isNotBlank()) {
                 builder.addDnsServer(dns1)
@@ -371,7 +377,7 @@ class PppVpnService : VpnService() {
             // the port is parsed from the AppConfiguration JSON we just sent
             // to the native engine so it always matches what's actually
             // listening.
-            val systemHttpProxy = options.optBoolean("autoAppendApps", false)
+            val systemHttpProxy = options.optBoolean("autoAppendApps", false) || proxyOnly
             if (systemHttpProxy) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     val port = parseHttpProxyPort(configJson)

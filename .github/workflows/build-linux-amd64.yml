@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-linux-amd64-${{ github.ref }}
+  group: build-linux-amd64-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -28,48 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Base build (no extra features)
-          - suffix: ""
-            enable_sysnat: "OFF"
-            enable_io_uring: "OFF"
-            enable_simd: "OFF"
-          # io-uring
-          - suffix: "-io-uring"
-            enable_sysnat: "OFF"
-            enable_io_uring: "ON"
-            enable_simd: "OFF"
-          # SIMD
-          - suffix: "-simd"
-            enable_sysnat: "OFF"
-            enable_io_uring: "OFF"
-            enable_simd: "ON"
-          # tc (SYSNAT)
-          - suffix: "-tc"
-            enable_sysnat: "ON"
-            enable_io_uring: "OFF"
-            enable_simd: "OFF"
-          # tc + io-uring
-          - suffix: "-tc-io-uring"
-            enable_sysnat: "ON"
-            enable_io_uring: "ON"
-            enable_simd: "OFF"
-          # tc + simd
-          - suffix: "-tc-simd"
-            enable_sysnat: "ON"
-            enable_io_uring: "OFF"
-            enable_simd: "ON"
-          # io-uring + simd
-          - suffix: "-io-uring-simd"
-            enable_sysnat: "OFF"
-            enable_io_uring: "ON"
-            enable_simd: "ON"
-          # tc + io-uring + simd
-          - suffix: "-tc-io-uring-simd"
-            enable_sysnat: "ON"
-            enable_io_uring: "ON"
-            enable_simd: "ON"
+      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"suffix":"","enable_sysnat":"OFF","enable_io_uring":"OFF","enable_simd":"OFF"},{"suffix":"-tc-io-uring-simd","enable_sysnat":"ON","enable_io_uring":"ON","enable_simd":"ON"}]}' || '{"include":[{"suffix":"","enable_sysnat":"OFF","enable_io_uring":"OFF","enable_simd":"OFF"},{"suffix":"-io-uring","enable_sysnat":"OFF","enable_io_uring":"ON","enable_simd":"OFF"},{"suffix":"-simd","enable_sysnat":"OFF","enable_io_uring":"OFF","enable_simd":"ON"},{"suffix":"-tc","enable_sysnat":"ON","enable_io_uring":"OFF","enable_simd":"OFF"},{"suffix":"-tc-io-uring","enable_sysnat":"ON","enable_io_uring":"ON","enable_simd":"OFF"},{"suffix":"-tc-simd","enable_sysnat":"ON","enable_io_uring":"OFF","enable_simd":"ON"},{"suffix":"-io-uring-simd","enable_sysnat":"OFF","enable_io_uring":"ON","enable_simd":"ON"},{"suffix":"-tc-io-uring-simd","enable_sysnat":"ON","enable_io_uring":"ON","enable_simd":"ON"}]}') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -175,6 +134,7 @@ jobs:
   # io_uring and SYSNAT are disabled (require kernel ≥ 5.10).
   build-debian10:
     name: Linux amd64 Debian 10
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     container: debian:buster
 
@@ -280,6 +240,7 @@ jobs:
   # jemalloc is intentionally NOT built here (the macro is off).
   build-asan:
     name: Linux amd64 ASan
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
