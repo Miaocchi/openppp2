@@ -387,12 +387,8 @@ namespace {
             snprintf(command, sizeof(command),
                 "ip6tables -C FORWARD -s %s/%d -j ACCEPT >/dev/null 2>&1 || "
                 "ip6tables -A FORWARD -s %s/%d -j ACCEPT >/dev/null 2>&1; "
-                "ip6tables -C FORWARD -d %s/%d -j ACCEPT >/dev/null 2>&1 || "
-                "ip6tables -A FORWARD -d %s/%d -j ACCEPT >/dev/null 2>&1; "
                 "ip6tables -C FORWARD -d %s/%d -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1 || "
                 "ip6tables -A FORWARD -d %s/%d -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1",
-                prefix.data(), prefix_length,
-                prefix.data(), prefix_length,
                 prefix.data(), prefix_length,
                 prefix.data(), prefix_length,
                 prefix.data(), prefix_length,
@@ -401,9 +397,7 @@ namespace {
         else {
             snprintf(command, sizeof(command),
                 "ip6tables -D FORWARD -s %s/%d -j ACCEPT >/dev/null 2>&1; "
-                "ip6tables -D FORWARD -d %s/%d -j ACCEPT >/dev/null 2>&1; "
                 "ip6tables -D FORWARD -d %s/%d -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT >/dev/null 2>&1",
-                prefix.data(), prefix_length,
                 prefix.data(), prefix_length,
                 prefix.data(), prefix_length);
         }
