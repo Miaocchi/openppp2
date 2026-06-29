@@ -549,6 +549,14 @@ namespace ppp {
                     return false;
                 }
 
+                FirewallPtr firewall = firewall_;
+                if (NULLPTR != firewall) {
+                    if (firewall->IsDropNetworkSegment(boost::asio::ip::address(destination))) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkFirewallBlocked);
+                        return false;
+                    }
+                }
+
                 VirtualEthernetSwitcher::VirtualEthernetExchangerPtr exchanger = switcher_->FindIPv6Exchanger(destination);
                 if (NULLPTR == exchanger) {
                     return switcher_->SendIPv6TransitPacket(packet, packet_length);
