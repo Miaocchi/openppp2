@@ -1344,7 +1344,7 @@ namespace ppp
 // -------------------------------------------------------------------------
 // std::hash specialization for ppp::Int128
 // -------------------------------------------------------------------------
-#if defined(_PPP_INT128) || (!defined(_MACOS) && !defined(_IPHONE) && !defined(_LIBCPP_VERSION))
+#if defined(_PPP_INT128) || (!defined(_MACOS) && !defined(_IPHONE) && !defined(_LIBCPP_VERSION) && !(defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 14))
 namespace std
 {
     template <>

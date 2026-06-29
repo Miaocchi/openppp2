@@ -11,19 +11,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:openppp2_mobile/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
+  testWidgets('App shell renders home navigation', (WidgetTester tester) async {
     // Build our app and trigger a frame.
     await tester.pumpWidget(const OpenPPP2App());
 
-    // Verify that our counter starts at 0.
-    expect(find.text('OpenPPP2'), findsOneWidget);
-    expect(find.text('未连接'), findsOneWidget);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.settings));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('客户端配置'), findsOneWidget);
+    // Verify that the home tab renders the current connection state and shell.
+    expect(find.text('Not Connected'), findsOneWidget);
+    expect(find.text('主页'), findsOneWidget);
+    expect(find.text('启动参数'), findsOneWidget);
+    expect(find.text('配置文件'), findsOneWidget);
+    expect(find.text('设置'), findsOneWidget);
   });
 }

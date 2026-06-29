@@ -122,3 +122,5 @@ android/android/keystore/*.properties
 
 # Local OTEL/Grafana deploy configs (not for version control)
 scripts/deploy/
+build/coverage/
+ios/App/.build/

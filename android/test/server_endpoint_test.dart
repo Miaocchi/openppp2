@@ -3,6 +3,7 @@ import 'package:openppp2_mobile/utils/server_endpoint.dart';
 
 void main() {
   group('ServerEndpoint', () {
+    // Aim: RFC-style bracketed IPv6 authority parses host and port.
     test('parses bracketed IPv6 server URLs', () {
       final endpoint = ServerEndpoint.parse('ppp://[2001:db8::1]:20000/');
 
@@ -10,6 +11,7 @@ void main() {
       expect(endpoint.port, 20000);
     });
 
+    // Aim: legacy URLs without brackets still split host/port on last colon.
     test('parses legacy unbracketed IPv6 server URLs', () {
       final endpoint = ServerEndpoint.parse('ppp://2001:db8::1:20000/');
 
@@ -17,6 +19,7 @@ void main() {
       expect(endpoint.port, 20000);
     });
 
+    // Aim: unbracketed IPv6 without a trailing port keeps port null.
     test('preserves legacy unbracketed IPv6 server URLs without ports', () {
       final endpoint = ServerEndpoint.parse('ppp://2001:db8::1/');
 
@@ -24,6 +27,7 @@ void main() {
       expect(endpoint.port, isNull);
     });
 
+    // Aim: IPv4-mapped IPv6 (::ffff:…) uses last-colon port split, not full string as host.
     test('parses legacy unbracketed IPv4-mapped IPv6 server URLs', () {
       final endpoint = ServerEndpoint.parse('ppp://::ffff:192.0.2.128:20000/');
 
@@ -31,17 +35,48 @@ void main() {
       expect(endpoint.port, 20000);
     });
 
+    // Aim: toPppUrl() wraps bare IPv6 hosts in brackets for valid URLs.
     test('formats IPv6 host with brackets for URLs', () {
       final url = ServerEndpoint(host: '2001:db8::1', port: 20000).toPppUrl();
 
       expect(url, 'ppp://[2001:db8::1]:20000/');
     });
 
+    // Aim: IPv4 and domain hosts are serialized without brackets.
     test('formats IPv4 and domain hosts without brackets', () {
       expect(ServerEndpoint(host: '192.0.2.10', port: 20000).toPppUrl(),
           'ppp://192.0.2.10:20000/');
       expect(ServerEndpoint(host: 'vpn.example.com', port: 20000).toPppUrl(),
           'ppp://vpn.example.com:20000/');
+    });
+  });
+
+  group('ServerEndpoint negative and regression', () {
+    // Aim: unclosed bracket does not crash; parser still yields some host text.
+    test('rejects_malformed_unclosed_ipv6_bracket', () {
+      final endpoint = ServerEndpoint.parse('ppp://[2001:db8::1');
+      expect(endpoint.host, isNotEmpty);
+    });
+
+    // Aim: regression guard for IPv4-mapped host/port splitting (issue-prone path).
+    test('regression_ipv4_mapped_host_port_split', () {
+      final endpoint = ServerEndpoint.parse('ppp://::ffff:192.0.2.128:20000/');
+      expect(endpoint.host, '::ffff:192.0.2.128');
+      expect(endpoint.port, 20000);
+    });
+
+    // Aim: empty input yields empty host and no port (boundary).
+    test('rejects_empty_input_host', () {
+      final endpoint = ServerEndpoint.parse('');
+      expect(endpoint.host, '');
+      expect(endpoint.port, isNull);
+    });
+
+    // Aim: bracketed loopback without port keeps port null.
+    test('boundary_ipv6_without_port', () {
+      final endpoint = ServerEndpoint.parse('ppp://[::1]/');
+      expect(endpoint.host, '::1');
+      expect(endpoint.port, isNull);
     });
   });
 }
