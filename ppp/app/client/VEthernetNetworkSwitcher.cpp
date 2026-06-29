@@ -1085,10 +1085,20 @@ namespace ppp {
                 applied = ppp::tap::TapLinux::SetIPAddress(tun_ni->Name, ipv4.address, ipv4.mask);
 #elif defined(_MACOS)
                 {
+                    ec.clear();
+                    boost::asio::ip::address gw = StringToAddress(ipv4.gateway.data(), ec);
+                    if (ec || !gw.is_v4()) {
+                        return false;
+                    }
+
+                    std::string address_text = addr.to_v4().to_string();
+                    std::string gateway_text = gw.to_v4().to_string();
+                    std::string mask_text = mask.to_v4().to_string();
+
                     char cmd[1024];
                     snprintf(cmd, sizeof(cmd),
                         "ifconfig %s inet %s %s netmask %s up > /dev/null 2>&1",
-                        tun_ni->Name.data(), ipv4.address.data(), ipv4.gateway.data(), ipv4.mask.data());
+                        tun_ni->Name.data(), address_text.data(), gateway_text.data(), mask_text.data());
                     applied = system(cmd) == 0;
                 }
 #elif defined(_WIN32)
