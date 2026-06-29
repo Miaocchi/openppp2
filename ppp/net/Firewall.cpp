@@ -558,7 +558,7 @@ namespace ppp
              */
             char* endptr = NULLPTR;
             long parsed_port = strtol(line.data(), &endptr, 10);
-            if (NULLPTR == endptr || endptr == line.data() || *endptr != '\x0' || parsed_port <= ppp::net::IPEndPoint::MinPort || parsed_port > ppp::net::IPEndPoint::MaxPort)
+            if (NULLPTR == endptr || endptr == line.data() || (*endptr != '\x0' && *endptr != '/') || parsed_port <= ppp::net::IPEndPoint::MinPort || parsed_port > ppp::net::IPEndPoint::MaxPort)
             {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkPortInvalid);
                 return false;
