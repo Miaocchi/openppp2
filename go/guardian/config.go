@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,13 +10,14 @@ import (
 )
 
 type GuardianConfig struct {
-	Listen      string           `json:"listen"`
-	Auth        AuthConfig       `json:"auth"`
-	Instances   []InstanceConfig `json:"instances"`
-	ProfilesDir string           `json:"profilesDir"`
-	BinariesDir string           `json:"binariesDir"`
-	Backup      BackupConfig     `json:"backup"`
-	LogLines    int              `json:"logLines"`
+	Listen             string           `json:"listen"`
+	Auth               AuthConfig       `json:"auth"`
+	Instances          []InstanceConfig `json:"instances"`
+	ProfilesDir        string           `json:"profilesDir"`
+	BinariesDir        string           `json:"binariesDir"`
+	Backup             BackupConfig     `json:"backup"`
+	LogLines           int              `json:"logLines"`
+	GeneratedJWTSecret bool             `json:"-"`
 }
 
 type AuthConfig struct {
@@ -61,7 +64,7 @@ type BackupConfig struct {
 
 func DefaultConfig() *GuardianConfig {
 	return &GuardianConfig{
-		Listen:      ":18080",
+		Listen:      "127.0.0.1:18080",
 		ProfilesDir: "./profiles",
 		BinariesDir: "./binaries",
 		Backup: BackupConfig{
@@ -71,10 +74,31 @@ func DefaultConfig() *GuardianConfig {
 		},
 		LogLines: 2000,
 		Auth: AuthConfig{
-			Enabled:          false,
+			Enabled:          true,
 			TokenExpiryHours: 24,
 		},
 	}
+}
+
+func ensureAuthSecret(cfg *GuardianConfig) error {
+	if cfg == nil || !cfg.Auth.Enabled || cfg.Auth.JWTSecret != "" {
+		return nil
+	}
+	secret, err := generateJWTSecret()
+	if err != nil {
+		return fmt.Errorf("generate auth jwtSecret: %w", err)
+	}
+	cfg.Auth.JWTSecret = secret
+	cfg.GeneratedJWTSecret = true
+	return nil
+}
+
+func generateJWTSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 func defaultInstanceConfig(global *GuardianConfig) InstanceConfig {
@@ -98,6 +122,28 @@ func defaultInstanceConfig(global *GuardianConfig) InstanceConfig {
 	}
 }
 
+func SaveConfigFile(path string, cfg *GuardianConfig) error {
+	if path == "" {
+		return fmt.Errorf("guardian config path is empty")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal guardian config: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		return fmt.Errorf("ensure config directory: %w", err)
+	}
+	if err := os.WriteFile(absPath, data, 0o600); err != nil {
+		return fmt.Errorf("write guardian config: %w", err)
+	}
+	return nil
+}
+
 func LoadConfig(path string) (*GuardianConfig, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -109,6 +155,9 @@ func LoadConfig(path string) (*GuardianConfig, error) {
 		if os.IsNotExist(err) {
 			// First run — use defaults, write config for future edits
 			cfg := DefaultConfig()
+			if err := ensureAuthSecret(cfg); err != nil {
+				return nil, err
+			}
 			baseDir := filepath.Dir(absPath)
 			cfg.ProfilesDir = filepath.Join(baseDir, cfg.ProfilesDir)
 			cfg.BinariesDir = filepath.Join(baseDir, cfg.BinariesDir)
@@ -135,7 +184,7 @@ func LoadConfig(path string) (*GuardianConfig, error) {
 	}
 
 	if cfg.Listen == "" {
-		cfg.Listen = ":18080"
+		cfg.Listen = "127.0.0.1:18080"
 	}
 	if cfg.LogLines <= 0 {
 		cfg.LogLines = 2000
@@ -154,6 +203,9 @@ func LoadConfig(path string) (*GuardianConfig, error) {
 	}
 	if cfg.Backup.Dir == "" {
 		cfg.Backup.Dir = "./backups"
+	}
+	if err := ensureAuthSecret(cfg); err != nil {
+		return nil, err
 	}
 
 	if cfg.ProfilesDir, err = resolve(cfg.ProfilesDir); err != nil {
