@@ -740,12 +740,6 @@ void ConsoleUI::Stop() noexcept {
         input_thread_.join();
     }
 
-    // Wait (bounded) for detached shell threads to finish calling AppendLine()
-    // before we tear down the TUI.  Each thread decrements pending_shell_threads_
-    // on exit, so this loop terminates as soon as all outstanding popen pipes close.
-    for (int i = 0; i < 100 && pending_shell_threads_.load(std::memory_order_acquire) > 0; ++i) {
-        ppp::Sleep(50);
-    }
 
     RestoreInputTerminal();
 
@@ -1891,7 +1885,6 @@ void ConsoleUI::ExecuteCommand(const ppp::string& command_line) noexcept {
             AppendLine("  openppp2 info             - Print full runtime environment snapshot");
             AppendLine("  openppp2 clear            - Clear command output section");
             AppendLine("  openppp2 telemetry ...    - Telemetry filter controls (status/help/log/metric/span/level/all/quiet/clear)");
-            AppendLine("  <shell command>           - Execute a system shell command");
             AppendLine("");
             AppendLine("All typed characters are normal input; no single-key hotkeys.");
             return;
@@ -2091,58 +2084,8 @@ void ConsoleUI::ExecuteCommand(const ppp::string& command_line) noexcept {
         return;
     }
 
-    // -----------------------------------------------------------------------
-    // System command: run in a detached thread to avoid blocking input
-    // -----------------------------------------------------------------------
-    ExecuteSystemCommand(cmd);
-}
-
-void ConsoleUI::ExecuteSystemCommand(const ppp::string& cmd) noexcept {
-    // Capture a raw pointer — the singleton outlives any detached thread.
-    ConsoleUI* self = this;
-    ppp::string cmd_copy = cmd;
-
-    // Track the outstanding thread count so Stop() can wait for all pipes to
-    // drain before tearing down the TUI (prevents AppendLine() use-after-stop).
-    pending_shell_threads_.fetch_add(1, std::memory_order_acq_rel);
-
-    std::thread([self, cmd_copy]() noexcept {
-        try {
-#if defined(_WIN32)
-            ppp::string shell_cmd = "cmd /c " + cmd_copy + " 2>&1";
-            FILE* fp = ::_popen(shell_cmd.data(), "r");
-#else
-            ppp::string shell_cmd = cmd_copy + " 2>&1";
-            FILE* fp = ::popen(shell_cmd.data(), "r");
-#endif
-            if (NULLPTR == fp) {
-                self->AppendLine("[Error: failed to open process pipe]");
-                self->pending_shell_threads_.fetch_sub(1, std::memory_order_acq_rel);
-                return;
-            }
-
-            char buf[4096];
-            while (NULLPTR != std::fgets(buf, sizeof(buf), fp)) {
-                ppp::string line = buf;
-                // Strip trailing newline / carriage-return
-                while (!line.empty() &&
-                       ('\n' == line.back() || '\r' == line.back())) {
-                    line.pop_back();
-                }
-                self->AppendLine(line);
-            }
-
-#if defined(_WIN32)
-            ::_pclose(fp);
-#else
-            ::pclose(fp);
-#endif
-        } catch (...) {
-            self->AppendLine("[Error: exception during system command]");
-        }
-
-        self->pending_shell_threads_.fetch_sub(1, std::memory_order_acq_rel);
-    }).detach();
+    AppendLine("Unknown command: '" + cmd + "'");
+    AppendLine("Type 'openppp2 help' for available commands.");
 }
 
 // ---------------------------------------------------------------------------
