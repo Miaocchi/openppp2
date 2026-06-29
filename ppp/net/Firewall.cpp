@@ -404,13 +404,13 @@ namespace ppp
             ppp::vector<ppp::string> lables;
             if (Tokenize<ppp::string>(host, lables, ".") < 1)
             {
-                return false;
+                return true;
             }
 
             std::size_t label_size = lables.size();
             if (label_size < 2)
             {
-                return false;
+                return true;
             }
 
             for (ppp::string& i : lables)
