@@ -7,15 +7,13 @@ name: Build · Go Guardian
 
 on:
   push:
-    branches:
-      - main
-      - 'feature/**'
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: build-go-guardian-${{ github.ref }}
+  group: build-go-guardian-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:

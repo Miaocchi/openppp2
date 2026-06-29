@@ -7,15 +7,13 @@ name: Build · Android
 
 on:
   push:
-    branches:
-      - main
-      - 'feature/**'
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: build-android-${{ github.ref }}
+  group: build-android-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:

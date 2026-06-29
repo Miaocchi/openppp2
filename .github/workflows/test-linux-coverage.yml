@@ -2,12 +2,14 @@ name: Test · Linux coverage
 
 on:
   push:
-    branches:
-      - main
-      - 'feature/**'
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: test-linux-coverage-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   proxy-unit-coverage:
