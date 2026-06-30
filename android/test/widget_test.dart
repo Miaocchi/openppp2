@@ -85,8 +85,12 @@ void main() {
 
     expect(find.text('OPENPPP2'), findsWidgets);
     expect(find.text('OpenTelemetry'), findsOneWidget);
-    expect(find.text('路径感知'), findsOneWidget);
     expect(find.text('启用 OTEL'), findsOneWidget);
     expect(find.text('OTLP Endpoint'), findsOneWidget);
+
+    await tester.drag(find.byType(ListView).last, const Offset(0, -500));
+    await tester.pumpAndSettle();
+
+    expect(find.text('路径感知'), findsOneWidget);
   });
 }
