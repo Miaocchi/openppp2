@@ -435,6 +435,9 @@
     <ClCompile Include="ppp\diagnostics\ErrorHandler.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\diagnostics\PathAwarenessStore.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\app\client\dns\Rule.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -1524,6 +1527,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\diagnostics\ErrorHandler.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\diagnostics\PathAwarenessStore.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\client\dns\Rule.h">

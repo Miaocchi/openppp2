@@ -408,6 +408,7 @@
     <ClCompile Include="ppp\diagnostics\Error.cpp" />
     <ClCompile Include="ppp\diagnostics\ErrorHandler.cpp" />
     <ClCompile Include="ppp\diagnostics\LinkTelemetry.cpp" />
+    <ClCompile Include="ppp\diagnostics\PathAwarenessStore.cpp" />
     <ClCompile Include="ppp\diagnostics\PreventReturn.cpp" />
     <ClCompile Include="ppp\diagnostics\Telemetry.cpp" />
     <ClCompile Include="ppp\hash\hash_bytes.cpp" />
@@ -725,6 +726,7 @@
     <ClInclude Include="ppp\diagnostics\Error.h" />
     <ClInclude Include="ppp\diagnostics\ErrorHandler.h" />
     <ClInclude Include="ppp\diagnostics\LinkTelemetry.h" />
+    <ClInclude Include="ppp\diagnostics\PathAwarenessStore.h" />
     <ClInclude Include="ppp\diagnostics\PreventReturn.h" />
     <ClInclude Include="ppp\diagnostics\Telemetry.h" />
     <ClInclude Include="ppp\hash\hash_bytes.h" />
