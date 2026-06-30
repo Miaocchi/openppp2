@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "OPENPPP2"
+    },
+    {
+      "name": "module_desc",
+      "value": "OpenPPP2 HarmonyOS client"
+    },
+    {
+      "name": "entry_desc",
+      "value": "OpenPPP2"
+    },
+    {
+      "name": "vpn_extension_desc",
+      "value": "OpenPPP2 VPN tunnel"
+    }
+  ]
+}

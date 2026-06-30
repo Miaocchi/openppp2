@@ -12,6 +12,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         CrashReporter.install(process: .app)
 
         VPNController.shared.recoverStaleTunnelState()
+        VPNController.shared.syncActiveProfileToSystemPreferences()
 
         let window = UIWindow(frame: UIScreen.main.bounds)
         let rootViewController = ViewController()

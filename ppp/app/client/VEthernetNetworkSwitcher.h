@@ -446,7 +446,7 @@ namespace ppp {
                  */
                 uint8_t                                                             MuxAcceleration(uint8_t* mux_acceleration) noexcept;
 
-#if defined(_ANDROID) || defined(_IPHONE)
+#if defined(_ANDROID) || defined(_IPHONE) || defined(_HARMONYOS)
                 /**
                  * @brief Sets the bypass IP-list text used on mobile platforms.
                  *

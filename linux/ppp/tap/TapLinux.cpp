@@ -11,7 +11,7 @@
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
 
-#if defined(_ANDROID)
+#if defined(_ANDROID) || defined(_HARMONYOS)
 #include <linux/if.h>
 #include <linux/if_tun.h>
 #include <linux/netlink.h>
@@ -1867,7 +1867,7 @@ namespace ppp {
             return any ? rib : NULLPTR;
         }
 
-#if defined(_ANDROID)
+#if defined(_ANDROID) || defined(_HARMONYOS)
         static bool ITAP_FROM_REQUIRED(
             const std::shared_ptr<boost::asio::io_context>& context,
             const ppp::string& id,

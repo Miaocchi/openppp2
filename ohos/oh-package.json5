@@ -1,0 +1,10 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "openppp2-ohos",
+  "version": "1.0.0",
+  "description": "OpenPPP2 native HarmonyOS NEXT client",
+  "main": "",
+  "author": "OpenPPP2",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {}
+}

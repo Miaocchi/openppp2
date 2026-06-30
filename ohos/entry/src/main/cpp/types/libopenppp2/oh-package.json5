@@ -1,0 +1,6 @@
+{
+  "name": "libopenppp2.so",
+  "types": "./index.d.ts",
+  "version": "",
+  "description": "OpenPPP2 HarmonyOS Native API"
+}

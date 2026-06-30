@@ -776,7 +776,7 @@ namespace ppp {
                 Timer::ReleaseAllTimeouts(timeouts);
             }
 
-#if defined(_ANDROID) || defined(_IPHONE)
+#if defined(_ANDROID) || defined(_IPHONE) || defined(_HARMONYOS)
             /** @brief Stores bypass IP list text used by mobile route setup. */
             void VEthernetNetworkSwitcher::SetBypassIpList(ppp::string&& bypass_ip_list) noexcept {
                 bypass_ip_list_ = std::move(bypass_ip_list);

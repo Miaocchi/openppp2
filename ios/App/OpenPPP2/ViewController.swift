@@ -11,8 +11,8 @@ final class ViewController: UITabBarController {
 
         viewControllers = [
             makeTab(HomeViewController(), title: "主页", image: "house", selectedImage: "house.fill"),
-            makeTab(OptionsViewController(), title: "启动参数", image: "slider.horizontal.3", selectedImage: "slider.horizontal.3"),
-            makeTab(ProfilesViewController(), title: "配置文件", image: "folder", selectedImage: "folder.fill"),
+            makeTab(ProfilesViewController(), title: "服务器", image: "network", selectedImage: "network"),
+            makeTab(OptionsViewController(), title: "参数", image: "slider.horizontal.3", selectedImage: "slider.horizontal.3"),
             makeTab(SettingsViewController(), title: "设置", image: "gearshape", selectedImage: "gearshape.fill")
         ]
     }
@@ -1105,6 +1105,18 @@ final class VPNController {
             name: .NEVPNStatusDidChange,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(savedConfigurationDidChange),
+            name: ProfileStore.didChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(savedConfigurationDidChange),
+            name: TelemetrySettingsStore.didChangeNotification,
+            object: nil
+        )
     }
 
     var isActive: Bool {
@@ -1165,9 +1177,9 @@ final class VPNController {
         emitChange()
         completion(.success(()))
 #else
-        let options = profile.options
         let telemetry = TelemetrySettingsStore.shared.settings()
-        let effectiveJson = ProfileStore.effectiveJson(profile.json, options: options, telemetry: telemetry)
+        let providerConfiguration = Self.providerConfiguration(for: profile, telemetry: telemetry)
+        Self.persistLastTunnelConfiguration(for: profile, telemetry: telemetry)
         loadManager { [weak self] manager, error in
             if let error {
                 self?.record(error)
@@ -1179,13 +1191,7 @@ final class VPNController {
             let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
             proto.providerBundleIdentifier = Self.providerBundleIdentifier
             proto.serverAddress = profile.serverEndpoint ?? profile.name
-            proto.providerConfiguration = [
-                "profileId": profile.id,
-                "profileName": profile.name,
-                "configJson": effectiveJson,
-                "optionsJson": Self.encodeOptions(options),
-                "telemetryJson": Self.encodeTelemetry(telemetry)
-            ]
+            proto.providerConfiguration = providerConfiguration
             manager.localizedDescription = "OpenPPP2"
             manager.protocolConfiguration = proto
             manager.isEnabled = true
@@ -1216,6 +1222,66 @@ final class VPNController {
                     } catch {
                         self?.record(error)
                         completion(.failure(error))
+                    }
+                }
+            }
+        }
+#endif
+    }
+
+    func syncActiveProfileToSystemPreferences(completion: ((Result<Void, Error>) -> Void)? = nil) {
+#if targetEnvironment(simulator)
+        completion?(.success(()))
+#else
+        guard let profile = ProfileStore.shared.activeProfile() else {
+            completion?(.success(()))
+            return
+        }
+
+        let telemetry = TelemetrySettingsStore.shared.settings()
+        let providerConfiguration = Self.providerConfiguration(for: profile, telemetry: telemetry)
+        Self.persistLastTunnelConfiguration(for: profile, telemetry: telemetry)
+
+        loadManager { [weak self] manager, error in
+            if let error {
+                NSLog("OpenPPP2 failed to load VPN preferences for sync: %@", error.localizedDescription)
+                completion?(.failure(error))
+                return
+            }
+
+            guard let manager else {
+                NSLog("OpenPPP2 skipped VPN preferences sync because no manager exists yet")
+                completion?(.success(()))
+                return
+            }
+            let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
+            proto.providerBundleIdentifier = Self.providerBundleIdentifier
+            proto.serverAddress = profile.serverEndpoint ?? profile.name
+            proto.providerConfiguration = providerConfiguration
+            manager.localizedDescription = "OpenPPP2"
+            manager.protocolConfiguration = proto
+            manager.isEnabled = true
+
+            manager.saveToPreferences { saveError in
+                if let saveError {
+                    NSLog("OpenPPP2 failed to sync VPN preferences: %@", saveError.localizedDescription)
+                    DispatchQueue.main.async {
+                        completion?(.failure(saveError))
+                    }
+                    return
+                }
+
+                manager.loadFromPreferences { loadError in
+                    DispatchQueue.main.async {
+                        if let loadError {
+                            NSLog("OpenPPP2 failed to reload synced VPN preferences: %@", loadError.localizedDescription)
+                            completion?(.failure(loadError))
+                            return
+                        }
+
+                        self?.manager = manager
+                        NSLog("OpenPPP2 synced VPN preferences for Control Center profile=%@", profile.name)
+                        completion?(.success(()))
                     }
                 }
             }
@@ -1456,6 +1522,10 @@ final class VPNController {
         emitChange()
     }
 
+    @objc private func savedConfigurationDidChange(_ notification: Notification) {
+        syncActiveProfileToSystemPreferences()
+    }
+
     private func record(_ error: Error) {
         lastError = error.localizedDescription
         emitChange()
@@ -1481,6 +1551,30 @@ final class VPNController {
               let raw = String(data: data, encoding: .utf8)
         else { return "{}" }
         return raw
+    }
+
+    private static func providerConfiguration(for profile: ConfigProfile, telemetry: TelemetrySettings) -> [String: Any] {
+        let effectiveJson = ProfileStore.effectiveJson(profile.json, options: profile.options, telemetry: telemetry)
+        return [
+            "profileId": profile.id,
+            "profileName": profile.name,
+            "configJson": effectiveJson,
+            "optionsJson": encodeOptions(profile.options),
+            "telemetryJson": encodeTelemetry(telemetry)
+        ]
+    }
+
+    private static func persistLastTunnelConfiguration(for profile: ConfigProfile, telemetry: TelemetrySettings) {
+        let effectiveJson = ProfileStore.effectiveJson(profile.json, options: profile.options, telemetry: telemetry)
+        TunnelSharedState.writeLastTunnelConfiguration(TunnelSharedState.LastTunnelConfiguration(
+            profileId: profile.id,
+            profileName: profile.name,
+            serverAddress: profile.serverEndpoint ?? profile.name,
+            configJson: effectiveJson,
+            optionsJson: encodeOptions(profile.options),
+            telemetryJson: encodeTelemetry(telemetry),
+            updatedAtMs: Int64(Date().timeIntervalSince1970 * 1000)
+        ))
     }
 }
 
@@ -1878,7 +1972,7 @@ final class SelectProfileViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Select a Location"
+        title = "选择服务器"
         tableView.backgroundColor = .systemGroupedBackground
         tableView.register(ProfileCell.self, forCellReuseIdentifier: ProfileCell.reuseIdentifier)
         navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .close, target: self, action: #selector(close))
@@ -1918,7 +2012,7 @@ final class SelectProfileViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        section == 0 ? (favoriteProfiles.isEmpty ? nil : "Favorites") : "Locations"
+        section == 0 ? (favoriteProfiles.isEmpty ? nil : "收藏") : "服务器"
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -1990,7 +2084,7 @@ final class ProfilesViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "配置文件"
+        title = "服务器"
         tableView.backgroundColor = .systemGroupedBackground
         tableView.register(ProfileCell.self, forCellReuseIdentifier: ProfileCell.reuseIdentifier)
         navigationItem.rightBarButtonItems = [
@@ -2086,7 +2180,7 @@ final class ProfilesViewController: UITableViewController {
                         let subscription = try RemoteSubscriptionParser.parse(text)
                         let count = self.store.upsertSubscription(url: urlText, subscription: subscription)
                         self.reload()
-                        self.presentToast("已导入/更新 \(count) 个节点")
+                        self.presentToast("已导入/更新 \(count) 台服务器")
                     } catch {
                         self.presentMessage(title: "订阅导入失败", message: error.localizedDescription)
                     }
@@ -2137,7 +2231,7 @@ final class ProfilesViewController: UITableViewController {
     }
 
     private func confirmDelete(_ profile: ConfigProfile) {
-        let alert = UIAlertController(title: "删除配置", message: "确定要删除「\(profile.name)」吗？", preferredStyle: .alert)
+        let alert = UIAlertController(title: "删除服务器", message: "确定要删除「\(profile.name)」吗？", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
             self?.store.remove(profile.id)
@@ -2255,7 +2349,7 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = original == nil ? "新增配置" : "编辑配置"
+        title = original == nil ? "添加服务器" : "编辑服务器"
         view.backgroundColor = .systemGroupedBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             barButtonSystemItem: .save,
@@ -2307,7 +2401,7 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
         content.addArrangedSubview(SectionView(title: "高级 Raw JSON", symbol: "chevron.left.forwardslash.chevron.right", views: [rawTextView]))
 
         let saveButton = UIButton(type: .system)
-        saveButton.setTitle("保存配置", for: .normal)
+        saveButton.setTitle("保存服务器", for: .normal)
         saveButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
         saveButton.backgroundColor = .systemBlue
         saveButton.tintColor = .white
@@ -2482,7 +2576,7 @@ final class OptionsViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "启动参数"
+        title = "参数"
         view.backgroundColor = .systemGroupedBackground
         navigationItem.rightBarButtonItems = [
             UIBarButtonItem(barButtonSystemItem: .save, target: self, action: #selector(save)),
@@ -2551,7 +2645,7 @@ final class OptionsViewController: UIViewController {
         ]))
 
         let saveButton = UIButton(type: .system)
-        saveButton.setTitle("保存启动参数", for: .normal)
+        saveButton.setTitle("保存参数", for: .normal)
         saveButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
         saveButton.backgroundColor = .systemBlue
         saveButton.tintColor = .white
@@ -2598,7 +2692,7 @@ final class OptionsViewController: UIViewController {
 
     @objc private func save() {
         guard var profile else {
-            presentMessage(title: "没有配置文件", message: "请先在配置文件页创建并选择一个配置。")
+            presentMessage(title: "没有服务器", message: "请先在服务器页创建并选择一台服务器。")
             return
         }
 
@@ -2632,8 +2726,8 @@ final class OptionsViewController: UIViewController {
         store.update(profile, snapshot: false)
         promptRestartForActiveTunnelIfNeeded(
             profile: profile,
-            message: "启动参数已保存。当前 VPN 正在运行，要让新参数生效需要重连。",
-            noRestartMessage: "启动参数已保存"
+            message: "参数已保存。当前 VPN 正在运行，要让新参数生效需要重连。",
+            noRestartMessage: "参数已保存"
         )
     }
 
@@ -2648,7 +2742,6 @@ final class OptionsViewController: UIViewController {
 final class SettingsViewController: UITableViewController {
     private let store = ProfileStore.shared
     private let vpn = VPNController.shared
-    private let rows = ["调试面板", "刷新 VPN 状态", "崩溃收集", "遥测上传", "打开系统设置", "清空配置文件"]
     private var crashReportSummary: String?
 
     override func viewDidLoad() {
@@ -2663,32 +2756,41 @@ final class SettingsViewController: UITableViewController {
         refreshCrashReportSummary()
     }
 
+    override func numberOfSections(in tableView: UITableView) -> Int {
+        SettingsPresentation.Section.allCases.count
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        SettingsPresentation.Section(rawValue: section)?.title
+    }
+
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        rows.count
+        SettingsPresentation.Section(rawValue: section)?.rows.count ?? 0
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "Cell", for: indexPath)
         var config = UIListContentConfiguration.valueCell()
-        config.text = rows[indexPath.row]
-        switch indexPath.row {
-        case 0:
-            config.secondaryText = store.debugPanelEnabled() ? "开启" : "关闭"
-        case 1:
+        let row = row(at: indexPath)
+        config.text = row.title
+        switch row {
+        case .vpnStatus:
             config.secondaryText = statusText(vpn.status)
-        case 2:
+        case .debugPanel:
+            config.secondaryText = store.debugPanelEnabled() ? "开启" : "关闭"
+        case .crashReports:
             config.secondaryText = crashReportSummary ?? CrashReporter.pendingReportsSummary()
-        case 3:
+        case .telemetryUpload:
             let telemetry = TelemetrySettingsStore.shared.settings()
-            config.secondaryText = telemetry.uploadEnabled ? telemetry.destination.displayName : "关闭"
-        case 4:
+            config.secondaryText = telemetrySummary(telemetry)
+        case .openSystemSettings:
             config.secondaryText = "iOS VPN / App 设置"
-        default:
+        case .resetProfiles:
             config.secondaryText = "恢复默认配置"
         }
         cell.contentConfiguration = config
-        cell.accessoryType = indexPath.row == 0 ? .none : .disclosureIndicator
-        if indexPath.row == 0 {
+        cell.accessoryType = row.usesDisclosure ? .disclosureIndicator : .none
+        if row == .debugPanel {
             let toggle = UISwitch()
             toggle.isOn = store.debugPanelEnabled()
             toggle.addAction(UIAction { [weak self] action in
@@ -2704,26 +2806,41 @@ final class SettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        switch indexPath.row {
-        case 1:
+        switch row(at: indexPath) {
+        case .vpnStatus:
             vpn.refresh { [weak self] in self?.tableView.reloadData() }
-        case 2:
+        case .crashReports:
             navigationController?.pushViewController(CrashReportsViewController(), animated: true)
-        case 3:
+        case .telemetryUpload:
             navigationController?.pushViewController(TelemetrySettingsViewController(), animated: true)
-        case 4:
+        case .openSystemSettings:
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.open(url)
             }
-        case 5:
+        case .resetProfiles:
             confirmReset()
-        default:
+        case .debugPanel:
             break
         }
     }
 
+    private func row(at indexPath: IndexPath) -> SettingsPresentation.Row {
+        guard let section = SettingsPresentation.Section(rawValue: indexPath.section) else {
+            return .vpnStatus
+        }
+        return section.rows[indexPath.row]
+    }
+
+    private func telemetrySummary(_ telemetry: TelemetrySettings) -> String {
+        SettingsPresentation.telemetrySummary(
+            uploadEnabled: telemetry.uploadEnabled,
+            destinationName: telemetry.destination.displayName,
+            endpoint: telemetry.effectiveEndpoint
+        )
+    }
+
     private func confirmReset() {
-        let alert = UIAlertController(title: "清空配置文件", message: "这会删除所有本地配置并恢复默认空白配置。", preferredStyle: .alert)
+        let alert = UIAlertController(title: "清空服务器", message: "这会删除所有本地服务器并恢复默认空白配置。", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
             self?.store.resetAll()

@@ -1,0 +1,1845 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OPENPPP2 Mobile Preview</title>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --stage: #e9ede8;
+      --stage-ink: #1f2a25;
+      --app-bg: #f6f8f4;
+      --surface: #ffffff;
+      --surface-raised: #fbfcfa;
+      --ink: #15201b;
+      --muted: #66736c;
+      --faint: #dfe6df;
+      --primary: #2563eb;
+      --primary-soft: #e7efff;
+      --success: #14945f;
+      --success-soft: #e3f7ed;
+      --danger: #dc3f3f;
+      --danger-soft: #fde8e8;
+      --warning: #b86b11;
+      --warning-soft: #fff2d9;
+      --cyan: #087c90;
+      --cyan-soft: #ddf6fa;
+      --shadow: 0 22px 60px rgba(38, 52, 44, 0.18);
+      --radius: 8px;
+      --pill: 999px;
+    }
+
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --stage: #171b16;
+      --stage-ink: #edf4ec;
+      --app-bg: #10140f;
+      --surface: #181d17;
+      --surface-raised: #20271e;
+      --ink: #edf4ec;
+      --muted: #a7b2aa;
+      --faint: #30382e;
+      --primary: #76a0ff;
+      --primary-soft: rgba(118, 160, 255, 0.16);
+      --success: #4fca8b;
+      --success-soft: rgba(79, 202, 139, 0.16);
+      --danger: #ff7a7a;
+      --danger-soft: rgba(255, 122, 122, 0.16);
+      --warning: #ffc86b;
+      --warning-soft: rgba(255, 200, 107, 0.16);
+      --cyan: #6ed8e7;
+      --cyan-soft: rgba(110, 216, 231, 0.16);
+      --shadow: 0 22px 60px rgba(0, 0, 0, 0.38);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+    }
+
+    body {
+      background:
+        radial-gradient(circle at 18% 12%, rgba(37, 99, 235, 0.10), transparent 26rem),
+        radial-gradient(circle at 88% 78%, rgba(20, 148, 95, 0.12), transparent 22rem),
+        var(--stage);
+      color: var(--stage-ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .preview-stage {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(360px, 430px) minmax(0, 1fr);
+      gap: 32px;
+      min-height: 100vh;
+      padding: 34px clamp(18px, 4vw, 54px);
+      align-items: center;
+    }
+
+    .preview-notes {
+      max-width: 360px;
+      justify-self: end;
+    }
+
+    .preview-notes h1 {
+      margin: 0 0 12px;
+      font-size: 34px;
+      line-height: 1.08;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .preview-notes p {
+      margin: 0 0 22px;
+      color: color-mix(in srgb, var(--stage-ink) 72%, transparent);
+      line-height: 1.7;
+      font-size: 15px;
+    }
+
+    .preview-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .preview-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 42px;
+      border: 1px solid color-mix(in srgb, var(--stage-ink) 18%, transparent);
+      border-radius: var(--radius);
+      color: var(--stage-ink);
+      background: color-mix(in srgb, var(--surface) 76%, transparent);
+      padding: 0 13px;
+      cursor: pointer;
+      box-shadow: 0 8px 22px rgba(38, 52, 44, 0.08);
+    }
+
+    .phone-frame {
+      justify-self: center;
+      width: min(100%, 412px);
+      padding: 12px;
+      border-radius: 38px;
+      background: linear-gradient(145deg, #2c322d, #111411);
+      box-shadow: var(--shadow);
+    }
+
+    .phone {
+      position: relative;
+      overflow: hidden;
+      width: 100%;
+      aspect-ratio: 390 / 844;
+      max-height: calc(100vh - 68px);
+      border-radius: 30px;
+      background: var(--app-bg);
+      color: var(--ink);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+    }
+
+    .phone::before {
+      content: "";
+      position: absolute;
+      z-index: 12;
+      top: 9px;
+      left: 50%;
+      width: 98px;
+      height: 26px;
+      transform: translateX(-50%);
+      border-radius: 0 0 16px 16px;
+      background: #101310;
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: 44px minmax(0, 1fr) 76px;
+      height: 100%;
+      background: var(--app-bg);
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px 0;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .status-icons {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .battery {
+      display: inline-flex;
+      width: 22px;
+      height: 11px;
+      border: 1.8px solid currentColor;
+      border-radius: 3px;
+      padding: 1px;
+    }
+
+    .battery::after {
+      content: "";
+      display: block;
+      width: 70%;
+      border-radius: 1px;
+      background: currentColor;
+    }
+
+    .screens {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .screen {
+      position: absolute;
+      inset: 0;
+      display: none;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 8px 18px 22px;
+    }
+
+    .screen.active {
+      display: block;
+      animation: appear 160ms ease-out;
+    }
+
+    @keyframes appear {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .screen-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      min-height: 48px;
+      margin-bottom: 12px;
+    }
+
+    .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: var(--radius);
+      background: var(--primary-soft);
+      color: var(--primary);
+    }
+
+    .brand-copy {
+      min-width: 0;
+    }
+
+    .eyebrow {
+      margin: 0 0 1px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.2;
+    }
+
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    .title {
+      color: var(--ink);
+      font-size: 19px;
+      line-height: 1.2;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .icon-button {
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 40px;
+      height: 40px;
+      border: 1px solid var(--faint);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--ink);
+      cursor: pointer;
+    }
+
+    .icon-button:active,
+    .preview-button:active,
+    .nav-button:active,
+    .power-button:active {
+      transform: translateY(1px);
+    }
+
+    .status-pill,
+    .mini-pill,
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      max-width: 100%;
+      border-radius: var(--pill);
+      white-space: nowrap;
+    }
+
+    .status-pill {
+      min-height: 32px;
+      padding: 0 10px;
+      background: var(--danger-soft);
+      color: var(--danger);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .status-pill.connected {
+      background: var(--success-soft);
+      color: var(--success);
+    }
+
+    .connection-panel {
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+      min-height: 262px;
+      border: 1px solid var(--faint);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, transparent), var(--surface-raised));
+      padding: 20px 18px;
+    }
+
+    .connection-stack {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      min-height: 210px;
+      text-align: center;
+    }
+
+    .connection-orbit {
+      position: absolute;
+      width: 232px;
+      height: 232px;
+      border: 1px solid color-mix(in srgb, var(--danger) 22%, transparent);
+      border-radius: 50%;
+      opacity: 0.7;
+    }
+
+    .connection-orbit::before,
+    .connection-orbit::after {
+      content: "";
+      position: absolute;
+      inset: 24px;
+      border: 1px solid color-mix(in srgb, var(--danger) 18%, transparent);
+      border-radius: 50%;
+    }
+
+    .connection-orbit::after {
+      inset: 52px;
+    }
+
+    .is-connected .connection-orbit {
+      border-color: color-mix(in srgb, var(--success) 28%, transparent);
+    }
+
+    .is-connected .connection-orbit::before,
+    .is-connected .connection-orbit::after {
+      border-color: color-mix(in srgb, var(--success) 22%, transparent);
+    }
+
+    .power-button {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      place-items: center;
+      width: 124px;
+      height: 124px;
+      border: 0;
+      border-radius: 50%;
+      color: #fff;
+      background: linear-gradient(160deg, #ff766d, var(--danger));
+      cursor: pointer;
+      box-shadow: 0 18px 36px rgba(220, 63, 63, 0.26);
+    }
+
+    .is-connected .power-button {
+      background: linear-gradient(160deg, #51ca91, var(--success));
+      box-shadow: 0 18px 36px rgba(20, 148, 95, 0.26);
+    }
+
+    .power-button svg {
+      width: 42px;
+      height: 42px;
+      stroke-width: 2.4;
+    }
+
+    .connection-copy {
+      position: relative;
+      z-index: 1;
+      margin-top: 16px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .connection-state {
+      font-size: 25px;
+      line-height: 1.15;
+      font-weight: 850;
+      letter-spacing: 0;
+    }
+
+    .connection-detail {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .metric-tile {
+      min-width: 0;
+      min-height: 84px;
+      border: 1px solid var(--faint);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 11px 10px;
+    }
+
+    .metric-tile .label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+    }
+
+    .metric-tile .value {
+      margin-top: 10px;
+      font-size: 16px;
+      line-height: 1.15;
+      font-weight: 800;
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+      overflow-wrap: anywhere;
+    }
+
+    .section-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 18px 2px 8px;
+    }
+
+    .section-title-row h3 {
+      font-size: 14px;
+      line-height: 1.2;
+      color: var(--ink);
+    }
+
+    .text-button {
+      border: 0;
+      background: transparent;
+      color: var(--primary);
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .profile-card,
+    .row-card,
+    .setting-row,
+    .log-panel {
+      border: 1px solid var(--faint);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+
+    .profile-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 78px;
+      padding: 12px;
+      cursor: pointer;
+    }
+
+    .flag {
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 42px;
+      height: 42px;
+      border-radius: var(--radius);
+      background: var(--primary-soft);
+      font-size: 22px;
+    }
+
+    .profile-copy,
+    .row-copy {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    .profile-name,
+    .row-title {
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.25;
+      font-weight: 800;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .profile-subtitle,
+    .row-subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mini-pill {
+      min-height: 26px;
+      padding: 0 8px;
+      background: var(--success-soft);
+      color: var(--success);
+      font-size: 11px;
+      font-weight: 850;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .mini-pill.warn {
+      background: var(--warning-soft);
+      color: var(--warning);
+    }
+
+    .mini-pill.danger {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .node-list,
+    .settings-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .row-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 70px;
+      padding: 11px 12px;
+      cursor: pointer;
+    }
+
+    .row-icon {
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius);
+      color: var(--primary);
+      background: var(--primary-soft);
+    }
+
+    .row-card.active {
+      border-color: color-mix(in srgb, var(--primary) 72%, var(--faint));
+      box-shadow: inset 3px 0 0 var(--primary);
+    }
+
+    .section-card {
+      display: grid;
+      gap: 10px;
+      border: 1px solid var(--faint);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .section-head h3 {
+      font-size: 14px;
+      line-height: 1.2;
+    }
+
+    .tag {
+      min-height: 24px;
+      padding: 0 8px;
+      background: var(--cyan-soft);
+      color: var(--cyan);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .setting-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 58px;
+      padding: 10px;
+      background: var(--surface-raised);
+    }
+
+    .setting-row.compact {
+      min-height: 48px;
+    }
+
+    .setting-text {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    .setting-title {
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.25;
+      color: var(--ink);
+    }
+
+    .setting-subtitle {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .switch {
+      position: relative;
+      flex: 0 0 auto;
+      width: 46px;
+      height: 28px;
+    }
+
+    .switch input {
+      position: absolute;
+      opacity: 0;
+    }
+
+    .switch span {
+      position: absolute;
+      inset: 0;
+      border-radius: var(--pill);
+      background: #cad3ca;
+      cursor: pointer;
+      transition: 150ms ease;
+    }
+
+    .switch span::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: 4px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+      transition: 150ms ease;
+    }
+
+    .switch input:checked + span {
+      background: var(--success);
+    }
+
+    .switch input:checked + span::after {
+      transform: translateX(18px);
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid var(--faint);
+      border-radius: var(--radius);
+      background: var(--surface-raised);
+    }
+
+    .segmented.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .segmented.four {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .segment {
+      min-width: 0;
+      min-height: 34px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .segment.active {
+      background: var(--surface);
+      color: var(--primary);
+      box-shadow: 0 2px 8px rgba(38, 52, 44, 0.08);
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .field-grid.single {
+      grid-template-columns: 1fr;
+    }
+
+    .field {
+      display: grid;
+      gap: 5px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .field input,
+    .field textarea {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--faint);
+      border-radius: var(--radius);
+      background: var(--surface-raised);
+      color: var(--ink);
+      padding: 0 10px;
+      outline: none;
+    }
+
+    .field textarea {
+      min-height: 72px;
+      resize: vertical;
+      padding: 10px;
+      line-height: 1.45;
+    }
+
+    .inline-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .action-card {
+      display: grid;
+      gap: 9px;
+      min-width: 0;
+      border: 1px solid var(--faint);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 12px;
+      cursor: pointer;
+    }
+
+    .action-card.primary {
+      border-color: color-mix(in srgb, var(--primary) 52%, var(--faint));
+      background: linear-gradient(180deg, var(--primary-soft), var(--surface));
+    }
+
+    .action-card .row-icon {
+      width: 34px;
+      height: 34px;
+    }
+
+    .action-card strong {
+      display: block;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.25;
+    }
+
+    .action-card span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .save-strip {
+      position: sticky;
+      bottom: -22px;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 14px -18px -22px;
+      padding: 10px 18px 14px;
+      border-top: 1px solid var(--faint);
+      background: color-mix(in srgb, var(--surface) 94%, transparent);
+      backdrop-filter: blur(14px);
+    }
+
+    .filled-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-height: 40px;
+      border: 0;
+      border-radius: var(--radius);
+      background: var(--primary);
+      color: #fff;
+      padding: 0 13px;
+      font-weight: 850;
+      cursor: pointer;
+    }
+
+    .log-panel {
+      padding: 12px;
+    }
+
+    .log-panel code {
+      display: block;
+      margin-top: 8px;
+      max-height: 132px;
+      overflow: auto;
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--ink) 8%, transparent);
+      color: var(--muted);
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+    }
+
+    .bottom-nav {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 4px;
+      align-items: center;
+      padding: 8px 10px 12px;
+      border-top: 1px solid var(--faint);
+      background: color-mix(in srgb, var(--surface) 92%, transparent);
+    }
+
+    .nav-button {
+      display: grid;
+      place-items: center;
+      gap: 3px;
+      min-width: 0;
+      min-height: 54px;
+      border: 0;
+      border-radius: var(--radius);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 760;
+    }
+
+    .nav-button svg {
+      width: 21px;
+      height: 21px;
+      stroke-width: 2.2;
+    }
+
+    .nav-button.active {
+      background: var(--primary-soft);
+      color: var(--primary);
+    }
+
+    .side-panel {
+      max-width: 320px;
+      justify-self: start;
+      display: grid;
+      gap: 12px;
+    }
+
+    .token-card {
+      border: 1px solid color-mix(in srgb, var(--stage-ink) 15%, transparent);
+      border-radius: var(--radius);
+      background: color-mix(in srgb, var(--surface) 74%, transparent);
+      padding: 14px;
+      box-shadow: 0 8px 22px rgba(38, 52, 44, 0.06);
+    }
+
+    .token-card h2 {
+      font-size: 14px;
+      line-height: 1.3;
+      margin-bottom: 10px;
+    }
+
+    .swatches {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 7px;
+    }
+
+    .swatch {
+      height: 34px;
+      border-radius: var(--radius);
+      border: 1px solid rgba(255, 255, 255, 0.26);
+    }
+
+    .token-card ul {
+      margin: 0;
+      padding-left: 18px;
+      color: color-mix(in srgb, var(--stage-ink) 72%, transparent);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    @media (max-width: 1040px) {
+      .preview-stage {
+        grid-template-columns: 1fr;
+        justify-items: center;
+      }
+
+      .preview-notes,
+      .side-panel {
+        justify-self: center;
+        max-width: 412px;
+        width: 100%;
+      }
+
+      .preview-notes h1 {
+        font-size: 28px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      body {
+        background: var(--app-bg);
+      }
+
+      .preview-stage {
+        display: block;
+        min-height: 100vh;
+        padding: 0;
+      }
+
+      .preview-notes,
+      .side-panel {
+        display: none;
+      }
+
+      .phone-frame {
+        width: 100%;
+        min-height: 100vh;
+        padding: 0;
+        border-radius: 0;
+        background: var(--app-bg);
+        box-shadow: none;
+      }
+
+      .phone {
+        width: 100%;
+        min-height: 100vh;
+        max-height: none;
+        aspect-ratio: auto;
+        border: 0;
+        border-radius: 0;
+      }
+
+      .phone::before {
+        display: none;
+      }
+
+      .app {
+        min-height: 100vh;
+      }
+
+      .inline-actions {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="preview-stage">
+    <aside class="preview-notes" aria-label="Preview summary">
+      <h1>OPENPPP2 移动端重构预览</h1>
+      <p>先把移动端主路径做成 Web 原型：连接、服务器、参数、设置四个页签可以直接点击。这个版本用于确认信息层级和视觉方向。</p>
+      <div class="preview-actions">
+        <button class="preview-button" id="themeToggle" type="button">
+          <i data-lucide="moon"></i>
+          <span>暗色</span>
+        </button>
+        <button class="preview-button" id="connectShortcut" type="button">
+          <i data-lucide="power"></i>
+          <span>连接</span>
+        </button>
+      </div>
+    </aside>
+
+    <section class="phone-frame" aria-label="OPENPPP2 mobile app preview">
+      <div class="phone">
+        <div class="app">
+          <div class="status-bar" aria-hidden="true">
+            <span>9:41</span>
+            <span class="status-icons">
+              <i data-lucide="signal" width="14" height="14"></i>
+              <i data-lucide="wifi" width="14" height="14"></i>
+              <span class="battery"></span>
+            </span>
+          </div>
+
+          <div class="screens">
+            <section class="screen active" data-screen="home">
+              <header class="screen-header">
+                <div class="brand-lockup">
+                  <div class="brand-mark"><i data-lucide="shield-check"></i></div>
+                  <div class="brand-copy">
+                    <p class="eyebrow">OPENPPP2</p>
+                    <h2 class="title">安全连接</h2>
+                  </div>
+                </div>
+                <span class="status-pill" id="statusPill">
+                  <i data-lucide="circle-off" width="14" height="14"></i>
+                  <span>未连接</span>
+                </span>
+              </header>
+
+              <section class="connection-panel" id="connectionPanel">
+                <div class="connection-orbit" aria-hidden="true"></div>
+                <div class="connection-stack">
+                  <button class="power-button" id="powerButton" type="button" title="连接或断开">
+                    <i data-lucide="power"></i>
+                  </button>
+                  <div class="connection-copy">
+                    <p class="connection-state" id="connectionState">未连接</p>
+                    <p class="connection-detail" id="connectionDetail">当前流量未经过 OPENPPP2 隧道</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="metrics" aria-label="Connection metrics">
+                <article class="metric-tile">
+                  <p class="label"><i data-lucide="timer" width="13" height="13"></i>时长</p>
+                  <p class="value" id="durationValue">00:00:00</p>
+                </article>
+                <article class="metric-tile">
+                  <p class="label"><i data-lucide="arrow-up" width="13" height="13"></i>上行</p>
+                  <p class="value" id="uploadValue">0 KB/s</p>
+                </article>
+                <article class="metric-tile">
+                  <p class="label"><i data-lucide="arrow-down" width="13" height="13"></i>下行</p>
+                  <p class="value" id="downloadValue">0 KB/s</p>
+                </article>
+              </section>
+
+              <div class="section-title-row">
+                <h3>当前服务器</h3>
+                <button class="text-button" type="button" data-jump="nodes">切换</button>
+              </div>
+              <article class="profile-card" data-jump="nodes">
+                <div class="flag">🇯🇵</div>
+                <div class="profile-copy">
+                  <p class="profile-name">Tokyo Premium · TCP</p>
+                  <p class="profile-subtitle">jp-01.edge.example.com:443</p>
+                </div>
+                <span class="mini-pill">38 ms</span>
+              </article>
+
+              <div class="section-title-row">
+                <h3>运行策略</h3>
+                <button class="text-button" type="button" data-jump="options">编辑</button>
+              </div>
+              <div class="node-list">
+                <article class="row-card" data-jump="options">
+                  <div class="row-icon"><i data-lucide="route"></i></div>
+                  <div class="row-copy">
+                    <p class="row-title">智能分流</p>
+                    <p class="row-subtitle">国内直连 · 海外代理 · LAN 放行</p>
+                  </div>
+                  <i data-lucide="chevron-right" width="18" height="18"></i>
+                </article>
+                <article class="row-card" data-jump="options">
+                  <div class="row-icon"><i data-lucide="scan-search"></i></div>
+                  <div class="row-copy">
+                    <p class="row-title">DNS 解析</p>
+                    <p class="row-subtitle">Domestic 223.5.5.5 · Foreign 1.1.1.1</p>
+                  </div>
+                  <i data-lucide="chevron-right" width="18" height="18"></i>
+                </article>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="nodes">
+              <header class="screen-header">
+                <div>
+                  <p class="eyebrow">Profiles</p>
+                  <h2 class="title">服务器</h2>
+                </div>
+                <div>
+                  <button class="icon-button" type="button" title="同步订阅"><i data-lucide="refresh-cw"></i></button>
+                  <button class="icon-button" type="button" title="新增配置"><i data-lucide="plus"></i></button>
+                </div>
+              </header>
+
+              <div class="inline-actions">
+                <article class="action-card primary">
+                  <div class="row-icon"><i data-lucide="plus"></i></div>
+                  <div>
+                    <strong>添加单个服务器</strong>
+                    <span>手动填写名称、地址、端口和密钥</span>
+                  </div>
+                </article>
+                <article class="action-card">
+                  <div class="row-icon"><i data-lucide="cloud-download"></i></div>
+                  <div>
+                    <strong>导入远程订阅</strong>
+                    <span>从 URL 同步多台服务器</span>
+                  </div>
+                </article>
+              </div>
+
+              <article class="profile-card">
+                <div class="row-icon"><i data-lucide="rss"></i></div>
+                <div class="profile-copy">
+                  <p class="profile-name">远程订阅</p>
+                  <p class="profile-subtitle">12 台服务器 · 10:24 更新</p>
+                </div>
+                <span class="mini-pill">正常</span>
+              </article>
+
+              <div class="section-title-row">
+                <h3>可用服务器</h3>
+                <span class="tag">延迟已排序</span>
+              </div>
+              <div class="node-list">
+                <article class="row-card active node-option" data-node="Tokyo Premium · TCP" data-flag="🇯🇵" data-latency="38 ms">
+                  <div class="flag">🇯🇵</div>
+                  <div class="row-copy">
+                    <p class="row-title">Tokyo Premium · TCP</p>
+                    <p class="row-subtitle">jp-01.edge.example.com:443</p>
+                  </div>
+                  <span class="mini-pill">38 ms</span>
+                </article>
+                <article class="row-card node-option" data-node="Singapore Relay · UDP" data-flag="🇸🇬" data-latency="62 ms">
+                  <div class="flag">🇸🇬</div>
+                  <div class="row-copy">
+                    <p class="row-title">Singapore Relay · UDP</p>
+                    <p class="row-subtitle">sg-02.edge.example.com:8443</p>
+                  </div>
+                  <span class="mini-pill warn">62 ms</span>
+                </article>
+                <article class="row-card node-option" data-node="Los Angeles Backup" data-flag="🇺🇸" data-latency="142 ms">
+                  <div class="flag">🇺🇸</div>
+                  <div class="row-copy">
+                    <p class="row-title">Los Angeles Backup</p>
+                    <p class="row-subtitle">us-west.backup.example.com:443</p>
+                  </div>
+                  <span class="mini-pill danger">142 ms</span>
+                </article>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="options">
+              <header class="screen-header">
+                <div>
+                  <p class="eyebrow">Launch Options</p>
+                  <h2 class="title">参数</h2>
+                </div>
+                <button class="icon-button" type="button" title="保存"><i data-lucide="save"></i></button>
+              </header>
+
+              <section class="section-card">
+                <div class="section-head">
+                  <h3>代理与应用</h3>
+                  <span class="tag">Per App</span>
+                </div>
+                <div class="setting-row">
+                  <div class="row-icon"><i data-lucide="split"></i></div>
+                  <div class="setting-text">
+                    <p class="setting-title">分应用代理</p>
+                    <p class="setting-subtitle">仅代理已选择的应用</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" checked>
+                    <span></span>
+                  </label>
+                </div>
+                <div class="segmented two" role="group" aria-label="Proxy mode">
+                  <button class="segment active" type="button">仅代理选中</button>
+                  <button class="segment" type="button">排除选中</button>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">已选择应用</p>
+                    <p class="setting-subtitle">Telegram · Chrome · YouTube</p>
+                  </div>
+                  <button class="text-button" type="button">选择</button>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">允许局域网访问</p>
+                    <p class="setting-subtitle">保留打印机、NAS 与本地网段</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" checked>
+                    <span></span>
+                  </label>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">阻断 QUIC</p>
+                    <p class="setting-subtitle">降低 UDP 旁路风险</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox">
+                    <span></span>
+                  </label>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">系统 HTTP 代理</p>
+                    <p class="setting-subtitle">自动附加 Android 系统代理配置</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox">
+                    <span></span>
+                  </label>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">仅代理模式</p>
+                    <p class="setting-subtitle">只启动代理能力，不接管全局 VPN 路由</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox">
+                    <span></span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="section-card">
+                <div class="section-head">
+                  <h3>TUN 接口</h3>
+                  <span class="tag">Network</span>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="tunIp">TUN IP</label>
+                    <input id="tunIp" value="10.0.0.2">
+                  </div>
+                  <div class="field">
+                    <label for="tunMask">TUN Mask</label>
+                    <input id="tunMask" value="255.255.255.0">
+                  </div>
+                  <div class="field">
+                    <label for="tunPrefix">TUN Prefix</label>
+                    <input id="tunPrefix" value="24">
+                  </div>
+                  <div class="field">
+                    <label for="mtu">MTU</label>
+                    <input id="mtu" value="1400">
+                  </div>
+                  <div class="field">
+                    <label for="gateway">Gateway</label>
+                    <input id="gateway" value="10.0.0.1">
+                  </div>
+                  <div class="field">
+                    <label for="vnet">虚拟网络</label>
+                    <input id="vnet" value="关闭">
+                  </div>
+                </div>
+              </section>
+
+              <section class="section-card">
+                <div class="section-head">
+                  <h3>路由</h3>
+                  <span class="tag">Route</span>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="route">默认路由</label>
+                    <input id="route" value="0.0.0.0">
+                  </div>
+                  <div class="field">
+                    <label for="routePrefix">Route Prefix</label>
+                    <input id="routePrefix" value="0">
+                  </div>
+                </div>
+                <div class="field-grid single">
+                  <div class="field">
+                    <label for="bypassIpList">绕过 CIDR</label>
+                    <textarea id="bypassIpList">10.0.0.0/8
+172.16.0.0/12
+192.168.0.0/16</textarea>
+                  </div>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">静态路由模式</p>
+                    <p class="setting-subtitle">使用固定路由表，不自动推导</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox">
+                    <span></span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="section-card">
+                <div class="section-head">
+                  <h3>DNS 基础</h3>
+                  <span class="tag">System DNS</span>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="dns1">DNS 1</label>
+                    <input id="dns1" value="223.5.5.5">
+                  </div>
+                  <div class="field">
+                    <label for="dns2">DNS 2</label>
+                    <input id="dns2" value="1.1.1.1">
+                  </div>
+                </div>
+                <div class="field-grid single">
+                  <div class="field">
+                    <label for="dnsRulesList">DNS 规则列表</label>
+                    <textarea id="dnsRulesList">geosite:cn -> domestic
+geosite:geolocation-!cn -> foreign</textarea>
+                  </div>
+                </div>
+              </section>
+
+              <section class="section-card">
+                <div class="section-head">
+                  <h3>DNS Resolver</h3>
+                  <span class="tag">Smart DNS</span>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="dnsDomestic">国内上游</label>
+                    <input id="dnsDomestic" value="https://dns.alidns.com/dns-query">
+                  </div>
+                  <div class="field">
+                    <label for="dnsForeign">海外上游</label>
+                    <input id="dnsForeign" value="https://1.1.1.1/dns-query">
+                  </div>
+                  <div class="field">
+                    <label for="dnsEcsOverride">ECS Override IP</label>
+                    <input id="dnsEcsOverride" value="">
+                  </div>
+                  <div class="field">
+                    <label for="dnsStunCandidates">STUN 候选</label>
+                    <input id="dnsStunCandidates" value="stun.l.google.com:19302">
+                  </div>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">拦截未匹配 DNS</p>
+                    <p class="setting-subtitle">未命中规则时仍由隧道接管</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" checked>
+                    <span></span>
+                  </label>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">启用 ECS</p>
+                    <p class="setting-subtitle">向上游传递客户端子网信息</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" checked>
+                    <span></span>
+                  </label>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">TLS 校验证书</p>
+                    <p class="setting-subtitle">DoH / DoT 连接校验远端证书</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" checked>
+                    <span></span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="section-card">
+                <div class="section-head">
+                  <h3>Geo Rules</h3>
+                  <span class="tag">Bypass</span>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">启用 Geo 分流</p>
+                    <p class="setting-subtitle">按国家、GeoIP 和 GeoSite 输出规则</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox" checked>
+                    <span></span>
+                  </label>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="geoCountry">国家代码</label>
+                    <input id="geoCountry" value="CN">
+                  </div>
+                  <div class="field">
+                    <label for="geoOutputBypass">输出 Bypass</label>
+                    <input id="geoOutputBypass" value="bypass.txt">
+                  </div>
+                  <div class="field">
+                    <label for="geoIpDat">GeoIP.dat</label>
+                    <input id="geoIpDat" value="rules/geoip.dat">
+                  </div>
+                  <div class="field">
+                    <label for="geoSiteDat">GeoSite.dat</label>
+                    <input id="geoSiteDat" value="rules/geosite.dat">
+                  </div>
+                  <div class="field">
+                    <label for="geoIpDownloadUrl">GeoIP 下载 URL</label>
+                    <input id="geoIpDownloadUrl" value="https://example.com/geoip.dat">
+                  </div>
+                  <div class="field">
+                    <label for="geoSiteDownloadUrl">GeoSite 下载 URL</label>
+                    <input id="geoSiteDownloadUrl" value="https://example.com/geosite.dat">
+                  </div>
+                  <div class="field">
+                    <label for="geoDnsProviderDomestic">国内 DNS Provider</label>
+                    <input id="geoDnsProviderDomestic" value="domestic">
+                  </div>
+                  <div class="field">
+                    <label for="geoDnsProviderForeign">海外 DNS Provider</label>
+                    <input id="geoDnsProviderForeign" value="foreign">
+                  </div>
+                </div>
+                <div class="field-grid single">
+                  <div class="field">
+                    <label for="geoIpFiles">附加 GeoIP 文件</label>
+                    <textarea id="geoIpFiles">rules/private-geoip.dat</textarea>
+                  </div>
+                  <div class="field">
+                    <label for="geoSiteFiles">附加 GeoSite 文件</label>
+                    <textarea id="geoSiteFiles">rules/private-geosite.dat</textarea>
+                  </div>
+                  <div class="field">
+                    <label for="geoOutputDnsRules">输出 DNS Rules</label>
+                    <textarea id="geoOutputDnsRules">geosite:cn -> domestic
+geosite:geolocation-!cn -> foreign</textarea>
+                  </div>
+                </div>
+              </section>
+
+              <section class="section-card">
+                <div class="section-head">
+                  <h3>高级</h3>
+                  <span class="tag">手动</span>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label for="mux">VMux</label>
+                    <input id="mux" value="0">
+                  </div>
+                  <div class="field">
+                    <label for="mark">Mark</label>
+                    <input id="mark" value="0">
+                  </div>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">VNet</p>
+                    <p class="setting-subtitle">启用虚拟网络交换模式</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox">
+                    <span></span>
+                  </label>
+                </div>
+                <div class="setting-row compact">
+                  <div class="setting-text">
+                    <p class="setting-title">Static Mode</p>
+                    <p class="setting-subtitle">固定参数，不从运行时状态覆盖</p>
+                  </div>
+                  <label class="switch">
+                    <input type="checkbox">
+                    <span></span>
+                  </label>
+                </div>
+              </section>
+
+              <div class="save-strip">
+                <span class="setting-subtitle">已覆盖当前 Android 表单里的主要参数</span>
+                <button class="filled-button" type="button">
+                  <i data-lucide="save" width="17" height="17"></i>
+                  保存
+                </button>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="settings">
+              <header class="screen-header">
+                <div>
+                  <p class="eyebrow">App</p>
+                  <h2 class="title">设置</h2>
+                </div>
+                <button class="icon-button" type="button" title="帮助"><i data-lucide="circle-help"></i></button>
+              </header>
+
+              <div class="settings-list">
+                <article class="row-card">
+                  <div class="row-icon"><i data-lucide="info"></i></div>
+                  <div class="row-copy">
+                    <p class="row-title">OPENPPP2 Android Client</p>
+                    <p class="row-subtitle">v1.0.0 · Native engine ready</p>
+                  </div>
+                </article>
+
+                <section class="section-card">
+                  <div class="section-head">
+                    <h3>主题</h3>
+                  </div>
+                  <div class="segmented" role="group" aria-label="Theme mode">
+                    <button class="segment active theme-segment" type="button" data-mode="system">系统</button>
+                    <button class="segment theme-segment" type="button" data-mode="light">浅色</button>
+                    <button class="segment theme-segment" type="button" data-mode="dark">深色</button>
+                  </div>
+                </section>
+
+                <section class="section-card">
+                  <div class="section-head">
+                    <h3>OpenTelemetry</h3>
+                    <span class="tag">OTEL</span>
+                  </div>
+                  <div class="setting-row compact">
+                    <div class="setting-text">
+                      <p class="setting-title">启用 OTEL</p>
+                      <p class="setting-subtitle">Native 日志、Metrics 和 Spans 重连后生效</p>
+                    </div>
+                    <label class="switch">
+                      <input type="checkbox" checked>
+                      <span></span>
+                    </label>
+                  </div>
+                  <div class="field-grid single">
+                    <div class="field">
+                      <label for="otelEndpoint">OTLP Endpoint</label>
+                      <input id="otelEndpoint" value="https://collector.example.com">
+                    </div>
+                  </div>
+                  <div class="segmented four" role="group" aria-label="OTEL level">
+                    <button class="segment" type="button">Info</button>
+                    <button class="segment active" type="button">Verbose</button>
+                    <button class="segment" type="button">Debug</button>
+                    <button class="segment" type="button">Trace</button>
+                  </div>
+                  <div class="setting-row compact">
+                    <div class="setting-text">
+                      <p class="setting-title">Metrics</p>
+                      <p class="setting-subtitle">count / gauge / histogram</p>
+                    </div>
+                    <label class="switch">
+                      <input type="checkbox" checked>
+                      <span></span>
+                    </label>
+                  </div>
+                  <div class="setting-row compact">
+                    <div class="setting-text">
+                      <p class="setting-title">Spans</p>
+                      <p class="setting-subtitle">Native trace span</p>
+                    </div>
+                    <label class="switch">
+                      <input type="checkbox">
+                      <span></span>
+                    </label>
+                  </div>
+                  <div class="field-grid single">
+                    <div class="field">
+                      <label for="otelLogFile">log-file</label>
+                      <input id="otelLogFile" value="/sdcard/Download/openppp2-otel.log">
+                    </div>
+                  </div>
+                </section>
+
+                <section class="section-card">
+                  <div class="section-head">
+                    <h3>调试</h3>
+                    <span class="tag">开发</span>
+                  </div>
+                  <div class="setting-row compact">
+                    <div class="setting-text">
+                      <p class="setting-title">显示调试面板</p>
+                      <p class="setting-subtitle">主页和设置页展示日志状态</p>
+                    </div>
+                    <label class="switch">
+                      <input type="checkbox" checked>
+                      <span></span>
+                    </label>
+                  </div>
+                  <div class="log-panel">
+                    <p class="setting-title">最近日志</p>
+                    <code>[10:24:31] link_state=ESTABLISHED
+[10:24:32] rx=1.8MB tx=420KB
+[10:24:33] dns route matched: geosite:cn</code>
+                  </div>
+                </section>
+              </div>
+            </section>
+          </div>
+
+          <nav class="bottom-nav" aria-label="Main navigation">
+            <button class="nav-button active" type="button" data-target="home">
+              <i data-lucide="house"></i>
+              <span>主页</span>
+            </button>
+            <button class="nav-button" type="button" data-target="nodes">
+              <i data-lucide="server"></i>
+              <span>服务器</span>
+            </button>
+            <button class="nav-button" type="button" data-target="options">
+              <i data-lucide="sliders-horizontal"></i>
+              <span>参数</span>
+            </button>
+            <button class="nav-button" type="button" data-target="settings">
+              <i data-lucide="settings"></i>
+              <span>设置</span>
+            </button>
+          </nav>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side-panel" aria-label="Design tokens">
+      <section class="token-card">
+        <h2>视觉基调</h2>
+        <div class="swatches" aria-hidden="true">
+          <span class="swatch" style="background:#2563eb"></span>
+          <span class="swatch" style="background:#14945f"></span>
+          <span class="swatch" style="background:#dc3f3f"></span>
+          <span class="swatch" style="background:#b86b11"></span>
+          <span class="swatch" style="background:#087c90"></span>
+        </div>
+      </section>
+      <section class="token-card">
+        <h2>重构重点</h2>
+        <ul>
+          <li>首页只保留连接主路径。</li>
+          <li>服务器从配置页中独立出来。</li>
+          <li>高级参数默认收进分组。</li>
+          <li>Android 设置页展示 OTEL 配置。</li>
+          <li>状态、流量、错误都有固定位置。</li>
+        </ul>
+      </section>
+    </aside>
+  </main>
+
+  <script>
+    const appState = {
+      connected: false,
+      connectedAt: null,
+      timer: null,
+      node: {
+        name: "Tokyo Premium · TCP",
+        flag: "🇯🇵",
+        latency: "38 ms",
+      },
+    };
+
+    const screens = document.querySelectorAll(".screen");
+    const navButtons = document.querySelectorAll(".nav-button");
+    const statusPill = document.getElementById("statusPill");
+    const panel = document.getElementById("connectionPanel");
+    const connectionState = document.getElementById("connectionState");
+    const connectionDetail = document.getElementById("connectionDetail");
+    const durationValue = document.getElementById("durationValue");
+    const uploadValue = document.getElementById("uploadValue");
+    const downloadValue = document.getElementById("downloadValue");
+    const powerButton = document.getElementById("powerButton");
+    const themeToggle = document.getElementById("themeToggle");
+    const connectShortcut = document.getElementById("connectShortcut");
+
+    function createIcons() {
+      if (window.lucide) {
+        window.lucide.createIcons();
+      }
+    }
+
+    function showScreen(target) {
+      screens.forEach((screen) => {
+        screen.classList.toggle("active", screen.dataset.screen === target);
+      });
+      navButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.target === target);
+      });
+    }
+
+    function formatDuration(ms) {
+      const total = Math.max(0, Math.floor(ms / 1000));
+      const h = String(Math.floor(total / 3600)).padStart(2, "0");
+      const m = String(Math.floor((total % 3600) / 60)).padStart(2, "0");
+      const s = String(total % 60).padStart(2, "0");
+      return `${h}:${m}:${s}`;
+    }
+
+    function updateConnectionUi() {
+      panel.classList.toggle("is-connected", appState.connected);
+      statusPill.classList.toggle("connected", appState.connected);
+      statusPill.innerHTML = appState.connected
+        ? '<i data-lucide="shield-check" width="14" height="14"></i><span>已保护</span>'
+        : '<i data-lucide="circle-off" width="14" height="14"></i><span>未连接</span>';
+      connectionState.textContent = appState.connected ? "已连接" : "未连接";
+      connectionDetail.textContent = appState.connected
+        ? `${appState.node.name} · ${appState.node.latency}`
+        : "当前流量未经过 OPENPPP2 隧道";
+      connectShortcut.querySelector("span").textContent = appState.connected ? "断开" : "连接";
+      createIcons();
+    }
+
+    function refreshMetrics() {
+      if (!appState.connected || !appState.connectedAt) {
+        durationValue.textContent = "00:00:00";
+        uploadValue.textContent = "0 KB/s";
+        downloadValue.textContent = "0 KB/s";
+        return;
+      }
+      const elapsed = Date.now() - appState.connectedAt;
+      const wave = Math.sin(Date.now() / 1300);
+      durationValue.textContent = formatDuration(elapsed);
+      uploadValue.textContent = `${(260 + wave * 80).toFixed(0)} KB/s`;
+      downloadValue.textContent = `${(1.8 + wave * 0.4).toFixed(1)} MB/s`;
+    }
+
+    function setConnected(value) {
+      appState.connected = value;
+      appState.connectedAt = value ? Date.now() : null;
+      updateConnectionUi();
+      refreshMetrics();
+      if (appState.timer) {
+        clearInterval(appState.timer);
+      }
+      appState.timer = value ? setInterval(refreshMetrics, 1000) : null;
+    }
+
+    navButtons.forEach((button) => {
+      button.addEventListener("click", () => showScreen(button.dataset.target));
+    });
+
+    document.querySelectorAll("[data-jump]").forEach((button) => {
+      button.addEventListener("click", () => showScreen(button.dataset.jump));
+    });
+
+    document.querySelectorAll(".node-option").forEach((node) => {
+      node.addEventListener("click", () => {
+        document.querySelectorAll(".node-option").forEach((item) => item.classList.remove("active"));
+        node.classList.add("active");
+        appState.node = {
+          name: node.dataset.node,
+          flag: node.dataset.flag,
+          latency: node.dataset.latency,
+        };
+        document.querySelector(".profile-card[data-jump='nodes'] .flag").textContent = appState.node.flag;
+        document.querySelector(".profile-card[data-jump='nodes'] .profile-name").textContent = appState.node.name;
+        document.querySelector(".profile-card[data-jump='nodes'] .mini-pill").textContent = appState.node.latency;
+        updateConnectionUi();
+        showScreen("home");
+      });
+    });
+
+    document.querySelectorAll(".segment").forEach((segment) => {
+      segment.addEventListener("click", () => {
+        segment.parentElement.querySelectorAll(".segment").forEach((item) => item.classList.remove("active"));
+        segment.classList.add("active");
+      });
+    });
+
+    powerButton.addEventListener("click", () => setConnected(!appState.connected));
+    connectShortcut.addEventListener("click", () => setConnected(!appState.connected));
+
+    themeToggle.addEventListener("click", () => {
+      const dark = document.documentElement.dataset.theme !== "dark";
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+      themeToggle.querySelector("span").textContent = dark ? "浅色" : "暗色";
+      themeToggle.querySelector("i").setAttribute("data-lucide", dark ? "sun" : "moon");
+      createIcons();
+    });
+
+    document.querySelectorAll(".theme-segment").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = button.dataset.mode;
+        if (mode === "dark") {
+          document.documentElement.dataset.theme = "dark";
+        } else if (mode === "light") {
+          document.documentElement.dataset.theme = "light";
+        }
+      });
+    });
+
+    updateConnectionUi();
+    createIcons();
+  </script>
+</body>
+</html>

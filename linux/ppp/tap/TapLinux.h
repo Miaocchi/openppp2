@@ -84,9 +84,9 @@ namespace ppp
             static bool                                                             AddAllRoutes(const ppp::function<ppp::string(ppp::net::native::RouteEntry&)>& interface_name, std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept;
             static bool                                                             DeleteAllRoutes(const ppp::function<ppp::string(ppp::net::native::RouteEntry&)>& interface_name, std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept;
             static std::shared_ptr<ppp::net::native::RouteInformationTable>         FindAllDefaultGatewayRoutes(const ppp::unordered_set<uint32_t>& bypass_gws) noexcept;
-#if defined(_ANDROID)   
+#if defined(_ANDROID) || defined(_HARMONYOS)
             static std::shared_ptr<ITap>                                            From(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& id, void* tun, uint32_t address, uint32_t gw, uint32_t mask, bool promisc, bool hosted_network) noexcept;
-#endif  
+#endif
 
         private:    
             static void                                                             InitialSockAddrIn(struct sockaddr* sa, in_addr_t addr) noexcept;
