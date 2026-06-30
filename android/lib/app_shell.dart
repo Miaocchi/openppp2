@@ -14,12 +14,21 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   int _index = 0;
 
-  late final List<Widget> _pages = const [
-    HomePage(),
-    OptionsPage(),
-    ProfilesPage(),
-    SettingsPage(),
-  ];
+  late final List<Widget> _pages;
+
+  @override
+  void initState() {
+    super.initState();
+    _pages = [
+      HomePage(
+        onOpenServers: () => setState(() => _index = 1),
+        onOpenOptions: () => setState(() => _index = 2),
+      ),
+      const ProfilesPage(),
+      const OptionsPage(),
+      const SettingsPage(),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -37,14 +46,14 @@ class _AppShellState extends State<AppShell> {
             label: '主页',
           ),
           NavigationDestination(
-            icon: Icon(Icons.tune_outlined),
-            selectedIcon: Icon(Icons.tune_rounded),
-            label: '启动参数',
+            icon: Icon(Icons.dns_outlined),
+            selectedIcon: Icon(Icons.dns_rounded),
+            label: '服务器',
           ),
           NavigationDestination(
-            icon: Icon(Icons.folder_copy_outlined),
-            selectedIcon: Icon(Icons.folder_copy_rounded),
-            label: '配置文件',
+            icon: Icon(Icons.tune_outlined),
+            selectedIcon: Icon(Icons.tune_rounded),
+            label: '参数',
           ),
           NavigationDestination(
             icon: Icon(Icons.settings_outlined),

@@ -14,6 +14,7 @@
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/asio/vdns.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/PathAwarenessStore.h>
 #include <ppp/diagnostics/Stopwatch.h>
 
 #include <ppp/auxiliary/JsonAuxiliary.h>
@@ -438,6 +439,18 @@ bool                                                                        libo
         json["in"] = stl::to_string<ppp::string>(statistics->IncomingTraffic.load());
         json["out"] = stl::to_string<ppp::string>(statistics->OutgoingTraffic.load());
     }
+
+    ppp::diagnostics::PathAwarenessStore::RecordTrafficSnapshot(
+        0,
+        "default",
+        TransmissionStatistics.outgoing_traffic,
+        TransmissionStatistics.incoming_traffic,
+        TransmissionStatistics.statistics_snapshot
+            ? TransmissionStatistics.statistics_snapshot->IncomingTraffic.load()
+            : 0,
+        TransmissionStatistics.statistics_snapshot
+            ? TransmissionStatistics.statistics_snapshot->OutgoingTraffic.load()
+            : 0);
 
     std::shared_ptr<ppp::string> json_string = ppp::make_shared_object<ppp::string>(JsonAuxiliary::ToStyledString(json));
     if (NULLPTR == json_string) {
@@ -917,6 +930,95 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1app_1co
     }
 
     return JNIENV_NewStringUTF(env, json->data());
+}
+
+static int                                                                  libopenppp2_validate_path_awareness_json(const ppp::string& text, bool allow_null) noexcept {
+    if (text.empty()) {
+        return LIBOPENPPP2_ERROR_SUCCESS;
+    }
+
+    Json::Value json = JsonAuxiliary::FromString(text);
+    if (json.isObject()) {
+        return LIBOPENPPP2_ERROR_SUCCESS;
+    }
+
+    if (allow_null && json.isNull()) {
+        return LIBOPENPPP2_ERROR_SUCCESS;
+    }
+
+    return libopenppp2_set_last_error_and_return(
+        ppp::diagnostics::ErrorCode::ConfigFileMalformed,
+        LIBOPENPPP2_ERROR_ARG_CONFIGURATION_STRING_NOT_IS_JSON_OBJECT_STRING);
+}
+
+// package: supersocksr.ppp.android.c
+// public final class libopenpppp2
+// public native int set_path_awareness_snapshot(string json)
+__LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1path_1awareness_1snapshot(JNIEnv* env, jobject* this_, jstring snapshot) noexcept {
+    __LIBOPENPPP2_MAIN__;
+
+    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Success);
+
+    ppp::string text = "{}";
+    if (NULLPTR != snapshot) {
+        std::shared_ptr<ppp::string> input = JNIENV_GetStringUTFChars(env, snapshot);
+        if (NULLPTR != input) {
+            text = *input;
+        }
+    }
+
+    int err = libopenppp2_validate_path_awareness_json(text, false);
+    if (err != LIBOPENPPP2_ERROR_SUCCESS) {
+        return err;
+    }
+
+    ppp::diagnostics::PathAwarenessStore::SetLocalSnapshot(text);
+    return libopenppp2_set_last_error_for_result(LIBOPENPPP2_ERROR_SUCCESS);
+}
+
+// package: supersocksr.ppp.android.c
+// public final class libopenpppp2
+// public native string get_path_awareness_snapshot()
+__LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1path_1awareness_1snapshot(JNIEnv* env, jobject* this_) noexcept {
+    __LIBOPENPPP2_MAIN__;
+
+    ppp::string text = ppp::diagnostics::PathAwarenessStore::GetLocalSnapshotWithNative();
+    return JNIENV_NewStringUTF(env, text.data());
+}
+
+// package: supersocksr.ppp.android.c
+// public final class libopenpppp2
+// public native int set_peer_path_awareness_snapshot(string json)
+__LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1peer_1path_1awareness_1snapshot(JNIEnv* env, jobject* this_, jstring snapshot) noexcept {
+    __LIBOPENPPP2_MAIN__;
+
+    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Success);
+
+    ppp::string text = "null";
+    if (NULLPTR != snapshot) {
+        std::shared_ptr<ppp::string> input = JNIENV_GetStringUTFChars(env, snapshot);
+        if (NULLPTR != input) {
+            text = *input;
+        }
+    }
+
+    int err = libopenppp2_validate_path_awareness_json(text, true);
+    if (err != LIBOPENPPP2_ERROR_SUCCESS) {
+        return err;
+    }
+
+    ppp::diagnostics::PathAwarenessStore::SetPeerSnapshot(text);
+    return libopenppp2_set_last_error_for_result(LIBOPENPPP2_ERROR_SUCCESS);
+}
+
+// package: supersocksr.ppp.android.c
+// public final class libopenpppp2
+// public native string get_peer_path_awareness_snapshot()
+__LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_get_1peer_1path_1awareness_1snapshot(JNIEnv* env, jobject* this_) noexcept {
+    __LIBOPENPPP2_MAIN__;
+
+    ppp::string text = ppp::diagnostics::PathAwarenessStore::GetPeerSnapshot();
+    return JNIENV_NewStringUTF(env, text.data());
 }
 
 // package: supersocksr.ppp.android.c

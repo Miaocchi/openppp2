@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Network
 import android.net.ProxyInfo
 import android.net.VpnService
 import android.os.Build
@@ -16,6 +17,8 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
 import android.util.Log
+import java.net.HttpURLConnection
+import java.net.URL
 import org.json.JSONObject
 import supersocksr.ppp.android.c.libopenppp2
 
@@ -42,6 +45,9 @@ class PppVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var vpnThread: Thread? = null
+    private var pathManager: AndroidNetworkPathManager? = null
+    private var underlyingNetworksReady = false
+    private var underlyingNetworksEnabled = false
 
     // When ACTION_CONNECT arrives while the previous session is still tearing
     // down, we stash the new config here and the vpn thread's finally block
@@ -62,6 +68,7 @@ class PppVpnService : VpnService() {
                 6
             }
             PppStateStore.setLinkState(this@PppVpnService, ls)
+            refreshPathAwarenessFromNative()
             // Mirror to currentState only as a hint: do NOT downgrade currentState
             // here -- the authoritative VPN-service state is event-driven.
             linkStateHandler?.postDelayed(this, 1000L)
@@ -85,6 +92,105 @@ class PppVpnService : VpnService() {
         PppStateStore.clearLinkState(this)
     }
 
+    private fun startPathAwareness(options: JSONObject) {
+        stopPathAwareness()
+
+        val policy = AndroidNetworkPathManager.Policy(
+            pathAwarenessEnabled = options.optBoolean("pathAwarenessEnabled", true),
+            multiNetworkEnabled = options.optBoolean("multiNetworkEnabled", false),
+            multiNetworkMode = normalizeMultiNetworkMode(options.optString("multiNetworkMode", "handover")),
+            cellularPolicy = normalizeCellularPolicy(options.optString("multiNetworkCellularPolicy", "system")),
+            primary = normalizeMultiNetworkPrimary(options.optString("multiNetworkPrimary", "auto")),
+        )
+        underlyingNetworksEnabled = policy.pathAwarenessEnabled && policy.multiNetworkEnabled
+
+        val manager = AndroidNetworkPathManager(
+            service = this,
+            policy = policy,
+            onSnapshot = { snapshot ->
+                PppStateStore.setPathAwareness(this, snapshot)
+                MainActivity.sendEvent(mapOf("type" to "pathAwareness", "value" to snapshot))
+                try {
+                    val result = libopenppp2.set_path_awareness_snapshot(snapshot)
+                    if (result != 0) {
+                        PppLog.write(this, "path-awareness native set failed result=$result error=${libopenppp2.get_last_error_text()}")
+                    }
+                } catch (e: UnsatisfiedLinkError) {
+                    PppLog.write(this, "path-awareness native set unavailable", e)
+                } catch (e: Throwable) {
+                    PppLog.write(this, "path-awareness native set failed", e)
+                }
+            },
+            onUnderlyingNetworks = { networks ->
+                applyUnderlyingNetworks(networks)
+            },
+        )
+        pathManager = manager
+        manager.start()
+        PppLog.write(
+            this,
+            "path-awareness started enabled=${policy.pathAwarenessEnabled} mode=${policy.multiNetworkMode} multi=${policy.multiNetworkEnabled} cellular=${policy.cellularPolicy}",
+        )
+    }
+
+    private fun stopPathAwareness() {
+        pathManager?.stop()
+        pathManager = null
+        underlyingNetworksReady = false
+        underlyingNetworksEnabled = false
+    }
+
+    private fun applyUnderlyingNetworks(networks: List<Network>) {
+        if (!underlyingNetworksEnabled ||
+            !underlyingNetworksReady ||
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1
+        ) {
+            return
+        }
+
+        try {
+            val payload = if (networks.isEmpty()) null else networks.toTypedArray()
+            val ok = setUnderlyingNetworks(payload)
+            PppLog.write(this, "path-awareness setUnderlyingNetworks count=${networks.size} ok=$ok")
+        } catch (e: Throwable) {
+            PppLog.write(this, "path-awareness setUnderlyingNetworks failed", e)
+        }
+    }
+
+    private fun refreshPathAwarenessFromNative() {
+        val snapshot = try {
+            libopenppp2.get_path_awareness_snapshot()
+        } catch (_: UnsatisfiedLinkError) {
+            null
+        } catch (_: Throwable) {
+            null
+        }
+        if (!snapshot.isNullOrBlank() && snapshot != "{}") {
+            PppStateStore.setPathAwareness(this, snapshot)
+        }
+    }
+
+    private fun normalizeMultiNetworkMode(value: String): String {
+        return when (value) {
+            "parallel" -> "parallel"
+            else -> "handover"
+        }
+    }
+
+    private fun normalizeCellularPolicy(value: String): String {
+        return when (value) {
+            "never", "always" -> value
+            else -> "system"
+        }
+    }
+
+    private fun normalizeMultiNetworkPrimary(value: String): String {
+        return when (value) {
+            "wifi", "cellular" -> value
+            else -> "auto"
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -95,6 +201,7 @@ class PppVpnService : VpnService() {
         // the UI sit on "Initializing" forever. Reset them so the user
         // sees a clean disconnected state.
         PppStateStore.clearLinkState(this)
+        PppStateStore.clearPathAwareness(this)
         PppStateStore.set(this, 0)
         currentState = 0
         isRunning = false
@@ -180,6 +287,7 @@ class PppVpnService : VpnService() {
 
     override fun onDestroy() {
         stopVpn()
+        stopPathAwareness()
         isRunning = false
         currentState = 0
         PppStateStore.set(this, 0)
@@ -248,9 +356,13 @@ class PppVpnService : VpnService() {
             val proxyOnly = options.optBoolean("proxyOnly", false)
             val bypassIpList = options.optString("bypassIpList", "")
             val dnsRulesList = options.optString("dnsRulesList", "")
+            val pathAwarenessEnabled = options.optBoolean("pathAwarenessEnabled", true)
+            val multiNetworkEnabled = options.optBoolean("multiNetworkEnabled", false)
+            val multiNetworkMode = normalizeMultiNetworkMode(options.optString("multiNetworkMode", "handover"))
+            val multiNetworkCellularPolicy = normalizeCellularPolicy(options.optString("multiNetworkCellularPolicy", "system"))
             PppLog.write(
                 this,
-                "vpn options tunIp=$vpnIp tunMask=$vpnMask tunPrefix=$vpnPrefix route=$route/$routePrefix dns1=$dns1 dns2=$dns2 mtu=$mtu mark=$mark mux=$mux vnet=$vnet blockQuic=$blockQuic staticMode=$staticMode proxyOnly=$proxyOnly bypassIpList=${bypassIpList.isNotBlank()} dnsRulesList=${dnsRulesList.isNotBlank()}"
+                "vpn options tunIp=$vpnIp tunMask=$vpnMask tunPrefix=$vpnPrefix route=$route/$routePrefix dns1=$dns1 dns2=$dns2 mtu=$mtu mark=$mark mux=$mux vnet=$vnet blockQuic=$blockQuic staticMode=$staticMode proxyOnly=$proxyOnly pathAwareness=$pathAwarenessEnabled multiNetwork=$multiNetworkEnabled/$multiNetworkMode cellular=$multiNetworkCellularPolicy bypassIpList=${bypassIpList.isNotBlank()} dnsRulesList=${dnsRulesList.isNotBlank()}"
             )
 
             // Anchor relative paths inside the AppConfiguration JSON
@@ -286,6 +398,8 @@ class PppVpnService : VpnService() {
                 val dnsResult = libopenppp2.set_dns_rules_list(dnsRulesList)
                 PppLog.write(this, "set_dns_rules_list result=$dnsResult")
             }
+
+            startPathAwareness(options)
 
             val builder = Builder()
                 .setSession("OpenPPP2")
@@ -395,6 +509,7 @@ class PppVpnService : VpnService() {
             vpnInterface = builder.establish()
             PppLog.write(this, "builder.establish result=${vpnInterface != null}")
             if (vpnInterface == null) {
+                stopPathAwareness()
                 notifyError("Failed to establish VPN interface")
                 notifyStateChanged(0) // disconnected
                 stopForeground(true)
@@ -408,6 +523,8 @@ class PppVpnService : VpnService() {
             val tunFd = vpnInterface!!.detachFd()
             vpnInterface = null
             PppLog.write(this, "detached tun fd=$tunFd")
+            underlyingNetworksReady = true
+            pathManager?.flushUnderlyingNetworks()
 
             // Set network interface for native layer
             val niResult = libopenppp2.set_network_interface(
@@ -421,6 +538,7 @@ class PppVpnService : VpnService() {
             )
             PppLog.write(this, "set_network_interface result=$niResult")
             if (niResult != 0) {
+                stopPathAwareness()
                 notifyError("set_network_interface failed: $niResult, error: ${libopenppp2.get_last_error_text()}")
                 vpnInterface?.close()
                 vpnInterface = null
@@ -461,6 +579,7 @@ class PppVpnService : VpnService() {
                 } finally {
                     isRunning = false
                     stopLinkStatePoller()
+                    stopPathAwareness()
                     vpnInterface?.close()
                     vpnInterface = null
                     val pConfig = pendingConfig
@@ -487,6 +606,7 @@ class PppVpnService : VpnService() {
         } catch (e: Throwable) {
             Log.e(TAG, "startVpn exception", e)
             PppLog.write(this, "startVpn exception", e)
+            stopPathAwareness()
             notifyError("startVpn exception: ${e.message ?: e.javaClass.name}")
             notifyStateChanged(0)
             stopForeground(true)
@@ -520,6 +640,33 @@ class PppVpnService : VpnService() {
         PppLog.write(this, "statistics=$json")
         PppStateStore.setStatistics(this, json)
         MainActivity.sendEvent(mapOf("type" to "statistics", "value" to json))
+    }
+
+    fun postTelemetry(url: String, body: ByteArray): Boolean {
+        if (url.isBlank() || body.isEmpty()) return false
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 3000
+                readTimeout = 3000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+            }
+            connection.outputStream.use { it.write(body) }
+            val code = connection.responseCode
+            val ok = code in 200..299
+            if (!ok) {
+                PppLog.write(this, "otel post failed code=$code url=$url")
+            }
+            ok
+        } catch (e: Throwable) {
+            PppLog.write(this, "otel post exception url=$url", e)
+            false
+        } finally {
+            connection?.disconnect()
+        }
     }
 
     private fun notifyStateChanged(state: Int) {

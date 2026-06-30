@@ -80,10 +80,12 @@ class VpnService {
   final _stateController = StreamController<VpnState>.broadcast();
   final _statsController = StreamController<VpnStatistics>.broadcast();
   final _errorController = StreamController<String>.broadcast();
+  final _pathAwarenessController = StreamController<String>.broadcast();
 
   Stream<VpnState> get stateStream => _stateController.stream;
   Stream<VpnStatistics> get statsStream => _statsController.stream;
   Stream<String> get errorStream => _errorController.stream;
+  Stream<String> get pathAwarenessStream => _pathAwarenessController.stream;
 
   VpnState _currentState = VpnState.disconnected;
   VpnState get currentState => _currentState;
@@ -91,6 +93,8 @@ class VpnService {
   VpnStatistics _currentStats = const VpnStatistics();
   VpnStatistics get currentStats => _currentStats;
   String? _lastStatsRaw;
+  String _currentPathAwareness = '{}';
+  String get currentPathAwareness => _currentPathAwareness;
 
   bool _initialized = false;
   StreamSubscription<dynamic>? _eventSubscription;
@@ -129,6 +133,10 @@ class VpnService {
         final value = event['value']?.toString() ?? 'Unknown VPN error';
         _errorController.add(value);
         _updateState(VpnState.disconnected);
+      } else if (type == 'pathAwareness') {
+        final value = event['value']?.toString() ?? '{}';
+        _currentPathAwareness = value;
+        _pathAwarenessController.add(value);
       }
     }
   }
@@ -217,6 +225,25 @@ class VpnService {
   Future<VpnStatistics> getStatistics() async {
     final value = await _channel.invokeMethod<String>('getStatistics') ?? '{}';
     return _applyStatistics(value);
+  }
+
+  Future<String> getPathAwareness() async {
+    try {
+      final value = await _channel.invokeMethod<String>('getPathAwareness') ?? '{}';
+      _currentPathAwareness = value;
+      return value;
+    } on PlatformException {
+      return _currentPathAwareness;
+    }
+  }
+
+  Future<int> getPathAwarenessAgeMs() async {
+    try {
+      final value = await _channel.invokeMethod<int>('getPathAwarenessAgeMs');
+      return value ?? -1;
+    } on PlatformException {
+      return -1;
+    }
   }
 
   Future<String> readLog() async {
@@ -317,5 +344,6 @@ class VpnService {
     _stateController.close();
     _statsController.close();
     _errorController.close();
+    _pathAwarenessController.close();
   }
 }

@@ -331,7 +331,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     final hasHistory = (widget.profile?.history.isNotEmpty ?? false);
     return Scaffold(
       appBar: AppBar(
-        title: Text(isNew ? '新增配置' : '编辑配置'),
+        title: Text(isNew ? '添加服务器' : '编辑服务器'),
         centerTitle: true,
         actions: [
           if (!isNew)
@@ -564,7 +564,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
           FilledButton.icon(
             onPressed: _saving ? null : _save,
             icon: const Icon(Icons.save_rounded),
-            label: const Text('保存配置'),
+            label: const Text('保存服务器'),
           ),
         ],
       ),

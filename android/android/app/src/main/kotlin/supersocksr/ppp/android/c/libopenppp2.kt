@@ -30,6 +30,19 @@ class libopenppp2 {
         }
 
         /**
+         * Called from native telemetry backend to export an OTLP JSON payload.
+         */
+        @JvmStatic
+        fun otel_post(url: String, body: ByteArray): Boolean {
+            val service = PppVpnService.instance
+            if (service == null) {
+                android.util.Log.w("openppp2", "otel_post failed: service missing")
+                return false
+            }
+            return service.postTelemetry(url, body)
+        }
+
+        /**
          * Called from native code to report traffic statistics.
          * json format: {"tx":"...", "rx":"...", "in":"...", "out":"..."}
          */
@@ -68,6 +81,18 @@ class libopenppp2 {
 
         @JvmStatic
         external fun get_app_configuration(): String?
+
+        @JvmStatic
+        external fun set_path_awareness_snapshot(json: String): Int
+
+        @JvmStatic
+        external fun get_path_awareness_snapshot(): String?
+
+        @JvmStatic
+        external fun set_peer_path_awareness_snapshot(json: String): Int
+
+        @JvmStatic
+        external fun get_peer_path_awareness_snapshot(): String?
 
         @JvmStatic
         external fun set_network_interface(

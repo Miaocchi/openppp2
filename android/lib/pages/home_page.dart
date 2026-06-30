@@ -8,7 +8,14 @@ import '../widgets/debug_panel.dart';
 import 'select_profile_page.dart';
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final VoidCallback? onOpenServers;
+  final VoidCallback? onOpenOptions;
+
+  const HomePage({
+    super.key,
+    this.onOpenServers,
+    this.onOpenOptions,
+  });
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -221,7 +228,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (profile == null || profile.json.trim().isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先在「配置文件」页中添加并选择一个配置')),
+        const SnackBar(content: Text('请先在「服务器」页中添加并选择一台服务器')),
       );
       _openSelectProfile();
       return;
@@ -237,8 +244,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       // installed apps into the per-app whitelist" flag -- doing the latter
       // would silently break user-configured app splitting.
       // Splice options.dnsConfig / options.geoRules into the AppConfiguration
-      // JSON so the native engine receives the user's friendly form values.
-      final mergedJson = ProfileStore.effectiveJson(profile.json, options);
+      // JSON, and add global OTEL settings, so the native engine receives the
+      // user's friendly form values.
+      final telemetry = await _store.getTelemetrySettings();
+      final mergedJson = ProfileStore.effectiveJson(
+        profile.json,
+        options,
+        telemetry: telemetry,
+      );
       await _vpnService.connect(mergedJson, vpnOptions: options);
       _startConnectWatchdog();
     } catch (e) {
@@ -457,106 +470,55 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final accentSofter = accent.withValues(alpha: 0.06);
 
     final statusTitle = isActive
-        ? 'Connected'
+        ? '已连接'
         : (_state == VpnState.connecting
             ? _connectingLabel()
-            : (_state == VpnState.disconnecting ? 'Disconnecting...' : 'Not Connected'));
+            : (_state == VpnState.disconnecting ? '断开中...' : '未连接'));
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
           children: [
-            _buildHeader(theme),
-            const SizedBox(height: 8),
-            Center(
-              child: _RadialPowerButton(
-                color: accent,
-                softColor: accentSoft,
-                softerColor: accentSofter,
-                isBusy: isBusy,
-                onTap: _state == VpnState.disconnecting ? null : _toggleConnection,
-                isOn: isActive,
-              ),
+            _buildHeader(theme, isActive),
+            const SizedBox(height: 12),
+            _buildConnectionPanel(
+              theme: theme,
+              accent: accent,
+              accentSoft: accentSoft,
+              accentSofter: accentSofter,
+              isActive: isActive,
+              isBusy: isBusy,
+              statusTitle: statusTitle,
             ),
-            const SizedBox(height: 18),
-            Center(
-              child: Text(
-                statusTitle,
-                style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Center(
-              child: RichText(
-                text: TextSpan(
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                  children: [
-                    const TextSpan(text: 'VPN is '),
-                    TextSpan(
-                      text: isActive ? 'ON' : 'OFF',
-                      style: TextStyle(
-                        color: isActive ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            if (isActive) ...[
-              const SizedBox(height: 6),
-              Center(
-                child: Text(
-                  _duration,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontFeatures: [const FontFeature.tabularFigures()],
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 24),
-            Padding(
-              padding: const EdgeInsets.only(left: 4, bottom: 8),
-              child: Text(
-                isActive ? 'Connected to' : 'Connect to',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
+            const SizedBox(height: 12),
+            _buildMetricGrid(),
+            _SectionTitleRow(
+              title: '当前服务器',
+              action: '切换',
+              onPressed: widget.onOpenServers ?? _openSelectProfile,
             ),
             _buildLocationCard(theme, isActive),
-            if (isActive) ...[
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: _StatCard(
-                      icon: Icons.arrow_upward_rounded,
-                      label: '上行',
-                      value: _formatSpeed(_stats.txSpeedBytes),
-                      subtitle: '总 ${_formatBytes(_stats.outBytes)}',
-                      color: const Color(0xFFF59E0B),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _StatCard(
-                      icon: Icons.arrow_downward_rounded,
-                      label: '下行',
-                      value: _formatSpeed(_stats.rxSpeedBytes),
-                      subtitle: '总 ${_formatBytes(_stats.inBytes)}',
-                      color: const Color(0xFF3B82F6),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+            _SectionTitleRow(
+              title: '运行策略',
+              action: '编辑',
+              onPressed: widget.onOpenOptions,
+            ),
+            _PolicyRow(
+              icon: Icons.alt_route_rounded,
+              title: '智能分流',
+              subtitle: '国内直连 · 海外代理 · LAN 按配置放行',
+              color: const Color(0xFF087C90),
+              onTap: widget.onOpenOptions,
+            ),
+            const SizedBox(height: 8),
+            _PolicyRow(
+              icon: Icons.dns_rounded,
+              title: 'DNS 解析',
+              subtitle: '基础 DNS、Resolver 与 Geo 规则在参数页维护',
+              color: theme.colorScheme.primary,
+              onTap: widget.onOpenOptions,
+            ),
             if (_lastError != null) ...[
               const SizedBox(height: 12),
               Card(
@@ -590,19 +552,95 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildHeader(ThemeData theme) {
+  Widget _buildHeader(ThemeData theme, bool isActive) {
     return Padding(
       padding: const EdgeInsets.only(top: 4, bottom: 12),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.location_on_rounded, size: 20, color: theme.colorScheme.primary),
-          const SizedBox(width: 6),
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            alignment: Alignment.center,
+            child: Icon(
+              Icons.shield_rounded,
+              color: theme.colorScheme.primary,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'OPENPPP2',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                Text(
+                  '安全连接',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _StatusPill(isActive: isActive, text: _getStateText()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConnectionPanel({
+    required ThemeData theme,
+    required Color accent,
+    required Color accentSoft,
+    required Color accentSofter,
+    required bool isActive,
+    required bool isBusy,
+    required String statusTitle,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      padding: const EdgeInsets.fromLTRB(18, 20, 18, 18),
+      child: Column(
+        children: [
+          Center(
+            child: _RadialPowerButton(
+              color: accent,
+              softColor: accentSoft,
+              softerColor: accentSofter,
+              isBusy: isBusy,
+              onTap:
+                  _state == VpnState.disconnecting ? null : _toggleConnection,
+              isOn: isActive,
+            ),
+          ),
+          const SizedBox(height: 12),
           Text(
-            'OPENPPP2',
-            style: theme.textTheme.titleMedium?.copyWith(
+            statusTitle,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.headlineSmall?.copyWith(
               fontWeight: FontWeight.w900,
-              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            isActive ? '当前流量已经过 OPENPPP2 隧道' : '当前流量未经过 OPENPPP2 隧道',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
         ],
@@ -610,22 +648,57 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildMetricGrid() {
+    return Row(
+      children: [
+        Expanded(
+          child: _StatCard(
+            icon: Icons.timer_outlined,
+            label: '时长',
+            value: _duration,
+            color: const Color(0xFF087C90),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _StatCard(
+            icon: Icons.arrow_upward_rounded,
+            label: '上行',
+            value: _formatSpeed(_stats.txSpeedBytes),
+            subtitle: _formatBytes(_stats.outBytes),
+            color: const Color(0xFFF59E0B),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _StatCard(
+            icon: Icons.arrow_downward_rounded,
+            label: '下行',
+            value: _formatSpeed(_stats.rxSpeedBytes),
+            subtitle: _formatBytes(_stats.inBytes),
+            color: const Color(0xFF3B82F6),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildLocationCard(ThemeData theme, bool isActive) {
     final p = _active;
-    final name = p?.name ?? 'No profile';
+    final name = p?.name ?? '未选择服务器';
     final sub = (p?.subtitle.isNotEmpty == true)
         ? p!.subtitle
-        : (p?.serverEndpoint ?? '点击选择一个配置');
+        : (p?.serverEndpoint ?? '点击选择服务器');
 
     return Material(
       color: theme.colorScheme.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: theme.colorScheme.outlineVariant),
       ),
       child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: _openSelectProfile,
+        borderRadius: BorderRadius.circular(12),
+        onTap: widget.onOpenServers ?? _openSelectProfile,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
@@ -660,6 +733,159 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     Text(
                       sub,
                       maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionTitleRow extends StatelessWidget {
+  final String title;
+  final String action;
+  final VoidCallback? onPressed;
+
+  const _SectionTitleRow({
+    required this.title,
+    required this.action,
+    this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 18, 4, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: onPressed,
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  final bool isActive;
+  final String text;
+
+  const _StatusPill({
+    required this.isActive,
+    required this.text,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color =
+        isActive ? const Color(0xFF14945F) : Theme.of(context).colorScheme.error;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isActive ? Icons.shield_rounded : Icons.shield_outlined,
+            size: 15,
+            color: color,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            text,
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PolicyRow extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color color;
+  final VoidCallback? onTap;
+
+  const _PolicyRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.color,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: theme.colorScheme.outlineVariant),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                alignment: Alignment.center,
+                child: Icon(icon, color: color, size: 21),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
@@ -785,11 +1011,19 @@ class _StatCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(label, style: theme.textTheme.bodySmall),
             const SizedBox(height: 4),
-            Text(
-              value,
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-                fontFeatures: [const FontFeature.tabularFigures()],
+            SizedBox(
+              width: double.infinity,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.center,
+                child: Text(
+                  value,
+                  maxLines: 1,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    fontFeatures: [const FontFeature.tabularFigures()],
+                  ),
+                ),
               ),
             ),
             if (subtitle != null) ...[

@@ -61,7 +61,7 @@ class RemoteSubscriptionParser {
 
       final id = (node['id'] ?? '').toString().trim();
       if (id.isEmpty) {
-        throw const FormatException('节点 id 不能为空');
+        throw const FormatException('服务器 id 不能为空');
       }
       final rawName = (node['name'] ?? id).toString().trim();
       final name = prefix == null || prefix.isEmpty || rawName.startsWith(prefix)
@@ -79,7 +79,7 @@ class RemoteSubscriptionParser {
     }
 
     if (nodes.isEmpty) {
-      throw const FormatException('订阅中没有可导入节点');
+      throw const FormatException('订阅中没有可导入服务器');
     }
 
     return RemoteSubscriptionResult(
@@ -99,7 +99,7 @@ class RemoteSubscriptionParser {
       if (decoded is Map) {
         return Map<String, dynamic>.from(decoded);
       }
-      throw const FormatException('节点 config 字符串必须是 JSON object');
+      throw const FormatException('服务器 config 字符串必须是 JSON object');
     }
 
     final root = Map<String, dynamic>.from(
@@ -107,13 +107,13 @@ class RemoteSubscriptionParser {
     );
     final server = (node['server'] ?? '').toString().trim();
     if (server.isEmpty) {
-      throw const FormatException('精简节点必须包含 server');
+      throw const FormatException('精简服务器必须包含 server');
     }
     _validateServerUri(server);
 
     final key = _mapOrEmpty(node['key']);
     if (key.isEmpty) {
-      throw const FormatException('精简节点必须包含 key');
+      throw const FormatException('精简服务器必须包含 key');
     }
 
     root['key'] = {

@@ -76,6 +76,19 @@ class MainActivity : FlutterActivity() {
                     "getStatistics" -> {
                         result.success(PppStateStore.getStatistics(this))
                     }
+                    "getPathAwareness" -> {
+                        result.success(PppStateStore.getPathAwareness(this))
+                    }
+                    "getPathAwarenessAgeMs" -> {
+                        val age = PppStateStore.getPathAwarenessAgeMs(this)
+                        result.success(
+                            when {
+                                age < 0L -> -1
+                                age > Int.MAX_VALUE -> Int.MAX_VALUE
+                                else -> age.toInt()
+                            }
+                        )
+                    }
                     "getLinkState" -> {
                         // The native engine lives in the `:vpn` process, so we
                         // CANNOT call libopenppp2.get_link_state() from this

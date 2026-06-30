@@ -37,7 +37,7 @@ class DebugPanel extends StatelessWidget {
     r'startForeground|builder\.establish|set_app_configuration|'
     r'set_network_interface|set_bypass_ip_list|set_dns_rules_list|'
     r'libopenppp2\.run|onStarted|VPN started|onRevoke|'
-    r'state=|notifyError)',
+    r'path-awareness|state=|notifyError)',
     caseSensitive: false,
   );
 

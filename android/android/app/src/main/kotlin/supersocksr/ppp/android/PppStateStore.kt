@@ -10,6 +10,7 @@ object PppStateStore {
     private const val KEY_STATISTICS = "statistics"
     private const val STATISTICS_FILE = "openppp2-statistics.json"
     private const val LINK_STATE_FILE = "openppp2-linkstate.txt"
+    private const val PATH_AWARENESS_FILE = "openppp2-path-awareness.json"
 
     fun set(context: Context, state: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -80,6 +81,43 @@ object PppStateStore {
     fun clearLinkState(context: Context) {
         try {
             File(context.filesDir, LINK_STATE_FILE).delete()
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun setPathAwareness(context: Context, json: String) {
+        try {
+            File(context.filesDir, PATH_AWARENESS_FILE).writeText(
+                if (json.isBlank()) "{}" else json,
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun getPathAwareness(context: Context): String {
+        return try {
+            val f = File(context.filesDir, PATH_AWARENESS_FILE)
+            if (!f.exists()) return "{}"
+            val text = f.readText()
+            if (text.isBlank()) "{}" else text
+        } catch (_: Throwable) {
+            "{}"
+        }
+    }
+
+    fun getPathAwarenessAgeMs(context: Context): Long {
+        return try {
+            val f = File(context.filesDir, PATH_AWARENESS_FILE)
+            if (!f.exists()) return -1L
+            System.currentTimeMillis() - f.lastModified()
+        } catch (_: Throwable) {
+            -1L
+        }
+    }
+
+    fun clearPathAwareness(context: Context) {
+        try {
+            File(context.filesDir, PATH_AWARENESS_FILE).delete()
         } catch (_: Throwable) {
         }
     }

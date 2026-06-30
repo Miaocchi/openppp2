@@ -230,7 +230,7 @@ class _PerAppProxyPageState extends State<PerAppProxyPage> {
                     child: Padding(
                       padding: const EdgeInsets.all(24),
                       child: Text(
-                        '请先在「配置文件」页中创建并选择一个配置',
+                        '请先在「服务器」页中创建并选择一台服务器',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodyMedium,
                       ),

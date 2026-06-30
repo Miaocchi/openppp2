@@ -12,6 +12,7 @@ class ProfileStore {
   static const _activeIdKey = 'active_profile_id';
   static const _optionsKey = 'vpn_options_json';
   static const _debugPanelKey = 'debug_panel_enabled';
+  static const _telemetryKey = 'android_telemetry_settings_v1';
 
   static const _legacyConfigKey = 'vpn_config_json';
 
@@ -145,6 +146,14 @@ class ProfileStore {
     // When true, connect in proxy-only mode: minimal VPN route on Android,
     // local HTTP/SOCKS only (no full TUN routing / DNS hijack).
     'proxyOnly': false,
+    // ---- Path awareness / multi-network reservation ----
+    // Path awareness is observe-only in V1. Multi-network transport selection
+    // remains disabled until native socket binding is wired.
+    'pathAwarenessEnabled': true,
+    'multiNetworkEnabled': false,
+    'multiNetworkMode': 'handover', // 'handover' | 'parallel'
+    'multiNetworkCellularPolicy': 'system', // 'system' | 'never' | 'always'
+    'multiNetworkPrimary': 'auto', // 'auto' | 'wifi' | 'cellular'
     // Native AppConfiguration `dns` block (spliced into profile.json at
     // connect time by [effectiveJson]). See openppp2/ppp/configurations
     // /AppConfiguration.h for the full schema.
@@ -184,12 +193,28 @@ class ProfileStore {
     },
   };
 
+  static const Map<String, dynamic> defaultTelemetrySettings = {
+    'enabled': false,
+    'endpoint': '',
+    'level': 1,
+    'metricsEnabled': false,
+    'spansEnabled': false,
+    'logFile': '',
+    'consoleLog': true,
+    'consoleMetric': false,
+    'consoleSpan': false,
+  };
+
   /// Merge the per-profile `dns` and `geo-rules` form values (under
-  /// `options.dnsConfig` / `options.geoRules`) into `profile.json` and return
-  /// the resulting JSON string. This is what should be passed to the native
-  /// engine via `set_app_configuration` so each profile can carry its own
-  /// AppConfiguration tuning without forcing users to hand-edit raw JSON.
-  static String effectiveJson(String profileJson, Map<String, dynamic> options) {
+  /// `options.dnsConfig` / `options.geoRules`) plus optional global telemetry
+  /// settings into `profile.json` and return the resulting JSON string. This is
+  /// what should be passed to the native engine via `set_app_configuration` so
+  /// users can tune AppConfiguration without hand-editing raw JSON.
+  static String effectiveJson(
+    String profileJson,
+    Map<String, dynamic> options, {
+    Map<String, dynamic>? telemetry,
+  }) {
     Map<String, dynamic> root;
     try {
       final decoded = jsonDecode(profileJson);
@@ -314,6 +339,30 @@ class ProfileStore {
       client['http-proxy'] = hp;
       client['socks-proxy'] = sp;
       root['client'] = client;
+    }
+
+    if (telemetry != null) {
+      final tc = <String, dynamic>{
+        ...defaultTelemetrySettings,
+        ...telemetry,
+      };
+      final telemetryMap = (root['telemetry'] is Map)
+          ? Map<String, dynamic>.from(root['telemetry'] as Map)
+          : <String, dynamic>{};
+      final level = int.tryParse((tc['level'] ?? '1').toString()) ?? 1;
+      final metricsEnabled = tc['metricsEnabled'] == true;
+      final spansEnabled = tc['spansEnabled'] == true;
+
+      telemetryMap['enabled'] = tc['enabled'] == true;
+      telemetryMap['level'] = level.clamp(0, 3);
+      telemetryMap['count'] = metricsEnabled;
+      telemetryMap['span'] = spansEnabled;
+      telemetryMap['endpoint'] = (tc['endpoint'] ?? '').toString().trim();
+      telemetryMap['log-file'] = (tc['logFile'] ?? '').toString().trim();
+      telemetryMap['console-log'] = tc['consoleLog'] != false;
+      telemetryMap['console-metric'] = tc['consoleMetric'] == true;
+      telemetryMap['console-span'] = tc['consoleSpan'] == true;
+      root['telemetry'] = telemetryMap;
     }
 
     return const JsonEncoder.withIndent('  ').convert(root);
@@ -638,6 +687,34 @@ class ProfileStore {
   Future<void> setDebugPanelEnabled(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_debugPanelKey, value);
+    _emit();
+  }
+
+  Future<Map<String, dynamic>> getTelemetrySettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_telemetryKey);
+    if (raw == null || raw.isEmpty) {
+      return Map<String, dynamic>.from(defaultTelemetrySettings);
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return <String, dynamic>{
+          ...defaultTelemetrySettings,
+          ...Map<String, dynamic>.from(decoded),
+        };
+      }
+    } catch (_) {}
+    return Map<String, dynamic>.from(defaultTelemetrySettings);
+  }
+
+  Future<void> setTelemetrySettings(Map<String, dynamic> settings) async {
+    final prefs = await SharedPreferences.getInstance();
+    final normalized = <String, dynamic>{
+      ...defaultTelemetrySettings,
+      ...settings,
+    };
+    await prefs.setString(_telemetryKey, jsonEncode(normalized));
     _emit();
   }
 

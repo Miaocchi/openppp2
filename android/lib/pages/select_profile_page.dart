@@ -74,12 +74,12 @@ class _SelectProfilePageState extends State<SelectProfilePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Select a Location'),
+        title: const Text('选择服务器'),
         centerTitle: true,
         actions: [
           IconButton(
             icon: const Icon(Icons.add_rounded),
-            tooltip: '新增配置',
+            tooltip: '添加单个服务器',
             onPressed: _add,
           ),
         ],
@@ -94,7 +94,7 @@ class _SelectProfilePageState extends State<SelectProfilePage> {
                     controller: _searchController,
                     onChanged: (v) => setState(() => _query = v),
                     decoration: InputDecoration(
-                      hintText: '搜索配置名称或地址...',
+                      hintText: '搜索服务器名称或地址...',
                       prefixIcon: const Icon(Icons.search_rounded),
                       filled: true,
                       border: OutlineInputBorder(
@@ -110,7 +110,7 @@ class _SelectProfilePageState extends State<SelectProfilePage> {
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                     children: [
                       if (favorites.isNotEmpty) ...[
-                        _SectionHeader('Favorites'),
+                        _SectionHeader('收藏'),
                         ...favorites.map((p) => _ProfileTile(
                               profile: p,
                               isActive: p.id == _activeId,
@@ -119,13 +119,13 @@ class _SelectProfilePageState extends State<SelectProfilePage> {
                             )),
                         const SizedBox(height: 8),
                       ],
-                      _SectionHeader('Locations'),
+                      _SectionHeader('服务器'),
                       if (others.isEmpty && favorites.isEmpty)
                         Padding(
                           padding: const EdgeInsets.symmetric(vertical: 24),
                           child: Center(
                             child: Text(
-                              '没有匹配的配置',
+                              '没有匹配的服务器',
                               style: theme.textTheme.bodyMedium?.copyWith(
                                 color: theme.colorScheme.onSurfaceVariant,
                               ),

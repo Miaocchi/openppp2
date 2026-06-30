@@ -76,6 +76,13 @@ class _OptionsPageState extends State<OptionsPage> {
   bool _allowLan = false;
   bool _proxyOnly = false;
 
+  // Path awareness / multi-network reservation.
+  bool _pathAwarenessEnabled = true;
+  bool _multiNetworkEnabled = false;
+  String _multiNetworkMode = 'handover';
+  String _multiNetworkCellularPolicy = 'system';
+  String _multiNetworkPrimary = 'auto';
+
   ConfigProfile? _profile;
   bool _loading = true;
   bool _dirty = false;
@@ -173,6 +180,23 @@ class _OptionsPageState extends State<OptionsPage> {
     _autoAppendApps = m['autoAppendApps'] == true;
     _allowLan = m['allowLan'] == true;
     _proxyOnly = m['proxyOnly'] == true;
+    _pathAwarenessEnabled = m['pathAwarenessEnabled'] != false;
+    _multiNetworkEnabled = m['multiNetworkEnabled'] == true;
+    _multiNetworkMode = _oneOf(
+      (m['multiNetworkMode'] ?? 'handover').toString(),
+      const ['handover', 'parallel'],
+      'handover',
+    );
+    _multiNetworkCellularPolicy = _oneOf(
+      (m['multiNetworkCellularPolicy'] ?? 'system').toString(),
+      const ['system', 'never', 'always'],
+      'system',
+    );
+    _multiNetworkPrimary = _oneOf(
+      (m['multiNetworkPrimary'] ?? 'auto').toString(),
+      const ['auto', 'wifi', 'cellular'],
+      'auto',
+    );
   }
 
   Map<String, dynamic> _readForm() => {
@@ -221,7 +245,16 @@ class _OptionsPageState extends State<OptionsPage> {
         'autoAppendApps': _autoAppendApps,
         'allowLan': _allowLan,
         'proxyOnly': _proxyOnly,
+        'pathAwarenessEnabled': _pathAwarenessEnabled,
+        'multiNetworkEnabled': _multiNetworkEnabled,
+        'multiNetworkMode': _multiNetworkMode,
+        'multiNetworkCellularPolicy': _multiNetworkCellularPolicy,
+        'multiNetworkPrimary': _multiNetworkPrimary,
       };
+
+  String _oneOf(String value, List<String> allowed, String fallback) {
+    return allowed.contains(value) ? value : fallback;
+  }
 
   void _markDirty() {
     if (!_dirty) setState(() => _dirty = true);
@@ -273,10 +306,10 @@ class _OptionsPageState extends State<OptionsPage> {
     setState(() => _dirty = false);
     if (showSnack) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('「${p.name}」启动参数已保存')),
-    );
+        SnackBar(content: Text('「${p.name}」参数已保存')),
+      );
+    }
   }
-}
 
   Future<void> _reset() async {
     final ok = await showDialog<bool>(
@@ -284,7 +317,7 @@ class _OptionsPageState extends State<OptionsPage> {
       builder: (ctx) => AlertDialog(
         title: const Text('恢复默认'),
         content: Text(
-          '将「${_profile?.name ?? '当前配置'}」的启动参数恢复为默认值？',
+          '将「${_profile?.name ?? '当前服务器'}」的参数恢复为默认值？',
         ),
         actions: [
           TextButton(
@@ -309,9 +342,9 @@ class _OptionsPageState extends State<OptionsPage> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('应用到所有配置文件'),
+        title: const Text('应用到所有服务器'),
         content: const Text(
-          '将当前表单中的启动参数（DNS / Geo / TUN / 路由）应用到所有配置文件？',
+          '将当前表单中的参数（DNS / Geo / TUN / 路由）应用到所有服务器？',
         ),
         actions: [
           TextButton(
@@ -334,7 +367,7 @@ class _OptionsPageState extends State<OptionsPage> {
     if (!mounted) return;
     setState(() => _dirty = false);
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已应用到 ${list.length} 个配置文件')),
+      SnackBar(content: Text('已应用到 ${list.length} 台服务器')),
     );
   }
 
@@ -381,11 +414,11 @@ class _OptionsPageState extends State<OptionsPage> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('启动参数'),
+        title: const Text('参数'),
         centerTitle: true,
         actions: [
           IconButton(
-            tooltip: '应用到所有配置文件',
+            tooltip: '应用到所有服务器',
             icon: const Icon(Icons.copy_all_rounded),
             onPressed: _profile == null ? null : _copyToAll,
           ),
@@ -408,7 +441,7 @@ class _OptionsPageState extends State<OptionsPage> {
                   child: Padding(
                     padding: const EdgeInsets.all(24),
                     child: Text(
-                      '请先在「配置文件」页中创建并选择一个配置',
+                      '请先在「服务器」页中创建并选择一台服务器',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodyMedium,
                     ),
@@ -419,7 +452,7 @@ class _OptionsPageState extends State<OptionsPage> {
                   children: [
                     _activeBanner(theme),
                     _Section(
-                      title: '代理',
+                      title: '代理与应用',
                       icon: Icons.account_tree_rounded,
                       tint: Colors.cyan,
                       children: [
@@ -467,6 +500,84 @@ class _OptionsPageState extends State<OptionsPage> {
                             _markDirty();
                           }),
                         ),
+                      ],
+                    ),
+                    _Section(
+                      title: '路径感知',
+                      icon: Icons.hub_rounded,
+                      tint: Colors.green,
+                      children: [
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          value: _pathAwarenessEnabled,
+                          title: const Text('客户端路径感知'),
+                          subtitle: const Text('观察 Wi-Fi / 蜂窝上游状态，写入诊断快照'),
+                          onChanged: (v) => setState(() {
+                            _pathAwarenessEnabled = v;
+                            _markDirty();
+                          }),
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          value: _multiNetworkEnabled,
+                          title: const Text('多网并发预留'),
+                          subtitle: const Text('V1 只预留策略和诊断，暂不改变 socket 选路'),
+                          onChanged: _pathAwarenessEnabled
+                              ? (v) => setState(() {
+                                    _multiNetworkEnabled = v;
+                                    _markDirty();
+                                  })
+                              : null,
+                        ),
+                        if (_multiNetworkEnabled) ...[
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _select(
+                                  label: '模式',
+                                  value: _multiNetworkMode,
+                                  values: const {
+                                    'handover': 'Handover',
+                                    'parallel': 'Parallel',
+                                  },
+                                  onChanged: (value) => setState(() {
+                                    _multiNetworkMode = value;
+                                    _markDirty();
+                                  }),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: _select(
+                                  label: 'Primary',
+                                  value: _multiNetworkPrimary,
+                                  values: const {
+                                    'auto': 'Auto',
+                                    'wifi': 'Wi-Fi',
+                                    'cellular': 'Cellular',
+                                  },
+                                  onChanged: (value) => setState(() {
+                                    _multiNetworkPrimary = value;
+                                    _markDirty();
+                                  }),
+                                ),
+                              ),
+                            ],
+                          ),
+                          _select(
+                            label: '蜂窝策略',
+                            value: _multiNetworkCellularPolicy,
+                            values: const {
+                              'system': 'System',
+                              'never': 'Never',
+                              'always': 'Always',
+                            },
+                            onChanged: (value) => setState(() {
+                              _multiNetworkCellularPolicy = value;
+                              _markDirty();
+                            }),
+                          ),
+                        ],
                       ],
                     ),
                     _Section(
@@ -790,7 +901,7 @@ class _OptionsPageState extends State<OptionsPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '当前编辑: ${p.name}',
+                  '当前服务器: ${p.name}',
                   style: theme.textTheme.titleSmall
                       ?.copyWith(fontWeight: FontWeight.w800),
                 ),
@@ -829,6 +940,37 @@ class _OptionsPageState extends State<OptionsPage> {
           border: const OutlineInputBorder(),
           isDense: true,
         ),
+      ),
+    );
+  }
+
+  Widget _select({
+    required String label,
+    required String value,
+    required Map<String, String> values,
+    required ValueChanged<String> onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DropdownButtonFormField<String>(
+        value: values.containsKey(value) ? value : values.keys.first,
+        isExpanded: true,
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+          isDense: true,
+        ),
+        items: values.entries
+            .map(
+              (entry) => DropdownMenuItem<String>(
+                value: entry.key,
+                child: Text(entry.value),
+              ),
+            )
+            .toList(growable: false),
+        onChanged: (next) {
+          if (next != null) onChanged(next);
+        },
       ),
     );
   }

@@ -5,6 +5,7 @@
 #include "OpenPPP2VpnProtectBridge.h"
 
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/Telemetry.h>
 
 #include <android/log.h>
 
@@ -22,6 +23,7 @@ namespace ppp
                 JavaVM*                                             vm = NULLPTR;
                 jclass                                              clazz = NULLPTR;
                 jmethodID                                           protect = NULLPTR;
+                jmethodID                                           otel_post = NULLPTR;
                 bool                                                enabled = true;
                 std::mutex                                          syncobj;
             };
@@ -85,7 +87,7 @@ namespace ppp
                     return false;
                 }
 
-                if (NULLPTR != state.clazz && NULLPTR != state.protect)
+                if (NULLPTR != state.clazz && NULLPTR != state.protect && NULLPTR != state.otel_post)
                 {
                     return true;
                 }
@@ -109,6 +111,16 @@ namespace ppp
                     return false;
                 }
 
+                jmethodID otel_post_method = env->GetStaticMethodID(local_clazz, "otel_post", "(Ljava/lang/String;[B)Z");
+                ClearException(env, "GetStaticMethodID(otel_post)");
+                if (NULLPTR == otel_post_method)
+                {
+                    env->DeleteLocalRef(local_clazz);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeEventDispatchFailed);
+                    __android_log_print(ANDROID_LOG_WARN, TAG, "method not found: otel_post(Ljava/lang/String;[B)Z");
+                    return false;
+                }
+
                 jclass global_clazz = static_cast<jclass>(env->NewGlobalRef(local_clazz));
                 env->DeleteLocalRef(local_clazz);
                 ClearException(env, "NewGlobalRef(protect class)");
@@ -125,7 +137,88 @@ namespace ppp
 
                 state.clazz = global_clazz;
                 state.protect = protect_method;
+                state.otel_post = otel_post_method;
                 return true;
+            }
+
+            bool TelemetryHttpPost(const char* url, const void* body, size_t body_len, void* user_data) noexcept
+            {
+                (void)user_data;
+                if (NULLPTR == url || '\0' == url[0] || NULLPTR == body || body_len < 1)
+                {
+                    return false;
+                }
+
+                JavaVM* vm = NULLPTR;
+                jclass clazz = NULLPTR;
+                jmethodID otel_post_method = NULLPTR;
+                {
+                    ProtectBridgeState& state = GetState();
+                    std::lock_guard<std::mutex> scope(state.syncobj);
+                    vm = state.vm;
+                    clazz = state.clazz;
+                    otel_post_method = state.otel_post;
+                }
+
+                bool attached = false;
+                JNIEnv* env = AttachEnvironment(vm, attached);
+                if (NULLPTR == env)
+                {
+                    return false;
+                }
+
+                if (NULLPTR == clazz || NULLPTR == otel_post_method)
+                {
+                    ProtectBridgeState& state = GetState();
+                    std::lock_guard<std::mutex> scope(state.syncobj);
+                    if (!CacheProtectClassLocked(state, env))
+                    {
+                        if (attached && NULLPTR != vm)
+                        {
+                            vm->DetachCurrentThread();
+                        }
+                        return false;
+                    }
+                    clazz = state.clazz;
+                    otel_post_method = state.otel_post;
+                }
+
+                jstring url_string = env->NewStringUTF(url);
+                jbyteArray body_bytes = env->NewByteArray(static_cast<jsize>(body_len));
+                if (NULLPTR == url_string || NULLPTR == body_bytes)
+                {
+                    ClearException(env, "NewStringUTF/NewByteArray(otel_post)");
+                    if (NULLPTR != url_string)
+                    {
+                        env->DeleteLocalRef(url_string);
+                    }
+                    if (NULLPTR != body_bytes)
+                    {
+                        env->DeleteLocalRef(body_bytes);
+                    }
+                    if (attached && NULLPTR != vm)
+                    {
+                        vm->DetachCurrentThread();
+                    }
+                    return false;
+                }
+
+                env->SetByteArrayRegion(body_bytes, 0, static_cast<jsize>(body_len), reinterpret_cast<const jbyte*>(body));
+                bool ok = false;
+                if (!ClearException(env, "SetByteArrayRegion(otel_post)"))
+                {
+                    ok = env->CallStaticBooleanMethod(clazz, otel_post_method, url_string, body_bytes);
+                    ClearException(env, "CallStaticBooleanMethod(otel_post)");
+                }
+
+                env->DeleteLocalRef(url_string);
+                env->DeleteLocalRef(body_bytes);
+
+                if (attached && NULLPTR != vm)
+                {
+                    vm->DetachCurrentThread();
+                }
+                return ok;
             }
         }
 
@@ -140,7 +233,12 @@ namespace ppp
             ProtectBridgeState& state = GetState();
             std::lock_guard<std::mutex> scope(state.syncobj);
             state.vm = vm;
-            return CacheProtectClassLocked(state, env);
+            bool ok = CacheProtectClassLocked(state, env);
+            if (ok)
+            {
+                ppp::telemetry::SetHttpPostSink(&TelemetryHttpPost, NULLPTR);
+            }
+            return ok;
         }
 
         void ShutdownProtectBridge(JNIEnv* env) noexcept
@@ -156,9 +254,12 @@ namespace ppp
                 clazz = state.clazz;
                 state.clazz = NULLPTR;
                 state.protect = NULLPTR;
+                state.otel_post = NULLPTR;
                 state.vm = NULLPTR;
                 state.enabled = false;
             }
+
+            ppp::telemetry::SetHttpPostSink(NULLPTR, NULLPTR);
 
             if (NULLPTR == clazz)
             {

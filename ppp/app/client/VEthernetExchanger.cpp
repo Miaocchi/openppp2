@@ -20,6 +20,7 @@
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/PathAwarenessStore.h>
 #include <ppp/diagnostics/Telemetry.h>
 
 #include <chrono>
@@ -467,7 +468,18 @@ namespace ppp {
                 ppp::telemetry::Count("client_exchanger.connect.attempt", 1);
                 ppp::telemetry::Log(Level::kInfo, "client_exchanger", "tcp connecting: %s:%d address=%s", hostname.c_str(), remotePort, remoteIP.to_string().c_str());
 
+                auto connect_started = std::chrono::steady_clock::now();
                 bool ok = ppp::coroutines::asio::async_connect(*socket, remoteEP, y);
+                int64_t connect_ms = static_cast<int64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - connect_started).count());
+                ppp::diagnostics::PathAwarenessStore::RecordConnectObservation(
+                    TransmissionRoleName(role),
+                    0,
+                    "default",
+                    connect_ms,
+                    -1,
+                    ok ? 0 : (int)ppp::diagnostics::ErrorCode::TcpConnectFailed);
                 if (!ok) {
                     ppp::telemetry::Count("client_exchanger.connect.fail.tcp", 1);
                     ppp::telemetry::Log(Level::kInfo, "client_exchanger", "tcp connect failed: %s:%d address=%s error=%d", hostname.c_str(), remotePort, remoteIP.to_string().c_str(), (int)ppp::diagnostics::ErrorCode::TcpConnectFailed);
@@ -682,7 +694,18 @@ namespace ppp {
                     return NULLPTR;
                 }
 
+                auto handshake_started = std::chrono::steady_clock::now();
                 bool noerror = transmission->HandshakeServer(y, GetId(), false);
+                int64_t handshake_ms = static_cast<int64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - handshake_started).count());
+                ppp::diagnostics::PathAwarenessStore::RecordConnectObservation(
+                    TransmissionRoleName(ppp::transmissions::TcpTransmissionRole::Child),
+                    0,
+                    "default",
+                    -1,
+                    handshake_ms,
+                    noerror ? 0 : (int)ppp::diagnostics::ErrorCode::SessionHandshakeFailed);
                 if (noerror) {
 #if defined(_IPHONE)
                     if (ios_child_slot && NULLPTR != ios_child_slot_generation) {
@@ -886,7 +909,19 @@ namespace ppp {
                     ExchangeToConnectingState(); {
                         ITransmissionPtr transmission = OpenTransmission(context, y, ppp::transmissions::TcpTransmissionRole::Main);
                         if (transmission) {
-                            bool established = transmission->HandshakeServer(y, GetId(), true) && EchoLanToRemoteExchanger(transmission, y) > -1;
+                            auto handshake_started = std::chrono::steady_clock::now();
+                            bool handshake_ok = transmission->HandshakeServer(y, GetId(), true);
+                            int64_t handshake_ms = static_cast<int64_t>(
+                                std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - handshake_started).count());
+                            ppp::diagnostics::PathAwarenessStore::RecordConnectObservation(
+                                TransmissionRoleName(ppp::transmissions::TcpTransmissionRole::Main),
+                                0,
+                                "default",
+                                -1,
+                                handshake_ms,
+                                handshake_ok ? 0 : (int)ppp::diagnostics::ErrorCode::SessionHandshakeFailed);
+                            bool established = handshake_ok && EchoLanToRemoteExchanger(transmission, y) > -1;
                             if (established) {
                                 transmission_ = transmission;
                                 ExchangeToEstablishState(); {
