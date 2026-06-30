@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/config_profile.dart';
 import '../services/profile_store.dart';
+import '../services/subscription_service.dart';
 import 'profile_edit_page.dart';
 
 class ProfilesPage extends StatefulWidget {
@@ -41,6 +42,84 @@ class _ProfilesPageState extends State<ProfilesPage> {
       MaterialPageRoute(builder: (_) => const ProfileEditPage()),
     );
     if (ok == true) await _load();
+  }
+
+  Future<String?> _askSubscriptionUrl() async {
+    final controller = TextEditingController();
+    try {
+      return await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('导入远程订阅'),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.url,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: '订阅 URL',
+              hintText: 'https://example.com/openppp2.json',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+              child: const Text('导入'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  Future<void> _importSubscription() async {
+    final url = await _askSubscriptionUrl();
+    if (url == null || url.isEmpty) return;
+
+    var progressShown = false;
+    if (mounted) {
+      progressShown = true;
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    try {
+      final subscription = await SubscriptionService().fetch(url);
+      final count = await _store.upsertSubscription(
+        url: url,
+        subscription: subscription,
+      );
+      if (!mounted) return;
+      if (progressShown) Navigator.of(context, rootNavigator: true).pop();
+      await _load();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已导入/更新 $count 个节点')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      if (progressShown) Navigator.of(context, rootNavigator: true).pop();
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('订阅导入失败'),
+          content: SelectableText(e.toString()),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('关闭'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   Future<void> _edit(ConfigProfile p) async {
@@ -87,6 +166,11 @@ class _ProfilesPageState extends State<ProfilesPage> {
         title: const Text('配置文件'),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.cloud_download_outlined),
+            tooltip: '导入远程订阅',
+            onPressed: _importSubscription,
+          ),
           IconButton(
             icon: const Icon(Icons.add_rounded),
             tooltip: '新增配置',

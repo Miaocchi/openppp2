@@ -12,20 +12,13 @@ class ServerEndpoint {
 
     const scheme = 'ppp://';
     if (trimmed.startsWith(scheme)) {
-      final authority = trimmed.substring(scheme.length).split('/').first;
-      if (authority.startsWith('[') || ':'.allMatches(authority).length > 1) {
-        return _parseAuthority(authority);
-      }
+      final authority = _pppAuthority(trimmed.substring(scheme.length));
+      return _parseAuthority(authority);
     }
 
     final uri = Uri.tryParse(trimmed);
     if (uri != null && uri.host.isNotEmpty) {
       return ServerEndpoint(host: uri.host, port: uri.hasPort ? uri.port : null);
-    }
-
-    if (trimmed.startsWith(scheme)) {
-      final authority = trimmed.substring(scheme.length).split('/').first;
-      return _parseAuthority(authority);
     }
 
     return _parseAuthority(trimmed);
@@ -81,4 +74,14 @@ class ServerEndpoint {
 
   static bool _needsIpv6Brackets(String host) =>
       host.contains(':') && !(host.startsWith('[') && host.endsWith(']'));
+
+  static String _pppAuthority(String value) {
+    final parts = value.split('/');
+    if (parts.isNotEmpty &&
+        (parts.first.toLowerCase() == 'ws' || parts.first.toLowerCase() == 'wss') &&
+        parts.length > 1) {
+      return parts[1];
+    }
+    return parts.first;
+  }
 }

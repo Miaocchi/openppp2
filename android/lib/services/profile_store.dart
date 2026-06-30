@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/config_profile.dart';
+import '../models/remote_subscription.dart';
 import '../utils/server_endpoint.dart';
 
 /// Persistent store for the list of config profiles (locations) plus
@@ -397,6 +398,66 @@ class ProfileStore {
     list.add(profile);
     await _writeProfiles(prefs, list);
     return profile;
+  }
+
+  Future<int> upsertSubscription({
+    required String url,
+    required RemoteSubscriptionResult subscription,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = await getProfiles();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    var changed = 0;
+
+    for (final node in subscription.nodes) {
+      final existingIndex = list.indexWhere(
+        (p) => p.subscriptionUrl == url && p.subscriptionNodeId == node.id,
+      );
+      if (existingIndex >= 0) {
+        final prev = list[existingIndex];
+        var history = List<ConfigSnapshot>.from(prev.history);
+        if (prev.json != node.json) {
+          history.insert(
+            0,
+            ConfigSnapshot(timestampMs: now, json: prev.json),
+          );
+          if (history.length > ConfigProfile.historyLimit) {
+            history = history.sublist(0, ConfigProfile.historyLimit);
+          }
+        }
+        list[existingIndex] = prev.copyWith(
+          name: node.name,
+          subtitle:
+              node.subtitle.isNotEmpty ? node.subtitle : (_hostFromJson(node.json) ?? ''),
+          flag: node.flag,
+          json: node.json,
+          options: node.options.isEmpty ? prev.options : node.options,
+          subscriptionUrl: url,
+          subscriptionNodeId: node.id,
+          subscriptionUpdatedAtMs: now,
+          history: history,
+        );
+      } else {
+        list.add(ConfigProfile(
+          id: _newId(),
+          name: node.name,
+          subtitle:
+              node.subtitle.isNotEmpty ? node.subtitle : (_hostFromJson(node.json) ?? ''),
+          flag: node.flag,
+          json: node.json,
+          options: node.options,
+          subscriptionUrl: url,
+          subscriptionNodeId: node.id,
+          subscriptionUpdatedAtMs: now,
+        ));
+      }
+      changed++;
+    }
+
+    if (changed > 0) {
+      await _writeProfiles(prefs, list);
+    }
+    return changed;
   }
 
   /// Update an existing profile. The previous JSON is pushed onto its

@@ -23,6 +23,9 @@ class ConfigProfile {
   String flag;
   String json;
   bool favorite;
+  String? subscriptionUrl;
+  String? subscriptionNodeId;
+  int? subscriptionUpdatedAtMs;
 
   /// Per-profile VPN launch options (TUN / DNS / Geo bypass / etc).
   /// When empty, the global `ProfileStore.defaultOptions` is used.
@@ -41,6 +44,9 @@ class ConfigProfile {
     this.flag = '',
     required this.json,
     this.favorite = false,
+    this.subscriptionUrl,
+    this.subscriptionNodeId,
+    this.subscriptionUpdatedAtMs,
     Map<String, dynamic>? options,
     List<ConfigSnapshot>? history,
   })  : options = options ?? <String, dynamic>{},
@@ -53,6 +59,9 @@ class ConfigProfile {
         'flag': flag,
         'json': json,
         'favorite': favorite,
+        'subscriptionUrl': subscriptionUrl,
+        'subscriptionNodeId': subscriptionNodeId,
+        'subscriptionUpdatedAtMs': subscriptionUpdatedAtMs,
         'options': options,
         'history': history.map((h) => h.toMap()).toList(),
       };
@@ -78,6 +87,10 @@ class ConfigProfile {
       flag: (m['flag'] ?? '').toString(),
       json: (m['json'] ?? '').toString(),
       favorite: m['favorite'] == true,
+      subscriptionUrl: m['subscriptionUrl']?.toString(),
+      subscriptionNodeId: m['subscriptionNodeId']?.toString(),
+      subscriptionUpdatedAtMs:
+          (m['subscriptionUpdatedAtMs'] is int) ? m['subscriptionUpdatedAtMs'] as int : null,
       options: options,
       history: history,
     );
@@ -109,6 +122,9 @@ class ConfigProfile {
     String? flag,
     String? json,
     bool? favorite,
+    String? subscriptionUrl,
+    String? subscriptionNodeId,
+    int? subscriptionUpdatedAtMs,
     Map<String, dynamic>? options,
     List<ConfigSnapshot>? history,
   }) =>
@@ -119,6 +135,10 @@ class ConfigProfile {
         flag: flag ?? this.flag,
         json: json ?? this.json,
         favorite: favorite ?? this.favorite,
+        subscriptionUrl: subscriptionUrl ?? this.subscriptionUrl,
+        subscriptionNodeId: subscriptionNodeId ?? this.subscriptionNodeId,
+        subscriptionUpdatedAtMs:
+            subscriptionUpdatedAtMs ?? this.subscriptionUpdatedAtMs,
         options: options ?? this.options,
         history: history ?? this.history,
       );

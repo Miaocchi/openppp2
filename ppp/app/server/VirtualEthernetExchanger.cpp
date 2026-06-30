@@ -385,10 +385,25 @@ namespace ppp {
                 return false; // Immediate return false and forcefully close the connection due to a suspected malicious attack on the server.
             }
 
-            /** @brief Rejects legacy information packet to keep protocol surface strict. */
+            /** @brief Handles legacy clients that send a base INFO packet without extensions. */
             bool VirtualEthernetExchanger::OnInformation(const ITransmissionPtr& transmission, const VirtualEthernetInformation& information, YieldContext& y) noexcept {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
-                return false; // Immediate return false and forcefully close the connection due to a suspected malicious attack on the server.
+                if (disposed_ || NULLPTR == switcher_ || NULLPTR == transmission) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionDisposed);
+                    return false;
+                }
+
+                std::shared_ptr<ppp::configurations::AppConfiguration> configuration = switcher_->GetConfiguration();
+                if (NULLPTR != configuration && !configuration->server.backend.empty()) {
+                    return true;
+                }
+
+                VirtualEthernetInformation info;
+                info.Clear();
+                info.BandwidthQoS    = 0;
+                info.IncomingTraffic = std::numeric_limits<UInt64>::max();
+                info.OutgoingTraffic = std::numeric_limits<UInt64>::max();
+                info.ExpiredTime     = std::numeric_limits<UInt32>::max();
+                return DoInformation(transmission, info, y);
             }
 
             /** @brief Processes extended information packets, including IPv4/IPv6 assignment requests. */
@@ -409,8 +424,7 @@ namespace ppp {
                 }
 
                 if (!has_ipv6_request && !has_ipv4_request && !has_p2p_request) {
-                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
-                    return false;
+                    return OnInformation(transmission, information.Base, y);
                 }
 
                 VirtualEthernetInformationExtensions response;

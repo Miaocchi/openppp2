@@ -149,11 +149,11 @@ namespace ppp {
                     }
                 }
 
-                // Build IPv4 request: when the client has an explicit static IP configuration
-                // (--tun-static or equivalent), send "manual" mode with the configured address
-                // tuple so the server knows not to assign from its pool.  Otherwise request
-                // "auto" for server-side DHCP allocation.
-                {
+                // Only send the newer INFO extension request when the local profile explicitly
+                // opts into server-side IPv4 allocation. Older servers treat any client-originated
+                // extended INFO packet as invalid, so the default mobile/static-TUN path stays
+                // on the legacy handshake.
+                if (configuration->server.ipv4_pool.configured) {
                     ppp::app::protocol::ClientIPv4Request ipv4_req;
                     ipv4_req.enabled = true;
 
@@ -187,6 +187,10 @@ namespace ppp {
                             request.P2P.virtual_ip = tap->IPAddress;
                         }
                     }
+                }
+
+                if (!request.HasAny()) {
+                    return true;
                 }
 
                 InformationEnvelope envelope;

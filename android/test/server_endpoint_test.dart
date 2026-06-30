@@ -49,6 +49,16 @@ void main() {
       expect(ServerEndpoint(host: 'vpn.example.com', port: 20000).toPppUrl(),
           'ppp://vpn.example.com:20000/');
     });
+
+    test('parses websocket transport prefix', () {
+      final ws = ServerEndpoint.parse('ppp://ws/vpn.example.com:20000/');
+      expect(ws.host, 'vpn.example.com');
+      expect(ws.port, 20000);
+
+      final wss = ServerEndpoint.parse('ppp://wss/[2001:db8::1]:443/');
+      expect(wss.host, '2001:db8::1');
+      expect(wss.port, 443);
+    });
   });
 
   group('ServerEndpoint negative and regression', () {

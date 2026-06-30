@@ -1,5 +1,6 @@
 import NetworkExtension
 import UIKit
+import Darwin
 
 final class ViewController: UITabBarController {
     override func viewDidLoad() {
@@ -183,6 +184,9 @@ struct ConfigProfile: Codable, Equatable {
     var flag: String
     var json: String
     var favorite: Bool
+    var subscriptionUrl: String?
+    var subscriptionNodeId: String?
+    var subscriptionUpdatedAtMs: Int?
     var options: LaunchOptions
     var history: [ConfigSnapshot]
 
@@ -195,17 +199,283 @@ struct ConfigProfile: Codable, Equatable {
             let root = object as? [String: Any],
             let client = root["client"] as? [String: Any],
             let server = client["server"] as? String,
-            let url = URL(string: server),
-            let host = url.host,
-            !host.isEmpty
+            let endpoint = PppServerEndpoint.parse(server)
         else {
             return nil
         }
 
-        if let port = url.port {
-            return "\(host):\(port)"
+        if let port = endpoint.port {
+            return "\(endpoint.host):\(port)"
         }
-        return host
+        return endpoint.host
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case subtitle
+        case flag
+        case json
+        case favorite
+        case subscriptionUrl
+        case subscriptionNodeId
+        case subscriptionUpdatedAtMs
+        case options
+        case history
+    }
+
+    init(
+        id: String,
+        name: String,
+        subtitle: String,
+        flag: String,
+        json: String,
+        favorite: Bool,
+        subscriptionUrl: String? = nil,
+        subscriptionNodeId: String? = nil,
+        subscriptionUpdatedAtMs: Int? = nil,
+        options: LaunchOptions,
+        history: [ConfigSnapshot]
+    ) {
+        self.id = id
+        self.name = name
+        self.subtitle = subtitle
+        self.flag = flag
+        self.json = json
+        self.favorite = favorite
+        self.subscriptionUrl = subscriptionUrl
+        self.subscriptionNodeId = subscriptionNodeId
+        self.subscriptionUpdatedAtMs = subscriptionUpdatedAtMs
+        self.options = options
+        self.history = history
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        subtitle = try container.decodeIfPresent(String.self, forKey: .subtitle) ?? ""
+        flag = try container.decodeIfPresent(String.self, forKey: .flag) ?? ""
+        json = try container.decode(String.self, forKey: .json)
+        favorite = try container.decodeIfPresent(Bool.self, forKey: .favorite) ?? false
+        subscriptionUrl = try container.decodeIfPresent(String.self, forKey: .subscriptionUrl)
+        subscriptionNodeId = try container.decodeIfPresent(String.self, forKey: .subscriptionNodeId)
+        subscriptionUpdatedAtMs = try container.decodeIfPresent(Int.self, forKey: .subscriptionUpdatedAtMs)
+        options = try container.decodeIfPresent(LaunchOptions.self, forKey: .options) ?? LaunchOptions()
+        history = try container.decodeIfPresent([ConfigSnapshot].self, forKey: .history) ?? []
+    }
+}
+
+struct PppServerEndpoint {
+    var host: String
+    var port: Int?
+
+    static func parse(_ value: String) -> PppServerEndpoint? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let prefix = "ppp://"
+        if trimmed.hasPrefix(prefix) {
+            let rest = String(trimmed.dropFirst(prefix.count))
+            let parts = rest.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+            let authority: String
+            if let first = parts.first?.lowercased(), (first == "ws" || first == "wss"), parts.count > 1 {
+                authority = parts[1]
+            } else {
+                authority = parts.first ?? ""
+            }
+            return parseAuthority(authority)
+        }
+
+        if let components = URLComponents(string: trimmed), let host = components.host, !host.isEmpty {
+            return PppServerEndpoint(host: host, port: components.port)
+        }
+        return parseAuthority(trimmed)
+    }
+
+    private static func parseAuthority(_ raw: String) -> PppServerEndpoint? {
+        let authority = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !authority.isEmpty else { return nil }
+
+        if authority.hasPrefix("[") {
+            guard let end = authority.firstIndex(of: "]") else { return nil }
+            let host = String(authority[authority.index(after: authority.startIndex)..<end])
+            let rest = String(authority[authority.index(after: end)...])
+            let port = rest.hasPrefix(":") ? Int(rest.dropFirst()) : nil
+            return PppServerEndpoint(host: host, port: port)
+        }
+
+        if authority.filter({ $0 == ":" }).count > 1 {
+            if let colon = authority.lastIndex(of: ":") {
+                let hostCandidate = String(authority[..<colon])
+                let tail = String(authority[authority.index(after: colon)...])
+                if let port = Int(tail), isValidIPv6Address(hostCandidate) {
+                    return PppServerEndpoint(host: hostCandidate, port: port)
+                }
+            }
+            return PppServerEndpoint(host: authority, port: nil)
+        }
+
+        if let colon = authority.lastIndex(of: ":") {
+            let host = String(authority[..<colon])
+            let tail = String(authority[authority.index(after: colon)...])
+            if let port = Int(tail), !host.isEmpty {
+                return PppServerEndpoint(host: host, port: port)
+            }
+        }
+        return PppServerEndpoint(host: authority, port: nil)
+    }
+
+    private static func isValidIPv6Address(_ value: String) -> Bool {
+        var addr = in6_addr()
+        return value.withCString { inet_pton(AF_INET6, $0, &addr) == 1 }
+    }
+}
+
+struct RemoteSubscriptionNode {
+    var id: String
+    var name: String
+    var subtitle: String
+    var flag: String
+    var json: String
+    var options: LaunchOptions?
+}
+
+struct RemoteSubscriptionResult {
+    var name: String
+    var profilePrefix: String?
+    var nodes: [RemoteSubscriptionNode]
+}
+
+enum RemoteSubscriptionParser {
+    static func parse(_ text: String) throws -> RemoteSubscriptionResult {
+        guard let data = text.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            throw NSError.openPPP2("订阅根节点必须是 JSON object")
+        }
+
+        guard object["type"] as? String == "openppp2-subscription" else {
+            throw NSError.openPPP2("订阅 type 必须是 openppp2-subscription")
+        }
+        guard let version = object["version"] as? NSNumber, version.intValue == 1 else {
+            throw NSError.openPPP2("仅支持订阅 version=1")
+        }
+        guard let rawNodes = object["nodes"] as? [[String: Any]] else {
+            throw NSError.openPPP2("订阅 nodes 必须是数组")
+        }
+
+        let prefix = (object["profilePrefix"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var nodes: [RemoteSubscriptionNode] = []
+        for rawNode in rawNodes where (rawNode["enabled"] as? Bool) != false {
+            let id = "\(rawNode["id"] ?? "")".trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty else {
+                throw NSError.openPPP2("节点 id 不能为空")
+            }
+
+            let rawName = "\(rawNode["name"] ?? id)".trimmingCharacters(in: .whitespacesAndNewlines)
+            let name: String
+            if let prefix, !prefix.isEmpty, !rawName.hasPrefix(prefix) {
+                name = "\(prefix) \(rawName)"
+            } else {
+                name = rawName.isEmpty ? id : rawName
+            }
+
+            let config = try buildConfig(from: rawNode)
+            guard JSONSerialization.isValidJSONObject(config),
+                  let jsonData = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]),
+                  let json = String(data: jsonData, encoding: .utf8)
+            else {
+                throw NSError.openPPP2("节点 \(id) 配置无法序列化")
+            }
+
+            nodes.append(RemoteSubscriptionNode(
+                id: id,
+                name: name,
+                subtitle: rawNode["subtitle"] as? String ?? "",
+                flag: rawNode["flag"] as? String ?? "",
+                json: json,
+                options: decodeOptions(rawNode["options"])
+            ))
+        }
+
+        guard !nodes.isEmpty else {
+            throw NSError.openPPP2("订阅中没有可导入节点")
+        }
+
+        return RemoteSubscriptionResult(
+            name: object["name"] as? String ?? "OPENPPP2 Subscription",
+            profilePrefix: prefix?.isEmpty == false ? prefix : nil,
+            nodes: nodes
+        )
+    }
+
+    private static func buildConfig(from node: [String: Any]) throws -> [String: Any] {
+        if let config = node["config"] as? [String: Any] {
+            return config
+        }
+        if let configText = node["config"] as? String, !configText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let data = configText.data(using: .utf8),
+                  let config = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                throw NSError.openPPP2("节点 config 字符串必须是 JSON object")
+            }
+            return config
+        }
+
+        guard let defaultData = ProfileStore.defaultJson.data(using: .utf8),
+              var root = try JSONSerialization.jsonObject(with: defaultData) as? [String: Any]
+        else {
+            throw NSError.openPPP2("默认配置无法解析")
+        }
+
+        let server = "\(node["server"] ?? "")".trimmingCharacters(in: .whitespacesAndNewlines)
+        guard server.hasPrefix("ppp://") else {
+            throw NSError.openPPP2("精简节点必须包含 ppp:// server")
+        }
+        guard let key = node["key"] as? [String: Any], !key.isEmpty else {
+            throw NSError.openPPP2("精简节点必须包含 key")
+        }
+
+        var keyRoot = root["key"] as? [String: Any] ?? [:]
+        key.forEach { keyRoot[$0.key] = $0.value }
+        root["key"] = keyRoot
+
+        var client = root["client"] as? [String: Any] ?? [:]
+        if let clientOverride = node["client"] as? [String: Any] {
+            clientOverride.forEach { client[$0.key] = $0.value }
+        }
+        client["server"] = server
+        if let bandwidth = node["bandwidth"] as? NSNumber {
+            client["bandwidth"] = bandwidth.intValue
+        }
+        client["mappings"] = []
+        root["client"] = client
+
+        if let websocket = node["websocket"] as? [String: Any] {
+            var ws = root["websocket"] as? [String: Any] ?? [:]
+            websocket.forEach { ws[$0.key] = $0.value }
+            root["websocket"] = ws
+        }
+
+        return root
+    }
+
+    private static func decodeOptions(_ value: Any?) -> LaunchOptions? {
+        guard let map = value as? [String: Any],
+              JSONSerialization.isValidJSONObject(map),
+              let data = try? JSONSerialization.data(withJSONObject: map),
+              let options = try? JSONDecoder().decode(LaunchOptions.self, from: data)
+        else {
+            return nil
+        }
+        return options
+    }
+}
+
+extension NSError {
+    static func openPPP2(_ message: String) -> NSError {
+        NSError(domain: "OpenPPP2", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }
 
@@ -391,6 +661,56 @@ final class ProfileStore {
         list.append(profile)
         defaults.set(profile.id, forKey: activeIdKey)
         save(list)
+    }
+
+    @discardableResult
+    func upsertSubscription(url: String, subscription: RemoteSubscriptionResult) -> Int {
+        var list = profiles()
+        let now = Int(Date().timeIntervalSince1970 * 1000)
+        var changed = 0
+
+        for node in subscription.nodes {
+            if let index = list.firstIndex(where: { $0.subscriptionUrl == url && $0.subscriptionNodeId == node.id }) {
+                var updated = list[index]
+                if updated.json != node.json {
+                    updated.history.insert(ConfigSnapshot(timestampMs: now, json: updated.json), at: 0)
+                    if updated.history.count > ConfigProfile.historyLimit {
+                        updated.history = Array(updated.history.prefix(ConfigProfile.historyLimit))
+                    }
+                }
+                updated.name = node.name
+                updated.subtitle = node.subtitle.isEmpty ? (Self.hostFromJson(node.json) ?? "") : node.subtitle
+                updated.flag = node.flag
+                updated.json = node.json
+                if let options = node.options {
+                    updated.options = options
+                }
+                updated.subscriptionUrl = url
+                updated.subscriptionNodeId = node.id
+                updated.subscriptionUpdatedAtMs = now
+                list[index] = updated
+            } else {
+                list.append(ConfigProfile(
+                    id: UUID().uuidString,
+                    name: node.name,
+                    subtitle: node.subtitle.isEmpty ? (Self.hostFromJson(node.json) ?? "") : node.subtitle,
+                    flag: node.flag,
+                    json: node.json,
+                    favorite: false,
+                    subscriptionUrl: url,
+                    subscriptionNodeId: node.id,
+                    subscriptionUpdatedAtMs: now,
+                    options: node.options ?? LaunchOptions(),
+                    history: []
+                ))
+            }
+            changed += 1
+        }
+
+        if changed > 0 {
+            save(list)
+        }
+        return changed
     }
 
     func update(_ profile: ConfigProfile, snapshot: Bool = true) {
@@ -631,6 +951,18 @@ final class ProfileStore {
         }
 
         return client["server"] as? String
+    }
+
+    private static func hostFromJson(_ json: String) -> String? {
+        guard let server = clientServer(in: json),
+              let endpoint = PppServerEndpoint.parse(server)
+        else {
+            return nil
+        }
+        if let port = endpoint.port {
+            return "\(endpoint.host):\(port)"
+        }
+        return endpoint.host
     }
 
     private static func jsonByReplacingClientServer(in json: String, server: String) -> String {
@@ -1661,11 +1993,19 @@ final class ProfilesViewController: UITableViewController {
         title = "配置文件"
         tableView.backgroundColor = .systemGroupedBackground
         tableView.register(ProfileCell.self, forCellReuseIdentifier: ProfileCell.reuseIdentifier)
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .add,
-            target: self,
-            action: #selector(addProfile)
-        )
+        navigationItem.rightBarButtonItems = [
+            UIBarButtonItem(
+                image: UIImage(systemName: "icloud.and.arrow.down"),
+                style: .plain,
+                target: self,
+                action: #selector(importSubscription)
+            ),
+            UIBarButtonItem(
+                barButtonSystemItem: .add,
+                target: self,
+                action: #selector(addProfile)
+            )
+        ]
         NotificationCenter.default.addObserver(self, selector: #selector(reload), name: ProfileStore.didChangeNotification, object: nil)
         reload()
     }
@@ -1683,6 +2023,76 @@ final class ProfilesViewController: UITableViewController {
     @objc private func addProfile() {
         let editor = ProfileEditViewController(profile: nil)
         navigationController?.pushViewController(editor, animated: true)
+    }
+
+    @objc private func importSubscription() {
+        let alert = UIAlertController(title: "导入远程订阅", message: nil, preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "https://example.com/openppp2.json"
+            field.keyboardType = .URL
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "导入", style: .default) { [weak self, weak alert] _ in
+            guard let self,
+                  let urlText = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !urlText.isEmpty
+            else {
+                return
+            }
+            self.fetchSubscription(urlText)
+        })
+        present(alert, animated: true)
+    }
+
+    private func fetchSubscription(_ urlText: String) {
+        guard let url = URL(string: urlText),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http"
+        else {
+            presentMessage(title: "订阅地址无效", message: "订阅地址必须是 http 或 https URL。")
+            return
+        }
+
+        let progress = UIAlertController(title: nil, message: "正在拉取订阅...", preferredStyle: .alert)
+        present(progress, animated: true)
+
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("OpenPPP2/iOS", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                progress.dismiss(animated: true) {
+                    guard let self else { return }
+                    if let error {
+                        self.presentMessage(title: "订阅导入失败", message: error.localizedDescription)
+                        return
+                    }
+                    if let http = response as? HTTPURLResponse,
+                       http.statusCode < 200 || http.statusCode >= 300 {
+                        self.presentMessage(title: "订阅导入失败", message: "HTTP \(http.statusCode)")
+                        return
+                    }
+                    guard let data, data.count <= 2 * 1024 * 1024,
+                          let text = String(data: data, encoding: .utf8)
+                    else {
+                        self.presentMessage(title: "订阅导入失败", message: "响应为空、过大或不是 UTF-8。")
+                        return
+                    }
+
+                    do {
+                        let subscription = try RemoteSubscriptionParser.parse(text)
+                        let count = self.store.upsertSubscription(url: urlText, subscription: subscription)
+                        self.reload()
+                        self.presentToast("已导入/更新 \(count) 个节点")
+                    } catch {
+                        self.presentMessage(title: "订阅导入失败", message: error.localizedDescription)
+                    }
+                }
+            }
+        }.resume()
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -1920,11 +2330,11 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
     private func hydrateFormFromJson() {
         let client = jsonMap["client"] as? [String: Any] ?? [:]
         let key = jsonMap["key"] as? [String: Any] ?? [:]
-        if let server = client["server"] as? String, let url = URL(string: server) {
-            hostField.text = url.host ?? ""
-            portField.text = url.port.map(String.init) ?? ""
-            if subtitleField.text?.isEmpty != false, let host = url.host {
-                subtitleField.text = url.port == nil ? host : "\(host):\(url.port!)"
+        if let server = client["server"] as? String, let endpoint = PppServerEndpoint.parse(server) {
+            hostField.text = endpoint.host
+            portField.text = endpoint.port.map(String.init) ?? ""
+            if subtitleField.text?.isEmpty != false {
+                subtitleField.text = endpoint.port == nil ? endpoint.host : "\(endpoint.host):\(endpoint.port!)"
             }
         }
         bandwidthField.text = "\(client["bandwidth"] as? Int ?? 0)"
