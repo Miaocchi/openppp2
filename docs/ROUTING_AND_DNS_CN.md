@@ -364,7 +364,11 @@ vBGP 路由会合并到客户端 RIB 中。
 | `virr.url` | `""` | 周期性刷新的 bypass 列表 URL |
 | `vbgp.update-interval` | `3600` | vBGP 路由刷新间隔（秒） |
 | `vbgp.url` | `""` | vBGP 路由来源 URL |
-| `dns.servers` | 系统默认 | 服务端查询用的上游 DNS 服务器 |
+| `udp.dns.cache` | `true` | 开启 DNS 缓存写入；`false` 或 `udp.dns.ttl=0` 会禁止写入并不创建服务端 namespace cache |
+| `udp.dns.ttl` | `60` | DNS 缓存最大 TTL（秒）；实际缓存 TTL 取 DNS 响应 TTL 与该值的较小者 |
+| `dns.servers.domestic` | `doh.pub` | 默认国内 provider 或结构化 DNS server 配置 |
+| `dns.servers.foreign` | `cloudflare` | 默认海外 provider 或结构化 DNS server 配置 |
+| `dns.intercept-unmatched` | `true` | 拦截未命中规则的 DNS 查询，并按 `foreign -> domestic -> cloudflare` 解析 |
 
 ---
 
@@ -414,14 +418,16 @@ vBGP 路由会合并到客户端 RIB 中。
 DNS 规则文件格式示例：
 
 ```
-# 将这些域名路由到本地 DNS 服务器
-.example.com 192.168.1.1
-.localnet.com 192.168.1.1
+# Provider 规则（推荐）
+example.cn /doh.pub/nic
+google.com /cloudflare/tun
 
-# 将这些路由到特定上游
-.google.com 8.8.8.8
-.cloudflare.com 1.1.1.1
+# 旧 IP 规则仍然支持
+legacy-cn.example /1.2.4.8/nic
+legacy-foreign.example /1.1.1.1/tun
 ```
+
+Provider 规则中，第三段选择 resolver 语义：`/nic` 表示国内并允许 ECS，`/tun`、`/vpn`、`/cf`、`/c` 表示海外且不注入 ECS。旧 IP 规则中，第三段仍保持路径语义：`/nic` 走物理网卡，`/tun` 走 VPN 隧道。
 
 ### 生成 GeoIP / GeoSite 分流规则
 
@@ -495,6 +501,7 @@ regexp:^.*\.example\.cn$
 - `dns-provider-foreign` 已解析并预留给未来非 CN 或 `geolocation-!cn` 生成，但当前生成器不消费它。
 - `append-bypass` 在 GeoIP CIDR 后合并，可包含内联 CIDR 或本地 CIDR 文件。
 - `append-dns-rules` 在 GeoSite 规则后合并，可包含完整规则、用国内 provider 归一化的普通域名，或 `rules://` 本地文件。
+- 客户端 `vdns` 和服务端 namespace cache 只缓存正向的 A/AAAA/CNAME 链响应，且 TTL 必须大于 0；实际缓存 TTL 为 `min(响应 TTL, udp.dns.ttl)`，`udp.dns.cache=false` 或 `udp.dns.ttl=0` 禁止写入。
 - Android/iOS 客户端当前不运行生成器，因此不会影响已有移动端 DNS 规则注入路径。
 
 ### VIRR 定期刷新 bypass 列表示例

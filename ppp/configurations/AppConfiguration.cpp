@@ -390,11 +390,11 @@ namespace ppp {
             config.p2p.migration_grace_ms = 5000;
             config.p2p.buffer_pool_count = 64;
 
-            config.dns.servers.domestic = "";
-            config.dns.servers.foreign = "";
+            config.dns.servers.domestic = "doh.pub";
+            config.dns.servers.foreign = "cloudflare";
             config.dns.servers.domestic_entries.clear();
             config.dns.servers.foreign_entries.clear();
-            config.dns.intercept_unmatched = false;
+            config.dns.intercept_unmatched = true;
             config.dns.ecs.enabled = false;
             config.dns.ecs.override_ip = "";
             config.dns.tls.verify_peer = true;
@@ -1419,6 +1419,23 @@ namespace ppp {
             return proto;
         }
 
+        static bool IsDnsServerAddressLiteralSpec(const ppp::string& value) noexcept {
+            ppp::string host;
+            int port = 0;
+            if (!Ipep::ParseEndPoint(value, host, port)) {
+                host = value;
+            }
+
+            host = ATrim(host);
+            if (host.empty()) {
+                return false;
+            }
+
+            boost::system::error_code ec;
+            boost::asio::ip::address ip = ppp::StringToAddress(host.data(), ec);
+            return !ec && !ip.is_unspecified();
+        }
+
         /**
          * @brief Parses a single DNS server entry from a JSON object.
          * @param entry Output DnsServerEntry.
@@ -1461,8 +1478,8 @@ namespace ppp {
         /**
          * @brief Parses a DNS server specification that may be a string, object, or array.
          *
-         * - **string**: Stored in the legacy shorthand field and also as a single entry
-         *   with address field populated.
+         * - **string**: Stored in the shorthand field. IP literals are also converted
+         *   into a structured entry; provider names remain on the provider fallback path.
          * - **object**: Parsed as a structured DnsServerEntry into the entries list.
          * - **array**: Each element is parsed individually; strings go to legacy shorthand
          *   (first element only) and entries list, objects go to entries list only.
@@ -1483,15 +1500,16 @@ namespace ppp {
             }
 
             // --- string shorthand: "cloudflare", "1.1.1.1:53", etc. ---
+            // Provider strings stay on the provider fallback path. Raw IP strings
+            // still populate entries so legacy dns.servers IP shorthand works.
             if (json.isString()) {
                 shorthand = LTrim(RTrim(JsonAuxiliary::AsString(json)));
-                if (!shorthand.empty()) {
+                if (!shorthand.empty() && IsDnsServerAddressLiteralSpec(shorthand)) {
                     DnsServerEntry entry;
                     entry.address = shorthand;
                     entries.emplace_back(std::move(entry));
-                    return true;
                 }
-                return false;
+                return !shorthand.empty();
             }
 
             // --- object: single structured entry ---
@@ -1588,11 +1606,13 @@ namespace ppp {
             config.vmem.path = JsonAuxiliary::AsValue<ppp::string>(json["vmem"]["path"]);
 
             config.udp.inactive.timeout = JsonAuxiliary::AsValue<int>(json["udp"]["inactive"]["timeout"]);
-            config.udp.dns.timeout = JsonAuxiliary::AsValue<int>(json["udp"]["dns"]["timeout"]);
-            config.udp.dns.ttl = JsonAuxiliary::AsValue<int>(json["udp"]["dns"]["ttl"]);
-            config.udp.dns.turbo = JsonAuxiliary::AsValue<bool>(json["udp"]["dns"]["turbo"]);
-            config.udp.dns.cache = JsonAuxiliary::AsInt64(json["udp"]["dns"]["cache"], 1) != 0;
-            config.udp.dns.redirect = JsonAuxiliary::AsValue<ppp::string>(json["udp"]["dns"]["redirect"]);
+            AssignIfPresent(config.udp.dns.timeout, json["udp"]["dns"]["timeout"]);
+            AssignIfPresent(config.udp.dns.ttl, json["udp"]["dns"]["ttl"]);
+            AssignBoolIfPresent(config.udp.dns.turbo, json["udp"]["dns"]["turbo"]);
+            if (!json["udp"]["dns"]["cache"].isNull()) {
+                config.udp.dns.cache = JsonAuxiliary::AsInt64(json["udp"]["dns"]["cache"], 1) != 0;
+            }
+            AssignIfPresent(config.udp.dns.redirect, json["udp"]["dns"]["redirect"]);
             config.udp.listen.port = JsonAuxiliary::AsValue<int>(json["udp"]["listen"]["port"]);
             config.udp.cwnd = std::max<int>(0, JsonAuxiliary::AsValue<int>(json["udp"]["cwnd"]));
             config.udp.rwnd = std::max<int>(0, JsonAuxiliary::AsValue<int>(json["udp"]["rwnd"]));
@@ -1759,15 +1779,17 @@ namespace ppp {
             {
                 ppp::string domestic_shorthand;
                 ppp::vector<DnsServerEntry> domestic_entries;
-                ParseDnsServerSpec(domestic_shorthand, domestic_entries, json["dns"]["servers"]["domestic"]);
-                config.dns.servers.domestic = domestic_shorthand;
-                config.dns.servers.domestic_entries = std::move(domestic_entries);
+                if (ParseDnsServerSpec(domestic_shorthand, domestic_entries, json["dns"]["servers"]["domestic"])) {
+                    config.dns.servers.domestic = domestic_shorthand;
+                    config.dns.servers.domestic_entries = std::move(domestic_entries);
+                }
 
                 ppp::string foreign_shorthand;
                 ppp::vector<DnsServerEntry> foreign_entries;
-                ParseDnsServerSpec(foreign_shorthand, foreign_entries, json["dns"]["servers"]["foreign"]);
-                config.dns.servers.foreign = foreign_shorthand;
-                config.dns.servers.foreign_entries = std::move(foreign_entries);
+                if (ParseDnsServerSpec(foreign_shorthand, foreign_entries, json["dns"]["servers"]["foreign"])) {
+                    config.dns.servers.foreign = foreign_shorthand;
+                    config.dns.servers.foreign_entries = std::move(foreign_entries);
+                }
             }
             AssignBoolIfPresent(config.dns.intercept_unmatched, json["dns"]["intercept-unmatched"]);
             AssignBoolIfPresent(config.dns.ecs.enabled, json["dns"]["ecs"]["enabled"]);

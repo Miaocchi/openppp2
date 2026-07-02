@@ -65,7 +65,13 @@ class ProfileStore {
   },
   "udp": {
     "inactive": { "timeout": 72 },
-    "dns": { "timeout": 4, "redirect": "8.8.8.8:53" },
+    "dns": {
+      "timeout": 4,
+      "ttl": 60,
+      "cache": true,
+      "turbo": false,
+      "redirect": "0.0.0.0"
+    },
     "listen": { "port": 20000 },
     "static": {
       "keep-alived": [1, 5],
@@ -73,6 +79,20 @@ class ProfileStore {
       "quic": false,
       "icmp": true,
       "server": "127.0.0.1:20000"
+    }
+  },
+  "dns": {
+    "servers": {
+      "domestic": "doh.pub",
+      "foreign": "cloudflare"
+    },
+    "intercept-unmatched": true,
+    "ecs": {
+      "enabled": true,
+      "override-ip": ""
+    },
+    "tls": {
+      "verify-peer": true
     }
   },
   "websocket": {

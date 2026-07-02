@@ -167,6 +167,103 @@ static ppp::vector<ppp::dns::ServerEntry> BuildResolverEntries(
     return result;
 }
 
+static bool ParseDnsReachabilityIp(const ppp::string& address, uint32_t& ipnet) noexcept {
+    ipnet = ppp::net::IPEndPoint::AnyAddress;
+    if (address.empty()) {
+        return false;
+    }
+
+    ppp::string host;
+    int port = 0;
+    if (!ppp::net::Ipep::ParseEndPoint(address, host, port)) {
+        host = address;
+    }
+
+    host = ATrim(host);
+    if (host.empty()) {
+        return false;
+    }
+
+    boost::system::error_code ec;
+    boost::asio::ip::address ip = ppp::StringToAddress(host.data(), ec);
+    if (ec || !ip.is_v4() || ip.is_unspecified() || ip.is_loopback() || ip.is_multicast()) {
+        return false;
+    }
+
+    ipnet = htonl(ip.to_v4().to_uint());
+    return true;
+}
+
+static void AddDnsProviderReachabilityIps(
+    const ppp::string& provider_name,
+    const ppp::function<void(uint32_t)>& add_ip) noexcept {
+
+    if (provider_name.empty() || !add_ip) {
+        return;
+    }
+
+    const ppp::vector<ppp::dns::ServerEntry>* provider =
+        ppp::dns::DnsResolver::GetProvider(provider_name);
+    if (NULLPTR == provider) {
+        return;
+    }
+
+    for (const ppp::dns::ServerEntry& entry : *provider) {
+        uint32_t ip = ppp::net::IPEndPoint::AnyAddress;
+        if (ParseDnsReachabilityIp(entry.address, ip)) {
+            add_ip(ip);
+        }
+        for (const boost::asio::ip::address& bootstrap : entry.bootstrap_ips) {
+            if (bootstrap.is_v4() && !bootstrap.is_unspecified() && !bootstrap.is_loopback() && !bootstrap.is_multicast()) {
+                add_ip(htonl(bootstrap.to_v4().to_uint()));
+            }
+        }
+    }
+}
+
+static void AddDnsServerEntryReachabilityIps(
+    const ppp::vector<ppp::configurations::AppConfiguration::DnsServerEntry>& entries,
+    const ppp::function<void(uint32_t)>& add_ip) noexcept {
+
+    if (!add_ip) {
+        return;
+    }
+
+    for (const auto& entry : entries) {
+        if (!entry.address.empty() && ppp::dns::DnsResolver::HasProvider(entry.address)) {
+            AddDnsProviderReachabilityIps(entry.address, add_ip);
+        }
+        else {
+            uint32_t ip = ppp::net::IPEndPoint::AnyAddress;
+            if (ParseDnsReachabilityIp(entry.address, ip)) {
+                add_ip(ip);
+            }
+        }
+
+        for (const ppp::string& bootstrap : entry.bootstrap) {
+            uint32_t ip = ppp::net::IPEndPoint::AnyAddress;
+            if (ParseDnsReachabilityIp(bootstrap, ip)) {
+                add_ip(ip);
+            }
+        }
+    }
+}
+
+static void AddDnsInterceptReachabilityIps(
+    const std::shared_ptr<ppp::configurations::AppConfiguration>& configuration,
+    const ppp::function<void(uint32_t)>& add_ip) noexcept {
+
+    if (NULLPTR == configuration || !add_ip) {
+        return;
+    }
+
+    AddDnsProviderReachabilityIps(configuration->dns.servers.foreign, add_ip);
+    AddDnsProviderReachabilityIps(configuration->dns.servers.domestic, add_ip);
+    AddDnsProviderReachabilityIps("cloudflare", add_ip);
+    AddDnsServerEntryReachabilityIps(configuration->dns.servers.foreign_entries, add_ip);
+    AddDnsServerEntryReachabilityIps(configuration->dns.servers.domestic_entries, add_ip);
+}
+
 /**
  * @brief Parses a STUN candidate string ("ip:port" or "hostname:port") into StunCandidate.
  *
@@ -1732,8 +1829,18 @@ namespace ppp {
                 // Add dns route set rules.
                 uint32_t gws[] = {tap->GatewayServer, IPEndPoint::LoopbackAddress};
                 ppp::unordered_set<uint32_t> dns_serverss_[2];
+                ppp::function<void(uint32_t)> add_bypass_ip =
+                    [&dns_serverss_](uint32_t ip) noexcept {
+                        dns_serverss_[1].emplace(ip);
+                    };
+
                 for (auto&& dns_rules : dns_ruless_) {
                     for (auto& [_, r] : dns_rules) {
+                        if (!r->ProviderName.empty()) {
+                            AddDnsProviderReachabilityIps(r->ProviderName, add_bypass_ip);
+                            continue;
+                        }
+
                         boost::asio::ip::address server = r->Server;
                         if (!server.is_v4()) {
                             continue;
@@ -1747,6 +1854,10 @@ namespace ppp {
                             dns_serverss_[0].emplace(ip);
                         }
                     }
+                }
+
+                if (configuration_->dns.intercept_unmatched) {
+                    AddDnsInterceptReachabilityIps(configuration_, add_bypass_ip);
                 }
 
                 // Compare two lists and remove duplicate ip addresses that appear in both lists.
@@ -1828,6 +1939,8 @@ namespace ppp {
                 if (!VEthernet::Open(tap)) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionOpenFailed);
                 }
+
+                ppp::net::asio::vdns::ClearCache();
 
                 ppp::telemetry::Log(Level::kInfo, "client", proxy_only_ ? "proxy-only session starting" : "TUN attached");
                 ppp::telemetry::Count(proxy_only_ ? "client.proxy.attach" : "client.tun.attach", 1);
@@ -2571,69 +2684,9 @@ namespace ppp {
                 add_dns_server_to_dns_servers(tun_ni_, dns_serverss_[0]);
                 add_dns_server_to_dns_servers(underlying_ni_, dns_serverss_[1]);
 
-                // Helper: add a single "ip[:port]" address literal to dns_serverss_[1]
-                // so that DnsResolver-created sockets (DoH/DoT/TCP/UDP) can reach the
-                // upstream IP directly through the underlying NIC, bypassing the TUN
-                // and avoiding the recursive DNS-redirect loop that would otherwise
-                // occur when the system default route still points at the VPN tunnel.
-                // (See docs/DNS_MODULE_DESIGN.md "Socket protection / bypass routing".)
-                auto add_bypass_ip_literal =
-                    [this](const ppp::string& address) noexcept -> bool {
-                        if (address.empty()) {
-                            return false;
-                        }
-
-                        ppp::string host;
-                        int port = 0;
-                        if (!ppp::net::Ipep::ParseEndPoint(address, host, port)) {
-                            // Treat the entire string as a bare IP literal as a fallback
-                            // (some configurations omit the :port suffix).
-                            host = address;
-                        }
-                        if (host.empty()) {
-                            return false;
-                        }
-
-                        boost::system::error_code ec;
-                        boost::asio::ip::address ip = ppp::StringToAddress(host.data(), ec);
-                        if (ec || !ip.is_v4() || ip.is_unspecified() || ip.is_loopback() || ip.is_multicast()) {
-                            return false;
-                        }
-
-                        uint32_t ipnet = htonl(ip.to_v4().to_uint());
-                        dns_serverss_[1].emplace(ipnet);
-                        return true;
-                    };
-
-                // Helper: expand a built-in provider short name (e.g. "doh.pub",
-                // "cloudflare") to its IPv4 endpoints and add them to the bypass set.
-                auto add_bypass_provider =
-                    [&add_bypass_ip_literal](const ppp::string& provider_name) noexcept {
-                        if (provider_name.empty()) {
-                            return;
-                        }
-
-                        const ppp::vector<ppp::dns::ServerEntry>* provider =
-                            ppp::dns::DnsResolver::GetProvider(provider_name);
-                        if (NULLPTR == provider) {
-                            return;
-                        }
-
-                        for (const ppp::dns::ServerEntry& entry : *provider) {
-                            add_bypass_ip_literal(entry.address);
-                        }
-                    };
-
-                // Helper: walk a list of structured DnsServerEntry objects and add
-                // both their primary address and any bootstrap_ips to the bypass set.
-                auto add_bypass_dns_entries =
-                    [&add_bypass_ip_literal](const ppp::vector<ppp::configurations::AppConfiguration::DnsServerEntry>& entries) noexcept {
-                        for (const auto& ce : entries) {
-                            add_bypass_ip_literal(ce.address);
-                            for (const auto& b : ce.bootstrap) {
-                                add_bypass_ip_literal(b);
-                            }
-                        }
+                ppp::function<void(uint32_t)> add_bypass_ip =
+                    [this](uint32_t ip) noexcept {
+                        dns_serverss_[1].emplace(ip);
                     };
 
                 // Add dns route set rules.
@@ -2645,7 +2698,7 @@ namespace ppp {
                         // to choose dns_serverss_ slot -- provider sockets always need
                         // the host route bypass to function.
                         if (!r->ProviderName.empty()) {
-                            add_bypass_provider(r->ProviderName);
+                            AddDnsProviderReachabilityIps(r->ProviderName, add_bypass_ip);
                             continue;
                         }
 
@@ -2672,11 +2725,7 @@ namespace ppp {
                 // The hardcoded "cloudflare" final fallback in ResolveAsyncWithFallback
                 // is also covered so the failover chain remains reachable.
                 if (configuration_->dns.intercept_unmatched) {
-                    add_bypass_provider(configuration_->dns.servers.domestic);
-                    add_bypass_provider(configuration_->dns.servers.foreign);
-                    add_bypass_provider("cloudflare");
-                    add_bypass_dns_entries(configuration_->dns.servers.domestic_entries);
-                    add_bypass_dns_entries(configuration_->dns.servers.foreign_entries);
+                    AddDnsInterceptReachabilityIps(configuration_, add_bypass_ip);
                 }
 
                 // Compare two lists and remove duplicate ip addresses that appear in both lists.
@@ -3477,9 +3526,12 @@ namespace ppp {
                 try {
                     if (!response.empty() && NULLPTR != self) {
                         try {
-                            ppp::net::asio::vdns::AddCache(
-                                response.data(),
-                                static_cast<int>(response.size()));
+                            std::shared_ptr<ppp::configurations::AppConfiguration> configuration = self->configuration_;
+                            if (NULLPTR != configuration && configuration->udp.dns.cache) {
+                                ppp::net::asio::vdns::AddCache(
+                                    response.data(),
+                                    static_cast<int>(response.size()));
+                            }
                         }
                         catch (...) { /* cache failure is non-fatal */ }
 
@@ -3593,6 +3645,60 @@ namespace ppp {
                     }
                 }
 
+                auto start_unmatched_resolve =
+                    [this, exchanger, frame, messages, packet, destinationIP]() noexcept -> bool {
+                        if (NULLPTR == configuration_ || !configuration_->dns.intercept_unmatched || NULLPTR == dns_resolver_) {
+                            return false;
+                        }
+
+                        std::shared_ptr<ppp::dns::DnsResolver> resolver = dns_resolver_;
+                        ppp::string domestic = configuration_->dns.servers.domestic;
+                        ppp::string foreign  = configuration_->dns.servers.foreign;
+
+                        boost::asio::ip::udp::endpoint sourceEP =
+                            IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
+                        boost::asio::ip::udp::endpoint destEP(destinationIP, PPP_DNS_SYS_PORT);
+
+                        auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(
+                            shared_from_this());
+
+                        ppp::dns::DnsResolver::ResolveCallback callback =
+                            [resolver, self, sourceEP, destEP, exchanger, messages, packet](ppp::vector<Byte> response) noexcept {
+                                (void)resolver; // keep DnsResolver alive until async resolve completes
+                                (void)packet; // keep IPFrame alive until async resolve completes
+                                HandleDnsResolverResponse(self, exchanger, messages, sourceEP, destEP, std::move(response));
+                            };
+
+                        ppp::vector<ppp::dns::ServerEntry> foreign_entries =
+                            BuildResolverEntries(configuration_->dns.servers.foreign_entries);
+                        if (!foreign_entries.empty()) {
+                            resolver->ResolveAsyncWithEntries(
+                                foreign_entries, false,
+                                static_cast<const Byte*>(messages->Buffer.get()),
+                                messages->Length,
+                                callback);
+                            return true;
+                        }
+
+                        ppp::vector<ppp::dns::ServerEntry> domestic_entries =
+                            BuildResolverEntries(configuration_->dns.servers.domestic_entries);
+                        if (!domestic_entries.empty()) {
+                            resolver->ResolveAsyncWithEntries(
+                                domestic_entries, true,
+                                static_cast<const Byte*>(messages->Buffer.get()),
+                                messages->Length,
+                                callback);
+                            return true;
+                        }
+
+                        resolver->ResolveAsyncWithFallback(
+                            foreign, domestic, "cloudflare",
+                            static_cast<const Byte*>(messages->Buffer.get()),
+                            messages->Length,
+                            callback);
+                        return true;
+                    };
+
                 boost::asio::ip::address serverIP;
                 if (std::shared_ptr<ITap> tap = GetTap(); IPAddressIsGatewayServer(packet->Destination, tap->GatewayServer, tap->SubmaskAddress)) {
                     auto& dnsServers = ppp::net::asio::vdns::servers;
@@ -3614,139 +3720,29 @@ namespace ppp {
                 else {
                     ppp::app::client::dns::Rule::Ptr rulePtr = ppp::app::client::dns::Rule::Get(stl::transform<ppp::string>(qs.mName), dns_ruless_[0], dns_ruless_[1], dns_ruless_[2]);
                     if (NULLPTR == rulePtr) {
-#if defined(_ANDROID)
-                        // On Android: if intercept_unmatched is enabled, use DnsResolver.
-                        // Prefer configured entries first (foreign/domestic), then
-                        // fall back to provider-based ResolveAsyncWithFallback.
-                        if (configuration_->dns.intercept_unmatched && NULLPTR != dns_resolver_) {
-                            ppp::string domestic = configuration_->dns.servers.domestic;
-                            ppp::string foreign  = configuration_->dns.servers.foreign;
-
-                            boost::asio::ip::udp::endpoint sourceEP =
-                                IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
-                            boost::asio::ip::udp::endpoint destEP(destinationIP, PPP_DNS_SYS_PORT);
-
-                            auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(
-                                shared_from_this());
-
-                            // Phase A: prefer structured entries from config.
-                            ppp::vector<ppp::dns::ServerEntry> foreign_entries =
-                                BuildResolverEntries(configuration_->dns.servers.foreign_entries);
-                            ppp::vector<ppp::dns::ServerEntry> domestic_entries =
-                                BuildResolverEntries(configuration_->dns.servers.domestic_entries);
-
-                            if (!foreign_entries.empty()) {
-                                // Unmatched queries prefer foreign entries first, preserving the
-                                // legacy no-ECS behaviour of the foreign tier.
-                                dns_resolver_->ResolveAsyncWithEntries(
-                                    foreign_entries, false,
-                                    static_cast<const Byte*>(messages->Buffer.get()),
-                                    messages->Length,
-                                    [self, sourceEP, destEP, exchanger, messages, packet](ppp::vector<Byte> response) noexcept {
-                                        (void)packet; // keep IPFrame alive until async resolve completes
-                                        HandleDnsResolverResponse(self, exchanger, messages, sourceEP, destEP, std::move(response));
-                                    });
-                                return true;
-                            }
-
-                            if (!domestic_entries.empty()) {
-                                // If only domestic structured entries are configured, treat the
-                                // query as domestic so ECS injection semantics match the
-                                // provider-based domestic fallback path.
-                                dns_resolver_->ResolveAsyncWithEntries(
-                                    domestic_entries, true,
-                                    static_cast<const Byte*>(messages->Buffer.get()),
-                                    messages->Length,
-                                    [self, sourceEP, destEP, exchanger, messages, packet](ppp::vector<Byte> response) noexcept {
-                                        (void)packet;
-                                        HandleDnsResolverResponse(self, exchanger, messages, sourceEP, destEP, std::move(response));
-                                    });
-                                return true;
-                            }
-
-                            // Fallback: no structured entries, use legacy provider-based path.
-                            dns_resolver_->ResolveAsyncWithFallback(
-                                foreign, domestic, "cloudflare",
-                                static_cast<const Byte*>(messages->Buffer.get()),
-                                messages->Length,
-                                [self, sourceEP, destEP, exchanger, messages, packet](ppp::vector<Byte> response) noexcept {
-                                    (void)packet;
-                                    HandleDnsResolverResponse(self, exchanger, messages, sourceEP, destEP, std::move(response));
-                                });
+                        if (start_unmatched_resolve()) {
                             return true;
                         }
 
+#if defined(_ANDROID)
                         serverIP = destinationIP;
                         __android_log_print(ANDROID_LOG_INFO, "openppp2", "dns_redirect android fallback upstream=%s host=%s",
                             serverIP.to_string().c_str(),
                             qs.mName.c_str());
 #else
-                        // Desktop: if intercept_unmatched is enabled, use DnsResolver.
-                        // Prefer configured entries first (foreign/domestic), then
-                        // fall back to provider-based ResolveAsyncWithFallback.
-                        if (configuration_->dns.intercept_unmatched && NULLPTR != dns_resolver_) {
-                            ppp::string domestic = configuration_->dns.servers.domestic;
-                            ppp::string foreign  = configuration_->dns.servers.foreign;
-
-                            boost::asio::ip::udp::endpoint sourceEP =
-                                IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
-                            boost::asio::ip::udp::endpoint destEP(destinationIP, PPP_DNS_SYS_PORT);
-
-                            auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(
-                                shared_from_this());
-
-                            // Phase A: prefer structured entries from config.
-                            ppp::vector<ppp::dns::ServerEntry> foreign_entries =
-                                BuildResolverEntries(configuration_->dns.servers.foreign_entries);
-                            ppp::vector<ppp::dns::ServerEntry> domestic_entries =
-                                BuildResolverEntries(configuration_->dns.servers.domestic_entries);
-
-                            if (!foreign_entries.empty()) {
-                                // Unmatched queries prefer foreign entries first, preserving the
-                                // legacy no-ECS behaviour of the foreign tier.
-                                dns_resolver_->ResolveAsyncWithEntries(
-                                    foreign_entries, false,
-                                    static_cast<const Byte*>(messages->Buffer.get()),
-                                    messages->Length,
-                                    [self, sourceEP, destEP, exchanger, messages](ppp::vector<Byte> response) noexcept {
-                                        HandleDnsResolverResponse(self, exchanger, messages, sourceEP, destEP, std::move(response));
-                                    });
-                                return true;
-                            }
-
-                            if (!domestic_entries.empty()) {
-                                // If only domestic structured entries are configured, treat the
-                                // query as domestic so ECS injection semantics match the
-                                // provider-based domestic fallback path.
-                                dns_resolver_->ResolveAsyncWithEntries(
-                                    domestic_entries, true,
-                                    static_cast<const Byte*>(messages->Buffer.get()),
-                                    messages->Length,
-                                    [self, sourceEP, destEP, exchanger, messages](ppp::vector<Byte> response) noexcept {
-                                        HandleDnsResolverResponse(self, exchanger, messages, sourceEP, destEP, std::move(response));
-                                    });
-                                return true;
-                            }
-
-                            // Fallback: no structured entries, use legacy provider-based path.
-                            dns_resolver_->ResolveAsyncWithFallback(
-                                foreign, domestic, "cloudflare",
-                                static_cast<const Byte*>(messages->Buffer.get()),
-                                messages->Length,
-                                [self, sourceEP, destEP, exchanger, messages](ppp::vector<Byte> response) noexcept {
-                                    HandleDnsResolverResponse(self, exchanger, messages, sourceEP, destEP, std::move(response));
-                                });
-                            return true;
-                        }
-
                         return false;
 #endif
                     }
                     else {
                         if (!rulePtr->ProviderName.empty()) {
+                            if (NULLPTR == dns_resolver_) {
+                                return false;
+                            }
+
                             // Provider-based DNS resolution via DnsResolver (DoH/DoT/TCP/UDP).
                             // This path is taken when dns-rules.txt contains a provider short name
                             // (e.g. "doh.pub", "cloudflare") instead of a raw IP address.
+                            std::shared_ptr<ppp::dns::DnsResolver> resolver = dns_resolver_;
                             bool domestic = rulePtr->Nic;
                             boost::asio::ip::udp::endpoint sourceEP =
                                 IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
@@ -3757,11 +3753,12 @@ namespace ppp {
                             auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(
                                 shared_from_this());
 
-                            dns_resolver_->ResolveAsync(
+                            resolver->ResolveAsync(
                                 rulePtr->ProviderName, domestic,
                                 static_cast<const Byte*>(messages->Buffer.get()),
                                 messages->Length,
-                                [self, sourceEP, destEP, exchanger, messages, packet](ppp::vector<Byte> response) noexcept {
+                                [resolver, self, sourceEP, destEP, exchanger, messages, packet](ppp::vector<Byte> response) noexcept {
+                                    (void)resolver; // keep DnsResolver alive until async resolve completes
                                     (void)packet; // keep IPFrame alive until async resolve completes
                                     HandleDnsResolverResponse(self, exchanger, messages, sourceEP, destEP, std::move(response));
                                 });

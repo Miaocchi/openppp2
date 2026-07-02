@@ -2147,7 +2147,7 @@ namespace ppp {
              */
             bool VirtualEthernetSwitcher::OpenNamespaceCacheIfNeed() noexcept {
                 int ttl = configuration_->udp.dns.ttl;
-                if (ttl > 0) {
+                if (configuration_->udp.dns.cache && ttl > 0) {
                     VirtualEthernetNamespaceCachePtr cache = NewNamespaceCache(ttl);
                     if (NULLPTR == cache) {
                         return false;

@@ -205,8 +205,9 @@ namespace ppp
                             host = ToLower<ppp::string>(host);
                         }
 
-                        // Parse the optional third segment (nic flag) before the address
-                        // check so it is available for both IP and provider-name paths.
+                        // Parse the optional third segment before the address check.
+                        // Legacy IP rules use it as a nic/tun path selector; provider
+                        // rules reuse the same boolean as domestic/foreign semantics.
                         bool nic = true;
                         if (segment_size > 2)
                         {

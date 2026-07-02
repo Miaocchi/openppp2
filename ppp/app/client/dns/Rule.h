@@ -30,10 +30,12 @@ namespace ppp
                 /**
                  * @brief Stores one DNS routing rule entry.
                  *
-                 * @details Each `Rule` maps a host-matching pattern to an upstream DNS
-                 *          server address and a flag indicating whether the query should
-                 *          be resolved through the physical NIC (`Nic = true`) or through
-                 *          the VPN channel (`Nic = false`).
+                 * @details Each `Rule` maps a host-matching pattern to either a legacy
+                 *          upstream DNS server address or a built-in provider name.
+                 *          For legacy IP rules, `Nic = true` means physical NIC and
+                 *          `Nic = false` means VPN tunnel. For provider rules,
+                 *          `Nic = true` means domestic/ECS-eligible semantics and
+                 *          `Nic = false` means foreign/no-ECS semantics.
                  *
                  *          Rule entries are normally created and owned by the three-tier
                  *          lookup tables held in `VEthernetNetworkSwitcher::dns_ruless_`.
@@ -52,12 +54,12 @@ namespace ppp
                     ppp::string                         Host;
 
                     /**
-                     * @brief When true, DNS queries matching this rule are sent through the
-                     *        physical NIC rather than through the VPN tunnel.
+                     * @brief Legacy path selector, or provider domestic selector.
                      *
-                     * @details Setting `Nic = false` (the default) routes matching queries to
-                     *          `Server` via the VPN.  Setting `Nic = true` bypasses the VPN
-                     *          and resolves directly on the host network.
+                     * @details For IP-based rules, `Nic = true` bypasses the VPN via the
+                     *          physical NIC and `Nic = false` forwards through the tunnel.
+                     *          For provider rules, `Nic = true` marks the query domestic
+                     *          (ECS eligible) and `Nic = false` marks it foreign.
                      */
                     bool                                Nic = false;
 

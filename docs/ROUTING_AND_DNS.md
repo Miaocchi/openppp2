@@ -370,7 +370,11 @@ Routing and DNS are not separate knobs. They form a unified traffic classificati
 | `virr.url` | `""` | Bypass list URL for periodic refresh |
 | `vbgp.update-interval` | `3600` | vBGP route refresh interval (seconds) |
 | `vbgp.url` | `""` | vBGP route source URL |
-| `dns.servers` | system | Upstream DNS server for server-side queries |
+| `udp.dns.cache` | `true` | Enables DNS cache writes; `false` or `udp.dns.ttl=0` disables writes and server namespace cache creation |
+| `udp.dns.ttl` | `60` | Maximum DNS cache TTL in seconds; positive response TTLs are honored and capped by this value |
+| `dns.servers.domestic` | `doh.pub` | Default domestic provider or structured DNS server spec |
+| `dns.servers.foreign` | `cloudflare` | Default foreign provider or structured DNS server spec |
+| `dns.intercept-unmatched` | `true` | Intercept unmatched DNS queries and resolve through `foreign -> domestic -> cloudflare` |
 
 ---
 
@@ -420,14 +424,16 @@ Routing and DNS `ppp::diagnostics::ErrorCode` values (from `ppp/diagnostics/Erro
 DNS rules file format example:
 
 ```
-# Route these domains to the local DNS server
-.example.com 192.168.1.1
-.localnet.com 192.168.1.1
+# Provider rules (preferred)
+example.cn /doh.pub/nic
+google.com /cloudflare/tun
 
-# Route these to a specific upstream
-.google.com 8.8.8.8
-.cloudflare.com 1.1.1.1
+# Legacy IP rules remain supported
+legacy-cn.example /1.2.4.8/nic
+legacy-foreign.example /1.1.1.1/tun
 ```
+
+For provider rules, the third segment selects resolver semantics: `/nic` means domestic and ECS-eligible; `/tun`, `/vpn`, `/cf`, and `/c` mean foreign and no ECS. For legacy IP rules, the same segment keeps its path meaning: `/nic` bypasses the VPN through the physical adapter, while `/tun` forwards through the tunnel.
 
 ### Generating GeoIP / GeoSite split rules
 
@@ -501,6 +507,7 @@ Important details:
 - `dns-provider-foreign` is parsed and reserved for future non-CN or `geolocation-!cn` generation, but is not consumed by the current generator.
 - `append-bypass` is merged after GeoIP CIDRs and can contain inline CIDRs or local CIDR files.
 - `append-dns-rules` is merged after GeoSite rules and can contain full rules, plain domains normalized with the domestic provider, or `rules://` local files.
+- Client `vdns` and server namespace cache store only positive A/AAAA/CNAME-chain responses with positive TTL; cached TTL is `min(response TTL, udp.dns.ttl)`, and `udp.dns.cache=false` or `udp.dns.ttl=0` disables writes.
 - Android/iOS clients currently do not run the generator, so existing mobile DNS-rule injection paths remain unchanged.
 
 ### Checking if a bypass route is active (code)

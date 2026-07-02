@@ -16,6 +16,8 @@
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
 
+#include <common/dnslib/message.h>
+
 #include <cstring>      // std::memcpy, std::strlen
 #include <memory>       // std::shared_ptr
 #include <new>          // std::bad_alloc
@@ -392,6 +394,108 @@ namespace ppp {
                             return true;
                         };
                     return ExtractHostZ(szPacketStartPos, nPacketLength, fPredicateB, fPredicateE);
+                }
+
+                static bool IsCacheableAnswerType(::dns::RecordType type) noexcept {
+                    return type == ::dns::RecordType::kA ||
+                        type == ::dns::RecordType::kAAAA ||
+                        type == ::dns::RecordType::kCNAME;
+                }
+
+                bool ExtractPositiveResponseMinTtl(const Byte* packet, int packet_length, uint32_t& ttl) noexcept {
+                    ttl = 0;
+                    if (NULLPTR == packet || packet_length < static_cast<int>(sizeof(dns_hdr))) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsPacketInvalid);
+                        return false;
+                    }
+
+                    ::dns::Message message;
+                    if (::dns::BufferResult::NoError != message.decode(packet, static_cast<size_t>(packet_length))) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsPacketInvalid);
+                        return false;
+                    }
+
+                    if (!message.mQr || message.mRCode != static_cast<uint16_t>(::dns::ResponseCode::kNOERROR)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsResponseInvalid);
+                        return false;
+                    }
+
+                    bool has_terminal_address = false;
+                    uint32_t min_ttl = UINT32_MAX;
+                    for (::dns::ResourceRecord& rr : message.answers) {
+                        if (rr.mClass != ::dns::RecordClass::kIN || !IsCacheableAnswerType(rr.mType)) {
+                            continue;
+                        }
+
+                        if (rr.mTtl == 0) {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsResponseInvalid);
+                            return false;
+                        }
+
+                        min_ttl = std::min<uint32_t>(min_ttl, rr.mTtl);
+
+                        if (rr.mType == ::dns::RecordType::kA && NULLPTR != rr.getRData<::dns::RDataA>()) {
+                            has_terminal_address = true;
+                        }
+                        elif(rr.mType == ::dns::RecordType::kAAAA && NULLPTR != rr.getRData<::dns::RDataAAAA>()) {
+                            has_terminal_address = true;
+                        }
+                    }
+
+                    if (!has_terminal_address || min_ttl == UINT32_MAX) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsResponseInvalid);
+                        return false;
+                    }
+
+                    ttl = min_ttl;
+                    return true;
+                }
+
+                bool RewriteResponseIdAndTtl(
+                    const Byte* packet,
+                    int packet_length,
+                    uint16_t trans_id,
+                    uint32_t ttl,
+                    std::shared_ptr<Byte>& response,
+                    int& response_length) noexcept {
+
+                    response.reset();
+                    response_length = 0;
+                    if (NULLPTR == packet || packet_length < static_cast<int>(sizeof(dns_hdr)) || ttl < 1) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsPacketInvalid);
+                        return false;
+                    }
+
+                    ::dns::Message message;
+                    if (::dns::BufferResult::NoError != message.decode(packet, static_cast<size_t>(packet_length))) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsPacketInvalid);
+                        return false;
+                    }
+
+                    message.mId = trans_id;
+                    for (::dns::ResourceRecord& rr : message.answers) {
+                        if (rr.mClass == ::dns::RecordClass::kIN && IsCacheableAnswerType(rr.mType)) {
+                            rr.mTtl = ttl;
+                        }
+                    }
+
+                    ppp::vector<Byte> encoded(PPP_BUFFER_SIZE);
+                    size_t encoded_size = 0;
+                    if (::dns::BufferResult::NoError != message.encode(encoded.data(), encoded.size(), encoded_size) || encoded_size < sizeof(dns_hdr)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsResponseInvalid);
+                        return false;
+                    }
+
+                    std::shared_ptr<Byte> copy = make_shared_alloc<Byte>(static_cast<int>(encoded_size));
+                    if (NULLPTR == copy) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                        return false;
+                    }
+
+                    std::memcpy(copy.get(), encoded.data(), encoded_size);
+                    response = std::move(copy);
+                    response_length = static_cast<int>(encoded_size);
+                    return true;
                 }
 
             } // namespace dns

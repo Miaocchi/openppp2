@@ -316,8 +316,8 @@ namespace ppp {
              *
              * Controls domestic/foreign DNS server selection, unmatched-query
              * interception policy, and EDNS Client Subnet (ECS) behavior.
-             * When all fields are at their defaults the legacy DNS forwarding
-             * path is used exclusively, preserving backward compatibility.
+             * New defaults use provider-based full interception: unmatched
+             * queries prefer foreign DNS, then domestic DNS, then Cloudflare.
              */
         struct {
             struct {
@@ -326,7 +326,7 @@ namespace ppp {
                 ppp::vector<DnsServerEntry>                         domestic_entries; ///< Structured domestic DNS server entries; populated from object/array forms.
                 ppp::vector<DnsServerEntry>                         foreign_entries;  ///< Structured foreign DNS server entries; populated from object/array forms.
             }                                                       servers;         ///< DNS server selection for domestic and foreign queries.
-            bool                                                    intercept_unmatched; ///< When true, unmatched DNS queries are intercepted and routed through dns.servers.foreign; default false preserves legacy behavior.
+            bool                                                    intercept_unmatched; ///< When true, unmatched DNS queries are intercepted and routed through foreign->domestic->cloudflare; default true.
             struct {
                 bool                                                enabled;         ///< Enable EDNS Client Subnet (ECS) OPT RR injection for domestic queries; default false.
                 ppp::string                                         override_ip;     ///< Manual exit IP for ECS; highest-priority source. Empty = auto-detect from server or STUN.

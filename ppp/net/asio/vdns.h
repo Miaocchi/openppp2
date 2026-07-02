@@ -145,6 +145,14 @@ namespace ppp {
                 bool                                                                            AddCache(const Byte* packet, int packet_size) noexcept;
 
                 /**
+                 * @brief Clears all process-wide vdns cache entries immediately.
+                 *
+                 * Used when DNS configuration changes or a client session starts, so
+                 * stale mobile-network answers cannot leak across reconnects.
+                 */
+                void                                                                            ClearCache() noexcept;
+
+                /**
                  * @brief Checks whether a hostname represents a reverse DNS lookup domain.
                  *
                  * Reverse queries for IPv4 (.in-addr.arpa) and IPv6 (.ip6.arpa) should not

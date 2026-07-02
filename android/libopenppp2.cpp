@@ -954,8 +954,9 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1app_1confi
 
     int err = libopenppp2_application::Invoke(
         [&app, &config]() noexcept {
-            ppp::net::asio::vdns::ttl = config->udp.dns.ttl;
+            ppp::net::asio::vdns::ttl = config->udp.dns.cache ? config->udp.dns.ttl : 0;
             ppp::net::asio::vdns::enabled = config->udp.dns.turbo;
+            ppp::net::asio::vdns::ClearCache();
 
             app->configuration_ = config;
             return LIBOPENPPP2_ERROR_SUCCESS;
@@ -1196,6 +1197,7 @@ __LIBOPENPPP2__(jboolean) Java_supersocksr_ppp_android_c_libopenppp2_set_1dns_1b
     ppp::net::asio::vdns::enabled = turbo;
     ppp::net::asio::vdns::ttl = ttl;
     ppp::net::asio::vdns::servers = addresses;
+    ppp::net::asio::vdns::ClearCache();
     return true;
 }
 
