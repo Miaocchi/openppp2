@@ -2,7 +2,7 @@
 
 ## 概述
 
-在现有 DNS 拦截/缓存架构上扩展多协议上游支持（UDP / TCP / DoH / DoT），配合 EDNS Client Subnet 优化国内 CDN 解析。目标是**默认零破坏性变更**：完全兼容现有 `dns-rules.txt` 和 `vdns` 缓存；所有会改变未命中规则处理行为的能力必须通过显式配置开启。
+在现有 DNS 拦截/缓存架构上扩展多协议上游支持（UDP / TCP / DoH / DoT），配合 EDNS Client Subnet 优化国内 CDN 解析。当前默认策略面向移动网络：保留旧 IP 规则兼容性，同时默认开启 provider-based full interception，未命中规则按 `foreign -> domestic -> cloudflare` 解析。
 
 ## 实现状态总览
 
@@ -11,7 +11,7 @@
 | UDP/TCP/DoH/DoT 四协议 | ✅ 已实现 | 全部异步，`DnsResolver.cpp` 中完整实现 |
 | 12 个内置提供商 | ✅ 已实现 | 代码硬编码于 `Providers()` 静态表中 |
 | dns-rules.txt 扩展（提供商名称） | ✅ 已实现 | `Rule::Load()` 扩展，`ProviderName` 字段 |
-| `intercept-unmatched` 配置 | ✅ 已实现 | 未命中规则时走 `dns.servers.foreign` |
+| `intercept-unmatched` 配置 | ✅ 已实现 | 默认开启；未命中规则时按 `foreign -> domestic -> cloudflare` 解析 |
 | `verify-peer` TLS 证书校验 | ✅ 已实现 | 可选，使用 `cacert.pem` / 内置根证书 / 系统 CA |
 | ECS IPv4 /24 注入 | ✅ 已实现 | `InjectEcsOptRr()` 内联实现 |
 | ClientExitIP 服务器→客户端传递 | ✅ 已实现 | 优先级 2 的出口 IP 来源 |
@@ -66,14 +66,14 @@
 | `vdns` 缓存 | `ppp/net/asio/vdns.h/cpp` | `QueryCache`/`QueryCache2`/`AddCache`/`UpdateAsync` 完全复用 |
 | `dns::Rule` | `ppp/app/client/dns/Rule.h/cpp` | 三级匹配（full→regexp→suffix）完全保留 |
 | `RedirectDnsServer` | `VEthernetNetworkSwitcher.cpp` | 现有 UDP 转发路径完全保留 |
-| `dns-rules.txt` | 配置文件 | 格式不变：`domain /server_ip/nic` |
+| `dns-rules.txt` | 配置文件 | 旧 IP 格式保留；默认示例改为 `domain /provider/nic|tun` |
 
 ### 扩展的组件
 
 | 组件 | 变更类型 | 说明 |
 |------|---------|------|
 | `dns::Rule::Load` | 扩展 | `server_ip` 字段新增识别提供商简写名称 |
-| `RedirectDnsServer` | 扩展 | 当匹配到提供商名称时走 `DnsResolver` 路径；未命中规则默认保持旧行为 |
+| `RedirectDnsServer` | 扩展 | 当匹配到提供商名称时走 `DnsResolver` 路径；未命中规则默认走 `foreign -> domestic -> cloudflare` |
 | `appsettings.json` | 扩展 | 新增 `dns.servers.domestic`/`dns.servers.foreign`/`dns.intercept-unmatched` 配置 |
 | `VirtualEthernetInformationExtensions` | 扩展 | 新增 `ClientExitIP` 字段，服务器填充，客户端读取用于 ECS |
 
@@ -102,8 +102,8 @@
 │     │  → 走现有 UDP 转发路径（零修改）                      │
 │     └─ 命中且 Rule->ProviderName 非空（如 "doh.pub"）      │
 │        → 走新 DnsResolver 路径                            │
-│  4. 未命中任何规则 → 默认保持旧行为；仅 intercept-unmatched │
-│     显式开启时才走 dns.servers.foreign                     │
+│  4. 未命中任何规则 → 默认走 foreign_entries/domestic_entries │
+│     或 foreign → domestic → cloudflare provider fallback    │
 │                                                          │
 │  新路径:                                                  │
 │  4a. DnsResolver::ResolveAsync()                          │
@@ -149,7 +149,7 @@
             "domestic": "doh.pub",
             "foreign": "cloudflare"
         },
-        "intercept-unmatched": false,
+        "intercept-unmatched": true,
         "ecs": {
             "enabled": true,
             "override-ip": ""
@@ -196,11 +196,11 @@
 
 | JSON key | C++ 字段 | 类型 | 默认值 | 状态 | 说明 |
 |----------|----------|------|--------|------|------|
-| `dns.servers.domestic` | `dns.servers.domestic` | string | `""` | ✅ 已实现 | 国内 DNS 服务器提供商简写名 |
+| `dns.servers.domestic` | `dns.servers.domestic` | string | `"doh.pub"` | ✅ 已实现 | 国内 DNS 服务器提供商简写名 |
 | `dns.servers.domestic` | `dns.servers.domestic_entries` | object/array | `[]` | ✅ 已实现 | 国内 DNS 结构化条目列表（支持 object/array 形式） |
-| `dns.servers.foreign` | `dns.servers.foreign` | string | `""` | ✅ 已实现 | 海外 DNS 服务器提供商简写名 |
+| `dns.servers.foreign` | `dns.servers.foreign` | string | `"cloudflare"` | ✅ 已实现 | 海外 DNS 服务器提供商简写名 |
 | `dns.servers.foreign` | `dns.servers.foreign_entries` | object/array | `[]` | ✅ 已实现 | 海外 DNS 结构化条目列表（支持 object/array 形式） |
-| `dns.intercept-unmatched` | `dns.intercept_unmatched` | bool | `false` | ✅ 已实现 | 未命中 `dns-rules.txt` 时是否默认拦截并走 `dns.servers.foreign`；默认 false 保持旧行为 |
+| `dns.intercept-unmatched` | `dns.intercept_unmatched` | bool | `true` | ✅ 已实现 | 未命中 `dns-rules.txt` 时默认拦截并按 `foreign -> domestic -> cloudflare` 解析 |
 | `dns.ecs.enabled` | `dns.ecs.enabled` | bool | `false` | ✅ 已实现 | 启用 ECS（仅国内查询）；涉及隐私，默认关闭 |
 | `dns.ecs.override-ip` | `dns.ecs.override_ip` | string | `""` | ✅ 已实现 | 手动指定出口 IP（最高优先，跳过自动检测） |
 | `dns.tls.verify-peer` | `dns.tls.verify_peer` | bool | `true` | ✅ 已实现 | DoH/DoT 是否校验证书链与主机名；默认开启，使用 `cacert.pem`、内置根证书和系统默认 CA 路径 |
@@ -210,8 +210,9 @@
 
 | 现有字段 | 作用 | 说明 |
 |----------|------|------|
-| `udp.dns.ttl` | 缓存 TTL（秒） | 对应 `vdns::ttl` |
-| `udp.dns.turbo` | 启用 vdns 缓存 | 对应 `vdns::enabled` |
+| `udp.dns.ttl` | 最大缓存 TTL（秒） | 客户端 `vdns` 与服务端 namespace cache 都以 DNS 响应 TTL 为准，并用该值封顶；`0` 禁止写入/不创建服务端 cache |
+| `udp.dns.cache` | DNS cache 写入开关 | 与 `udp.dns.ttl>0` 同时满足时才写入客户端 `vdns` / 创建服务端 namespace cache |
+| `udp.dns.turbo` | vdns 查询模式开关 | 对应 `vdns::enabled`；缓存写入仍受 `udp.dns.cache`、`udp.dns.ttl` 与正向响应 TTL 限制 |
 
 ### 协议配置字段（object/array 形式）
 
@@ -464,6 +465,8 @@ baidu.com          /alidns/nic
 
 当 `server_ip` 字段匹配内置提供商名称时，走 `DnsResolver` 多协议路径。
 
+Provider 规则中第三段不再表示物理路径，而是 resolver 语义：`/nic` 表示国内查询并允许 ECS，`/tun`、`/vpn`、`/cf`、`/c` 表示海外查询且不注入 ECS。旧 IP 规则仍保持原路径语义：`/nic` 走物理网卡，`/tun` 走 VPN 隧道。
+
 ### 识别逻辑（已实现，`Rule::Load`）
 
 ```
@@ -479,7 +482,7 @@ segments[1] 解析流程：
 ### 匹配优先级（不变）
 
 1. `dns-rules.txt` 规则优先
-2. 未匹配的域名默认保持旧路径；仅 `dns.intercept-unmatched=true` 时使用 `dns.servers.foreign`
+2. 未匹配的域名默认拦截，优先 `foreign_entries`，再 `domestic_entries`，最后 `foreign -> domestic -> cloudflare`
 3. ECS 仅对 `nic`（国内）查询添加，并且必须显式开启
 
 ---
@@ -873,7 +876,7 @@ void DnsResolver::TryProtocols(entries, index, packet, callback) noexcept {
 
 **结构化 entries 路径**（已实现）：
 
-`ResolveAsyncWithEntries()` 接受 `dns.servers.domestic_entries` / `foreign_entries` 转换后的 `ServerEntry` 列表，不查内置 provider 表。`intercept-unmatched` 未命中规则时先使用 `foreign_entries`；如果未配置 foreign entries 但配置了 domestic entries，则以 `domestic=true` 调用并允许 ECS 注入。
+`ResolveAsyncWithEntries()` 接受 `dns.servers.domestic_entries` / `foreign_entries` 转换后的 `ServerEntry` 列表；若条目使用 provider shorthand，则先展开为内置 provider endpoint。`intercept-unmatched` 未命中规则时先使用 `foreign_entries`；如果未配置 foreign entries 但配置了 domestic entries，则以 `domestic=true` 调用并允许 ECS 注入。
 
 ---
 

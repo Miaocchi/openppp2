@@ -72,12 +72,11 @@ namespace ppp {
 
             public:
                 /**
-                 * @brief Initializes the cache with a TTL in seconds.
-                 *
-                 * @param ttl Cache entry lifetime in seconds.  Values below 1 are normalized
-                 *            to 1 second internally to prevent zero-TTL entries that would
-                 *            expire immediately.
-                 */
+             * @brief Initializes the cache with a maximum TTL cap in seconds.
+             *
+             * @param ttl Cache TTL cap in seconds. Values below 1 disable cache writes;
+             *            the switcher normally avoids creating a cache instance in that case.
+             */
                 VirtualEthernetNamespaceCache(int ttl)                      noexcept;
 
                 /**
@@ -162,7 +161,7 @@ namespace ppp {
                 virtual void                                                Update() noexcept;
 
             private:    
-                int                                                         TTL_ = 0;               ///< Cache entry lifetime in seconds (normalized to >= 1).
+                int                                                         TTL_ = 0;               ///< Maximum cache lifetime in milliseconds; 0 disables writes.
                 SynchronizedObject                                          LockObj_;               ///< Mutex protecting all cache state.
                 ppp::unordered_map<ppp::string, NamespaceRecordNodePtr>     NamespaceHashTable_;    ///< O(1) keyed lookup into the linked list.
                 ppp::collections::LinkedList<NamespaceRecord>               NamespaceLinkedList_;   ///< Ordered list for O(1) TTL expiration from the head.

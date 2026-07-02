@@ -126,6 +126,42 @@ namespace ppp {
                     const ppp::function<bool(dns_hdr*)>& fPredicateB,
                     const ppp::function<bool(dns_hdr*, ppp::string&, uint16_t, uint16_t)>& fPredicateE) noexcept;
 
+                /**
+                 * @brief Extracts the minimum positive TTL from a positive DNS response.
+                 *
+                 * @details Only A, AAAA, and CNAME answer records in class IN participate.
+                 *          The function returns false for negative responses, empty answers,
+                 *          zero-TTL relevant records, or answers without a terminal A/AAAA.
+                 *
+                 * @param packet Raw DNS response packet.
+                 * @param packet_length Packet length.
+                 * @param ttl Receives the minimum positive TTL in seconds.
+                 * @return True when the response is cacheable.
+                 */
+                bool ExtractPositiveResponseMinTtl(
+                    const Byte* packet,
+                    int packet_length,
+                    uint32_t& ttl) noexcept;
+
+                /**
+                 * @brief Rebuilds a DNS response with a caller transaction id and TTL.
+                 *
+                 * @param packet Cached raw DNS response packet.
+                 * @param packet_length Cached packet length.
+                 * @param trans_id Transaction id to write into the returned response.
+                 * @param ttl Remaining TTL in seconds to write on cacheable answer records.
+                 * @param response Receives a newly allocated encoded DNS response.
+                 * @param response_length Receives the encoded response length.
+                 * @return True when the response was decoded and encoded successfully.
+                 */
+                bool RewriteResponseIdAndTtl(
+                    const Byte* packet,
+                    int packet_length,
+                    uint16_t trans_id,
+                    uint32_t ttl,
+                    std::shared_ptr<Byte>& response,
+                    int& response_length) noexcept;
+
             } // namespace dns
 
             // -----------------------------------------------------------------------

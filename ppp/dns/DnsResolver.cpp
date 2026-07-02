@@ -323,11 +323,11 @@ namespace ppp {
         /**
          * @brief Expands structured entries that use provider shorthand addresses.
          *
-         * Configuration accepts string shorthand for dns.servers.domestic/foreign.
-         * The config parser stores such strings as DnsServerEntry.address.  Without
-         * this expansion, ResolveAsyncWithEntries() treats "cloudflare" or
-         * "doh.pub" as UDP address literals, exhausts immediately, and unmatched
-         * domains can fail while system DNS has already been pointed at the tunnel.
+         * Object/array dns.servers entries may use provider shorthand in the
+         * address field. Without this expansion, ResolveAsyncWithEntries() treats
+         * "cloudflare" or "doh.pub" as UDP address literals, exhausts immediately,
+         * and unmatched domains can fail while system DNS has already been pointed
+         * at the tunnel.
          */
         static ppp::vector<ServerEntry> ExpandResolverEntries(const ppp::vector<ServerEntry>& explicit_entries) noexcept {
             ppp::vector<ServerEntry> expanded;
@@ -825,15 +825,24 @@ namespace ppp {
 
             // Build ordered list of non-empty, registered provider names.
             ppp::vector<ppp::string> candidates;
-            if (!provider_name.empty() && HasProvider(provider_name)) {
-                candidates.emplace_back(provider_name);
-            }
-            if (!fallback1.empty() && HasProvider(fallback1)) {
-                candidates.emplace_back(fallback1);
-            }
-            if (!fallback2.empty() && HasProvider(fallback2)) {
-                candidates.emplace_back(fallback2);
-            }
+            auto add_candidate = [&candidates](const ppp::string& name) noexcept {
+                if (name.empty() || !DnsResolver::HasProvider(name)) {
+                    return;
+                }
+
+                ppp::string normalized = NormalizeProviderName(name);
+                for (const ppp::string& existing : candidates) {
+                    if (NormalizeProviderName(existing) == normalized) {
+                        return;
+                    }
+                }
+
+                candidates.emplace_back(name);
+            };
+
+            add_candidate(provider_name);
+            add_candidate(fallback1);
+            add_candidate(fallback2);
 
             if (candidates.empty()) {
                 boost::asio::post(context_, [callback]() noexcept { callback(ppp::vector<Byte>()); });

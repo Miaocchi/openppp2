@@ -98,7 +98,11 @@ cdn[*] = IPEndPoint::MinPort;
 
 // UDP DNS 相关默认值
 udp.dns.timeout   = 4000;    ///< DNS 查询超时（毫秒）
-udp.dns.ttl       = 60;      ///< DNS 缓存 TTL（秒）
+udp.dns.ttl       = 60;      ///< DNS 最大缓存 TTL（秒，实际取响应 TTL 与该值较小者）
+udp.dns.cache     = true;    ///< DNS cache 写入开关（仍要求 ttl > 0）
+dns.servers.domestic = "doh.pub";      ///< 默认国内 DNS provider
+dns.servers.foreign  = "cloudflare";   ///< 默认海外 DNS provider
+dns.intercept_unmatched = true;        ///< 未命中规则默认走 foreign -> domestic -> cloudflare
 udp.inactive.timeout = 72;   ///< UDP 空闲超时（秒）
 
 // TCP 相关默认值
@@ -350,11 +354,26 @@ key.kf / key.kh / key.kl / key.kx / key.sb —— 非法值时重置为框架内
             "timeout": 4000,
             "ttl": 60,
             "cache": true,
-            "redirect": "8.8.8.8:53"
+            "turbo": false,
+            "redirect": "0.0.0.0"
         },
         "static": {
             "aggligator": 4,
             "servers": ["1.0.0.1:20000", "1.0.0.2:20000"]
+        }
+    },
+    "dns": {
+        "servers": {
+            "domestic": "doh.pub",
+            "foreign": "cloudflare"
+        },
+        "intercept-unmatched": true,
+        "ecs": {
+            "enabled": false,
+            "override-ip": ""
+        },
+        "tls": {
+            "verify-peer": true
         }
     }
 }

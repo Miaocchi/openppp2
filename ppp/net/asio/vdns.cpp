@@ -7,6 +7,7 @@
 #include <ppp/net/Socket.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/native/ip.h>
+#include <ppp/net/native/checksum.h>
 #include <ppp/diagnostics/Error.h>
 
 #include <common/dnslib/message.h>
@@ -99,12 +100,16 @@ namespace ppp {
                     uint16_t&                                       ack,
                     const char*                                     expected_hostname = NULLPTR,
                     ppp::string*                                    out_hostname = NULLPTR,
-                    bool*                                           out_ipv4_or_ipv6 = NULLPTR) noexcept {
+                    bool*                                           out_ipv4_or_ipv6 = NULLPTR,
+                    uint32_t*                                       out_min_positive_ttl = NULLPTR) noexcept {
 
                     using IPEndPoint = ppp::net::IPEndPoint;
                     using AddressFamily = ppp::net::AddressFamily;
 
                     ack = 0;
+                    if (NULLPTR != out_min_positive_ttl) {
+                        *out_min_positive_ttl = 0;
+                    }
                     if (NULLPTR == packet || packet_size < 1) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsPacketInvalid);
                         return false;
@@ -113,6 +118,11 @@ namespace ppp {
                     ::dns::Message m;
                     if (::dns::BufferResult::NoError != m.decode(packet, packet_size)) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsPacketInvalid);
+                        return false;
+                    }
+
+                    if (!m.mQr || m.mRCode != static_cast<uint16_t>(::dns::ResponseCode::kNOERROR)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsResponseInvalid);
                         return false;
                     }
 
@@ -167,6 +177,8 @@ namespace ppp {
                     }
 
                     // Iterate over answer records (non-const because getRData returns shared_ptr)
+                    bool has_cacheable_terminal = false;
+                    uint32_t min_positive_ttl = UINT32_MAX;
                     for (::dns::ResourceRecord& rr : m.answers) {
                         if (::dns::RecordClass::kIN != rr.mClass) {
                             continue;
@@ -176,6 +188,14 @@ namespace ppp {
                         if (::dns::RecordType::kA == rr.mType) {
                             auto rdata = rr.getRData<::dns::RDataA>();
                             if (NULLPTR != rdata) {
+                                if (rr.mTtl < 1) {
+                                    min_positive_ttl = 0;
+                                }
+                                elif(min_positive_ttl != 0) {
+                                    min_positive_ttl = std::min<uint32_t>(min_positive_ttl, rr.mTtl);
+                                    has_cacheable_terminal = true;
+                                }
+
                                 ep = IPEndPoint(AddressFamily::InterNetwork,
                                     rdata->getAddress(), 4, IPEndPoint::MinPort);
 
@@ -191,6 +211,14 @@ namespace ppp {
                         elif (::dns::RecordType::kAAAA == rr.mType) {
                             auto rdata = rr.getRData<::dns::RDataAAAA>();
                             if (NULLPTR != rdata) {
+                                if (rr.mTtl < 1) {
+                                    min_positive_ttl = 0;
+                                }
+                                elif(min_positive_ttl != 0) {
+                                    min_positive_ttl = std::min<uint32_t>(min_positive_ttl, rr.mTtl);
+                                    has_cacheable_terminal = true;
+                                }
+
                                 ep = IPEndPoint(AddressFamily::InterNetworkV6,
                                     rdata->getAddress(), 16, IPEndPoint::MinPort);
 
@@ -202,6 +230,18 @@ namespace ppp {
                                 }
                             }
                         }
+                        elif (::dns::RecordType::kCNAME == rr.mType) {
+                            if (rr.mTtl < 1) {
+                                min_positive_ttl = 0;
+                            }
+                            elif(min_positive_ttl != 0) {
+                                min_positive_ttl = std::min<uint32_t>(min_positive_ttl, rr.mTtl);
+                            }
+                        }
+                    }
+
+                    if (NULLPTR != out_min_positive_ttl && has_cacheable_terminal && min_positive_ttl != UINT32_MAX) {
+                        *out_min_positive_ttl = min_positive_ttl;
                     }
 
                     ack = m.mId;
@@ -305,6 +345,8 @@ namespace ppp {
                     ppp::unordered_set<boost::asio::ip::address>                                addresses;   // Collected IPs
                     DNSRequestAsynchronousCallback                                              callback;    // User callback
                     ppp::string                                                                 hostname;    // Normalised hostname (lowercase)
+                    uint32_t                                                                    min_response_ttl = 0;
+                    bool                                                                        uncacheable_response_seen = false;
 
                     Byte                                                                        packet[PPP_MAX_DNS_PACKET_BUFFER_SIZE]; // Temporary buffer
 
@@ -435,9 +477,10 @@ namespace ppp {
 
                         uint16_t ack = 0;
                         ppp::unordered_set<boost::asio::ip::address> new_addrs;
+                        uint32_t response_ttl = 0;
 
                         // Verify that the response matches the expected hostname (case-insensitive)
-                        if (DNS_ProcessAResponseAddresses(const_cast<Byte*>(data), static_cast<int>(len), new_addrs, ack, hostname.data())) {
+                        if (DNS_ProcessAResponseAddresses(const_cast<Byte*>(data), static_cast<int>(len), new_addrs, ack, hostname.data(), NULLPTR, NULLPTR, &response_ttl)) {
                             // Merge the newly received addresses.
                             for (const auto& addr : new_addrs) {
                                 try {
@@ -446,6 +489,18 @@ namespace ppp {
                                 catch (const std::bad_alloc&) {
                                     // Ignore memory allocation failure for this address
                                 }
+                            }
+
+                            if (response_ttl > 0) {
+                                if (min_response_ttl < 1) {
+                                    min_response_ttl = response_ttl;
+                                }
+                                else {
+                                    min_response_ttl = std::min<uint32_t>(min_response_ttl, response_ttl);
+                                }
+                            }
+                            elif(!new_addrs.empty()) {
+                                uncacheable_response_seen = true;
                             }
 
                             if (ack == a_state.id) {
@@ -507,12 +562,19 @@ namespace ppp {
                     // -------------------------------------------------------------------------
                     /** @brief Merges resolved addresses into global DNS cache. */
                     void cache() noexcept {
-                        int TTL = vdns::ttl;
-                        if (TTL < 1) {
-                            TTL = PPP_DEFAULT_DNS_TTL;
+                        int ttl_cap = vdns::ttl;
+                        if (ttl_cap < 1 || min_response_ttl < 1 || addresses.empty() || uncacheable_response_seen) {
+                            return;
                         }
 
-                        uint64_t expire_time = Executors::GetTickCount() + static_cast<uint64_t>(TTL) * 1000;
+                        uint32_t ttl_seconds = std::min<uint32_t>(
+                            min_response_ttl,
+                            static_cast<uint32_t>(ttl_cap));
+                        if (ttl_seconds < 1) {
+                            return;
+                        }
+
+                        uint64_t expire_time = Executors::GetTickCount() + static_cast<uint64_t>(ttl_seconds) * 1000;
 
                         internal& c = internal::c();
                         SynchronizedObjectScope lock(c.lockobj); // Protect global cache structures
@@ -760,6 +822,19 @@ namespace ppp {
                     if (Dictionary::TryGetValue(c.nr_hmap, out_hostname, out_node) && NULLPTR == out_node) {
                         Dictionary::TryRemove(c.nr_hmap, out_hostname); // Clean up null entry
                         out_node.reset();
+                    }
+                    elif(NULLPTR != out_node) {
+                        bool expired = false;
+                        {
+                            SynchronizedObjectScope record_lock(out_node->Value.lockobj);
+                            expired = Executors::GetTickCount() >= out_node->Value.expired_time;
+                        }
+
+                        if (expired) {
+                            Dictionary::TryRemove(c.nr_hmap, out_hostname);
+                            c.nr_list.Remove(out_node);
+                            out_node.reset();
+                        }
                     }
                     return true;
                 }
@@ -1012,8 +1087,17 @@ namespace ppp {
 
                     NamespaceRecord& record = node->Value;
                     bool any = false;
+                    uint32_t remaining_ttl = 0;
                     {
                         SynchronizedObjectScope lock(record.lockobj);
+                        uint64_t now = Executors::GetTickCount();
+                        if (now >= record.expired_time) {
+                            return ppp::string();
+                        }
+
+                        uint64_t remaining_ms = record.expired_time - now;
+                        remaining_ttl = static_cast<uint32_t>(std::max<uint64_t>(1, (remaining_ms + 999) / 1000));
+
                         // Quick check inside lock to avoid reading stale flags
                         if ((want_v4 && !record.ipv4) || (want_v6 && !record.ipv6)) {
                             return ppp::string();
@@ -1032,6 +1116,7 @@ namespace ppp {
                                 rr.mName = hostname_str;
                                 rr.mClass = ::dns::RecordClass::kIN;
                                 rr.mType = ::dns::RecordType::kA;
+                                rr.mTtl = remaining_ttl;
                                 rr.setRData(rd_a);
 
                                 try {
@@ -1055,6 +1140,7 @@ namespace ppp {
                                 rr.mName = hostname_str;
                                 rr.mClass = ::dns::RecordClass::kIN;
                                 rr.mType = ::dns::RecordType::kAAAA;
+                                rr.mTtl = remaining_ttl;
                                 rr.setRData(rd_aaaa);
 
                                 try {
@@ -1099,6 +1185,13 @@ namespace ppp {
                     }
                 }
 
+                void ClearCache() noexcept {
+                    internal& c = internal::c();
+                    SynchronizedObjectScope lock(c.lockobj);
+                    c.nr_hmap.clear();
+                    c.nr_list.Clear();
+                }
+
                 // -----------------------------------------------------------------------------
                 // Public API: AddCache – manually insert a DNS response packet into the cache.
                 // -----------------------------------------------------------------------------
@@ -1117,25 +1210,35 @@ namespace ppp {
                     uint16_t ack = 0;
                     ppp::string hostname;
                     bool ipv4_or_ipv6 = false;
+                    uint32_t response_ttl = 0;
                     ppp::unordered_set<boost::asio::ip::address> addresses;
 
                     // No expected hostname verification for manual cache addition – trust the packet.
                     if (!DNS_ProcessAResponseAddresses(const_cast<Byte*>(packet), packet_size,
-                        addresses, ack, NULLPTR, &hostname, &ipv4_or_ipv6)) {
+                        addresses, ack, NULLPTR, &hostname, &ipv4_or_ipv6, &response_ttl)) {
                         return false;
                     }
 
-                    if (hostname.empty() || IsReverseQuery(hostname.data())) {
+                    if (hostname.empty() || IsReverseQuery(hostname.data()) || addresses.empty() || response_ttl < 1) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsResponseInvalid);
                         return false;
                     }
 
-                    int TTL = vdns::ttl;
-                    if (TTL < 1) {
-                        TTL = PPP_DEFAULT_DNS_TTL;
+                    int ttl_cap = vdns::ttl;
+                    if (ttl_cap < 1) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsCacheFailed);
+                        return false;
                     }
 
-                    uint64_t expire_time = Executors::GetTickCount() + static_cast<uint64_t>(TTL) * 1000;
+                    uint32_t ttl_seconds = std::min<uint32_t>(
+                        response_ttl,
+                        static_cast<uint32_t>(ttl_cap));
+                    if (ttl_seconds < 1) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::DnsCacheFailed);
+                        return false;
+                    }
+
+                    uint64_t expire_time = Executors::GetTickCount() + static_cast<uint64_t>(ttl_seconds) * 1000;
 
                     internal& c = internal::c();
                     SynchronizedObjectScope lock(c.lockobj);

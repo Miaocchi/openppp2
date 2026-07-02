@@ -122,8 +122,9 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
 
     network_interface_ = network_interface;
 
-    ppp::net::asio::vdns::ttl = configuration->udp.dns.ttl;
+    ppp::net::asio::vdns::ttl = configuration->udp.dns.cache ? configuration->udp.dns.ttl : 0;
     ppp::net::asio::vdns::enabled = configuration->udp.dns.turbo;
+    ppp::net::asio::vdns::ClearCache();
 
     ppp::telemetry::SetEnabled(configuration->telemetry.enabled);
     ppp::telemetry::SetMinLevel(configuration->telemetry.level);

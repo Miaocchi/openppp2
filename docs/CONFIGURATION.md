@@ -114,7 +114,11 @@ Important defaults from `Clear()` include:
 | `concurrent` | `Thread::GetProcessorCount()` | Use all available CPU cores |
 | `cdn[*]` | `IPEndPoint::MinPort` (0) | Disabled until explicitly set |
 | `udp.dns.timeout` | 4000 ms | Reasonable DNS query timeout |
-| `udp.dns.ttl` | 60 s | DNS cache entry TTL |
+| `udp.dns.ttl` | 60 s | Maximum DNS cache TTL cap; response TTLs are honored |
+| `udp.dns.cache` | `true` | Enable DNS cache writes when `udp.dns.ttl > 0` |
+| `dns.servers.domestic` | `doh.pub` | Default domestic DNS provider |
+| `dns.servers.foreign` | `cloudflare` | Default foreign DNS provider |
+| `dns.intercept-unmatched` | `true` | Resolve unmatched DNS through `foreign -> domestic -> cloudflare` |
 | `udp.inactive.timeout` | 72 s | UDP relay idle timeout |
 | `tcp.inactive.timeout` | 300 s | TCP relay idle timeout |
 | `tcp.connect.timeout` | 15 s | TCP connect attempt timeout |
@@ -162,7 +166,8 @@ Contains all UDP policy:
 - `udp.listen.port` — UDP relay listen port.
 - `udp.inactive.timeout` — how long a UDP relay socket is kept alive after the last packet.
 - `udp.dns.timeout` — timeout for DNS queries forwarded through the tunnel.
-- `udp.dns.ttl` — how long resolved DNS entries are cached in the namespace cache.
+- `udp.dns.ttl` — maximum TTL for client `vdns` and server namespace cache entries; actual cache TTL is `min(response TTL, udp.dns.ttl)`, and `0` disables writes/server cache creation.
+- `udp.dns.cache` — cache write switch; it still requires `udp.dns.ttl > 0`.
 - `udp.dns.redirect` — comma-separated list of DNS server IPs to redirect queries to.
 - `udp.static.port` — static UDP relay port (for fixed-port static mappings).
 
@@ -486,9 +491,20 @@ The configuration decides the shape of the runtime:
     "dns": {
       "timeout": 4000,
       "ttl": 60,
+      "cache": true,
+      "turbo": false,
       "redirect": ""
     },
     "static": { "port": 0 }
+  },
+  "dns": {
+    "servers": {
+      "domestic": "doh.pub",
+      "foreign": "cloudflare"
+    },
+    "intercept-unmatched": true,
+    "ecs": { "enabled": false, "override-ip": "" },
+    "tls": { "verify-peer": true }
   },
   "tcp": {
     "listen": { "port": 2096, "backlog": 511 },
