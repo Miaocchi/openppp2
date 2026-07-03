@@ -1105,6 +1105,18 @@ final class VPNController {
             name: .NEVPNStatusDidChange,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(savedConfigurationDidChange),
+            name: ProfileStore.didChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(savedConfigurationDidChange),
+            name: TelemetrySettingsStore.didChangeNotification,
+            object: nil
+        )
     }
 
     var isActive: Bool {
@@ -1165,9 +1177,9 @@ final class VPNController {
         emitChange()
         completion(.success(()))
 #else
-        let options = profile.options
         let telemetry = TelemetrySettingsStore.shared.settings()
-        let effectiveJson = ProfileStore.effectiveJson(profile.json, options: options, telemetry: telemetry)
+        let providerConfiguration = Self.providerConfiguration(for: profile, telemetry: telemetry)
+        Self.persistLastTunnelConfiguration(for: profile, telemetry: telemetry)
         loadManager { [weak self] manager, error in
             if let error {
                 self?.record(error)
@@ -1179,13 +1191,7 @@ final class VPNController {
             let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
             proto.providerBundleIdentifier = Self.providerBundleIdentifier
             proto.serverAddress = profile.serverEndpoint ?? profile.name
-            proto.providerConfiguration = [
-                "profileId": profile.id,
-                "profileName": profile.name,
-                "configJson": effectiveJson,
-                "optionsJson": Self.encodeOptions(options),
-                "telemetryJson": Self.encodeTelemetry(telemetry)
-            ]
+            proto.providerConfiguration = providerConfiguration
             manager.localizedDescription = "OpenPPP2"
             manager.protocolConfiguration = proto
             manager.isEnabled = true
@@ -1216,6 +1222,67 @@ final class VPNController {
                     } catch {
                         self?.record(error)
                         completion(.failure(error))
+                    }
+                }
+            }
+        }
+#endif
+    }
+
+    func syncActiveProfileToSystemPreferences(completion: ((Result<Void, Error>) -> Void)? = nil) {
+#if targetEnvironment(simulator)
+        completion?(.success(()))
+#else
+        guard let profile = ProfileStore.shared.activeProfile() else {
+            completion?(.success(()))
+            return
+        }
+
+        let telemetry = TelemetrySettingsStore.shared.settings()
+        let providerConfiguration = Self.providerConfiguration(for: profile, telemetry: telemetry)
+        Self.persistLastTunnelConfiguration(for: profile, telemetry: telemetry)
+
+        loadManager { [weak self] manager, error in
+            if let error {
+                NSLog("OpenPPP2 failed to load VPN preferences for sync: %@", error.localizedDescription)
+                completion?(.failure(error))
+                return
+            }
+
+            guard let manager else {
+                NSLog("OpenPPP2 skipped VPN preferences sync because no manager exists yet")
+                completion?(.success(()))
+                return
+            }
+
+            let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
+            proto.providerBundleIdentifier = Self.providerBundleIdentifier
+            proto.serverAddress = profile.serverEndpoint ?? profile.name
+            proto.providerConfiguration = providerConfiguration
+            manager.localizedDescription = "OpenPPP2"
+            manager.protocolConfiguration = proto
+            manager.isEnabled = true
+
+            manager.saveToPreferences { saveError in
+                if let saveError {
+                    NSLog("OpenPPP2 failed to sync VPN preferences: %@", saveError.localizedDescription)
+                    DispatchQueue.main.async {
+                        completion?(.failure(saveError))
+                    }
+                    return
+                }
+
+                manager.loadFromPreferences { loadError in
+                    DispatchQueue.main.async {
+                        if let loadError {
+                            NSLog("OpenPPP2 failed to reload synced VPN preferences: %@", loadError.localizedDescription)
+                            completion?(.failure(loadError))
+                            return
+                        }
+
+                        self?.manager = manager
+                        NSLog("OpenPPP2 synced VPN preferences for Control Center profile=%@", profile.name)
+                        completion?(.success(()))
                     }
                 }
             }
@@ -1456,6 +1523,10 @@ final class VPNController {
         emitChange()
     }
 
+    @objc private func savedConfigurationDidChange(_ notification: Notification) {
+        syncActiveProfileToSystemPreferences()
+    }
+
     private func record(_ error: Error) {
         lastError = error.localizedDescription
         emitChange()
@@ -1481,6 +1552,30 @@ final class VPNController {
               let raw = String(data: data, encoding: .utf8)
         else { return "{}" }
         return raw
+    }
+
+    private static func providerConfiguration(for profile: ConfigProfile, telemetry: TelemetrySettings) -> [String: Any] {
+        let effectiveJson = ProfileStore.effectiveJson(profile.json, options: profile.options, telemetry: telemetry)
+        return [
+            "profileId": profile.id,
+            "profileName": profile.name,
+            "configJson": effectiveJson,
+            "optionsJson": encodeOptions(profile.options),
+            "telemetryJson": encodeTelemetry(telemetry)
+        ]
+    }
+
+    private static func persistLastTunnelConfiguration(for profile: ConfigProfile, telemetry: TelemetrySettings) {
+        let effectiveJson = ProfileStore.effectiveJson(profile.json, options: profile.options, telemetry: telemetry)
+        TunnelSharedState.writeLastTunnelConfiguration(TunnelSharedState.LastTunnelConfiguration(
+            profileId: profile.id,
+            profileName: profile.name,
+            serverAddress: profile.serverEndpoint ?? profile.name,
+            configJson: effectiveJson,
+            optionsJson: encodeOptions(profile.options),
+            telemetryJson: encodeTelemetry(telemetry),
+            updatedAtMs: Int64(Date().timeIntervalSince1970 * 1000)
+        ))
     }
 }
 
@@ -2113,7 +2208,7 @@ final class ProfilesViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         let profile = profiles[indexPath.row]
-        let use = UIContextualAction(style: .normal, title: "当前") { [weak self] _, _, done in
+        let use = UIContextualAction(style: .normal, title: "应用") { [weak self] _, _, done in
             guard let self else {
                 done(true)
                 return
@@ -2469,7 +2564,7 @@ final class OptionsViewController: UIViewController {
     private let geoCountry = FormTextField(label: "Geo Country")
     private let geoIpDat = FormTextField(label: "GeoIP.dat")
     private let geoSiteDat = FormTextField(label: "GeoSite.dat")
-    private let mux = FormTextField(label: "Mux", keyboard: .numberPad)
+    private let mux = FormTextField(label: "VNet Mux", keyboard: .numberPad)
 
     private let allowLan = UISwitch()
     private let blockQuic = UISwitch()
@@ -2485,8 +2580,8 @@ final class OptionsViewController: UIViewController {
         title = "启动参数"
         view.backgroundColor = .systemGroupedBackground
         navigationItem.rightBarButtonItems = [
-            UIBarButtonItem(barButtonSystemItem: .save, target: self, action: #selector(save)),
-            UIBarButtonItem(title: "默认", style: .plain, target: self, action: #selector(resetDefaults))
+            UIBarButtonItem(title: "保存", style: .done, target: self, action: #selector(save)),
+            UIBarButtonItem(title: "恢复默认", style: .plain, target: self, action: #selector(resetDefaults))
         ]
         setupLayout()
         NotificationCenter.default.addObserver(self, selector: #selector(load), name: ProfileStore.didChangeNotification, object: nil)
@@ -2539,26 +2634,14 @@ final class OptionsViewController: UIViewController {
             row([tunPrefix, gateway], weights: [1, 1]),
             mtu
         ]))
-        content.addArrangedSubview(SectionView(title: "路由", symbol: "arrow.triangle.branch", views: [
-            row([route, routePrefix], weights: [2, 1])
-        ]))
+        let advancedRow = disclosureRow(
+            title: "高级参数",
+            subtitle: "VNet Mux / VNet / Block QUIC / Static Mode"
+        )
+        advancedRow.addTarget(self, action: #selector(openAdvancedOptions), for: .touchUpInside)
         content.addArrangedSubview(SectionView(title: "高级", symbol: "tuningfork", views: [
-            mux,
-            switchRow(title: "VNet", subtitle: "启用虚拟网卡路径", control: vnet),
-            switchRow(title: "lwIP Dataplane", subtitle: "关闭时使用 native ctcp 路径", control: lwip),
-            switchRow(title: "Block QUIC", subtitle: "屏蔽 UDP/443 防止绕过", control: blockQuic),
-            switchRow(title: "Static Mode", subtitle: "UDP 静态隧道模式", control: staticMode)
+            advancedRow
         ]))
-
-        let saveButton = UIButton(type: .system)
-        saveButton.setTitle("保存启动参数", for: .normal)
-        saveButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
-        saveButton.backgroundColor = .systemBlue
-        saveButton.tintColor = .white
-        saveButton.layer.cornerRadius = 12
-        saveButton.addTarget(self, action: #selector(save), for: .touchUpInside)
-        saveButton.heightAnchor.constraint(equalToConstant: 48).isActive = true
-        content.addArrangedSubview(saveButton)
     }
 
     @objc private func load() {
@@ -2640,6 +2723,74 @@ final class OptionsViewController: UIViewController {
     @objc private func resetDefaults() {
         options = LaunchOptions()
         hydrate()
+    }
+
+    @objc private func openAdvancedOptions() {
+        let controller = OptionsAdvancedViewController(
+            mux: mux,
+            vnet: vnet,
+            blockQuic: blockQuic,
+            staticMode: staticMode
+        )
+        navigationController?.pushViewController(controller, animated: true)
+    }
+}
+
+final class OptionsAdvancedViewController: UIViewController {
+    private let scrollView = UIScrollView()
+    private let content = UIStackView()
+    private let mux: FormTextField
+    private let vnet: UISwitch
+    private let blockQuic: UISwitch
+    private let staticMode: UISwitch
+
+    init(mux: FormTextField, vnet: UISwitch, blockQuic: UISwitch, staticMode: UISwitch) {
+        self.mux = mux
+        self.vnet = vnet
+        self.blockQuic = blockQuic
+        self.staticMode = staticMode
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "高级参数"
+        view.backgroundColor = .systemGroupedBackground
+        setupLayout()
+    }
+
+    private func setupLayout() {
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        content.axis = .vertical
+        content.spacing = 12
+        content.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scrollView)
+        scrollView.addSubview(content)
+
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 16),
+            content.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -16),
+            content.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 16),
+            content.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -24),
+            content.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor, constant: -32)
+        ])
+
+        content.addArrangedSubview(SectionView(title: "VNet", symbol: "network", views: [
+            mux,
+            switchRow(title: "VNet", subtitle: "启用虚拟网卡路径", control: vnet)
+        ]))
+        content.addArrangedSubview(SectionView(title: "网络", symbol: "shield.lefthalf.filled", views: [
+            switchRow(title: "Block QUIC", subtitle: "屏蔽 UDP/443 防止绕过", control: blockQuic),
+            switchRow(title: "Static Mode", subtitle: "UDP 静态隧道模式", control: staticMode)
+        ]))
     }
 }
 
@@ -3524,6 +3675,48 @@ func switchRow(title: String, subtitle: String, control: UISwitch) -> UIView {
     row.alignment = .center
     labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     return row
+}
+
+func disclosureRow(title: String, subtitle: String) -> UIControl {
+    let titleLabel = UILabel()
+    titleLabel.text = title
+    titleLabel.font = .preferredFont(forTextStyle: .body)
+
+    let subtitleLabel = UILabel()
+    subtitleLabel.text = subtitle
+    subtitleLabel.font = .preferredFont(forTextStyle: .caption1)
+    subtitleLabel.textColor = .secondaryLabel
+    subtitleLabel.numberOfLines = 2
+
+    let labels = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
+    labels.axis = .vertical
+    labels.spacing = 2
+
+    let chevron = UIImageView(image: UIImage(systemName: "chevron.right"))
+    chevron.tintColor = .tertiaryLabel
+    chevron.contentMode = .scaleAspectFit
+    chevron.widthAnchor.constraint(equalToConstant: 12).isActive = true
+    chevron.heightAnchor.constraint(equalToConstant: 18).isActive = true
+
+    let stack = UIStackView(arrangedSubviews: [labels, chevron])
+    stack.axis = .horizontal
+    stack.spacing = 12
+    stack.alignment = .center
+    stack.translatesAutoresizingMaskIntoConstraints = false
+
+    let control = UIControl()
+    control.accessibilityLabel = title
+    control.accessibilityHint = subtitle
+    control.accessibilityTraits.insert(.button)
+    control.addSubview(stack)
+    labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    NSLayoutConstraint.activate([
+        stack.leadingAnchor.constraint(equalTo: control.leadingAnchor),
+        stack.trailingAnchor.constraint(equalTo: control.trailingAnchor),
+        stack.topAnchor.constraint(equalTo: control.topAnchor),
+        stack.bottomAnchor.constraint(equalTo: control.bottomAnchor)
+    ])
+    return control
 }
 
 func statusText(_ status: NEVPNStatus) -> String {

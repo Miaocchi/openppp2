@@ -16,10 +16,28 @@
 #include <sstream>
 #include <iostream>
 #include <limits.h>
+#if defined(_IPHONE)
+#include <dirent.h>
+#include <errno.h>
+#include <sys/stat.h>
+#else
 #include <boost/filesystem.hpp>
+#endif
 
 namespace ppp {
     namespace io {
+#if defined(_IPHONE)
+        static bool FILE_IsDirectory(const char* path) noexcept {
+            struct stat st;
+            return path != NULLPTR && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+        }
+
+        static bool FILE_IsRegularFile(const char* path) noexcept {
+            struct stat st;
+            return path != NULLPTR && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+        }
+#endif
+
         /**
          * @brief Gets file length in bytes.
          * @param path File path.
@@ -53,6 +71,12 @@ namespace ppp {
                 return false;
             }
 
+#if defined(_IPHONE)
+            if (FILE_IsDirectory(path)) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::FileIsDirectory);
+                return false;
+            }
+#else
             boost::system::error_code ec;
             if (boost::filesystem::is_directory(boost::filesystem::path(path), ec)) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::FileIsDirectory);
@@ -63,6 +87,7 @@ namespace ppp {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::FileStatFailed);
                 return false;
             }
+#endif
 
             if (access(path, F_OK) == 0) {
                 return true;
@@ -459,6 +484,45 @@ namespace ppp {
             }
         }
 
+#if defined(_IPHONE)
+        static bool FILE_GetAllFileNames(const char* path, bool recursion, ppp::vector<ppp::string>& out) noexcept {
+            if (NULLPTR == path || *path == '\x0') {
+                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FilePathInvalid);
+            }
+
+            DIR* dir = opendir(path);
+            if (dir == NULLPTR) {
+                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FileDirectoryEnumerateFailed);
+            }
+
+            bool ok = true;
+            while (struct dirent* entry = readdir(dir)) {
+                const char* name = entry->d_name;
+                if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+                    continue;
+                }
+
+                ppp::string fullpath = path;
+                if (!fullpath.empty() && fullpath.back() != '/') {
+                    fullpath.push_back('/');
+                }
+                fullpath.append(name);
+
+                if (FILE_IsRegularFile(fullpath.data())) {
+                    out.emplace_back(fullpath);
+                }
+                else if (recursion && FILE_IsDirectory(fullpath.data())) {
+                    if (!FILE_GetAllFileNames(fullpath.data(), recursion, out)) {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+
+            closedir(dir);
+            return ok;
+        }
+#else
         template <class TDirectoryIterator>
         /**
          * @brief Collects regular file names from a directory iterator type.
@@ -499,6 +563,7 @@ namespace ppp {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FileDirectoryEnumerateFailed);
             }
         }
+#endif
 
         /**
          * @brief Lists file names in a directory, optionally recursively.
@@ -508,12 +573,16 @@ namespace ppp {
          * @return `true` when traversal succeeds.
          */
         bool File::GetAllFileNames(const char* path, bool recursion, ppp::vector<ppp::string>& out) noexcept {
+#if defined(_IPHONE)
+            return FILE_GetAllFileNames(path, recursion, out);
+#else
             if (recursion) {
                 return FILE_GetAllFileNames<boost::filesystem::recursive_directory_iterator>(path, out);
             }
             else {
                 return FILE_GetAllFileNames<boost::filesystem::directory_iterator>(path, out);
             }
+#endif
         }
 
         /**
@@ -526,6 +595,42 @@ namespace ppp {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FilePathInvalid);
             }
 
+#if defined(_IPHONE)
+            if (FILE_IsDirectory(path)) {
+                return true;
+            }
+
+            ppp::string current;
+            const char* cursor = path;
+            if (*cursor == '/') {
+                current = "/";
+                ++cursor;
+            }
+
+            while (*cursor != '\x0') {
+                const char* next = strchr(cursor, '/');
+                if (next == cursor) {
+                    ++cursor;
+                    continue;
+                }
+
+                if (!current.empty() && current.back() != '/') {
+                    current.push_back('/');
+                }
+                current.append(cursor, next == NULLPTR ? strlen(cursor) : static_cast<size_t>(next - cursor));
+
+                if (!FILE_IsDirectory(current.data()) && mkdir(current.data(), 0755) != 0 && errno != EEXIST) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FileDirectoryCreateFailed);
+                }
+
+                if (next == NULLPTR) {
+                    break;
+                }
+                cursor = next + 1;
+            }
+
+            return FILE_IsDirectory(path) || ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FileDirectoryCreateFailed);
+#else
             boost::filesystem::path dir(path);
             boost::system::error_code ec;
             try {
@@ -539,6 +644,7 @@ namespace ppp {
             }
             catch (const std::exception&) {}
             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::FileDirectoryCreateFailed);
+#endif
         }
 
         /**

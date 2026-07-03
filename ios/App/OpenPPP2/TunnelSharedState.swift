@@ -3,6 +3,16 @@ import Foundation
 /// Cross-process tunnel liveness and diagnostics via App Group (mirrors Android
 /// `openppp2-linkstate.txt` + `PppStateStore`).
 enum TunnelSharedState {
+    struct LastTunnelConfiguration: Codable {
+        var profileId: String
+        var profileName: String
+        var serverAddress: String
+        var configJson: String
+        var optionsJson: String
+        var telemetryJson: String
+        var updatedAtMs: Int64
+    }
+
     static var appGroupIdentifier: String {
         AppGroupResolver.resolve(
             configured: Bundle.main.object(forInfoDictionaryKey: "OpenPPP2AppGroupIdentifier") as? String,
@@ -14,6 +24,7 @@ enum TunnelSharedState {
 
     private static let linkStateFileName = "openppp2-linkstate.txt"
     private static let diagnosticsFileName = "openppp2-shared-diagnostics.json"
+    private static let lastTunnelConfigurationKey = "openppp2_last_tunnel_configuration_v1"
     private static let queue = DispatchQueue(label: "openppp2.tunnel-shared-state")
 
     static var isSharedContainerAvailable: Bool {
@@ -103,8 +114,33 @@ enum TunnelSharedState {
         }
     }
 
+    static func writeLastTunnelConfiguration(_ configuration: LastTunnelConfiguration) {
+        queue.sync {
+            guard let defaults = sharedDefaults(),
+                  let data = try? JSONEncoder().encode(configuration)
+            else {
+                return
+            }
+            defaults.set(data, forKey: lastTunnelConfigurationKey)
+        }
+    }
+
+    static func readLastTunnelConfiguration() -> LastTunnelConfiguration? {
+        guard let defaults = sharedDefaults(),
+              let data = defaults.data(forKey: lastTunnelConfigurationKey),
+              let configuration = try? JSONDecoder().decode(LastTunnelConfiguration.self, from: data)
+        else {
+            return nil
+        }
+        return configuration
+    }
+
     private static func containerURL() -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)
+    }
+
+    private static func sharedDefaults() -> UserDefaults? {
+        UserDefaults(suiteName: appGroupIdentifier)
     }
 
     private static func linkStateURL() -> URL? {

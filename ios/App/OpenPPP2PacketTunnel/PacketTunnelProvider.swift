@@ -18,7 +18,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         TunnelSharedState.beginSession()
 
-        let providerConfiguration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration
+        let providerConfiguration = Self.effectiveProviderConfiguration(
+            from: (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration
+        )
         let launchOptions = Self.readOptions(from: providerConfiguration)
         let telemetry = Self.readTelemetry(from: providerConfiguration)
         let configJson = providerConfiguration?["configJson"] as? String ?? "{}"
@@ -36,8 +38,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         )
         TunnelSharedState.writeDiagnosticsJson(lastDiagnosticsJson)
         NSLog(
-            "OpenPPP2 PacketTunnel start profile=%@ server=%@ tunnel=%@/%@ route=%@/%d dataplane=%@",
+            "OpenPPP2 PacketTunnel start profile=%@ source=%@ server=%@ tunnel=%@/%@ route=%@/%d dataplane=%@",
             providerConfiguration?["profileName"] as? String ?? "(unknown)",
+            providerConfiguration?["configurationSource"] as? String ?? "provider",
             serverHost ?? "(unknown)",
             launchOptions.tunIp,
             launchOptions.tunMask,
@@ -202,6 +205,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return .disabled
         }
         return settings
+    }
+
+    private static func effectiveProviderConfiguration(from providerConfiguration: [String: Any]?) -> [String: Any]? {
+        if let providerConfiguration,
+           let configJson = providerConfiguration["configJson"] as? String,
+           !configJson.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           configJson != "{}" {
+            var configuration = providerConfiguration
+            configuration["configurationSource"] = "provider"
+            return configuration
+        }
+
+        guard let shared = TunnelSharedState.readLastTunnelConfiguration() else {
+            return providerConfiguration
+        }
+
+        NSLog("OpenPPP2 PacketTunnel using shared last tunnel configuration profile=%@", shared.profileName)
+        return [
+            "profileId": shared.profileId,
+            "profileName": shared.profileName,
+            "configJson": shared.configJson,
+            "optionsJson": shared.optionsJson,
+            "telemetryJson": shared.telemetryJson,
+            "configurationSource": "app-group"
+        ]
     }
 
     private static func preparedConfigJson(_ rawJson: String) -> String {
