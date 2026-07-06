@@ -63,13 +63,29 @@ final class OpenPPP2PacketTunnelAdapter {
         }
     }
 
-    fileprivate func writePacket(_ packet: UnsafeRawPointer?, size: Int32) -> Int32 {
+    fileprivate func writePacket(
+        _ packet: UnsafeRawPointer?,
+        size: Int32,
+        packetContext: UnsafeMutableRawPointer?,
+        release: openppp2_ios_packet_release?
+    ) -> Int32 {
         guard let packet, size > 0 else {
             return 0
         }
 
-        let data = Data(bytes: packet, count: Int(size))
-        let protocolNumber = Self.protocolNumber(for: data)
+        let data: Data
+        if let release {
+            data = Data(
+                bytesNoCopy: UnsafeMutableRawPointer(mutating: packet),
+                count: Int(size),
+                deallocator: .custom { _, _ in
+                    release(packetContext)
+                }
+            )
+        } else {
+            data = Data(bytes: packet, count: Int(size))
+        }
+        let protocolNumber = Self.protocolNumber(forFirstByte: packet.load(as: UInt8.self))
         return flow.writePackets([data], withProtocols: [protocolNumber]) ? 1 : 0
     }
 
@@ -78,6 +94,10 @@ final class OpenPPP2PacketTunnelAdapter {
             return NSNumber(value: AF_INET)
         }
 
+        return protocolNumber(forFirstByte: firstByte)
+    }
+
+    private static func protocolNumber(forFirstByte firstByte: UInt8) -> NSNumber {
         switch firstByte >> 4 {
         case 6:
             return NSNumber(value: AF_INET6)
@@ -90,6 +110,8 @@ final class OpenPPP2PacketTunnelAdapter {
 private func openPPP2PacketWriter(
     packet: UnsafeRawPointer?,
     packetSize: Int32,
+    packetContext: UnsafeMutableRawPointer?,
+    packetRelease: openppp2_ios_packet_release?,
     userData: UnsafeMutableRawPointer?
 ) -> Int32 {
     guard let userData else {
@@ -100,5 +122,10 @@ private func openPPP2PacketWriter(
         .fromOpaque(userData)
         .takeUnretainedValue()
 
-    return adapter.writePacket(packet, size: packetSize)
+    return adapter.writePacket(
+        packet,
+        size: packetSize,
+        packetContext: packetContext,
+        release: packetRelease
+    )
 }

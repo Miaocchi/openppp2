@@ -120,6 +120,9 @@ using ppp::net::packet::BufferSegment;
 using ppp::transmissions::ITransmission;
 using ppp::telemetry::Level;
 
+static constexpr ppp::UInt64 QUIC_REJECT_RATE_LIMIT_MS = 1000;
+static constexpr size_t QUIC_REJECT_RATE_LIMIT_MAX = 1024;
+
 /**
  * @brief Converts AppConfiguration::DnsServerEntry to dns::ServerEntry.
  *
@@ -151,6 +154,29 @@ static ppp::dns::ServerEntry DnsServerEntryToResolverEntry(
         }
     }
     return se;
+}
+
+static ppp::string BuildQuicRejectRateLimitKey(const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<UdpFrame>& frame) noexcept {
+    ppp::string key;
+    if (NULLPTR == packet || NULLPTR == frame) {
+        return key;
+    }
+
+    ppp::UInt32 source_ip = packet->Source;
+    ppp::UInt32 destination_ip = packet->Destination;
+    ppp::UInt16 source_port = static_cast<ppp::UInt16>(frame->Source.Port);
+    ppp::UInt16 destination_port = static_cast<ppp::UInt16>(frame->Destination.Port);
+
+    key.resize((sizeof(source_ip) << 1) + (sizeof(source_port) << 1));
+    char* out = &key[0];
+    memcpy(out, &source_ip, sizeof(source_ip));
+    out += sizeof(source_ip);
+    memcpy(out, &destination_ip, sizeof(destination_ip));
+    out += sizeof(destination_ip);
+    memcpy(out, &source_port, sizeof(source_port));
+    out += sizeof(source_port);
+    memcpy(out, &destination_port, sizeof(destination_port));
+    return key;
 }
 
 /**
@@ -507,6 +533,93 @@ namespace ppp {
                 }
             }
 
+            /** @brief Applies per-flow rate limiting for blocked QUIC ICMP rejects. */
+            bool VEthernetNetworkSwitcher::ShouldEmitBlockedQuicReject(const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<UdpFrame>& frame, UInt64 now) noexcept {
+                ppp::string key = BuildQuicRejectRateLimitKey(packet, frame);
+                if (key.empty()) {
+                    return true;
+                }
+
+                SynchronizedObjectScope scope(GetSynchronizedObject());
+                auto existing = quic_reject_rate_limits_.find(key);
+                if (existing != quic_reject_rate_limits_.end()) {
+                    if (now - existing->second < QUIC_REJECT_RATE_LIMIT_MS) {
+                        return false;
+                    }
+
+                    existing->second = now;
+                    return true;
+                }
+
+                if (quic_reject_rate_limits_.size() >= QUIC_REJECT_RATE_LIMIT_MAX) {
+                    for (auto tail = quic_reject_rate_limits_.begin(); tail != quic_reject_rate_limits_.end();) {
+                        if (now - tail->second >= QUIC_REJECT_RATE_LIMIT_MS) {
+                            tail = quic_reject_rate_limits_.erase(tail);
+                        }
+                        else {
+                            ++tail;
+                        }
+                    }
+
+                    if (quic_reject_rate_limits_.size() >= QUIC_REJECT_RATE_LIMIT_MAX) {
+                        quic_reject_rate_limits_.erase(quic_reject_rate_limits_.begin());
+                    }
+                }
+
+                quic_reject_rate_limits_.emplace(std::move(key), now);
+                return true;
+            }
+
+            /** @brief Emits ICMP Port Unreachable so QUIC clients quickly fall back to TCP. */
+            bool VEthernetNetworkSwitcher::RejectBlockedQuic(const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<UdpFrame>& frame) noexcept {
+                if (NULLPTR == packet || NULLPTR == frame) {
+                    return false;
+                }
+
+                UInt64 now = Executors::GetTickCount();
+                if (!ShouldEmitBlockedQuicReject(packet, frame, now)) {
+                    return true;
+                }
+
+                std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = GetBufferAllocator();
+                std::shared_ptr<BufferSegment> original = IPFrame::ToArray(allocator, packet.get());
+                if (NULLPTR == original || NULLPTR == original->Buffer) {
+                    return false;
+                }
+
+                int ip_header_size = sizeof(ip_hdr);
+                if (NULLPTR != packet->Options) {
+                    ip_header_size += packet->Options->Length;
+                }
+
+                if (original->Length < ip_header_size + (int)sizeof(udp_hdr)) {
+                    return false;
+                }
+
+                int quote_size = std::min<int>(original->Length, ip_header_size + (int)sizeof(udp_hdr));
+                std::shared_ptr<BufferSegment> quote = make_shared_object<BufferSegment>(
+                    wrap_shared_pointer(original->Buffer.get(), original->Buffer), quote_size);
+                if (NULLPTR == quote) {
+                    return false;
+                }
+
+                IcmpFrame icmp;
+                icmp.Type = IcmpType::ICMP_DUR;
+                icmp.Code = 3; // Port unreachable.
+                icmp.Source = packet->Destination;
+                icmp.Destination = packet->Source;
+                icmp.Ttl = IPFrame::DefaultTtl;
+                icmp.AddressesFamily = AddressFamily::InterNetwork;
+                icmp.Payload = quote;
+
+                std::shared_ptr<IPFrame> reply = IcmpFrame::ToIp(allocator, &icmp);
+                if (NULLPTR == reply) {
+                    return false;
+                }
+
+                return Output(reply.get());
+            }
+
             /** @brief Handles UDP frame forwarding, DNS redirect, and static mode paths. */
             bool VEthernetNetworkSwitcher::OnUdpPacketInput(const std::shared_ptr<IPFrame>& packet) noexcept {
                 std::shared_ptr<UdpFrame> frame = UdpFrame::Parse(packet.get());
@@ -546,12 +659,10 @@ namespace ppp {
 #endif
                 }
 
-                // If the current need to prohibit the transfer of QUIC IETF control protocol traffic,
-                // then the outgoing traffic sent to the 443 two ports through the UDP protocol can be directly discarded,
-                // simple and rough processing, if the remote sensing of all UDP port traffic,
-                // it will produce unnecessary burden and overhead on the performance of the program itself.
                 if (block_quic_ && destinationPort == PPP_HTTPS_SYS_PORT) {
-                    return false;
+                    // TODO: Also strip/ignore DNS HTTPS/SVCB records that advertise h3/alpn
+                    // so clients avoid attempting QUIC before this packet-level reject path.
+                    return RejectBlockedQuic(packet, frame);
                 }
 
                 // If the VPN uses static transmission mode, ensure that the link is link ready.
@@ -858,6 +969,7 @@ namespace ppp {
                 // Clear all ICMP packet container.
                 SynchronizedObjectScope scope(GetSynchronizedObject());
                 icmppackets_.clear();
+                quic_reject_rate_limits_.clear();
             }
 
             /** @brief Releases all registered timeout callbacks. */

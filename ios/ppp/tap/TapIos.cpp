@@ -6,6 +6,19 @@ namespace ppp
 {
     namespace tap
     {
+        namespace
+        {
+            struct TapIosPacketOwner
+            {
+                std::shared_ptr<Byte> packet;
+            };
+
+            void ReleaseTapIosPacket(void* context) noexcept
+            {
+                delete static_cast<TapIosPacketOwner*>(context);
+            }
+        }
+
         TapIos::TapIos(
             const std::shared_ptr<boost::asio::io_context>& context,
             const ppp::string&                              dev,
@@ -90,15 +103,6 @@ namespace ppp
 
         bool TapIos::Output(const std::shared_ptr<Byte>& packet, int packet_size) noexcept
         {
-            if (NULLPTR == packet)
-            {
-                return false;
-            }
-            return Output(packet.get(), packet_size);
-        }
-
-        bool TapIos::Output(const void* packet, int packet_size) noexcept
-        {
             if (!IsOpen() || NULLPTR == packet || packet_size < 1)
             {
                 return false;
@@ -110,7 +114,39 @@ namespace ppp
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelDeviceMissing);
                 return false;
             }
-            return output(packet, packet_size);
+
+            TapIosPacketOwner* owner = new (std::nothrow) TapIosPacketOwner();
+            if (NULLPTR == owner)
+            {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                return false;
+            }
+
+            owner->packet = packet;
+            bool ok = output(packet.get(), packet_size, owner, ReleaseTapIosPacket);
+            if (!ok)
+            {
+                ReleaseTapIosPacket(owner);
+            }
+            return ok;
+        }
+
+        bool TapIos::Output(const void* packet, int packet_size) noexcept
+        {
+            if (!IsOpen() || NULLPTR == packet || packet_size < 1)
+            {
+                return false;
+            }
+
+            std::shared_ptr<Byte> buffer = ppp::threading::BufferswapAllocator::MakeByteArray(BufferAllocator, packet_size);
+            if (NULLPTR == buffer)
+            {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                return false;
+            }
+
+            memcpy(buffer.get(), packet, packet_size);
+            return Output(buffer, packet_size);
         }
 
         bool TapIos::SetInterfaceMtu(int mtu) noexcept

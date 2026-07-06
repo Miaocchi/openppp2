@@ -53,6 +53,7 @@ struct openppp2_ios_tap
     bool                                                                        start_completed = false;
     bool                                                                        running = false;
     bool                                                                        stopping = false;
+    std::atomic<bool>                                                           packet_logging { false };
 };
 
 namespace
@@ -267,6 +268,7 @@ namespace
         ppp::string bypass_ip_list;
         ppp::string dns_rules_list;
         ppp::string root_path;
+        int         packet_logging = 0;
     };
 
     tunnel_options_snapshot snapshot_options(const openppp2_ios_tunnel_options& options) noexcept
@@ -282,6 +284,7 @@ namespace
         snapshot.bypass_ip_list = c_string_or_empty(options.bypass_ip_list);
         snapshot.dns_rules_list = c_string_or_empty(options.dns_rules_list);
         snapshot.root_path = c_string_or_empty(options.root_path);
+        snapshot.packet_logging = options.packet_logging;
         return snapshot;
     }
 
@@ -572,6 +575,7 @@ namespace
             tap->outbound_last = 0;
             tap->latest_statistics = "{}";
             tap->start_stage = "runtime thread pending";
+            tap->packet_logging.store(options_copy.packet_logging != 0, std::memory_order_relaxed);
         }
 
         try
@@ -618,10 +622,10 @@ namespace
 
                     set_start_stage(tap, "installing packet output");
                     ios_tap->SetPacketOutput(
-                        [tap](const void* packet, int packet_size) noexcept -> bool
+                        [tap](const void* packet, int packet_size, void* packet_context, ppp::tap::TapIos::PacketOutputReleaseHandler packet_release) noexcept -> bool
                         {
-                            bool ok = tap->writer(packet, packet_size, tap->user_data) != 0;
-                            if (packet_size > 0)
+                            bool ok = tap->writer(packet, packet_size, packet_context, packet_release, tap->user_data) != 0;
+                            if (packet_size > 0 && tap->packet_logging.load(std::memory_order_relaxed))
                             {
                                 static std::atomic<uint64_t> output_count { 0 };
                                 uint64_t n = ++output_count;
@@ -972,12 +976,15 @@ int openppp2_ios_tap_input(
         return 0;
     }
 
-    static std::atomic<uint64_t> input_count { 0 };
     bool ok = ios_tap->Input(packet, packet_size);
-    uint64_t n = ++input_count;
-    if (n <= 20 || (n % 50) == 0 || !ok)
+    if (tap->packet_logging.load(std::memory_order_relaxed))
     {
-        native_logf("OpenPPP2 native input #%llu bytes=%d ok=%d", (unsigned long long)n, packet_size, ok ? 1 : 0);
+        static std::atomic<uint64_t> input_count { 0 };
+        uint64_t n = ++input_count;
+        if (n <= 20 || (n % 50) == 0 || !ok)
+        {
+            native_logf("OpenPPP2 native input #%llu bytes=%d ok=%d", (unsigned long long)n, packet_size, ok ? 1 : 0);
+        }
     }
     if (ok)
     {
@@ -1060,8 +1067,27 @@ int openppp2_ios_tap_get_start_stage(
 
 const char* openppp2_ios_last_error_text(void)
 {
+    ErrorCode code = GetLastErrorCodeSnapshot();
+    if (code != ErrorCode::Success)
+    {
+        const char* formatted = FormatErrorString(code);
+        if (formatted != nullptr)
+        {
+            set_last_error(formatted);
+        }
+    }
+    else
+    {
+        set_last_error("success");
+    }
+
     std::lock_guard<std::mutex> scope(g_last_error_mutex);
-    return g_last_error_text.data();
+    return g_last_error_text.c_str();
+}
+
+int openppp2_ios_last_error_code(void)
+{
+    return static_cast<int>(GetLastErrorCodeSnapshot());
 }
 
 namespace

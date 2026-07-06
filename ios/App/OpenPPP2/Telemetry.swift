@@ -52,6 +52,12 @@ struct TelemetrySettings: Codable, Equatable {
     )
 }
 
+struct DebugSettings: Codable, Equatable {
+    var packetFlowDiagnosticsEnabled: Bool = false
+    var packetFlowConsoleLoggingEnabled: Bool = false
+    var packetFlowTelemetryEnabled: Bool = false
+}
+
 struct ProviderCommand: Codable {
     let command: String
     var telemetry: TelemetrySettings?

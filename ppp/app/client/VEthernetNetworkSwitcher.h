@@ -112,6 +112,8 @@ namespace ppp {
 
                 /** @brief Map from ICMP identifier to pending probe record. */
                 typedef ppp::unordered_map<int, VEthernetIcmpPacket>                VEthernetIcmpPacketTable;
+                /** @brief Per-flow last ICMP reject timestamp used by QUIC block rate limiting. */
+                typedef ppp::unordered_map<ppp::string, UInt64>                     QuicRejectRateLimitTable;
                 /** @brief Shared pointer alias for DNS rule entries. */
                 typedef ppp::app::client::dns::Rule::Ptr                            DNSRulePtr;
                 /** @brief Map from host/pattern string to DNS rule. */
@@ -747,6 +749,25 @@ namespace ppp {
                 bool                                                                IsApprovedIPv6Packet(Byte* packet, int packet_length) noexcept;
 
                 /**
+                 * @brief Emits ICMP Port Unreachable for a blocked UDP/443 packet.
+                 *
+                 * @param packet  Original IPv4 packet containing the UDP datagram.
+                 * @param frame   Parsed UDP frame for endpoint metadata.
+                 * @return true if consumed or rate-limited; false if reject generation failed.
+                 */
+                bool                                                                RejectBlockedQuic(const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<UdpFrame>& frame) noexcept;
+
+                /**
+                 * @brief Checks and updates per-flow rate limiting for blocked QUIC rejects.
+                 *
+                 * @param packet  Original IPv4 packet containing the UDP datagram.
+                 * @param frame   Parsed UDP frame for endpoint metadata.
+                 * @param now     Current monotonic tick in milliseconds.
+                 * @return true when an ICMP reject may be emitted.
+                 */
+                bool                                                                ShouldEmitBlockedQuicReject(const std::shared_ptr<IPFrame>& packet, const std::shared_ptr<UdpFrame>& frame, UInt64 now) noexcept;
+
+                /**
                  * @brief Intercepts a DNS UDP packet and redirects it according to rule sets.
                  *
                  * @param exchanger  Active exchanger for tunnel forwarding.
@@ -1015,6 +1036,8 @@ namespace ppp {
                 std::shared_ptr<ppp::transmissions::ITransmissionStatistics>        statistics_;
                 /** @brief Pending ICMP probe packet table, keyed by echo identifier. */
                 VEthernetIcmpPacketTable                                            icmppackets_;
+                /** @brief Recent blocked-QUIC flows that already received ICMP reject. */
+                QuicRejectRateLimitTable                                            quic_reject_rate_limits_;
                 struct {
                     int                                                             icmppackets_aid_  = 0;   ///< Auto-increment counter for ICMP probe keys.
                     bool                                                            block_quic_       = false;///< QUIC blocking state.

@@ -7,7 +7,13 @@
 extern "C" {
 #endif
 
-typedef int (*openppp2_ios_packet_writer)(const void* packet, int packet_size, void* user_data);
+typedef void (*openppp2_ios_packet_release)(void* packet_context);
+typedef int (*openppp2_ios_packet_writer)(
+    const void* packet,
+    int         packet_size,
+    void*       packet_context,
+    openppp2_ios_packet_release packet_release,
+    void*       user_data);
 typedef void (*openppp2_ios_statistics_writer)(const char* statistics_json, void* user_data);
 typedef int (*openppp2_ios_http_post_fn)(const char* url, const void* body, int body_len, void* user_data);
 
@@ -23,6 +29,7 @@ typedef struct openppp2_ios_tunnel_options
     const char* bypass_ip_list;
     const char* dns_rules_list;
     const char* root_path;
+    int         packet_logging;
 } openppp2_ios_tunnel_options;
 
 typedef struct openppp2_ios_tap openppp2_ios_tap;
@@ -62,6 +69,8 @@ int openppp2_ios_tap_get_start_stage(
     int               buffer_size);
 
 const char* openppp2_ios_last_error_text(void);
+
+int openppp2_ios_last_error_code(void);
 
 void openppp2_ios_set_telemetry_http_post(
     openppp2_ios_http_post_fn fn,

@@ -1,12 +1,16 @@
 import Foundation
 import Darwin
+import Network
 import NetworkExtension
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var adapter: OpenPPP2PacketTunnelAdapter?
     private var lastOptions = PacketTunnelOptions()
     private var telemetrySettings = TelemetrySettings.disabled
+    private var debugSettings = DebugSettings()
     private var lastDiagnosticsJson = "{}"
+    private var networkPathMonitor: NWPathMonitor?
+    private let networkPathQueue = DispatchQueue(label: "openppp2.packet-tunnel.network-path")
 
     override func startTunnel(
         options: [String: NSObject]?,
@@ -23,9 +27,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         )
         let launchOptions = Self.readOptions(from: providerConfiguration)
         let telemetry = Self.readTelemetry(from: providerConfiguration)
+        let debug = Self.readDebug(from: providerConfiguration)
         let configJson = providerConfiguration?["configJson"] as? String ?? "{}"
         lastOptions = launchOptions
         telemetrySettings = telemetry
+        debugSettings = debug
+        startNetworkPathMonitor(settings: telemetry)
         let preparedConfigJson = Self.preparedConfigJson(configJson)
         let serverHost = Self.serverHost(from: preparedConfigJson)
         let telemetryHost = Self.telemetryEndpointHost(from: preparedConfigJson)
@@ -37,17 +44,34 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             options: launchOptions
         )
         TunnelSharedState.writeDiagnosticsJson(lastDiagnosticsJson)
-        NSLog(
-            "OpenPPP2 PacketTunnel start profile=%@ source=%@ server=%@ tunnel=%@/%@ route=%@/%d dataplane=%@",
-            providerConfiguration?["profileName"] as? String ?? "(unknown)",
-            providerConfiguration?["configurationSource"] as? String ?? "provider",
-            serverHost ?? "(unknown)",
-            launchOptions.tunIp,
-            launchOptions.tunMask,
-            launchOptions.route,
-            launchOptions.routePrefix,
-            launchOptions.lwip ? "lwip" : "ctcp"
-        )
+        guard serverHost != nil else {
+            let error = Self.configurationError("client.server is empty or invalid")
+            lastDiagnosticsJson = Self.diagnosticsJson(
+                linkState: 6,
+                startStage: "invalid configuration",
+                lastError: error.localizedDescription,
+                serverHost: nil,
+                options: launchOptions
+            )
+            TunnelSharedState.writeDiagnosticsJson(lastDiagnosticsJson)
+            stopNetworkPathMonitor()
+            completionHandler(error)
+            return
+        }
+
+        if debug.packetFlowConsoleLoggingEnabled {
+            NSLog(
+                "OpenPPP2 PacketTunnel start profile=%@ source=%@ server=%@ tunnel=%@/%@ route=%@/%d dataplane=%@",
+                providerConfiguration?["profileName"] as? String ?? "(unknown)",
+                providerConfiguration?["configurationSource"] as? String ?? "provider",
+                serverHost ?? "(unknown)",
+                launchOptions.tunIp,
+                launchOptions.tunMask,
+                launchOptions.route,
+                launchOptions.routePrefix,
+                launchOptions.lwip ? "lwip" : "ctcp"
+            )
+        }
 
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: serverHost ?? launchOptions.gateway)
 
@@ -61,7 +85,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let serverIPv4Addresses = Self.resolveIPv4Addresses(for: serverHost)
         let telemetryIPv4Addresses = Self.resolveIPv4Addresses(for: telemetryHost)
         ipv4.excludedRoutes = Self.excludedRoutes(
-            from: launchOptions.bypassIpList,
+            from: launchOptions.effectiveBypassIpList,
             serverHost: serverHost,
             resolvedServerIPv4Addresses: serverIPv4Addresses,
             extraHosts: [telemetryHost].compactMap { $0 },
@@ -84,6 +108,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         setTunnelNetworkSettings(settings) { [weak self] error in
             if let error {
                 NSLog("OpenPPP2 PacketTunnel setTunnelNetworkSettings failed: %@", error.localizedDescription)
+                self?.stopNetworkPathMonitor()
                 completionHandler(error)
                 return
             }
@@ -93,9 +118,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 return
             }
 
-            let adapter = OpenPPP2PacketTunnelAdapter(flow: self.packetFlow, telemetry: telemetry)
+            let adapter = OpenPPP2PacketTunnelAdapter(flow: self.packetFlow, telemetry: telemetry, debug: debug)
             guard adapter.start(configJson: preparedConfigJson, options: launchOptions) else {
                 let lastError = openPPP2LastErrorText()
+                self.stopNetworkPathMonitor()
                 self.lastDiagnosticsJson = Self.diagnosticsJson(
                     linkState: 6,
                     startStage: "engine start failed",
@@ -112,7 +138,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 return
             }
 
-            NSLog("OpenPPP2 PacketTunnel engine started")
+            if debug.packetFlowConsoleLoggingEnabled {
+                NSLog("OpenPPP2 PacketTunnel engine started")
+            }
             self.adapter = adapter
             self.lastDiagnosticsJson = adapter.diagnosticsJson()
             completionHandler(nil)
@@ -123,11 +151,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
-        NSLog("OpenPPP2 PacketTunnel stop reason=%d (%@)", reason.rawValue, reason.telemetryLabel)
+        if debugSettings.packetFlowConsoleLoggingEnabled {
+            NSLog("OpenPPP2 PacketTunnel stop reason=%d (%@)", reason.rawValue, reason.telemetryLabel)
+        }
+        TunnelSharedState.writeLastTunnelStopReason(code: reason.rawValue, name: reason.telemetryLabel)
 
         let stopAttributes = adapter?.telemetryStopAttributes() ?? [:]
         adapter?.stop(stopReason: Int32(reason.rawValue))
         adapter = nil
+        stopNetworkPathMonitor()
 
         NativeTelemetryTransport.exportStopEvent(
             settings: telemetrySettings,
@@ -187,6 +219,64 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    private func startNetworkPathMonitor(settings: TelemetrySettings) {
+        stopNetworkPathMonitor()
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { path in
+            let snapshot = TunnelSharedState.NetworkPathSnapshot(path: path)
+            TunnelSharedState.writeNetworkPathSnapshot(snapshot)
+            Self.exportNetworkPathChanged(snapshot, settings: settings)
+        }
+        monitor.start(queue: networkPathQueue)
+        networkPathMonitor = monitor
+    }
+
+    private func stopNetworkPathMonitor() {
+        networkPathMonitor?.cancel()
+        networkPathMonitor = nil
+    }
+
+    private static func exportNetworkPathChanged(
+        _ snapshot: TunnelSharedState.NetworkPathSnapshot,
+        settings: TelemetrySettings
+    ) {
+        guard settings.canUpload, settings.includeNativeTelemetry else {
+            return
+        }
+
+        let interfaceText = snapshot.interfaces.joined(separator: ",")
+        let record = OTLPLogRecord(
+            timeUnixNano: UInt64(Date().timeIntervalSince1970 * 1_000_000_000),
+            severityText: "INFO",
+            body: "network_path changed status=\(snapshot.status) interfaces=\(interfaceText)",
+            attributes: [
+                "event.name": .string("openppp2.network_path.changed"),
+                "openppp2.component": .string("packet_tunnel"),
+                "openppp2.network_path.status": .string(snapshot.status),
+                "openppp2.network_path.interfaces": .string(interfaceText),
+                "openppp2.network_path.expensive": .bool(snapshot.isExpensive),
+                "openppp2.network_path.constrained": .bool(snapshot.isConstrained),
+                "openppp2.network_path.supports_ipv4": .bool(snapshot.supportsIPv4),
+                "openppp2.network_path.supports_ipv6": .bool(snapshot.supportsIPv6),
+                "openppp2.network_path.supports_dns": .bool(snapshot.supportsDNS)
+            ]
+        )
+        OTLPHTTPLogExporter(settings: settings, scopeName: "openppp2.ios.network_path")
+            .export(records: [record]) { result in
+                if case let .failure(error) = result {
+                    NSLog("OpenPPP2 network path telemetry failed: %@", error.localizedDescription)
+                }
+            }
+    }
+
+    private static func configurationError(_ message: String) -> NSError {
+        NSError(
+            domain: "OpenPPP2PacketTunnel",
+            code: 1001,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+    }
+
     private static func readOptions(from providerConfiguration: [String: Any]?) -> PacketTunnelOptions {
         guard let raw = providerConfiguration?["optionsJson"] as? String,
               let data = raw.data(using: .utf8),
@@ -203,6 +293,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               let settings = try? JSONDecoder().decode(TelemetrySettings.self, from: data)
         else {
             return .disabled
+        }
+        return settings
+    }
+
+    private static func readDebug(from providerConfiguration: [String: Any]?) -> DebugSettings {
+        guard let raw = providerConfiguration?["debugJson"] as? String,
+              let data = raw.data(using: .utf8),
+              let settings = try? JSONDecoder().decode(DebugSettings.self, from: data)
+        else {
+            return DebugSettings()
         }
         return settings
     }
@@ -228,6 +328,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             "configJson": shared.configJson,
             "optionsJson": shared.optionsJson,
             "telemetryJson": shared.telemetryJson,
+            "debugJson": shared.debugJson ?? "{}",
             "configurationSource": "app-group"
         ]
     }
@@ -427,15 +528,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         serverHost: String?,
         options: PacketTunnelOptions
     ) -> String {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "linkState": linkState,
             "startStage": startStage,
             "lastError": lastError,
             "serverHost": serverHost ?? "",
             "tunIp": options.tunIp,
             "route": "\(options.route)/\(options.routePrefix)",
+            "routeMode": options.routeMode,
             "dataplane": options.lwip ? "lwip" : "ctcp"
         ]
+        if let networkPath = TunnelSharedState.readNetworkPathSnapshot() {
+            payload["networkPath"] = networkPath.dictionary
+        }
 
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),

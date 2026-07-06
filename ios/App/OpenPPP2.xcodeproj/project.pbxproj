@@ -22,6 +22,24 @@
 		10000000000000000000001D /* TelemetryIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000117 /* TelemetryIdentity.swift */; };
 		10000000000000000000001E /* AppGroupResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000118 /* AppGroupResolver.swift */; };
 		10000000000000000000001F /* AppGroupResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000118 /* AppGroupResolver.swift */; };
+		100000000000000000000130 /* PacketFlowOutputQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000120 /* PacketFlowOutputQueue.swift */; };
+		100000000000000000000021 /* PacketFlowDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000121 /* PacketFlowDiagnostics.swift */; };
+		100000000000000000000022 /* PacketTunnelConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000122 /* PacketTunnelConfiguration.swift */; };
+		100000000000000000000023 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000123 /* AppModels.swift */; };
+		100000000000000000000024 /* ProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000124 /* ProfileStore.swift */; };
+		100000000000000000000025 /* VPNController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000125 /* VPNController.swift */; };
+		100000000000000000000026 /* HomeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000126 /* HomeViewController.swift */; };
+		100000000000000000000027 /* SelectProfileViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000127 /* SelectProfileViewController.swift */; };
+		100000000000000000000028 /* ProfilesViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000128 /* ProfilesViewController.swift */; };
+		100000000000000000000029 /* ProfileEditViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000129 /* ProfileEditViewController.swift */; };
+		10000000000000000000002A /* OptionsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000012A /* OptionsViewController.swift */; };
+		10000000000000000000002B /* SettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000012B /* SettingsViewController.swift */; };
+		10000000000000000000002C /* DebugSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000012C /* DebugSettingsViewController.swift */; };
+		10000000000000000000002D /* CrashReportsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000012D /* CrashReportsViewController.swift */; };
+		10000000000000000000002E /* TelemetrySettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000012E /* TelemetrySettingsViewController.swift */; };
+		10000000000000000000002F /* UIHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000012F /* UIHelpers.swift */; };
+		100000000000000000000135 /* ProfileImportExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000133 /* ProfileImportExport.swift */; };
+		100000000000000000000136 /* ProfileDocumentPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000134 /* ProfileDocumentPicker.swift */; };
 		100000000000000000000005 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 100000000000000000000105 /* NetworkExtension.framework */; };
 		100000000000000000000006 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 100000000000000000000105 /* NetworkExtension.framework */; };
 		100000000000000000000007 /* OpenPPP2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 100000000000000000000106 /* OpenPPP2.xcframework */; };
@@ -75,6 +93,24 @@
 		100000000000000000000116 /* NativeTelemetryTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTelemetryTransport.swift; sourceTree = "<group>"; };
 		100000000000000000000117 /* TelemetryIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TelemetryIdentity.swift; path = TelemetryIdentity.swift; sourceTree = "<group>"; };
 		100000000000000000000118 /* AppGroupResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppGroupResolver.swift; path = AppGroupResolver.swift; sourceTree = "<group>"; };
+		100000000000000000000120 /* PacketFlowOutputQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketFlowOutputQueue.swift; sourceTree = "<group>"; };
+		100000000000000000000121 /* PacketFlowDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketFlowDiagnostics.swift; sourceTree = "<group>"; };
+		100000000000000000000122 /* PacketTunnelConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelConfiguration.swift; sourceTree = "<group>"; };
+		100000000000000000000123 /* AppModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModels.swift; sourceTree = "<group>"; };
+		100000000000000000000124 /* ProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileStore.swift; sourceTree = "<group>"; };
+		100000000000000000000125 /* VPNController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VPNController.swift; sourceTree = "<group>"; };
+		100000000000000000000126 /* HomeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewController.swift; sourceTree = "<group>"; };
+		100000000000000000000127 /* SelectProfileViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectProfileViewController.swift; sourceTree = "<group>"; };
+		100000000000000000000128 /* ProfilesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfilesViewController.swift; sourceTree = "<group>"; };
+		100000000000000000000129 /* ProfileEditViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditViewController.swift; sourceTree = "<group>"; };
+		10000000000000000000012A /* OptionsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OptionsViewController.swift; sourceTree = "<group>"; };
+		10000000000000000000012B /* SettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewController.swift; sourceTree = "<group>"; };
+		10000000000000000000012C /* DebugSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugSettingsViewController.swift; sourceTree = "<group>"; };
+		10000000000000000000012D /* CrashReportsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashReportsViewController.swift; sourceTree = "<group>"; };
+		10000000000000000000012E /* TelemetrySettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetrySettingsViewController.swift; sourceTree = "<group>"; };
+		10000000000000000000012F /* UIHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIHelpers.swift; sourceTree = "<group>"; };
+		100000000000000000000133 /* ProfileImportExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileImportExport.swift; sourceTree = "<group>"; };
+		100000000000000000000134 /* ProfileDocumentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileDocumentPicker.swift; sourceTree = "<group>"; };
 		100000000000000000000201 /* OpenPPP2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenPPP2.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		100000000000000000000202 /* OpenPPP2PacketTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OpenPPP2PacketTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -118,6 +154,21 @@
 			children = (
 				100000000000000000000101 /* AppDelegate.swift */,
 				100000000000000000000102 /* ViewController.swift */,
+				100000000000000000000123 /* AppModels.swift */,
+				100000000000000000000124 /* ProfileStore.swift */,
+				100000000000000000000133 /* ProfileImportExport.swift */,
+				100000000000000000000134 /* ProfileDocumentPicker.swift */,
+				100000000000000000000125 /* VPNController.swift */,
+				100000000000000000000126 /* HomeViewController.swift */,
+				100000000000000000000127 /* SelectProfileViewController.swift */,
+				100000000000000000000128 /* ProfilesViewController.swift */,
+				100000000000000000000129 /* ProfileEditViewController.swift */,
+				10000000000000000000012A /* OptionsViewController.swift */,
+				10000000000000000000012B /* SettingsViewController.swift */,
+				10000000000000000000012C /* DebugSettingsViewController.swift */,
+				10000000000000000000012D /* CrashReportsViewController.swift */,
+				10000000000000000000012E /* TelemetrySettingsViewController.swift */,
+				10000000000000000000012F /* UIHelpers.swift */,
 				100000000000000000000113 /* CrashReporter.swift */,
 				100000000000000000000114 /* Telemetry.swift */,
 				100000000000000000000117 /* TelemetryIdentity.swift */,
@@ -134,6 +185,9 @@
 			children = (
 				100000000000000000000103 /* PacketTunnelProvider.swift */,
 				100000000000000000000104 /* OpenPPP2PacketTunnelAdapter.swift */,
+				100000000000000000000120 /* PacketFlowOutputQueue.swift */,
+				100000000000000000000121 /* PacketFlowDiagnostics.swift */,
+				100000000000000000000122 /* PacketTunnelConfiguration.swift */,
 				100000000000000000000116 /* NativeTelemetryTransport.swift */,
 				100000000000000000000112 /* rules */,
 				100000000000000000000110 /* Info.plist */,
@@ -263,6 +317,21 @@
 			files = (
 				100000000000000000000001 /* AppDelegate.swift in Sources */,
 				100000000000000000000002 /* ViewController.swift in Sources */,
+				100000000000000000000023 /* AppModels.swift in Sources */,
+				100000000000000000000024 /* ProfileStore.swift in Sources */,
+				100000000000000000000135 /* ProfileImportExport.swift in Sources */,
+				100000000000000000000136 /* ProfileDocumentPicker.swift in Sources */,
+				100000000000000000000025 /* VPNController.swift in Sources */,
+				100000000000000000000026 /* HomeViewController.swift in Sources */,
+				100000000000000000000027 /* SelectProfileViewController.swift in Sources */,
+				100000000000000000000028 /* ProfilesViewController.swift in Sources */,
+				100000000000000000000029 /* ProfileEditViewController.swift in Sources */,
+				10000000000000000000002A /* OptionsViewController.swift in Sources */,
+				10000000000000000000002B /* SettingsViewController.swift in Sources */,
+				10000000000000000000002C /* DebugSettingsViewController.swift in Sources */,
+				10000000000000000000002D /* CrashReportsViewController.swift in Sources */,
+				10000000000000000000002E /* TelemetrySettingsViewController.swift in Sources */,
+				10000000000000000000002F /* UIHelpers.swift in Sources */,
 				100000000000000000000013 /* CrashReporter.swift in Sources */,
 				100000000000000000000017 /* Telemetry.swift in Sources */,
 				10000000000000000000001C /* TelemetryIdentity.swift in Sources */,
@@ -277,6 +346,9 @@
 			files = (
 				100000000000000000000003 /* PacketTunnelProvider.swift in Sources */,
 				100000000000000000000004 /* OpenPPP2PacketTunnelAdapter.swift in Sources */,
+				100000000000000000000130 /* PacketFlowOutputQueue.swift in Sources */,
+				100000000000000000000021 /* PacketFlowDiagnostics.swift in Sources */,
+				100000000000000000000022 /* PacketTunnelConfiguration.swift in Sources */,
 				100000000000000000000014 /* CrashReporter.swift in Sources */,
 				100000000000000000000018 /* Telemetry.swift in Sources */,
 				10000000000000000000001D /* TelemetryIdentity.swift in Sources */,
@@ -365,7 +437,7 @@
 				MARKETING_VERSION = 0.1.0;
 				OPENPPP2_BUNDLE_ID = com.tunnel.openppp2;
 				OPENPPP2_APP_GROUP = group.openppp2;
-				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "http://10.1.0.36:4318/openppp2-cb7847ae-91bd-459b-b2b4-a7fa506fa4d6/v1/logs";
+				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "https://otel-openppp2.ling.com.es/openppp2-cb7847ae-91bd-459b-b2b4-a7fa506fa4d6/v1/logs";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID)";
 				PRODUCT_MODULE_NAME = OpenPPP2App;
 				PRODUCT_NAME = OpenPPP2;
@@ -394,7 +466,7 @@
 				MARKETING_VERSION = 0.1.0;
 				OPENPPP2_BUNDLE_ID = com.tunnel.openppp2;
 				OPENPPP2_APP_GROUP = group.openppp2;
-				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "http://10.1.0.36:4318/openppp2-cb7847ae-91bd-459b-b2b4-a7fa506fa4d6/v1/logs";
+				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "https://otel-openppp2.ling.com.es/openppp2-cb7847ae-91bd-459b-b2b4-a7fa506fa4d6/v1/logs";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID)";
 				PRODUCT_MODULE_NAME = OpenPPP2App;
 				PRODUCT_NAME = OpenPPP2;
@@ -445,7 +517,7 @@
 				"OPENSSL_LIB_DIR[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphonesimulator-x86_64/lib";
 				OPENPPP2_BUNDLE_ID = com.tunnel.openppp2;
 				OPENPPP2_APP_GROUP = group.openppp2;
-				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "http://10.1.0.36:4318/openppp2-cb7847ae-91bd-459b-b2b4-a7fa506fa4d6/v1/logs";
+				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "https://otel-openppp2.ling.com.es/openppp2-cb7847ae-91bd-459b-b2b4-a7fa506fa4d6/v1/logs";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID).PacketTunnel";
 				PRODUCT_NAME = OpenPPP2PacketTunnel;
 				SKIP_INSTALL = YES;
@@ -497,7 +569,7 @@
 				"OPENSSL_LIB_DIR[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/../../bin/openssl-ios/iphonesimulator-x86_64/lib";
 				OPENPPP2_BUNDLE_ID = com.tunnel.openppp2;
 				OPENPPP2_APP_GROUP = group.openppp2;
-				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "http://10.1.0.36:4318/openppp2-cb7847ae-91bd-459b-b2b4-a7fa506fa4d6/v1/logs";
+				OPENPPP2_TELEMETRY_DEVELOPER_ENDPOINT = "https://otel-openppp2.ling.com.es/openppp2-cb7847ae-91bd-459b-b2b4-a7fa506fa4d6/v1/logs";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OPENPPP2_BUNDLE_ID).PacketTunnel";
 				PRODUCT_NAME = OpenPPP2PacketTunnel;
 				SKIP_INSTALL = YES;

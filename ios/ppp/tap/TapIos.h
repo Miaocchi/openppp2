@@ -17,7 +17,8 @@ namespace ppp
         class TapIos final : public ppp::tap::ITap
         {
         public:
-            typedef ppp::function<bool(const void*, int)> PacketOutputEventHandler;
+            typedef void (*PacketOutputReleaseHandler)(void*);
+            typedef ppp::function<bool(const void*, int, void*, PacketOutputReleaseHandler)> PacketOutputEventHandler;
 
         public:
             TapIos(

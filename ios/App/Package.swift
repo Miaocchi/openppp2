@@ -9,7 +9,12 @@ let package = Package(
         .target(
             name: "OpenPPP2Logic",
             path: "OpenPPP2",
-            sources: ["AppGroupResolver.swift"]
+            sources: [
+                "AppGroupResolver.swift",
+                "AppModels.swift",
+                "TunnelSharedState.swift",
+                "ProfileImportExport.swift",
+            ]
         ),
         .testTarget(
             name: "OpenPPP2LogicTests",
