@@ -119,6 +119,10 @@ class MainActivity : FlutterActivity() {
                             result.success(loadAppIconBase64(pkg))
                         }
                     }
+                    "getTelemetryIdentity" -> {
+                        TelemetryIdentity.installIfNeeded(this)
+                        result.success(TelemetryIdentity.identityPayload(this))
+                    }
                     "requestPermission" -> {
                         requestVpnPermission(result)
                     }

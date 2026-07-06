@@ -189,6 +189,17 @@ namespace ppp {
                     }
                 }
 
+                if (!configuration->client.peer_route_announce.empty()) {
+                    request.PeerRouteAnnounce.enabled = true;
+                    request.PeerRouteAnnounce.action = "register";
+                    for (const auto& item : configuration->client.peer_route_announce) {
+                        ppp::app::protocol::PeerPrefixRouteEntry entry;
+                        entry.network = item.network;
+                        entry.prefix = item.prefix;
+                        request.PeerRouteAnnounce.prefixes.emplace_back(std::move(entry));
+                    }
+                }
+
                 if (!request.HasAny()) {
                     return true;
                 }
@@ -1399,6 +1410,29 @@ namespace ppp {
 
             /** @brief Forwards NAT payload from remote side to local switcher output. */
             bool VEthernetExchanger::OnNat(const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept {
+                if (NULLPTR == switcher_) {
+                    return false;
+                }
+
+                AppConfigurationPtr configuration = GetConfiguration();
+                if (NULLPTR != configuration && !configuration->client.peer_gateway_forward) {
+                    ppp::net::native::ip_hdr* ip = ppp::net::native::ip_hdr::Parse(packet, packet_length);
+                    if (NULLPTR == ip) {
+                        return false;
+                    }
+
+                    std::shared_ptr<ppp::tap::ITap> tap = switcher_->GetTap();
+                    if (NULLPTR == tap) {
+                        return false;
+                    }
+
+                    if (ip->dest != tap->IPAddress) {
+                        ppp::telemetry::Log(Level::kInfo, "client_exchanger", "peer gateway forward rejected");
+                        ppp::telemetry::Count("client.peer_gateway_forward.rejected", 1);
+                        return false;
+                    }
+                }
+
                 return switcher_->Output(packet, packet_length);
             }
 

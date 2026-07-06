@@ -274,6 +274,10 @@ namespace ppp {
                     }
                 }
 
+                if (IsPeerRoutingEnabled()) {
+                    BuildPeerRouteTableSnapshot(envelope.Extensions.PeerRouteTable, &session_id);
+                }
+
                 envelope.ExtendedJson = envelope.Extensions.ToJson();
                 return envelope;
             }
@@ -2068,6 +2072,8 @@ namespace ppp {
                     ipv6_leases_.clear();
                     p2p_peers_.clear();
                     p2p_virtual_ips_.clear();
+                    peer_prefix_gateways_.clear();
+                    peer_prefix_rib_.Clear();
                 }  // Release syncobj_ before heavy subsystem initialization.
 
                 bool ok = CreateAllAcceptors() &&
@@ -3172,6 +3178,8 @@ namespace ppp {
 
                     p2p_peers_.clear();
                     p2p_virtual_ips_.clear();
+                    peer_prefix_gateways_.clear();
+                    peer_prefix_rib_.Clear();
                     static_echo_allocateds_.clear();
                     break;
                 }
@@ -4276,6 +4284,198 @@ namespace ppp {
 
                 nats_.erase(tail);
                 return true;
+            }
+
+            bool VirtualEthernetSwitcher::IsPeerRoutingEnabled() const noexcept {
+                return NULLPTR != configuration_ &&
+                    configuration_->server.peer_routing.enabled &&
+                    configuration_->server.subnet;
+            }
+
+            void VirtualEthernetSwitcher::RebuildPeerPrefixRibLocked() noexcept {
+                peer_prefix_rib_.Clear();
+                for (const auto& kv : peer_prefix_gateways_) {
+                    const PeerPrefixGatewayRecord& record = kv.second;
+                    if (record.VirtualIP == 0) {
+                        continue;
+                    }
+
+                    for (const auto& prefix : record.Prefixes) {
+                        if (prefix.prefix <= 0 || prefix.prefix > net::native::MAX_PREFIX_VALUE_V4) {
+                            continue;
+                        }
+
+                        uint32_t network = prefix.NetworkHost();
+                        if (network == 0) {
+                            continue;
+                        }
+                        peer_prefix_rib_.AddRoute(network, prefix.prefix, record.VirtualIP);
+                    }
+                }
+            }
+
+            void VirtualEthernetSwitcher::BuildPeerRouteTableSnapshot(ppp::app::protocol::PeerRouteTableMessage& table, const Int128* exclude_session_id) noexcept {
+                table.Clear();
+                if (!IsPeerRoutingEnabled()) {
+                    return;
+                }
+
+                table.enabled = true;
+                table.action = "snapshot";
+
+                SynchronizedObjectScope scope(syncobj_);
+                for (const auto& kv : peer_prefix_gateways_) {
+                    if (NULLPTR != exclude_session_id && kv.first == *exclude_session_id) {
+                        continue;
+                    }
+
+                    const PeerPrefixGatewayRecord& record = kv.second;
+                    for (const auto& prefix : record.Prefixes) {
+                        ppp::app::protocol::PeerPrefixRouteEntry route = prefix;
+                        if (route.via.empty() && record.VirtualIP != 0) {
+                            route.via = IPEndPoint::ToAddressString(record.VirtualIP);
+                        }
+                        table.routes.emplace_back(std::move(route));
+                    }
+                }
+            }
+
+            uint32_t VirtualEthernetSwitcher::FindGatewayVirtualIPForDestination(uint32_t destination) noexcept {
+                if (!IsPeerRoutingEnabled()) {
+                    return 0;
+                }
+
+                SynchronizedObjectScope scope(syncobj_);
+                if (!peer_prefix_rib_.IsAvailable()) {
+                    return 0;
+                }
+
+                return net::native::ForwardInformationTable::GetNextHop(destination, peer_prefix_rib_.GetAllRoutes());
+            }
+
+            bool VirtualEthernetSwitcher::DeletePeerPrefixGateway(const Int128& session_id) noexcept {
+                bool removed = false;
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    removed = peer_prefix_gateways_.erase(session_id) > 0;
+                    if (removed) {
+                        RebuildPeerPrefixRibLocked();
+                    }
+                }
+
+                if (removed && NULLPTR != configuration_ && configuration_->server.peer_routing.distribute) {
+                    BroadcastPeerRouteTable(nullof<YieldContext>());
+                }
+                return removed;
+            }
+
+            bool VirtualEthernetSwitcher::UpdatePeerRouteAnnounce(
+                const std::shared_ptr<VirtualEthernetExchanger>& exchanger,
+                const VirtualEthernetInformationExtensions& request,
+                VirtualEthernetInformationExtensions& response) noexcept {
+
+                response.PeerRouteAnnounce = request.PeerRouteAnnounce;
+                if (!IsPeerRoutingEnabled()) {
+                    response.PeerRouteAnnounce.action = "reject";
+                    response.PeerRouteAnnounce.enabled = false;
+                    return false;
+                }
+
+                if (!request.PeerRouteAnnounce.enabled || request.PeerRouteAnnounce.action != "register") {
+                    return false;
+                }
+
+                if (NULLPTR == exchanger || exchanger->IsDisposed()) {
+                    return false;
+                }
+
+                Int128 session_id = exchanger->GetId();
+                uint32_t virtual_ip = 0;
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    for (const auto& kv : nats_) {
+                        if (NULLPTR != kv.second && kv.second->Exchanger.get() == exchanger.get()) {
+                            virtual_ip = kv.first;
+                            break;
+                        }
+                    }
+                }
+
+                if (virtual_ip == 0 || IPEndPoint::IsInvalid(IPEndPoint(virtual_ip, IPEndPoint::MinPort))) {
+                    response.PeerRouteAnnounce.action = "reject";
+                    return false;
+                }
+
+                PeerPrefixGatewayRecord record;
+                record.SessionId = session_id;
+                record.VirtualIP = virtual_ip;
+                record.Exchanger = exchanger;
+                for (const auto& prefix : request.PeerRouteAnnounce.prefixes) {
+                    if (prefix.HasAny()) {
+                        record.Prefixes.emplace_back(prefix);
+                    }
+                }
+
+                if (record.Prefixes.empty()) {
+                    response.PeerRouteAnnounce.action = "reject";
+                    return false;
+                }
+
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    peer_prefix_gateways_[session_id] = std::move(record);
+                    RebuildPeerPrefixRibLocked();
+                }
+
+                response.PeerRouteAnnounce.action = "registered";
+                BuildPeerRouteTableSnapshot(response.PeerRouteTable, &session_id);
+
+                if (NULLPTR != configuration_ && configuration_->server.peer_routing.distribute) {
+                    BroadcastPeerRouteTable(nullof<YieldContext>());
+                }
+
+                return true;
+            }
+
+            void VirtualEthernetSwitcher::BroadcastPeerRouteTable(YieldContext& y) noexcept {
+                if (!IsPeerRoutingEnabled() || NULLPTR == configuration_ || !configuration_->server.peer_routing.distribute) {
+                    return;
+                }
+
+                VirtualEthernetInformation info;
+                info.Clear();
+                info.BandwidthQoS = 0;
+                info.IncomingTraffic = std::numeric_limits<UInt64>::max();
+                info.OutgoingTraffic = std::numeric_limits<UInt64>::max();
+                info.ExpiredTime = std::numeric_limits<UInt32>::max();
+
+                ppp::vector<VirtualEthernetExchangerPtr> targets;
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    targets.reserve(exchangers_.size());
+                    for (const auto& kv : exchangers_) {
+                        if (NULLPTR != kv.second && !kv.second->IsDisposed()) {
+                            targets.emplace_back(kv.second);
+                        }
+                    }
+                }
+
+                InformationEnvelope envelope;
+                envelope.Base = info;
+                envelope.Extensions.Clear();
+                for (const auto& target : targets) {
+                    ITransmissionPtr transmission = target->GetTransmission();
+                    if (NULLPTR == transmission) {
+                        continue;
+                    }
+                    ppp::app::protocol::PeerRouteTableMessage table;
+                    Int128 session_id = target->GetId();
+                    BuildPeerRouteTableSnapshot(table, &session_id);
+
+                    envelope.Extensions.PeerRouteTable = table;
+                    envelope.ExtendedJson = envelope.Extensions.ToJson();
+                    target->DoInformation(transmission, envelope, y);
+                }
             }
 
             /**

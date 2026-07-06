@@ -32,6 +32,7 @@
 #include <ppp/app/client/GeoRuleGenerator.h>
 
 #include <android/OpenPPP2VpnProtectBridge.h>
+#include <android/OpenPPP2TelemetryBridge.h>
 
 #include <linux/ppp/tap/TapLinux.h>
 
@@ -109,6 +110,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     }
 
     ppp::android::InitializeProtectBridge(vm, env);
+    ppp::android::InitializeTelemetryBridge(vm, env);
     return JNI_VERSION_1_6;
 }
 
@@ -116,9 +118,11 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     JNIEnv* env = NULLPTR;
     if (NULLPTR != vm && JNI_OK == vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6)) {
         ppp::android::ShutdownProtectBridge(env);
+        ppp::android::ShutdownTelemetryBridge(env);
     }
     else {
         ppp::android::ShutdownProtectBridge();
+        ppp::android::ShutdownTelemetryBridge();
     }
 }
 
@@ -959,9 +963,39 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1app_1confi
             ppp::net::asio::vdns::ClearCache();
 
             app->configuration_ = config;
+            ppp::android::ConfigureNativeTelemetry(config);
             return LIBOPENPPP2_ERROR_SUCCESS;
         });
     return libopenppp2_set_last_error_for_result(err);
+}
+
+__LIBOPENPPP2__(void) Java_supersocksr_ppp_android_c_libopenppp2_installNativeTelemetryHttpPost(JNIEnv* env, jobject* this_) noexcept {
+    (void)env;
+    (void)this_;
+    ppp::android::InstallHttpPostSink();
+}
+
+__LIBOPENPPP2__(void) Java_supersocksr_ppp_android_c_libopenppp2_setNativeTelemetryResourceAttribute(
+    JNIEnv* env,
+    jobject* this_,
+    jstring key,
+    jstring value) noexcept
+{
+    (void)this_;
+    std::shared_ptr<ppp::string> key_string = JNIENV_GetStringUTFChars(env, key);
+    std::shared_ptr<ppp::string> value_string = JNIENV_GetStringUTFChars(env, value);
+    if (NULLPTR == key_string || key_string->empty() || NULLPTR == value_string)
+    {
+        return;
+    }
+
+    ppp::android::SetTelemetryResourceAttribute(key_string->c_str(), value_string->c_str());
+}
+
+__LIBOPENPPP2__(void) Java_supersocksr_ppp_android_c_libopenppp2_clearNativeTelemetryResourceAttributes(JNIEnv* env, jobject* this_) noexcept {
+    (void)env;
+    (void)this_;
+    ppp::android::ClearTelemetryResourceAttributes();
 }
 
 // package: supersocksr.ppp.android.c

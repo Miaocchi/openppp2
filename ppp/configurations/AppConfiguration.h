@@ -48,6 +48,18 @@ namespace ppp {
             };
 
             /**
+             * @brief Static or announced peer prefix route entry.
+             *
+             * Static client routes set @c via to the gateway peer virtual IPv4.
+             * Gateway peers omit @c via and only publish @c network/@c prefix.
+             */
+            struct PeerPrefixRouteConfiguration final {
+                ppp::string                                                 network; ///< Prefix network, e.g. "10.0.0.0".
+                int                                                         prefix = 0; ///< Prefix length, e.g. 24.
+                ppp::string                                                 via;     ///< Gateway peer virtual IPv4, e.g. "10.1.0.2"; empty for announce-only.
+            };
+
+            /**
              * @brief Structured DNS server entry with multi-protocol metadata.
              *
              * Describes a single upstream DNS server with its connection
@@ -223,6 +235,10 @@ namespace ppp {
                     ppp::string                                     network;     ///< IPv4 network address (e.g. "10.0.0.0").
                     ppp::string                                     mask;        ///< IPv4 subnet mask (e.g. "255.255.255.0").
                 }                                                           ipv4_pool;
+                struct {
+                    bool                                                    enabled;    ///< Enable peer prefix routing on the server.
+                    bool                                                    distribute; ///< Push route snapshots to all connected clients.
+                }                                                           peer_routing;
             }                                                               server;         ///< Server-mode specific parameters.
             struct {
                 ppp::string                                                 guid;           ///< Client GUID string used for authentication and session tracking.
@@ -239,6 +255,9 @@ namespace ppp {
 #endif
                 ppp::vector<MappingConfiguration>                           mappings;       ///< List of static port mapping rules activated on connect.
                 ppp::vector<RouteConfiguration>                             routes;         ///< List of route sources imported after tunnel establishment.
+                ppp::vector<PeerPrefixRouteConfiguration>                   peer_routes;    ///< Static peer-gateway routes installed on connect.
+                ppp::vector<PeerPrefixRouteConfiguration>                   peer_route_announce; ///< Prefixes this client advertises as a gateway.
+                bool                                                        peer_gateway_forward = false; ///< Forward received remote-prefix packets to the local LAN.
                 struct {
                     int                                                     port;           ///< HTTP proxy listen port; 0 disables the local HTTP proxy.
                     ppp::string                                             bind;           ///< HTTP proxy bind address; empty = loopback only.

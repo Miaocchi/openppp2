@@ -1458,6 +1458,117 @@ namespace ppp {
 
 #endif
 
+            void VEthernetNetworkSwitcher::ClearPeerPrefixRoutes() noexcept {
+                for (const auto& route : applied_peer_prefix_routes_) {
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                    DeleteRoute(route.Destination, route.NextHop, route.Prefix);
+#endif
+                }
+                applied_peer_prefix_routes_.clear();
+                if (NULLPTR != peer_prefix_rib_) {
+                    peer_prefix_rib_->Clear();
+                }
+                if (NULLPTR != peer_prefix_fib_) {
+                    peer_prefix_fib_->Clear();
+                }
+                peer_prefix_rib_ = NULLPTR;
+                peer_prefix_fib_ = NULLPTR;
+            }
+
+            bool VEthernetNetworkSwitcher::ApplyPeerPrefixRoutes(const VirtualEthernetInformationExtensions& extensions) noexcept {
+                if (proxy_only_) {
+                    return false;
+                }
+
+                std::shared_ptr<ppp::tap::ITap> tap = GetTap();
+                if (NULLPTR == tap) {
+                    return false;
+                }
+
+                ClearPeerPrefixRoutes();
+
+                RouteInformationTablePtr rib = make_shared_object<RouteInformationTable>();
+                if (NULLPTR == rib) {
+                    return false;
+                }
+
+                const auto& dynamic_routes = extensions.PeerRouteTable.HasAny()
+                    ? extensions.PeerRouteTable.routes
+                    : dynamic_peer_routes_;
+
+                auto install_route = [&](const ppp::app::protocol::PeerPrefixRouteEntry& route) -> bool {
+                    if (!route.HasVia()) {
+                        return false;
+                    }
+
+                    if (route.prefix <= 0 || route.prefix > net::native::MAX_PREFIX_VALUE_V4) {
+                        return false;
+                    }
+
+                    uint32_t network = route.NetworkHost();
+                    uint32_t via = route.ViaHost();
+                    if (network == 0 || via == 0) {
+                        return false;
+                    }
+
+                    if (via == tap->IPAddress) {
+                        return false;
+                    }
+
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                    if (!AddRoute(network, via, route.prefix)) {
+                        return false;
+                    }
+#endif
+
+                    if (!rib->AddRoute(network, route.prefix, via)) {
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                        DeleteRoute(network, via, route.prefix);
+#endif
+                        return false;
+                    }
+
+                    net::native::RouteEntry entry;
+                    entry.Destination = network;
+                    entry.Prefix = route.prefix;
+                    entry.NextHop = via;
+                    applied_peer_prefix_routes_.emplace_back(entry);
+                    return true;
+                };
+
+                bool any = false;
+                if (NULLPTR != configuration_) {
+                    for (const auto& route : configuration_->client.peer_routes) {
+                        ppp::app::protocol::PeerPrefixRouteEntry entry;
+                        entry.network = route.network;
+                        entry.prefix = route.prefix;
+                        entry.via = route.via;
+                        any |= install_route(entry);
+                    }
+                }
+
+                for (const auto& route : dynamic_routes) {
+                    any |= install_route(route);
+                }
+
+                if (any) {
+                    ForwardInformationTablePtr fib = make_shared_object<ForwardInformationTable>();
+                    if (NULLPTR != fib) {
+                        fib->Fill(*rib);
+                        if (fib->IsAvailable()) {
+                            peer_prefix_rib_ = rib;
+                            peer_prefix_fib_ = fib;
+                        }
+                    }
+
+                    ppp::telemetry::Log(Level::kInfo, "client", "peer prefix routes applied: static+dynamic count=%zu",
+                        applied_peer_prefix_routes_.size());
+                    ppp::telemetry::Count("client.peer_routes.applied", 1);
+                }
+
+                return any;
+            }
+
             /** @brief Adapts base information callback to extension-aware overload. */
             bool VEthernetNetworkSwitcher::OnInformation(const std::shared_ptr<VirtualEthernetInformation>& info) noexcept {
                 VirtualEthernetInformationExtensions extensions;
@@ -1574,6 +1685,14 @@ namespace ppp {
                         p2p.candidates.size(),
                         p2p.reason.c_str());
                     ppp::telemetry::Count("p2p.control", 1);
+                }
+
+                if (extensions.PeerRouteTable.HasAny()) {
+                    dynamic_peer_routes_ = extensions.PeerRouteTable.routes;
+                    ApplyPeerPrefixRoutes(extensions);
+                }
+                elif (!configuration_->client.peer_routes.empty()) {
+                    ApplyPeerPrefixRoutes(extensions);
                 }
 
                 std::shared_ptr<ppp::transmissions::ITransmissionQoS> qos = qos_;
@@ -2539,6 +2658,7 @@ namespace ppp {
 
             /** @brief Removes VPN route entries and restores system defaults. */
             void VEthernetNetworkSwitcher::DeleteRoute() noexcept {
+                ClearPeerPrefixRoutes();
                 ppp::telemetry::Log(Level::kDebug, "client", "route delete");
                 ppp::telemetry::Count("client.route.delete", 1);
 #if defined(_WIN32)
@@ -3218,6 +3338,8 @@ namespace ppp {
                     UnixNetworkInterface::SetDnsResolveConfiguration(GetUnderlyingNetworkInterface());
 #endif
                 }
+
+                ClearPeerPrefixRoutes();
 
                 // To clean up the managed and unmanaged data currently held by the class,
                 // You need to go through the complete construct fill process again after the Release of this function.

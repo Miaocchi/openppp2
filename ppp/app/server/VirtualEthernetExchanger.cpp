@@ -325,6 +325,7 @@ namespace ppp {
                 if (switcher_) {
                     switcher_->DeleteIPv6Exchanger(GetId());
                     switcher_->DeleteP2PPeer(GetId());
+                    switcher_->DeletePeerPrefixGateway(GetId());
                     switcher_->DeleteExchanger(this);
                     switcher_->DeleteNatInformation(this, address_);
 
@@ -417,13 +418,14 @@ namespace ppp {
                 bool has_ipv6_request = request.RequestedIPv6Address.is_v6();
                 bool has_ipv4_request = request.ClientIPv4Req.enabled;
                 bool has_p2p_request = request.P2P.HasAny();
+                bool has_peer_route_request = request.PeerRouteAnnounce.HasAny();
                 bool is_server_response = request.AssignedIPv6Address.is_v6() || request.IPv6StatusCode != VirtualEthernetInformationExtensions::IPv6Status_None;
                 if (is_server_response) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
                     return false;
                 }
 
-                if (!has_ipv6_request && !has_ipv4_request && !has_p2p_request) {
+                if (!has_ipv6_request && !has_ipv4_request && !has_p2p_request && !has_peer_route_request) {
                     return OnInformation(transmission, information.Base, y);
                 }
 
@@ -443,6 +445,15 @@ namespace ppp {
                 if (has_p2p_request) {
                     auto self = std::dynamic_pointer_cast<VirtualEthernetExchanger>(shared_from_this());
                     switcher_->UpdateP2PPeer(self, transmission, request, response);
+                }
+
+                if (has_peer_route_request) {
+                    auto self = std::dynamic_pointer_cast<VirtualEthernetExchanger>(shared_from_this());
+                    switcher_->UpdatePeerRouteAnnounce(self, request, response);
+                }
+
+                if (switcher_->IsPeerRoutingEnabled()) {
+                    switcher_->BuildPeerRouteTableSnapshot(response.PeerRouteTable);
                 }
 
                 // The base info quota/expire fields MUST satisfy the client-side
@@ -1460,17 +1471,27 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                 /** @brief Delivers a packet to the exchanger that owns destination address. */
                 static const auto forward =
                     [](VirtualEthernetSwitcher* switcher, uint32_t source, uint32_t destination, Byte* packet, int packet_length, YieldContext& y) noexcept -> int {
+                        bool via_gateway = false;
                         VES::NatInformationPtr nat = switcher->FindNatInformation(destination);
+                        if (NULLPTR == nat && switcher->IsPeerRoutingEnabled()) {
+                            uint32_t via = switcher->FindGatewayVirtualIPForDestination(destination);
+                            if (via != 0) {
+                                nat = switcher->FindNatInformation(via);
+                                via_gateway = (NULLPTR != nat);
+                            }
+                        }
                         if (NULLPTR == nat) {
                             return 0;
                         }
 
-                        uint32_t mask = nat->SubmaskAddress;
-                        std::shared_ptr<VirtualEthernetExchanger>& exchanger = nat->Exchanger;
-
-                        if ((destination & mask) != (nat->IPAddress & mask)) {
-                            return 0;
+                        if (!via_gateway) {
+                            uint32_t mask = nat->SubmaskAddress;
+                            if ((destination & mask) != (nat->IPAddress & mask)) {
+                                return 0;
+                            }
                         }
+
+                        std::shared_ptr<VirtualEthernetExchanger>& exchanger = nat->Exchanger;
 
                         ITransmissionPtr transmission = exchanger->GetTransmission();
                         if (NULLPTR != transmission) {

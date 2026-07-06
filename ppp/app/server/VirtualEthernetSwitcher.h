@@ -65,7 +65,7 @@ namespace ppp {
              * @note Must be created via `std::make_shared<VirtualEthernetSwitcher>(...)` so
              *       that `shared_from_this()` works from any member function.
              */
-            class VirtualEthernetSwitcher : public std::enable_shared_from_this<VirtualEthernetSwitcher> { 
+            class VirtualEthernetSwitcher : public std::enable_shared_from_this<VirtualEthernetSwitcher> {
                 friend class                                            VirtualEthernetNetworkTcpipConnection;
                 friend class                                            VirtualEthernetExchanger;
                 friend class                                            VirtualEthernetManagedServer;
@@ -152,6 +152,14 @@ namespace ppp {
                 };
                 typedef ppp::unordered_map<Int128, P2PPeerRecord>        P2PPeerTable;
 
+                struct PeerPrefixGatewayRecord {
+                    Int128                                               SessionId = 0;            ///< Session that owns the gateway prefixes.
+                    uint32_t                                             VirtualIP = 0;            ///< Gateway peer virtual IPv4 in network byte order.
+                    ppp::vector<ppp::app::protocol::PeerPrefixRouteEntry> Prefixes;              ///< Prefixes reachable via this gateway peer.
+                    std::weak_ptr<VirtualEthernetExchanger>              Exchanger;                ///< Owning exchanger.
+                };
+                typedef ppp::unordered_map<Int128, PeerPrefixGatewayRecord> PeerPrefixGatewayTable;
+
             private:
                 typedef ppp::cryptography::Ciphertext                   Ciphertext;
                 typedef std::shared_ptr<Ciphertext>                     CiphertextPtr;
@@ -211,7 +219,7 @@ namespace ppp {
                 };
                 typedef std::shared_ptr<
                     VirtualEthernetStaticEchoAllocatedContext>          VirtualEthernetStaticEchoAllocatedContextPtr;
-                typedef ppp::unordered_map<int, 
+                typedef ppp::unordered_map<int,
                     VirtualEthernetStaticEchoAllocatedContextPtr>       VirtualEthernetStaticEchoAllocatedTable;
                 typedef ppp::app::server::VirtualEthernetNamespaceCache VirtualEthernetNamespaceCache;
                 typedef std::shared_ptr<VirtualEthernetNamespaceCache>  VirtualEthernetNamespaceCachePtr;
@@ -786,8 +794,21 @@ namespace ppp {
                 bool                                                    DeleteP2PPeer(const Int128& session_id) noexcept;
                 /** @brief Sends peer endpoint hints to both sides while preserving server relay fallback. */
                 bool                                                    OfferP2PPeerHints(uint32_t source_ip, uint32_t destination_ip, YieldContext& y) noexcept;
+                /** @brief Registers or refreshes peer prefix gateway announcements. */
+                bool                                                    UpdatePeerRouteAnnounce(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, const VirtualEthernetInformationExtensions& request, VirtualEthernetInformationExtensions& response) noexcept;
+                /** @brief Removes prefix gateway state for a disconnected session. */
+                bool                                                    DeletePeerPrefixGateway(const Int128& session_id) noexcept;
+                /** @brief Returns true when server peer prefix routing is enabled. */
+                bool                                                    IsPeerRoutingEnabled() const noexcept;
+                /** @brief Resolves the gateway peer virtual IP for a destination address. */
+                uint32_t                                                FindGatewayVirtualIPForDestination(uint32_t destination) noexcept;
+                /** @brief Fills a peer-route-table snapshot for clients. */
+                void                                                    BuildPeerRouteTableSnapshot(ppp::app::protocol::PeerRouteTableMessage& table, const Int128* exclude_session_id = NULLPTR) noexcept;
+                /** @brief Pushes the current peer-route-table snapshot to all connected clients. */
+                void                                                    BroadcastPeerRouteTable(YieldContext& y) noexcept;
 
             private:
+                void                                                    RebuildPeerPrefixRibLocked() noexcept;
                 template <typename TTransmission>
                 typename std::enable_if<std::is_base_of<ITransmission, TTransmission>::value, std::shared_ptr<TTransmission>/**/>::type
                 /**
@@ -809,7 +830,7 @@ namespace ppp {
                     if (NULLPTR == transmission) {
                         return NULLPTR;
                     }
-                    
+
                     /**
                      * @brief Applies configured websocket host/path only when both are present.
                      */
@@ -832,6 +853,8 @@ namespace ppp {
                 IPv6LeaseTable                                          ipv6_leases_;                   ///< Active IPv6 lease records.
                 P2PPeerTable                                            p2p_peers_;                     ///< P2P control-plane peer records (key = session_id).
                 ppp::unordered_map<uint32_t, Int128>                    p2p_virtual_ips_;               ///< Reverse index: virtual_ip → session_id for dedup and NAT-ownership validation.
+                PeerPrefixGatewayTable                                  peer_prefix_gateways_;          ///< Prefix gateway records keyed by session_id.
+                ppp::net::native::RouteInformationTable                 peer_prefix_rib_;               ///< Prefix → gateway virtual IP lookup table.
                 ppp::p2p::P2PNatClassifier                              p2p_nat_classifier_;            ///< Server-side NAT type inference from relay traffic.
                 FirewallPtr                                             firewall_;                      ///< Packet firewall.
                 VirtualEthernetExchangerTable                           exchangers_;                    ///< Active session exchangers (key = session_id).

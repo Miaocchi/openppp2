@@ -1,5 +1,6 @@
 package supersocksr.ppp.android.c
 
+import supersocksr.ppp.android.NativeTelemetryTransport
 import supersocksr.ppp.android.PppVpnService
 
 /**
@@ -55,7 +56,24 @@ class libopenppp2 {
             return true
         }
 
+        /**
+         * Called from native C++ telemetry OTLP exporter (bounded queue).
+         */
+        @JvmStatic
+        fun telemetryHttpPost(url: String, body: ByteArray): Boolean {
+            return NativeTelemetryTransport.enqueuePost(url, body)
+        }
+
         // ========== Native methods ==========
+
+        @JvmStatic
+        external fun installNativeTelemetryHttpPost()
+
+        @JvmStatic
+        external fun setNativeTelemetryResourceAttribute(key: String, value: String)
+
+        @JvmStatic
+        external fun clearNativeTelemetryResourceAttributes()
 
         @JvmStatic
         external fun get_default_ciphersuites(): String?

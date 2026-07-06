@@ -9,6 +9,7 @@
 #include <ppp/ssl/SSL.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
+#include <ppp/net/native/rib.h>
 #include <ppp/ipv6/IPv6Packet.h>
 #include <ppp/net/http/HttpClient.h>
 #include <ppp/auxiliary/JsonAuxiliary.h>
@@ -346,6 +347,8 @@ namespace ppp {
             config.server.ipv4_pool.configured = false;
             config.server.ipv4_pool.network = "";
             config.server.ipv4_pool.mask = "";
+            config.server.peer_routing.enabled = false;
+            config.server.peer_routing.distribute = true;
 
             config.client.mappings.clear();
             config.client.guid = StringAuxiliary::Int128ToGuidString(MAKE_OWORD(UINT64_MAX, UINT64_MAX));
@@ -360,6 +363,9 @@ namespace ppp {
             config.client.socks_proxy.password = "";
             config.client.socks_proxy.username = "";
             config.client.proxy_only = false;
+            config.client.peer_routes.clear();
+            config.client.peer_route_announce.clear();
+            config.client.peer_gateway_forward = false;
 #if defined(_WIN32)
             config.client.paper_airplane.tcp = true;
 #endif
@@ -1333,6 +1339,31 @@ namespace ppp {
             return true;
         }
 
+        static bool ReadJsonToPeerPrefixRoute(AppConfiguration::PeerPrefixRouteConfiguration& route, const Json::Value& json) noexcept {
+            if (!json.isObject()) {
+                return false;
+            }
+
+            route.network = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["network"])));
+            route.prefix = static_cast<int>(JsonAuxiliary::AsInt64(json["prefix"], 0));
+            route.via = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["via"])));
+            return !route.network.empty() && route.prefix > 0 && route.prefix <= ppp::net::native::MAX_PREFIX_VALUE_V4;
+        }
+
+        static void LoadAllPeerPrefixRoutes(ppp::vector<AppConfiguration::PeerPrefixRouteConfiguration>& routes, const Json::Value& json) noexcept {
+            routes.clear();
+            if (!json.isArray()) {
+                return;
+            }
+
+            for (const auto& item : json) {
+                AppConfiguration::PeerPrefixRouteConfiguration route;
+                if (ReadJsonToPeerPrefixRoute(route, item)) {
+                    routes.emplace_back(std::move(route));
+                }
+            }
+        }
+
         /**
          * @brief Parses one route configuration object.
          * @param route Output route object.
@@ -1714,8 +1745,19 @@ namespace ppp {
                 }
             }
 
+            {
+                const Json::Value& peer_routing_json = json["server"]["peer-routing"];
+                if (peer_routing_json.isObject()) {
+                    AssignBoolIfPresent(config.server.peer_routing.enabled, peer_routing_json["enabled"]);
+                    AssignBoolIfPresent(config.server.peer_routing.distribute, peer_routing_json["distribute"]);
+                }
+            }
+
             LoadAllMappings(config, json["client"]["mappings"]);
             LoadAllRoutes(config.client.routes, json["client"]["routes"]);
+            LoadAllPeerPrefixRoutes(config.client.peer_routes, json["client"]["peer-routes"]);
+            LoadAllPeerPrefixRoutes(config.client.peer_route_announce, json["client"]["peer-route-announce"]);
+            AssignBoolIfPresent(config.client.peer_gateway_forward, json["client"]["peer-gateway-forward"]);
 
             config.client.reconnections.timeout = JsonAuxiliary::AsValue<int>(json["client"]["reconnections"]["timeout"]);
             config.client.guid = JsonAuxiliary::AsValue<ppp::string>(json["client"]["guid"]);
@@ -2045,6 +2087,13 @@ namespace ppp {
                 ipv4_pool["mask"]    = config.server.ipv4_pool.mask;
                 server["ipv4-pool"] = ipv4_pool;
             }
+
+            if (config.server.peer_routing.enabled) {
+                Json::Value peer_routing;
+                peer_routing["enabled"] = config.server.peer_routing.enabled;
+                peer_routing["distribute"] = config.server.peer_routing.distribute;
+                server["peer-routing"] = peer_routing;
+            }
             root["server"] = server;
 
             // Set client structure
@@ -2072,6 +2121,27 @@ namespace ppp {
                 jo["vbgp"] = route.vbgp;
                 routes.append(jo);
             }
+
+            Json::Value& peer_routes = client["peer-routes"];
+            for (const PeerPrefixRouteConfiguration& route : config.client.peer_routes) {
+                Json::Value jo;
+                jo["network"] = route.network;
+                jo["prefix"] = route.prefix;
+                if (!route.via.empty()) {
+                    jo["via"] = route.via;
+                }
+                peer_routes.append(jo);
+            }
+
+            Json::Value& peer_route_announce = client["peer-route-announce"];
+            for (const PeerPrefixRouteConfiguration& route : config.client.peer_route_announce) {
+                Json::Value jo;
+                jo["network"] = route.network;
+                jo["prefix"] = route.prefix;
+                peer_route_announce.append(jo);
+            }
+
+            client["peer-gateway-forward"] = config.client.peer_gateway_forward;
 
             client["http-proxy"]["bind"] = config.client.http_proxy.bind;
             client["http-proxy"]["port"] = config.client.http_proxy.port;

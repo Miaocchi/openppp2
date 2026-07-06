@@ -2,9 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/profile_store.dart';
+import '../services/telemetry_settings_store.dart';
 import '../services/theme_controller.dart';
 import '../vpn_service.dart';
+import '../widgets/app_section_card.dart';
 import '../widgets/debug_panel.dart';
+import 'options_advanced_page.dart';
+import 'telemetry_settings_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -19,6 +23,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   bool _debugPanelEnabled = false;
   bool _loading = true;
+  bool _telemetryUploadEnabled = false;
   VpnState _state = VpnState.disconnected;
   String _debugLog = '';
   String _logPath = '';
@@ -38,9 +43,11 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _load() async {
     final enabled = await _store.getDebugPanelEnabled();
+    final telemetry = await TelemetrySettingsStore().settings();
     if (!mounted) return;
     setState(() {
       _debugPanelEnabled = enabled;
+      _telemetryUploadEnabled = telemetry.uploadEnabled;
       _loading = false;
     });
     if (enabled) {
@@ -100,6 +107,35 @@ class _SettingsPageState extends State<SettingsPage> {
     await _refresh();
   }
 
+  Future<void> _confirmResetProfiles() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清空配置文件'),
+        content: const Text('这会删除所有本地配置并恢复默认空白配置。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _store.resetAll();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('配置文件已重置')),
+    );
+  }
+
   String _stateText() {
     switch (_state) {
       case VpnState.connected:
@@ -123,60 +159,129 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    if (_loading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('设置'),
         centerTitle: true,
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const AppSectionHeader('应用'),
+          Card(
+            child: Column(
               children: [
-                Card(
-                  child: Column(
-                    children: [
-                      ListTile(
-                        leading: const Icon(Icons.info_outline_rounded),
-                        title: const Text('OPENPPP2'),
-                        subtitle: const Text('Android Client · v1.0.0'),
-                      ),
-                      const Divider(height: 0),
-                      _ThemeModeTile(),
-                      const Divider(height: 0),
-                      SwitchListTile(
-                        secondary: const Icon(Icons.bug_report_outlined),
-                        value: _debugPanelEnabled,
-                        title: const Text('显示调试面板'),
-                        subtitle: const Text('在主页和此页显示日志/状态/停止按钮'),
-                        onChanged: _setDebugPanel,
-                      ),
-                    ],
-                  ),
+                const ListTile(
+                  leading: Icon(Icons.info_outline_rounded),
+                  title: Text('OPENPPP2'),
+                  subtitle: Text('Android Client'),
                 ),
-                const SizedBox(height: 12),
-                if (_debugPanelEnabled)
-                  DebugPanel(
-                    stateText: _stateText(),
-                    logPath: _logPath,
-                    logText: _debugLog,
-                    onRefresh: _refresh,
-                    onCopy: _copyLog,
-                    onClear: _clearLog,
-                    onStop: _stopVpn,
+                const Divider(height: 0),
+                _ThemeModeTile(),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          const AppSectionHeader('调试'),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  secondary: const Icon(Icons.bug_report_outlined),
+                  value: _debugPanelEnabled,
+                  title: const Text('调试面板'),
+                  subtitle: const Text('在主页显示运行日志与诊断信息'),
+                  onChanged: _setDebugPanel,
+                ),
+                const Divider(height: 0),
+                ListTile(
+                  leading: const Icon(Icons.analytics_outlined),
+                  title: const Text('遥测'),
+                  subtitle: Text(
+                    _telemetryUploadEnabled ? '已开启上传' : '未开启',
                   ),
-                const SizedBox(height: 16),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Text(
-                    '配置文件请在「配置文件」页面中编辑，启动参数请在「启动参数」页面中编辑。',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () async {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const TelemetrySettingsPage(),
+                      ),
+                    );
+                    final telemetry = await TelemetrySettingsStore().settings();
+                    if (!mounted) return;
+                    setState(
+                      () => _telemetryUploadEnabled = telemetry.uploadEnabled,
+                    );
+                  },
+                ),
+                const Divider(height: 0),
+                ListTile(
+                  leading: const Icon(Icons.refresh_rounded),
+                  title: const Text('刷新 VPN 状态'),
+                  subtitle: Text(_stateText()),
+                  onTap: _refresh,
+                ),
+                const Divider(height: 0),
+                ListTile(
+                  leading: const Icon(Icons.tune_rounded),
+                  title: const Text('高级启动参数'),
+                  subtitle: const Text('分应用代理、Geo 规则生成器等 Android 扩展项'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const OptionsAdvancedPage(),
+                      ),
+                    );
+                  },
                 ),
               ],
             ),
+          ),
+          if (_debugPanelEnabled) ...[
+            const SizedBox(height: 12),
+            DebugPanel(
+              stateText: _stateText(),
+              logPath: _logPath,
+              logText: _debugLog,
+              onRefresh: _refresh,
+              onCopy: _copyLog,
+              onClear: _clearLog,
+              onStop: _stopVpn,
+            ),
+          ],
+          const SizedBox(height: 12),
+          const AppSectionHeader('危险操作'),
+          Card(
+            child: ListTile(
+              leading: Icon(Icons.delete_forever_outlined,
+                  color: theme.colorScheme.error),
+              title: Text(
+                '清空配置文件',
+                style: TextStyle(color: theme.colorScheme.error),
+              ),
+              subtitle: const Text('恢复默认空白配置'),
+              onTap: _confirmResetProfiles,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Text(
+              '常规启动参数请在「启动参数」页编辑；配置文件请在「配置文件」页管理。',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

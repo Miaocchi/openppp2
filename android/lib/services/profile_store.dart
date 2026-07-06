@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/config_profile.dart';
 import '../models/remote_subscription.dart';
+import '../models/telemetry_settings.dart';
 import '../utils/server_endpoint.dart';
 
 /// Persistent store for the list of config profiles (locations) plus
@@ -209,7 +210,13 @@ class ProfileStore {
   /// the resulting JSON string. This is what should be passed to the native
   /// engine via `set_app_configuration` so each profile can carry its own
   /// AppConfiguration tuning without forcing users to hand-edit raw JSON.
-  static String effectiveJson(String profileJson, Map<String, dynamic> options) {
+  /// [telemetry] when provided, merges native telemetry settings into the JSON
+  /// block consumed by `set_app_configuration` (aligned with iOS ProfileStore).
+  static String effectiveJson(
+    String profileJson,
+    Map<String, dynamic> options, {
+    TelemetrySettings telemetry = TelemetrySettings.disabled,
+  }) {
     Map<String, dynamic> root;
     try {
       final decoded = jsonDecode(profileJson);
@@ -335,6 +342,9 @@ class ProfileStore {
       client['socks-proxy'] = sp;
       root['client'] = client;
     }
+
+    // ---- telemetry block (native engine OTLP) ----
+    root['telemetry'] = TelemetrySettings.appConfigurationBlock(telemetry);
 
     return const JsonEncoder.withIndent('  ').convert(root);
   }
@@ -659,6 +669,19 @@ class ProfileStore {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_debugPanelKey, value);
     _emit();
+  }
+
+  /// Delete all profiles and restore a single default blank profile.
+  Future<void> resetAll() async {
+    final prefs = await SharedPreferences.getInstance();
+    final seed = ConfigProfile(
+      id: _newId(),
+      name: 'Default',
+      json: defaultJson,
+    );
+    await _writeProfiles(prefs, [seed]);
+    await prefs.setString(_activeIdKey, seed.id);
+    await prefs.remove(_optionsKey);
   }
 
   static String _newId() {

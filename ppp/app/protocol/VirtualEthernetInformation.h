@@ -7,6 +7,7 @@
 #pragma once
 
 #include <ppp/stdafx.h>
+#include <ppp/app/protocol/PeerPrefixRoute.h>
 #include <ppp/auxiliary/JsonAuxiliary.h>
 #include <ppp/net/IPEndPoint.h>
 
@@ -279,6 +280,12 @@ namespace ppp {
 
                 /** @brief Optional P2P control-plane message. */
                 P2PControlMessage                                   P2P;
+
+                /** @brief Client prefix announcement for site-to-site gateway routing. */
+                PeerRouteAnnounceMessage                            PeerRouteAnnounce;
+
+                /** @brief Server prefix routing snapshot for clients. */
+                PeerRouteTableMessage                               PeerRouteTable;
 
                 /** @brief Detailed IPv6 provisioning outcomes.
                  *

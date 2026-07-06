@@ -16,10 +16,11 @@ void main() {
     await tester.pumpWidget(const OpenPPP2App());
 
     // Verify that the home tab renders the current connection state and shell.
-    expect(find.text('Not Connected'), findsOneWidget);
+    expect(find.text('未连接'), findsOneWidget);
     expect(find.text('主页'), findsOneWidget);
     expect(find.text('启动参数'), findsOneWidget);
-    expect(find.text('配置文件'), findsOneWidget);
     expect(find.text('设置'), findsOneWidget);
+    // Bottom nav + home embedded profile section both use this label.
+    expect(find.text('配置文件'), findsNWidgets(2));
   });
 }

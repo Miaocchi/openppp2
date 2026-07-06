@@ -2,10 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/config_profile.dart';
+import '../models/launch_route_mode.dart';
 import '../services/profile_store.dart';
+import '../services/telemetry_settings_store.dart';
 import '../vpn_service.dart';
 import '../widgets/debug_panel.dart';
-import 'select_profile_page.dart';
+import '../widgets/profile_ui.dart';
+import 'profile_edit_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -20,16 +23,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   VpnState _state = VpnState.disconnected;
   VpnStatistics _stats = const VpnStatistics();
+  List<ConfigProfile> _profiles = const [];
   ConfigProfile? _active;
+  Map<String, dynamic> _launchOptions = Map<String, dynamic>.from(
+    ProfileStore.defaultOptions,
+  );
   DateTime? _connectedAt;
   String _duration = '00:00:00';
   String? _lastError;
   bool _debugPanelEnabled = false;
   String _debugLog = '';
   String _logPath = '';
-  int _linkState = 6; // APP_UNINIT
-  Timer? _linkPollTimer;
+  int _linkState = 6;
 
+  Timer? _linkPollTimer;
   Timer? _durationTimer;
   Timer? _connectWatchdogTimer;
   Timer? _statePollTimer;
@@ -48,8 +55,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _vpnService.init();
     _stateSub = _vpnService.stateStream.listen(_applyState);
     _statsSub = _vpnService.statsStream.listen((stats) {
-      // Statistics no longer flip the UI to "connected" on their own:
-      // upstream advice is to rely on get_link_state() ESTABLISHED.
       if (!mounted) return;
       setState(() => _stats = stats);
     });
@@ -59,9 +64,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() => _lastError = error);
       unawaited(_showErrorDialog(error));
     });
-    _storeSub = _store.changes.listen((_) => _refreshActive());
+    _storeSub = _store.changes.listen((_) => _refreshStore());
 
-    unawaited(_refreshActive());
+    unawaited(_refreshStore());
     unawaited(_refreshStartupState());
     unawaited(_loadDebugPanelEnabled());
 
@@ -75,9 +80,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         unawaited(_refreshStatistics());
       }
     });
-    // Real link-state poller (1s). Drives the connecting->connected flip and
-    // catches the case where the service thinks it's connected but the
-    // tunnel never established.
     _linkPollTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_state == VpnState.disconnected || _state == VpnState.disconnecting) {
         if (_linkState != 6) setState(() => _linkState = 6);
@@ -87,19 +89,34 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
+  Future<void> _refreshStore() async {
+    final profiles = await _store.getProfiles();
+    final active = await _store.getActive();
+    Map<String, dynamic> options = Map<String, dynamic>.from(
+      ProfileStore.defaultOptions,
+    );
+    if (active != null) {
+      options = await _store.getProfileOptions(active.id);
+    }
+    if (!mounted) return;
+    setState(() {
+      _profiles = profiles;
+      _active = active;
+      _launchOptions = options;
+    });
+  }
+
   Future<void> _refreshLinkState() async {
     final ls = await _vpnService.getLinkState();
     if (!mounted) return;
     final wasEstablished = _linkState == 0;
     setState(() => _linkState = ls);
     if (ls == 0) {
-      // ESTABLISHED → real connected
       if (_state != VpnState.connected) {
         _connectWatchdogTimer?.cancel();
         _applyState(VpnState.connected);
       }
     } else if (wasEstablished && _state == VpnState.connected) {
-      // Tunnel was established but dropped (UNKNOWN/RECONNECTING/CONNECTING etc.)
       _applyState(VpnState.connecting);
       _connectedAt = null;
     }
@@ -109,15 +126,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshStartupState());
-      unawaited(_refreshActive());
+      unawaited(_refreshStore());
       unawaited(_loadDebugPanelEnabled());
     }
-  }
-
-  Future<void> _refreshActive() async {
-    final p = await _store.getActive();
-    if (!mounted) return;
-    setState(() => _active = p);
   }
 
   Future<void> _loadDebugPanelEnabled() async {
@@ -167,9 +178,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _applyState(VpnState state) {
     if (!mounted) return;
-    // Upstream guidance: the service can report "connected" before the link is
-    // actually established; only flip to Connected when get_link_state()
-    // reports ESTABLISHED (0). Otherwise stay in Connecting.
     var effective = state;
     if (state == VpnState.connected && _linkState != 0) {
       effective = VpnState.connecting;
@@ -221,24 +229,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (profile == null || profile.json.trim().isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先在「配置文件」页中添加并选择一个配置')),
+        const SnackBar(content: Text('请先添加并选择一个配置')),
       );
-      _openSelectProfile();
       return;
     }
     try {
       await _vpnService.clearLog();
-      // Per-profile launch options: each profile carries its own DNS / Geo
-      // bypass / TUN parameters. Falls back to legacy global options if a
-      // profile predates the per-profile feature.
       final options = await _store.getProfileOptions(profile.id);
-      // NOTE: `autoAppendApps` is a *system* HTTP proxy toggle (handled by
-      // PppVpnService via VpnService.Builder.setHttpProxy), not a "merge all
-      // installed apps into the per-app whitelist" flag -- doing the latter
-      // would silently break user-configured app splitting.
-      // Splice options.dnsConfig / options.geoRules into the AppConfiguration
-      // JSON so the native engine receives the user's friendly form values.
-      final mergedJson = ProfileStore.effectiveJson(profile.json, options);
+      final telemetry = await TelemetrySettingsStore().settings();
+      final mergedJson = ProfileStore.effectiveJson(
+        profile.json,
+        options,
+        telemetry: telemetry,
+      );
       await _vpnService.connect(mergedJson, vpnOptions: options);
       _startConnectWatchdog();
     } catch (e) {
@@ -249,14 +252,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  // Heartbeat-based watchdog. The native engine can legitimately take
-  // 60+s before issuing onStarted when geo-rules are enabled (parsing
-  // GeoIP.dat / GeoSite.dat is synchronous on the run() thread). The
-  // file log doesn't grow during that window either, so a fixed timer
-  // OR a log-growth timer would both mis-fire. Instead we trust the
-  // link-state-poller heartbeat in :vpn (writes once a second). As
-  // long as that heartbeat is fresh, the engine is alive and we keep
-  // waiting. _connectMaxSeconds caps the total wait.
   static const int _connectMaxSeconds = 180;
 
   void _startConnectWatchdog() {
@@ -269,7 +264,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         return;
       }
       final log = await _vpnService.readLog();
-      // Already connected? bail out cleanly.
       if (log.contains('onStarted key=') ||
           log.contains('VPN started with key=') ||
           log.contains('statistics=')) {
@@ -278,16 +272,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _applyState(VpnState.connected);
         return;
       }
-      // Liveness signal: :vpn writes the link-state file once a second.
-      // If the heartbeat is fresh (<5s) we assume the engine is still
-      // making progress -- even when log/link-state values stay the same
-      // (e.g. blocked inside open_switcher parsing GeoIP.dat for ~60s).
       final hbAgeMs = await _vpnService.getVpnHeartbeatAgeMs();
       final hbStale = hbAgeMs < 0 || hbAgeMs > 8000;
       final totalSec = DateTime.now().difference(startedAt).inSeconds;
-      if (!hbStale && totalSec < _connectMaxSeconds) {
-        return; // engine alive, keep waiting
-      }
+      if (!hbStale && totalSec < _connectMaxSeconds) return;
       timer.cancel();
       final hasRunCalled = log.contains('vpnThread started');
       final reason = totalSec >= _connectMaxSeconds
@@ -388,29 +376,69 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() => _state = VpnState.disconnected);
   }
 
-  Future<void> _openSelectProfile() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const SelectProfilePage()),
+  Future<void> _applyProfile(ConfigProfile profile) async {
+    if (profile.id == _active?.id) return;
+    await _store.setActive(profile.id);
+    await _refreshStore();
+    if (!mounted) return;
+    if (_state == VpnState.connected || _state == VpnState.connecting) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已切换到「${profile.name}」，重连后生效')),
+      );
+    }
+  }
+
+  Future<void> _editProfile(ConfigProfile profile) async {
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => ProfileEditPage(profile: profile)),
     );
-    if (mounted) await _refreshActive();
+    if (ok == true) await _refreshStore();
+  }
+
+  Future<void> _addProfile() async {
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const ProfileEditPage()),
+    );
+    if (ok == true) await _refreshStore();
+  }
+
+  Future<void> _togglePin(ConfigProfile profile) async {
+    await _store.toggleFavorite(profile.id);
+    await _refreshStore();
+  }
+
+  Future<void> _updateLaunchOption(
+    Map<String, dynamic> Function(Map<String, dynamic>) mutate,
+  ) async {
+    final active = _active;
+    if (active == null) return;
+    final next = mutate(Map<String, dynamic>.from(_launchOptions));
+    if (mapEquals(next, _launchOptions)) return;
+    await _store.setProfileOptions(active.id, next);
+    if (!mounted) return;
+    setState(() => _launchOptions = next);
+    if (_state == VpnState.connected || _state == VpnState.connecting) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('快捷设置已保存，重连后生效')),
+      );
+    }
   }
 
   String _connectingLabel() {
+    if (!_debugPanelEnabled) return '连接中...';
     switch (_linkState) {
-      case 0:
-        return 'Connecting...'; // shouldn't reach here
       case 4:
-        return 'Reconnecting...';
+        return '重连中...';
       case 5:
-        return 'Handshaking...';
+        return '握手中...';
       case 2:
-        return 'Initializing client...';
+        return '初始化客户端...';
       case 3:
-        return 'Initializing exchanger...';
+        return '初始化交换器...';
       case 6:
-        return 'Starting engine...';
+        return '启动引擎...';
       default:
-        return 'Connecting...';
+        return '连接中...';
     }
   }
 
@@ -426,6 +454,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         return '未连接';
     }
   }
+
+  bool get _isActive => _state == VpnState.connected;
+  bool get _isBusy =>
+      _state == VpnState.connecting || _state == VpnState.disconnecting;
 
   @override
   void dispose() {
@@ -446,117 +478,103 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isActive = _state == VpnState.connected;
-    final isBusy =
-        _state == VpnState.connecting || _state == VpnState.disconnecting;
-
-    final accent = isActive
-        ? const Color(0xFF22C55E) // green when on
-        : const Color(0xFFEF4444); // red when off
-    final accentSoft = accent.withValues(alpha: 0.12);
-    final accentSofter = accent.withValues(alpha: 0.06);
+    final isActive = _isActive;
+    final isBusy = _isBusy;
+    final isVpnLive = isActive || isBusy;
 
     final statusTitle = isActive
-        ? 'Connected'
+        ? '已连接'
         : (_state == VpnState.connecting
             ? _connectingLabel()
-            : (_state == VpnState.disconnecting ? 'Disconnecting...' : 'Not Connected'));
+            : (_state == VpnState.disconnecting ? '断开中...' : '未连接'));
+    final statusDetail = isActive
+        ? _duration
+        : (isBusy ? 'VPN 正在启动' : '准备连接');
+
+    final routeMode = LaunchRouteMode.fromOptions(_launchOptions);
+
     return Scaffold(
-      backgroundColor: theme.scaffoldBackgroundColor,
+      appBar: AppBar(
+        title: const Text('OPENPPP2'),
+        centerTitle: true,
+      ),
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
-            _buildHeader(theme),
-            const SizedBox(height: 8),
-            Center(
-              child: _RadialPowerButton(
-                color: accent,
-                softColor: accentSoft,
-                softerColor: accentSofter,
-                isBusy: isBusy,
-                onTap: _state == VpnState.disconnecting ? null : _toggleConnection,
-                isOn: isActive,
-              ),
+            HomeStatusCard(
+              statusText: statusTitle,
+              detailText: statusDetail,
+              isConnected: isActive,
+              isBusy: isBusy,
+              buttonLabel: isVpnLive ? '停止' : '连接',
+              buttonEnabled: _state != VpnState.disconnecting,
+              uploadText: _formatSpeed(_stats.txSpeedBytes),
+              downloadText: _formatSpeed(_stats.rxSpeedBytes),
+              allowLan: _launchOptions['allowLan'] == true,
+              blockQuic: _launchOptions['blockQuic'] == true,
+              routeMode: routeMode,
+              onConnect: _toggleConnection,
+              onAllowLanChanged: _active == null
+                  ? null
+                  : (v) => _updateLaunchOption((o) {
+                        o['allowLan'] = v;
+                        return o;
+                      }),
+              onBlockQuicChanged: _active == null
+                  ? null
+                  : (v) => _updateLaunchOption((o) {
+                        o['blockQuic'] = v;
+                        return o;
+                      }),
+              onRouteModeChanged: _active == null
+                  ? null
+                  : (mode) => _updateLaunchOption(
+                        (o) => LaunchRouteMode.applyTo(o, mode),
+                      ),
             ),
-            const SizedBox(height: 18),
-            Center(
-              child: Text(
-                statusTitle,
-                style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Center(
-              child: RichText(
-                text: TextSpan(
-                  style: theme.textTheme.bodyMedium?.copyWith(
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Text(
+                  '配置文件',
+                  style: theme.textTheme.titleSmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w700,
                   ),
-                  children: [
-                    const TextSpan(text: 'VPN is '),
-                    TextSpan(
-                      text: isActive ? 'ON' : 'OFF',
-                      style: TextStyle(
-                        color: isActive ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
-                        fontWeight: FontWeight.w800,
+                ),
+                const Spacer(),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.add_circle_outline),
+                  tooltip: '添加配置',
+                  onSelected: (value) {
+                    if (value == 'new') _addProfile();
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'new',
+                      child: ListTile(
+                        leading: Icon(Icons.add_rounded),
+                        title: Text('新增配置'),
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
                       ),
                     ),
                   ],
                 ),
-              ),
+              ],
             ),
-            if (isActive) ...[
-              const SizedBox(height: 6),
-              Center(
-                child: Text(
-                  _duration,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontFeatures: [const FontFeature.tabularFigures()],
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 24),
-            Padding(
-              padding: const EdgeInsets.only(left: 4, bottom: 8),
-              child: Text(
-                isActive ? 'Connected to' : 'Connect to',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
+            const SizedBox(height: 6),
+            GroupedProfileList(
+              profiles: _profiles,
+              activeId: _active?.id,
+              shrinkWrap: true,
+              maxHeight: MediaQuery.sizeOf(context).height * 0.38,
+              onTap: _applyProfile,
+              onApply: _applyProfile,
+              onEdit: _editProfile,
+              onTogglePin: _togglePin,
             ),
-            _buildLocationCard(theme, isActive),
-            if (isActive) ...[
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: _StatCard(
-                      icon: Icons.arrow_upward_rounded,
-                      label: '上行',
-                      value: _formatSpeed(_stats.txSpeedBytes),
-                      subtitle: '总 ${_formatBytes(_stats.outBytes)}',
-                      color: const Color(0xFFF59E0B),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _StatCard(
-                      icon: Icons.arrow_downward_rounded,
-                      label: '下行',
-                      value: _formatSpeed(_stats.rxSpeedBytes),
-                      subtitle: '总 ${_formatBytes(_stats.inBytes)}',
-                      color: const Color(0xFF3B82F6),
-                    ),
-                  ),
-                ],
-              ),
-            ],
             if (_lastError != null) ...[
               const SizedBox(height: 12),
               Card(
@@ -589,222 +607,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       ),
     );
   }
-
-  Widget _buildHeader(ThemeData theme) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 4, bottom: 12),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.location_on_rounded, size: 20, color: theme.colorScheme.primary),
-          const SizedBox(width: 6),
-          Text(
-            'OPENPPP2',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w900,
-              letterSpacing: 1.2,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildLocationCard(ThemeData theme, bool isActive) {
-    final p = _active;
-    final name = p?.name ?? 'No profile';
-    final sub = (p?.subtitle.isNotEmpty == true)
-        ? p!.subtitle
-        : (p?.serverEndpoint ?? '点击选择一个配置');
-
-    return Material(
-      color: theme.colorScheme.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: theme.colorScheme.outlineVariant),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: _openSelectProfile,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withValues(alpha: 0.1),
-                  shape: BoxShape.circle,
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  p?.flag.isNotEmpty == true ? p!.flag : '🌐',
-                  style: const TextStyle(fontSize: 20),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      sub,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right_rounded),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
-class _RadialPowerButton extends StatelessWidget {
-  final Color color;
-  final Color softColor;
-  final Color softerColor;
-  final bool isOn;
-  final bool isBusy;
-  final VoidCallback? onTap;
-
-  const _RadialPowerButton({
-    required this.color,
-    required this.softColor,
-    required this.softerColor,
-    required this.isOn,
-    required this.isBusy,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: SizedBox(
-        width: 240,
-        height: 240,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            Container(
-              width: 220,
-              height: 220,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: softerColor,
-              ),
-            ),
-            Container(
-              width: 170,
-              height: 170,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: softColor,
-              ),
-            ),
-            Container(
-              width: 124,
-              height: 124,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: color,
-                boxShadow: [
-                  BoxShadow(
-                    color: color.withValues(alpha: 0.45),
-                    blurRadius: 28,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
-              child: Center(
-                child: isBusy
-                    ? const SizedBox(
-                        width: 42,
-                        height: 42,
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                          strokeWidth: 3,
-                        ),
-                      )
-                    : const Icon(
-                        Icons.power_settings_new_rounded,
-                        color: Colors.white,
-                        size: 56,
-                      ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+bool mapEquals(Map<String, dynamic> a, Map<String, dynamic> b) {
+  if (a.length != b.length) return false;
+  for (final key in a.keys) {
+    if (!b.containsKey(key)) return false;
+    final av = a[key];
+    final bv = b[key];
+    if (av is Map && bv is Map) {
+      if (!mapEquals(
+        Map<String, dynamic>.from(av),
+        Map<String, dynamic>.from(bv),
+      )) {
+        return false;
+      }
+    } else if (av != bv) {
+      return false;
+    }
   }
-}
-
-class _StatCard extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  final String? subtitle;
-  final Color color;
-
-  const _StatCard({
-    required this.icon,
-    required this.label,
-    required this.value,
-    this.subtitle,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          children: [
-            Icon(icon, color: color, size: 22),
-            const SizedBox(height: 4),
-            Text(label, style: theme.textTheme.bodySmall),
-            const SizedBox(height: 4),
-            Text(
-              value,
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-                fontFeatures: [const FontFeature.tabularFigures()],
-              ),
-            ),
-            if (subtitle != null) ...[
-              const SizedBox(height: 2),
-              Text(
-                subtitle!,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                  fontFeatures: [const FontFeature.tabularFigures()],
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
+  return true;
 }

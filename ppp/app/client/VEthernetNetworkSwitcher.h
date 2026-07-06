@@ -612,6 +612,9 @@ namespace ppp {
                  */
                 virtual bool                                                        OnInformation(const std::shared_ptr<VirtualEthernetInformation>& information, const VirtualEthernetInformationExtensions& extensions) noexcept;
 
+                bool                                                        ApplyPeerPrefixRoutes(const VirtualEthernetInformationExtensions& extensions) noexcept;
+                void                                                        ClearPeerPrefixRoutes() noexcept;
+
             protected:
                 /**
                  * @brief Creates the VEthernetExchanger instance for this switcher.
@@ -1058,6 +1061,10 @@ namespace ppp {
                 RouteInformationTablePtr                                            rib_;
                 /** @brief Forward information base derived from the RIB. */
                 ForwardInformationTablePtr                                          fib_;
+                /** @brief Peer-prefix routes kept separate from mobile bypass routing. */
+                RouteInformationTablePtr                                            peer_prefix_rib_;
+                /** @brief Forwarding table derived only from peer-prefix routes. */
+                ForwardInformationTablePtr                                          peer_prefix_fib_;
                 /** @brief vBGP URL-to-path mapping for dynamic route updates. */
                 RouteIPListTablePtr                                                 vbgp_;
                 /** @brief Cached remote server URI string for route exception registration. */
@@ -1122,6 +1129,9 @@ namespace ppp {
                 boost::asio::ip::address                                            static_ipv4_address_;
                 boost::asio::ip::address                                            static_ipv4_gateway_;
                 boost::asio::ip::address                                            static_ipv4_mask_;
+
+                ppp::vector<ppp::app::protocol::PeerPrefixRouteEntry>               dynamic_peer_routes_;
+                ppp::vector<net::native::RouteEntry>                                applied_peer_prefix_routes_;
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
                 /** @brief Mutex guarding the default-route guard worker. */

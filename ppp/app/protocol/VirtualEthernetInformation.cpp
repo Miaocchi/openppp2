@@ -134,6 +134,8 @@ namespace ppp {
                 ClientIPv4Req.Clear();
                 ClientIPv4Assign.Clear();
                 P2P.Clear();
+                PeerRouteAnnounce.Clear();
+                PeerRouteTable.Clear();
             }
 
             /** @brief Returns whether any IPv6 extension field is currently populated. */
@@ -153,7 +155,9 @@ namespace ppp {
                     !ClientExitIP.is_unspecified() ||
                     ClientIPv4Req.HasAny() ||
                     ClientIPv4Assign.HasAny() ||
-                    P2P.HasAny();
+                    P2P.HasAny() ||
+                    PeerRouteAnnounce.HasAny() ||
+                    PeerRouteTable.HasAny();
             }
 
             /** @brief Writes IPv6 extension fields to a JSON object. */
@@ -219,6 +223,18 @@ namespace ppp {
                     Json::Value p2p;
                     P2P.ToJson(p2p);
                     json["p2p"] = p2p;
+                }
+
+                if (PeerRouteAnnounce.HasAny()) {
+                    Json::Value announce;
+                    PeerRouteAnnounce.ToJson(announce);
+                    json["peer-route-announce"] = announce;
+                }
+
+                if (PeerRouteTable.HasAny()) {
+                    Json::Value table;
+                    PeerRouteTable.ToJson(table);
+                    json["peer-route-table"] = table;
                 }
             }
 
@@ -324,6 +340,14 @@ namespace ppp {
 
                 if (json.isMember("p2p") && json["p2p"].isObject()) {
                     P2PControlMessage::FromJson(value.P2P, json["p2p"]);
+                }
+
+                if (json.isMember("peer-route-announce") && json["peer-route-announce"].isObject()) {
+                    PeerRouteAnnounceMessage::FromJson(value.PeerRouteAnnounce, json["peer-route-announce"]);
+                }
+
+                if (json.isMember("peer-route-table") && json["peer-route-table"].isObject()) {
+                    PeerRouteTableMessage::FromJson(value.PeerRouteTable, json["peer-route-table"]);
                 }
 
                 return value.HasAny();

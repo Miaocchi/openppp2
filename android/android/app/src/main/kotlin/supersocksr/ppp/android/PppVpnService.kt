@@ -100,6 +100,7 @@ class PppVpnService : VpnService() {
         currentState = 0
         isRunning = false
         ensureGeoRulesAssets()
+        NativeTelemetryTransport.install(applicationContext)
         PppLog.write(this, "PppVpnService created (state cleared)")
     }
 
