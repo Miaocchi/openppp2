@@ -34,7 +34,7 @@ jobs:
             -DENABLE_COVERAGE=ON
 
       - name: Build
-        run: cmake --build build/test --target p2p_replay_window_test dns_buffer_test base64_test
+        run: cmake --build build/test
 
       - name: Run tests
         run: |
@@ -51,7 +51,7 @@ jobs:
             exit 1
           fi
           llvm-profdata merge -sparse build/coverage/*.profraw -o build/coverage/merged.profdata
-          bins="build/test/p2p_replay_window_test build/test/dns_buffer_test build/test/base64_test"
+          bins="build/test/p2p_replay_window_test build/test/dns_buffer_test build/test/dns_message_test build/test/dns_server_validation_test build/test/dns_wire_validation_test build/test/base64_test build/test/sysctl_validation_test"
           llvm-cov report $bins \
             -instr-profile=build/coverage/merged.profdata \
             tests/cpp common/dnslib common/base64 ppp/p2p \

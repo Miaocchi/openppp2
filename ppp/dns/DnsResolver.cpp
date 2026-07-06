@@ -2043,7 +2043,7 @@ namespace ppp {
             });
 
             socket->async_send_to(boost::asio::buffer(packet->data(), packet->size()), remote,
-                [state](const boost::system::error_code& send_ec, std::size_t) noexcept {
+                [state, packet, remote](const boost::system::error_code& send_ec, std::size_t) noexcept {
                     if (state->IsCompleted()) {
                         return;
                     }
