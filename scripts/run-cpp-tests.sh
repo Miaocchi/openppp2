@@ -2,5 +2,5 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cmake -S "$ROOT/tests/cpp" -B "$ROOT/build/test" -G Ninja
-cmake --build "$ROOT/build/test" --target p2p_replay_window_test dns_buffer_test base64_test
+cmake --build "$ROOT/build/test" --target p2p_replay_window_test dns_buffer_test dns_message_test dns_server_validation_test dns_wire_validation_test base64_test sysctl_validation_test
 ctest --test-dir "$ROOT/build/test" --output-on-failure

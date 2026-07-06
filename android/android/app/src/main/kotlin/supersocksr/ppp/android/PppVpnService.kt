@@ -29,6 +29,7 @@ class PppVpnService : VpnService() {
         const val ACTION_DISCONNECT = "supersocksr.ppp.android.ACTION_DISCONNECT"
         const val EXTRA_CONFIG = "config_json"
         const val EXTRA_VPN_OPTIONS = "vpn_options_json"
+        private const val IPV6_BLOCK_ADDRESS = "fd00:6f70:656e:7070::2"
 
         var instance: PppVpnService? = null
             private set
@@ -298,6 +299,21 @@ class PppVpnService : VpnService() {
                 builder.addRoute(vpnIp, vpnPrefix)
             } else {
                 builder.addRoute(route, routePrefix)
+            }
+
+            try {
+                builder.addAddress(IPV6_BLOCK_ADDRESS, 128)
+                builder.addRoute("::", 0)
+                builder.allowFamily(OsConstants.AF_INET6)
+                PppLog.write(this, "IPv6 leak protection active (capturing ::/0)")
+            } catch (e: Throwable) {
+                val reason = "IPv6 leak protection setup failed: ${e.message ?: e.javaClass.name}"
+                PppLog.write(this, reason, e)
+                notifyError(reason)
+                notifyStateChanged(0)
+                stopForeground(true)
+                stopSelf()
+                return
             }
 
             if (dns1.isNotBlank()) {

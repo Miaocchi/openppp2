@@ -26,6 +26,8 @@
 
 #include <ppp/net/asio/vdns.h>
 #include <ppp/dns/DnsResolver.h>
+#include <ppp/dns/DnsWireValidation.h>
+#include <ppp/configurations/DnsServerValidation.h>
 #include <ppp/net/Socket.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
@@ -134,6 +136,9 @@ static ppp::dns::ServerEntry DnsServerEntryToResolverEntry(
 
     ppp::dns::ServerEntry se;
     ppp::string proto = ToLower(ce.protocol);
+    if (!ppp::configurations::detail::IsSupportedDnsProtocol(proto)) {
+        return se;
+    }
     if (proto == "doh") {
         se.protocol = ppp::dns::Protocol::DoH;
     } else if (proto == "dot") {
@@ -3581,11 +3586,22 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                 }
 
-                socket->async_receive_from(boost::asio::buffer(buffer.get(), max_buffer_size), *serverEPPtr,
-                    [self, this, socket, timeout, buffer, sourceEP, destinationEP, serverEPPtr, handle](boost::system::error_code ec, size_t sz) noexcept {
-                        DeleteTimeout(socket.get());
-                        if (ec == boost::system::errc::success) {
-                            if (sz > 0) {
+                auto receive_again = make_shared_object<std::function<void()> >();
+                if (NULLPTR == receive_again) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                }
+
+                *receive_again = [self, this, socket, timeout, buffer, sourceEP, destinationEP, serverEP, serverEPPtr, messages, max_buffer_size, handle, receive_again]() noexcept {
+                    socket->async_receive_from(boost::asio::buffer(buffer.get(), max_buffer_size), *serverEPPtr,
+                        [self, this, socket, timeout, buffer, sourceEP, destinationEP, serverEP, serverEPPtr, messages, handle, receive_again](boost::system::error_code ec, size_t sz) noexcept {
+                            if (ec == boost::system::errc::success && sz > 0) {
+                                bool source_ok = serverEPPtr->address() == serverEP.address() && serverEPPtr->port() == serverEP.port();
+                                bool id_ok = ppp::dns::detail::IsDnsResponseForQuery(messages->Buffer.get(), messages->Length, buffer.get(), sz);
+                                if (!source_ok || !id_ok) {
+                                    (*receive_again)();
+                                    return;
+                                }
+
 #if defined(_ANDROID)
                                 __android_log_print(ANDROID_LOG_INFO, "openppp2", "dns_redirect recv ok fd=%d bytes=%d",
                                     handle,
@@ -3593,21 +3609,24 @@ namespace ppp {
 #endif
                                 DatagramOutput(sourceEP, destinationEP, buffer.get(), sz);
                             }
-                        }
 #if defined(_ANDROID)
-                        else {
-                            __android_log_print(ANDROID_LOG_WARN, "openppp2", "dns_redirect recv failed fd=%d ec=%d",
-                                handle,
-                                ec.value());
-                        }
+                            else {
+                                __android_log_print(ANDROID_LOG_WARN, "openppp2", "dns_redirect recv failed fd=%d ec=%d",
+                                    handle,
+                                    ec.value());
+                            }
 #endif
 
-                        ppp::net::Socket::Closesocket(socket);
-                        if (timeout) {
-                            timeout->Stop();
-                            timeout->Dispose();
-                        }
-                    });
+                            DeleteTimeout(socket.get());
+                            *receive_again = std::function<void()>();
+                            ppp::net::Socket::Closesocket(socket);
+                            if (timeout) {
+                                timeout->Stop();
+                                timeout->Dispose();
+                            }
+                        });
+                };
+                (*receive_again)();
                 return true;
             }
 

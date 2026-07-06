@@ -7,7 +7,16 @@
 
 #include <ppp/stdafx.h>
 #include <atomic>
+#include <chrono>
 #include <mutex>
+
+namespace boost {
+    namespace asio {
+        namespace ssl {
+            class context;
+        }
+    }
+}
 
 /* Forward-declare OpenSSL session type so the public header does not pull in
  * <openssl/ssl.h>. The cache stores opaque SSL_SESSION pointers, lifetime
@@ -80,7 +89,7 @@ namespace ppp {
              *          and system default CA locations.  Hostname verification is
              *          also applied when SNI/hostname is available.
              */
-            void                                            SetTlsVerifyPeer(bool verify_peer) noexcept { tls_verify_peer_ = verify_peer; }
+            void                                            SetTlsVerifyPeer(bool verify_peer) noexcept;
 
             /**
              * @brief Stores default domestic and foreign provider names used as
@@ -250,6 +259,8 @@ namespace ppp {
              */
             ssl_session_st*                                 AcquireTlsSession(const ppp::string& host_key) noexcept;
 
+            std::shared_ptr<boost::asio::ssl::context>       AcquireClientSslContext(bool verify_peer) noexcept;
+
             /**
              * @brief Stores a TLS session for future resumption.
              *
@@ -266,6 +277,10 @@ namespace ppp {
              * @return ECS IP address, or unspecified if none available.
              */
             boost::asio::ip::address                        GetEcsIp() const noexcept;
+
+            void                                            ClearStunEcsCache() noexcept;
+
+            void                                            GetOrDetectEcsIpViaStun(const ExitIpCallback& callback) noexcept;
 
             /**
              * @brief Appends or merges an EDNS Client Subnet OPT RR into a raw DNS query packet.
@@ -342,6 +357,13 @@ namespace ppp {
             std::atomic<std::size_t>                        stun_rotation_{ 0 };
             std::atomic<bool>                               allow_ipv6_response_{ false }; ///< When false, AAAA queries are answered with empty NOERROR. Default false; promoted to true by OnInformation when the server assigns IPv6.
 
+            mutable std::mutex                              stun_ecs_mutex_;
+            boost::asio::ip::address                        stun_ecs_ip_;
+            std::chrono::steady_clock::time_point            stun_ecs_expires_at_{};
+            std::chrono::steady_clock::time_point            stun_ecs_negative_expires_at_{};
+            bool                                            stun_ecs_probe_inflight_ = false;
+            ppp::vector<ExitIpCallback>                     stun_ecs_pending_callbacks_;
+
             /**
              * @brief Cache of OpenSSL session tickets keyed by "<host>:<port>".
              *
@@ -360,6 +382,10 @@ namespace ppp {
             mutable std::mutex                              tls_session_mutex_;
             ppp::list<ppp::string>                          tls_session_lru_;
             ppp::unordered_map<ppp::string, TlsSessionCacheEntry> tls_session_cache_;
+
+            mutable std::mutex                              tls_context_mutex_;
+            std::shared_ptr<boost::asio::ssl::context>       tls_client_ssl_ctx_;
+            bool                                            tls_client_ssl_ctx_verify_peer_ = true;
         };
 
     } // namespace dns

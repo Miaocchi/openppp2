@@ -1,4 +1,5 @@
 #include <ppp/configurations/AppConfiguration.h>
+#include <ppp/configurations/DnsServerValidation.h>
 #include <ppp/app/ApplicationMode.h>
 #include <ppp/cryptography/Ciphertext.h>
 #include <ppp/cryptography/ssea.h>
@@ -1447,7 +1448,10 @@ namespace ppp {
                 return false;
             }
 
-            entry.protocol  = NormalizeDnsProtocol(JsonAuxiliary::AsValue<ppp::string>(json["protocol"]));
+            entry.protocol  = detail::NormalizeDnsProtocol(JsonAuxiliary::AsValue<ppp::string>(json["protocol"]));
+            if (!detail::IsSupportedDnsProtocol(entry.protocol)) {
+                return false;
+            }
             entry.url       = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["url"])));
             entry.hostname  = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["hostname"])));
             entry.address   = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["address"])));

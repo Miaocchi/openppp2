@@ -1,5 +1,6 @@
 #include <ppp/stdafx.h>
 #include <ppp/dns/DnsResolver.h>
+#include <ppp/dns/DnsWireValidation.h>
 #include <ppp/net/Socket.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
@@ -33,6 +34,8 @@ namespace ppp {
         static constexpr int PPP_DNS_RESOLVER_TCP_TIMEOUT_MS    = 3000;  ///< Plain TCP / DoT length-prefixed.
         static constexpr int PPP_DNS_RESOLVER_TLS_TIMEOUT_MS    = 4000;  ///< DoH / DoT (TLS handshake + request).
         static constexpr int PPP_DNS_RESOLVER_STUN_TIMEOUT_MS   = 3000;
+        static constexpr int PPP_DNS_RESOLVER_STUN_CACHE_SECONDS = 600;
+        static constexpr int PPP_DNS_RESOLVER_STUN_NEGATIVE_CACHE_SECONDS = 15;
 
         using ppp::telemetry::Level;
 
@@ -656,6 +659,64 @@ namespace ppp {
             }
         };
 
+        static bool IsSameUdpEndpoint(const udp::endpoint& lhs, const udp::endpoint& rhs) noexcept {
+            return lhs.address() == rhs.address() && lhs.port() == rhs.port();
+        }
+
+        static void StartDnsUdpReceive(
+            const std::shared_ptr<CompletionState>& state,
+            const std::shared_ptr<ppp::vector<Byte> >& packet,
+            const udp::endpoint& remote) noexcept {
+
+            if (NULLPTR == state || NULLPTR == packet || state->IsCompleted()) {
+                return;
+            }
+
+            auto socket_local = state->udp_socket;
+            auto buffer_local = std::static_pointer_cast<ppp::vector<Byte> >(state->slot0);
+            auto source_local = std::static_pointer_cast<udp::endpoint>(state->slot1);
+            if (NULLPTR == socket_local || NULLPTR == buffer_local || NULLPTR == source_local) {
+                return;
+            }
+
+            socket_local->async_receive_from(boost::asio::buffer(buffer_local->data(), buffer_local->size()), *source_local,
+                [state, packet, remote](const boost::system::error_code& recv_ec, std::size_t size) noexcept {
+                    if (state->IsCompleted()) {
+                        return;
+                    }
+                    if (recv_ec || size < 1) {
+                        CountDnsTransport(Protocol::UDP, DnsTransportStage::Recv,
+                            recv_ec ? DnsTransportReason::Failed : DnsTransportReason::Empty);
+                        state->Complete(ppp::vector<Byte>());
+                        return;
+                    }
+
+                    auto buffer_r = std::static_pointer_cast<ppp::vector<Byte> >(state->slot0);
+                    auto source_r = std::static_pointer_cast<udp::endpoint>(state->slot1);
+                    if (NULLPTR == buffer_r || NULLPTR == source_r) {
+                        state->Complete(ppp::vector<Byte>());
+                        return;
+                    }
+
+                    if (!IsSameUdpEndpoint(*source_r, remote) ||
+                        !ppp::dns::detail::IsDnsResponseForQuery(packet->data(), packet->size(), buffer_r->data(), size)) {
+                        CountDnsTransport(Protocol::UDP, DnsTransportStage::Recv, DnsTransportReason::Invalid);
+                        StartDnsUdpReceive(state, packet, remote);
+                        return;
+                    }
+
+                    try {
+                        buffer_r->resize(size);
+                        CountDnsTransport(Protocol::UDP, DnsTransportStage::Success);
+                        state->Complete(std::move(*buffer_r));
+                    }
+                    catch (const std::exception&) {
+                        CountDnsTransport(Protocol::UDP, DnsTransportStage::Parse, DnsTransportReason::Failed);
+                        state->Complete(ppp::vector<Byte>());
+                    }
+                });
+        }
+
         /* ========================================================================
          * DnsResolver — constructor and property setters
          * ======================================================================== */
@@ -674,6 +735,19 @@ namespace ppp {
             }
             tls_session_cache_.clear();
             tls_session_lru_.clear();
+        }
+
+        void DnsResolver::SetTlsVerifyPeer(bool verify_peer) noexcept {
+            bool clear_context = false;
+            if (tls_verify_peer_ != verify_peer) {
+                tls_verify_peer_ = verify_peer;
+                clear_context = true;
+            }
+
+            if (clear_context) {
+                std::lock_guard<std::mutex> lk(tls_context_mutex_);
+                tls_client_ssl_ctx_.reset();
+            }
         }
 
         /* ========================================================================
@@ -753,11 +827,13 @@ namespace ppp {
 
         void DnsResolver::SetExitIP(const boost::asio::ip::address& ip) noexcept {
             exit_ip_ = ip;
+            ClearStunEcsCache();
         }
 
         void DnsResolver::SetEcsConfig(bool enabled, const ppp::string& override_ip) noexcept {
             ecs_enabled_ = enabled;
             ecs_override_ip_ = override_ip;
+            ClearStunEcsCache();
         }
 
         boost::asio::ip::address DnsResolver::GetEcsIp() const noexcept {
@@ -786,6 +862,92 @@ namespace ppp {
         void DnsResolver::SetStunCandidates(ppp::vector<StunCandidate> candidates) noexcept {
             stun_candidates_ = std::move(candidates);
             stun_rotation_.store(0, std::memory_order_relaxed);
+            ClearStunEcsCache();
+        }
+
+        std::shared_ptr<boost::asio::ssl::context> DnsResolver::AcquireClientSslContext(bool verify_peer) noexcept {
+            std::lock_guard<std::mutex> lk(tls_context_mutex_);
+            if (NULLPTR != tls_client_ssl_ctx_ && tls_client_ssl_ctx_verify_peer_ == verify_peer) {
+                return tls_client_ssl_ctx_;
+            }
+
+            std::shared_ptr<boost::asio::ssl::context> ssl_ctx = ppp::ssl::SSL::CreateClientSslContext(
+                ppp::ssl::SSL::SSL_METHOD::tlsv12, verify_peer, std::string());
+            if (NULLPTR != ssl_ctx) {
+                tls_client_ssl_ctx_ = ssl_ctx;
+                tls_client_ssl_ctx_verify_peer_ = verify_peer;
+            }
+            return ssl_ctx;
+        }
+
+        void DnsResolver::ClearStunEcsCache() noexcept {
+            std::lock_guard<std::mutex> lk(stun_ecs_mutex_);
+            stun_ecs_ip_ = boost::asio::ip::address();
+            stun_ecs_expires_at_ = std::chrono::steady_clock::time_point();
+            stun_ecs_negative_expires_at_ = std::chrono::steady_clock::time_point();
+        }
+
+        void DnsResolver::GetOrDetectEcsIpViaStun(const ExitIpCallback& callback) noexcept {
+            if (NULLPTR == callback) {
+                return;
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            {
+                std::lock_guard<std::mutex> lk(stun_ecs_mutex_);
+                if (stun_ecs_ip_.is_v4() && !stun_ecs_ip_.is_unspecified() && now < stun_ecs_expires_at_) {
+                    boost::asio::ip::address cached_ip = stun_ecs_ip_;
+                    boost::asio::post(context_, [callback, cached_ip]() noexcept { callback(cached_ip); });
+                    return;
+                }
+                if (now < stun_ecs_negative_expires_at_) {
+                    boost::asio::post(context_, [callback]() noexcept { callback(boost::asio::ip::address()); });
+                    return;
+                }
+                try {
+                    stun_ecs_pending_callbacks_.emplace_back(callback);
+                }
+                catch (const std::exception&) {
+                    boost::asio::post(context_, [callback]() noexcept { callback(boost::asio::ip::address()); });
+                    return;
+                }
+                if (stun_ecs_probe_inflight_) {
+                    return;
+                }
+                stun_ecs_probe_inflight_ = true;
+            }
+
+            std::weak_ptr<DnsResolver> weak_self = weak_from_this();
+            DetectExitIPViaStun([weak_self](const boost::asio::ip::address& stun_ip) noexcept {
+                std::shared_ptr<DnsResolver> self = weak_self.lock();
+                if (NULLPTR == self) {
+                    return;
+                }
+
+                ppp::vector<ExitIpCallback> callbacks;
+                {
+                    std::lock_guard<std::mutex> lk(self->stun_ecs_mutex_);
+                    self->stun_ecs_probe_inflight_ = false;
+                    callbacks.swap(self->stun_ecs_pending_callbacks_);
+                    const auto complete_at = std::chrono::steady_clock::now();
+                    if (stun_ip.is_v4() && !stun_ip.is_unspecified()) {
+                        self->stun_ecs_ip_ = stun_ip;
+                        self->stun_ecs_expires_at_ = complete_at + std::chrono::seconds(PPP_DNS_RESOLVER_STUN_CACHE_SECONDS);
+                        self->stun_ecs_negative_expires_at_ = std::chrono::steady_clock::time_point();
+                    }
+                    else {
+                        self->stun_ecs_ip_ = boost::asio::ip::address();
+                        self->stun_ecs_expires_at_ = std::chrono::steady_clock::time_point();
+                        self->stun_ecs_negative_expires_at_ = complete_at + std::chrono::seconds(PPP_DNS_RESOLVER_STUN_NEGATIVE_CACHE_SECONDS);
+                    }
+                }
+
+                for (const ExitIpCallback& cb : callbacks) {
+                    if (NULLPTR != cb) {
+                        cb(stun_ip);
+                    }
+                }
+            });
         }
 
         /* ========================================================================
@@ -1078,7 +1240,7 @@ namespace ppp {
                     // No exit IP available yet — attempt STUN detection as a
                     // last-resort fallback before proceeding without ECS.
                     std::weak_ptr<DnsResolver> weak_self = weak_from_this();
-                    DetectExitIPViaStun(
+                    GetOrDetectEcsIpViaStun(
                         [weak_self, request, entries, callback](const boost::asio::ip::address& stun_ip) noexcept {
                             if (stun_ip.is_v4() && !stun_ip.is_unspecified()) {
                                 InjectEcsOptRr(*request, stun_ip);
@@ -1155,7 +1317,7 @@ namespace ppp {
                 }
                 else {
                     std::weak_ptr<DnsResolver> weak_self = weak_from_this();
-                    DetectExitIPViaStun(
+                    GetOrDetectEcsIpViaStun(
                         [weak_self, request, entries, callback](const boost::asio::ip::address& stun_ip) noexcept {
                             if (stun_ip.is_v4() && !stun_ip.is_unspecified()) {
                                 InjectEcsOptRr(*request, stun_ip);
@@ -1342,8 +1504,7 @@ namespace ppp {
             }
 
             /* Create TLS 1.2+ client context with system/bundled CA verification enabled. */
-            std::shared_ptr<boost::asio::ssl::context> ssl_ctx = ppp::ssl::SSL::CreateClientSslContext(
-                ppp::ssl::SSL::SSL_METHOD::tlsv12, tls_verify_peer_, std::string());
+            std::shared_ptr<boost::asio::ssl::context> ssl_ctx = AcquireClientSslContext(tls_verify_peer_);
             if (NULLPTR == ssl_ctx) {
                 CountDnsTransport(Protocol::DoH, DnsTransportStage::Tls, DnsTransportReason::AllocFailed);
                 ppp::net::Socket::Closesocket(socket);
@@ -1463,21 +1624,23 @@ namespace ppp {
                             /* Build HTTP/1.1 POST request with DNS wire-format body. */
                             typedef boost::beast::http::request<boost::beast::http::string_body> http_request_t;
                             typedef boost::beast::http::response<boost::beast::http::string_body> http_response_t;
+                            typedef boost::beast::http::response_parser<boost::beast::http::string_body> http_response_parser_t;
                             std::shared_ptr<http_request_t> http_req = make_shared_object<http_request_t>();
                             std::shared_ptr<boost::beast::flat_buffer> read_buf = make_shared_object<boost::beast::flat_buffer>();
-                            std::shared_ptr<http_response_t> http_res = make_shared_object<http_response_t>();
-                            if (NULLPTR == http_req || NULLPTR == read_buf || NULLPTR == http_res) {
+                            std::shared_ptr<http_response_parser_t> http_parser = make_shared_object<http_response_parser_t>();
+                            if (NULLPTR == http_req || NULLPTR == read_buf || NULLPTR == http_parser) {
                                 CountDnsTransport(Protocol::DoH, DnsTransportStage::Http, DnsTransportReason::AllocFailed);
                                 state->Complete(ppp::vector<Byte>());
                                 return;
                             }
+                            http_parser->body_limit(PPP_DNS_RESOLVER_TCP_MAX_SIZE);
                             // Park the HTTP request/response/parse buffer on
                             // the state so they outlive each individual
                             // lambda in the chain without being captured
                             // separately.
                             state->slot0 = http_req;
                             state->slot1 = read_buf;
-                            state->slot2 = http_res;
+                            state->slot2 = http_parser;
 
                             try {
                                 http_req->method(boost::beast::http::verb::post);
@@ -1509,8 +1672,8 @@ namespace ppp {
 
                                     auto stream_w = state->tls_stream;
                                     auto read_buf_w = std::static_pointer_cast<boost::beast::flat_buffer>(state->slot1);
-                                    auto http_res_w = std::static_pointer_cast<boost::beast::http::response<boost::beast::http::string_body> >(state->slot2);
-                                    if (NULLPTR == stream_w || NULLPTR == read_buf_w || NULLPTR == http_res_w) {
+                                    auto http_parser_w = std::static_pointer_cast<boost::beast::http::response_parser<boost::beast::http::string_body> >(state->slot2);
+                                    if (NULLPTR == stream_w || NULLPTR == read_buf_w || NULLPTR == http_parser_w) {
                                         return;
                                     }
 
@@ -1518,7 +1681,7 @@ namespace ppp {
                                      * alive via state->slot1 / state->slot2 for the entire
                                      * duration of async_read; beast holds them only by
                                      * reference. */
-                                    boost::beast::http::async_read(*stream_w, *read_buf_w, *http_res_w,
+                                    boost::beast::http::async_read(*stream_w, *read_buf_w, *http_parser_w,
                                         [state](const boost::system::error_code& read_ec, std::size_t) noexcept {
                                             if (state->IsCompleted()) {
                                                 return;
@@ -1529,20 +1692,21 @@ namespace ppp {
                                                 return;
                                             }
 
-                                            auto http_res_r = std::static_pointer_cast<boost::beast::http::response<boost::beast::http::string_body> >(state->slot2);
-                                            if (NULLPTR == http_res_r) {
+                                            auto http_parser_r = std::static_pointer_cast<boost::beast::http::response_parser<boost::beast::http::string_body> >(state->slot2);
+                                            if (NULLPTR == http_parser_r) {
                                                 state->Complete(ppp::vector<Byte>());
                                                 return;
                                             }
+                                            const http_response_t& http_res_r = http_parser_r->get();
 
-                                            if (http_res_r->result_int() != 200 || http_res_r->body().empty()) {
+                                            if (http_res_r.result_int() != 200 || http_res_r.body().empty()) {
                                                 CountDnsTransport(Protocol::DoH, DnsTransportStage::Http,
-                                                    http_res_r->result_int() != 200 ? DnsTransportReason::BadStatus : DnsTransportReason::Empty);
+                                                    http_res_r.result_int() != 200 ? DnsTransportReason::BadStatus : DnsTransportReason::Empty);
                                                 state->Complete(ppp::vector<Byte>());
                                                 return;
                                             }
 
-                                            const std::string& body = http_res_r->body();
+                                            const std::string& body = http_res_r.body();
                                             try {
                                                 ppp::vector<Byte> response(body.begin(), body.end());
                                                 CountDnsTransport(Protocol::DoH, DnsTransportStage::Success);
@@ -1624,8 +1788,7 @@ namespace ppp {
             }
 
             /* Create a TLS 1.2+ client context with system/bundled CA verification enabled. */
-            std::shared_ptr<boost::asio::ssl::context> ssl_ctx = ppp::ssl::SSL::CreateClientSslContext(
-                ppp::ssl::SSL::SSL_METHOD::tlsv12, tls_verify_peer_, std::string());
+            std::shared_ptr<boost::asio::ssl::context> ssl_ctx = AcquireClientSslContext(tls_verify_peer_);
             if (NULLPTR == ssl_ctx) {
                 CountDnsTransport(Protocol::DoT, DnsTransportStage::Tls, DnsTransportReason::AllocFailed);
                 ppp::net::Socket::Closesocket(socket);
@@ -1890,41 +2053,7 @@ namespace ppp {
                         return;
                     }
 
-                    auto socket_local = state->udp_socket;
-                    auto buffer_local = std::static_pointer_cast<ppp::vector<Byte> >(state->slot0);
-                    auto source_local = std::static_pointer_cast<udp::endpoint>(state->slot1);
-                    if (NULLPTR == socket_local || NULLPTR == buffer_local || NULLPTR == source_local) {
-                        return;
-                    }
-
-                    socket_local->async_receive_from(boost::asio::buffer(buffer_local->data(), buffer_local->size()), *source_local,
-                        [state](const boost::system::error_code& recv_ec, std::size_t size) noexcept {
-                            if (state->IsCompleted()) {
-                                return;
-                            }
-                            if (recv_ec || size < 1) {
-                                CountDnsTransport(Protocol::UDP, DnsTransportStage::Recv,
-                                    recv_ec ? DnsTransportReason::Failed : DnsTransportReason::Empty);
-                                state->Complete(ppp::vector<Byte>());
-                                return;
-                            }
-
-                            auto buffer_r = std::static_pointer_cast<ppp::vector<Byte> >(state->slot0);
-                            if (NULLPTR == buffer_r) {
-                                state->Complete(ppp::vector<Byte>());
-                                return;
-                            }
-
-                            try {
-                                buffer_r->resize(size);
-                                CountDnsTransport(Protocol::UDP, DnsTransportStage::Success);
-                                state->Complete(std::move(*buffer_r));
-                            }
-                            catch (const std::exception&) {
-                                CountDnsTransport(Protocol::UDP, DnsTransportStage::Parse, DnsTransportReason::Failed);
-                                state->Complete(ppp::vector<Byte>());
-                            }
-                        });
+                    StartDnsUdpReceive(state, packet, remote);
                 });
         }
 
@@ -2801,6 +2930,55 @@ namespace ppp {
             return boost::asio::ip::address_v4();
         }
 
+        static void StartBootstrapDnsReceive(
+            const std::shared_ptr<udp::socket>& socket,
+            const std::shared_ptr<boost::asio::steady_timer>& timer,
+            const std::shared_ptr<ppp::vector<Byte> >& query,
+            const std::shared_ptr<ppp::vector<Byte> >& recv_buf,
+            const std::shared_ptr<udp::endpoint>& recv_ep,
+            const std::shared_ptr<std::atomic<bool> >& done,
+            const DnsResolver::ExitIpCallback& callback,
+            const udp::endpoint& remote) noexcept {
+
+            socket->async_receive_from(
+                boost::asio::buffer(recv_buf->data(), recv_buf->size()), *recv_ep,
+                [socket, timer, query, recv_buf, recv_ep, done, callback, remote](const boost::system::error_code& recv_ec, std::size_t recv_size) noexcept {
+                    if (done->load(std::memory_order_acquire)) {
+                        return;
+                    }
+
+                    if (!recv_ec && recv_size >= kDnsHeaderSize) {
+                        bool source_ok = recv_ep->address() == remote.address() && recv_ep->port() == remote.port();
+                        bool id_ok = ppp::dns::detail::IsDnsResponseForQuery(query->data(), query->size(), recv_buf->data(), recv_size);
+                        if (!source_ok || !id_ok) {
+                            StartBootstrapDnsReceive(socket, timer, query, recv_buf, recv_ep, done, callback, remote);
+                            return;
+                        }
+                    }
+
+                    bool expected = false;
+                    if (!done->compare_exchange_strong(expected, true)) {
+                        return;
+                    }
+
+                    ppp::net::Socket::Cancel(*timer);
+                    ppp::net::Socket::Closesocket(socket);
+
+                    if (recv_ec || recv_size < kDnsHeaderSize) {
+                        callback(boost::asio::ip::address());
+                        return;
+                    }
+
+                    boost::asio::ip::address_v4 result = ParseFirstARecord(recv_buf->data(), recv_size);
+                    if (result.is_unspecified()) {
+                        callback(boost::asio::ip::address());
+                    }
+                    else {
+                        callback(boost::asio::ip::address(result));
+                    }
+                });
+        }
+
         void DnsResolver::ResolveHostnameAsync(
             boost::asio::io_context& context,
             const ppp::string& hostname,
@@ -2870,8 +3048,7 @@ namespace ppp {
 
             /* Send query. */
             socket->async_send_to(boost::asio::buffer(query->data(), query->size()), remote,
-                [socket, timer, query, recv_buf, recv_ep, done, callback](const boost::system::error_code& send_ec, std::size_t) noexcept {
-                    (void)query;
+                [socket, timer, query, recv_buf, recv_ep, done, callback, remote](const boost::system::error_code& send_ec, std::size_t) noexcept {
                     if (send_ec) {
                         bool expected = false;
                         if (done->compare_exchange_strong(expected, true)) {
@@ -2882,31 +3059,7 @@ namespace ppp {
                         return;
                     }
 
-                    /* Wait for response. */
-                    socket->async_receive_from(
-                        boost::asio::buffer(recv_buf->data(), recv_buf->size()), *recv_ep,
-                        [socket, timer, recv_buf, done, callback](const boost::system::error_code& recv_ec, std::size_t recv_size) noexcept {
-                            bool expected = false;
-                            if (!done->compare_exchange_strong(expected, true)) {
-                                return;
-                            }
-
-                            ppp::net::Socket::Cancel(*timer);
-                            ppp::net::Socket::Closesocket(socket);
-
-                            if (recv_ec || recv_size < kDnsHeaderSize) {
-                                callback(boost::asio::ip::address());
-                                return;
-                            }
-
-                            boost::asio::ip::address_v4 result = ParseFirstARecord(recv_buf->data(), recv_size);
-                            if (result.is_unspecified()) {
-                                callback(boost::asio::ip::address());
-                            }
-                            else {
-                                callback(boost::asio::ip::address(result));
-                            }
-                        });
+                    StartBootstrapDnsReceive(socket, timer, query, recv_buf, recv_ep, done, callback, remote);
                 });
         }
 

@@ -27,6 +27,8 @@ scripts/run-cpp-tests.sh
 scripts/run-cpp-coverage.sh
 ```
 
+The standalone C++ suite includes focused security and protocol regression tests that do not require a full native dependency tree, including DNS buffer parsing, P2P replay-window checks, Base64 handling, and Linux IPv6 sysctl validation.
+
 ## Go Guardian
 
 ```bash
@@ -84,9 +86,15 @@ tests/
   cpp/
     base64_test.cpp
     dns_buffer_test.cpp
+    dns_message_test.cpp
+    dns_server_validation_test.cpp
+    dns_wire_validation_test.cpp
     p2p_replay_window_test.cpp
+    sysctl_validation_test.cpp
   red-manifest/
 ```
+
+Android Flutter tests also include native-service static regressions such as `android/test/vpn_ipv6_leak_protection_test.dart`, which verifies the Kotlin VPN builder keeps IPv6 leak protection fail-closed.
 
 ## CMake Options
 
