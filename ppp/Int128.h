@@ -1341,25 +1341,26 @@ namespace ppp
 
 } // namespace ppp
 
-// -------------------------------------------------------------------------
-// std::hash specialization for ppp::Int128
-// -------------------------------------------------------------------------
-#if defined(_PPP_INT128)
-namespace std
+namespace ppp
 {
     template <>
-    struct hash<ppp::Int128>
+    struct hash<Int128>
     {
-        std::size_t operator()(const ppp::Int128& v) const noexcept
+        std::size_t operator()(const Int128& v) const noexcept
         {
             std::hash<uint64_t> h;
+#if defined(_PPP_INT128)
             std::size_t h1 = h(static_cast<uint64_t>(v.lo));
             std::size_t h2 = h(static_cast<uint64_t>(v.hi));
+#else
+            __uint128_t bits = static_cast<__uint128_t>(v);
+            std::size_t h1 = h(static_cast<uint64_t>(bits));
+            std::size_t h2 = h(static_cast<uint64_t>(bits >> 64));
+#endif
             return h1 ^ (h2 << 1);
         }
     };
 }
-#endif
 
 // -------------------------------------------------------------------------
 // Type traits

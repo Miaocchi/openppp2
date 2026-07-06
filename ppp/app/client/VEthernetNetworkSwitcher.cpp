@@ -1459,8 +1459,15 @@ namespace ppp {
 #endif
 
             void VEthernetNetworkSwitcher::ClearPeerPrefixRoutes() noexcept {
+#if defined(_WIN32)
+                auto mib = ppp::win32::network::Router::GetIpForwardTable();
+#endif
                 for (const auto& route : applied_peer_prefix_routes_) {
-#if !defined(_ANDROID) && !defined(_IPHONE)
+#if defined(_WIN32)
+                    if (NULLPTR != mib) {
+                        DeleteRoute(mib, route.Destination, route.NextHop, route.Prefix);
+                    }
+#elif !defined(_ANDROID) && !defined(_IPHONE)
                     DeleteRoute(route.Destination, route.NextHop, route.Prefix);
 #endif
                 }
@@ -1522,7 +1529,11 @@ namespace ppp {
 #endif
 
                     if (!rib->AddRoute(network, route.prefix, via)) {
-#if !defined(_ANDROID) && !defined(_IPHONE)
+#if defined(_WIN32)
+                        if (auto mib = ppp::win32::network::Router::GetIpForwardTable(); NULLPTR != mib) {
+                            DeleteRoute(mib, network, via, route.prefix);
+                        }
+#elif !defined(_ANDROID) && !defined(_IPHONE)
                         DeleteRoute(network, via, route.prefix);
 #endif
                         return false;

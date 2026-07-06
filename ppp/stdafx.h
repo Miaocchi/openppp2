@@ -1270,10 +1270,13 @@ namespace ppp {
     using map = std::map<TKey, TValue, std::less<TKey>, allocator<std::pair<const TKey, TValue>>>;
 
     template <typename TValue>
-    using unordered_set = std::unordered_set<TValue, std::hash<TValue>, std::equal_to<TValue>, allocator<TValue>>;
+    struct hash : std::hash<TValue> {};
+
+    template <typename TValue>
+    using unordered_set = std::unordered_set<TValue, ppp::hash<TValue>, std::equal_to<TValue>, allocator<TValue>>;
 
     template <typename TKey, typename TValue>
-    using unordered_map = std::unordered_map<TKey, TValue, std::hash<TKey>, std::equal_to<TKey>, allocator<std::pair<const TKey, TValue>>>;
+    using unordered_map = std::unordered_map<TKey, TValue, ppp::hash<TKey>, std::equal_to<TKey>, allocator<std::pair<const TKey, TValue>>>;
 }
 
 namespace ppp {
