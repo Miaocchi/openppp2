@@ -220,6 +220,11 @@ class PppVpnService : VpnService() {
                 PppLog.write(this, "ACTION_CONNECT while disconnecting -- queued for replay")
                 pendingConfig = configJson
                 pendingVpnOptions = vpnOptionsJson
+            } else if (currentState == 1) {
+                // Benign duplicate while the first session is still starting
+                // (native Open/run can take several seconds). Surfacing an error
+                // here makes the UI drop to disconnected right before onStarted.
+                PppLog.write(this, "ACTION_CONNECT ignored: session still connecting")
             } else {
                 PppLog.write(this, "ACTION_CONNECT ignored: VPN already running; ask user to disconnect first")
                 notifyError("VPN 已在运行，请先断开再切换配置")

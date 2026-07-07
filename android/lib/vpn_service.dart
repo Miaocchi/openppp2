@@ -128,7 +128,11 @@ class VpnService {
       } else if (type == 'error') {
         final value = event['value']?.toString() ?? 'Unknown VPN error';
         _errorController.add(value);
-        _updateState(VpnState.disconnected);
+        // Keep connecting state when the service is still starting up; a
+        // duplicate ACTION_CONNECT must not knock the UI back to disconnected.
+        if (_currentState != VpnState.connecting) {
+          _updateState(VpnState.disconnected);
+        }
       }
     }
   }

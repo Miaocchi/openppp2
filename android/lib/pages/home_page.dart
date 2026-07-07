@@ -35,6 +35,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String _debugLog = '';
   String _logPath = '';
   int _linkState = 6;
+  bool _connectInFlight = false;
 
   Timer? _linkPollTimer;
   Timer? _durationTimer;
@@ -225,6 +226,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
 
+    if (_connectInFlight) return;
+
     final profile = _active;
     if (profile == null || profile.json.trim().isEmpty) {
       if (!mounted) return;
@@ -233,6 +236,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
       return;
     }
+    _connectInFlight = true;
     try {
       await _vpnService.clearLog();
       final options = await _store.getProfileOptions(profile.id);
@@ -249,6 +253,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final error = e.toString();
       setState(() => _lastError = error);
       await _showErrorDialog(error);
+    } finally {
+      _connectInFlight = false;
     }
   }
 
@@ -263,20 +269,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         timer.cancel();
         return;
       }
-      final log = await _vpnService.readLog();
-      if (log.contains('onStarted key=') ||
-          log.contains('VPN started with key=') ||
-          log.contains('statistics=')) {
+      // Prefer native link state ESTABLISHED (0) over onStarted log markers.
+      final linkState = await _vpnService.getLinkState();
+      if (linkState == 0) {
         timer.cancel();
         if (!mounted) return;
         _applyState(VpnState.connected);
         return;
       }
       final hbAgeMs = await _vpnService.getVpnHeartbeatAgeMs();
-      final hbStale = hbAgeMs < 0 || hbAgeMs > 8000;
+      final hbStale = hbAgeMs < 0 || hbAgeMs > 30000;
       final totalSec = DateTime.now().difference(startedAt).inSeconds;
       if (!hbStale && totalSec < _connectMaxSeconds) return;
       timer.cancel();
+      final log = await _vpnService.readLog();
       final hasRunCalled = log.contains('vpnThread started');
       final reason = totalSec >= _connectMaxSeconds
           ? '超过 ${_connectMaxSeconds}s 上限'
@@ -291,6 +297,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _state = VpnState.disconnected;
         _lastError = error;
       });
+      await _vpnService.disconnect();
       await _showErrorDialog(error);
     });
   }

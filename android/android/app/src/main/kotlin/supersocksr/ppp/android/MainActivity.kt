@@ -87,7 +87,7 @@ class MainActivity : FlutterActivity() {
                         // file is stale and would pin the UI on "Initializing".
                         val linkFile = java.io.File(filesDir, "openppp2-linkstate.txt")
                         val ageMs = System.currentTimeMillis() - linkFile.lastModified()
-                        if (!linkFile.exists() || ageMs !in 0..10_000) {
+                        if (!linkFile.exists() || ageMs !in 0..30_000) {
                             PppStateStore.clearLinkState(this)
                             result.success(6) // APPLICATION_UNINITIALIZED
                             return@setMethodCallHandler
@@ -136,7 +136,7 @@ class MainActivity : FlutterActivity() {
                         // garbage and would trap the UI on "Initializing".
                         val linkFile = java.io.File(filesDir, "openppp2-linkstate.txt")
                         val ageMs = System.currentTimeMillis() - linkFile.lastModified()
-                        val vpnAlive = linkFile.exists() && ageMs in 0..10_000
+                        val vpnAlive = linkFile.exists() && ageMs in 0..30_000
                         if (!vpnAlive) {
                             PppStateStore.set(this, 0)
                             PppStateStore.clearLinkState(this)

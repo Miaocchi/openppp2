@@ -579,6 +579,47 @@ bool                                                                        libo
         });
 }
 
+static int                                                                         libopenppp2_invoke_on_run_context(const ppp::function<int()>& task) noexcept {
+    std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
+    if (NULLPTR == app) {
+        return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::AppContextUnavailable, LIBOPENPPP2_ERROR_APPLICATIION_UNINITIALIZED);
+    }
+
+    std::shared_ptr<VEthernetNetworkSwitcher> client = std::atomic_load(&app->client_);
+    if (NULLPTR == client) {
+        return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable, LIBOPENPPP2_ERROR_VETHERNET_PPPD_THREAD_NOT_RUNING);
+    }
+
+    std::shared_ptr<ppp::net::ProtectorNetwork> protector = client->GetProtectorNetwork();
+    if (NULLPTR == protector) {
+        return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::RuntimeEnvironmentInvalid, LIBOPENPPP2_ERROR_VETHERNET_PPPD_THREAD_NOT_RUNING);
+    }
+
+    std::shared_ptr<boost::asio::io_context> context = protector->GetContext();
+    if (NULLPTR == context) {
+        return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::RuntimeIoContextMissing, LIBOPENPPP2_ERROR_VETHERNET_PPPD_THREAD_NOT_RUNING);
+    }
+
+    std::shared_ptr<Executors::Awaitable> awaitable = ppp::make_shared_object<Executors::Awaitable>();
+    if (NULLPTR == awaitable) {
+        return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, LIBOPENPPP2_ERROR_ALLOCATED_MEMORY);
+    }
+
+    int err = LIBOPENPPP2_ERROR_UNKNOWN;
+    boost::asio::post(*context,
+        [context, awaitable, &err, task]() noexcept {
+            err = task();
+            awaitable->Processed();
+        });
+
+    bool ok = awaitable->Await();
+    if (!ok) {
+        return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::RuntimeEventDispatchFailed, LIBOPENPPP2_ERROR_UNKNOWN);
+    }
+
+    return err;
+}
+
 int                                                                         libopenppp2_application::Invoke(const ppp::function<int()>& task) noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
     if (NULLPTR == app) {
@@ -1677,7 +1718,7 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_stop(JNIEnv* en
 
     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::Success);
 
-    int err = libopenppp2_application::Invoke(
+    int err = libopenppp2_invoke_on_run_context(
         []() noexcept -> int {
             std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
             if (NULLPTR == app) {

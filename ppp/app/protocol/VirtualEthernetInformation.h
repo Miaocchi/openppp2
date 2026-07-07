@@ -60,7 +60,19 @@ namespace ppp {
                 /** @brief Checks validity against a provided timestamp. */
                 bool                                                Valid(UInt32 now) noexcept                                { return Valid(this, now); }
                 /** @brief Validates quotas and expiration values for a data instance. */
-                static bool                                         Valid(VirtualEthernetInformation* i, UInt32 now) noexcept { return (i->IncomingTraffic > 0 && i->OutgoingTraffic > 0) && (i->ExpiredTime != 0 && i->ExpiredTime > now); }
+                static bool                                         Valid(VirtualEthernetInformation* i, UInt32 now) noexcept {
+                    if (NULLPTR == i) {
+                        return false;
+                    }
+
+                    // Field docs: 0 traffic = unlimited; 0 ExpiredTime = no expiry.
+                    // Only reject when a non-zero expiry timestamp has passed.
+                    if (i->ExpiredTime != 0 && i->ExpiredTime <= now) {
+                        return false;
+                    }
+
+                    return true;
+                }
 
             public:
                 /** @brief Deserializes an information object from JSON text. */
