@@ -113,7 +113,7 @@ namespace ppp
 
 namespace ppp
 {
-    namespace hash
+    namespace hash_bytes
     {
 #if defined(_M_X64) || defined(__x86_64__) || defined(__aarch64__) || (defined(__WORDSIZE) && __WORDSIZE == 64)
         /**

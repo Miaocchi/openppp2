@@ -9,7 +9,7 @@
 
 namespace ppp
 {
-    namespace hash
+    namespace hash_bytes
     {
         /**
          * @brief Computes a Murmur-style hash for a byte sequence.

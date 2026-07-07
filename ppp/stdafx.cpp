@@ -161,7 +161,7 @@ namespace ppp {
 
         constexpr size_t __seed = static_cast<size_t>(0xc70f6907UL);
 
-        return ppp::hash::_Hash_bytes(s, len, __seed);
+        return ppp::hash_bytes::_Hash_bytes(s, len, __seed);
     }
 
     /**
