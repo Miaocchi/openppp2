@@ -401,6 +401,10 @@
     <ClCompile Include="ppp\app\client\route\RouteHost.cpp" />
     <ClCompile Include="ppp\app\client\udp\ClientDatagramPortManager.cpp" />
     <ClCompile Include="ppp\app\client\udp\UdpRelayHost.cpp" />
+    <ClCompile Include="ppp\app\server\udp\ServerDatagramPortManager.cpp" />
+    <ClCompile Include="ppp\app\server\udp\ServerUdpRelayHost.cpp" />
+    <ClCompile Include="ppp\app\server\udp\StaticDatagramPortManager.cpp" />
+    <ClCompile Include="ppp\app\server\udp\StaticUdpRelayHost.cpp" />
     <ClCompile Include="ppp\app\client\dns\DnsRouteDispatcher.cpp" />
     <ClCompile Include="ppp\app\client\dns\DnsUdpRelay.cpp" />
     <ClCompile Include="ppp\app\client\dns\FakeIpPool.cpp" />
