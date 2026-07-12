@@ -1,10 +1,10 @@
 #include <ppp/app/protocol/VirtualEthernetTcpipConnection.h>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/client/VEthernetNetworkTcpipConnection.h>
 #include <ppp/app/client/proxys/VEthernetSocksProxySwitcher.h>
 #include <ppp/app/client/proxys/VEthernetSocksProxyConnection.h>
-#include <ppp/configurations/AppConfiguration.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/Socket.h>
