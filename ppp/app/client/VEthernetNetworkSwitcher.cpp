@@ -1114,13 +1114,14 @@ namespace ppp {
                             [](dns::DnsInterceptor*) noexcept {});
                     };
                 host.get_configuration = [self]() noexcept { return self->GetConfiguration(); };
-#if defined(_LINUX)
+#if defined(_LINUX) && !defined(_ANDROID) && !defined(_IPHONE)
                 host.get_default_routes = [self]() noexcept { return self->default_routes_; };
                 host.set_default_routes =
                     [self](route::RouteInformationTablePtr routes) noexcept { self->default_routes_ = std::move(routes); };
                 host.get_nics = [self]() noexcept { return &self->nics_; };
 #else
-                // RouteTableManager_linux is the only consumer of these Linux-only ports.
+                // RouteTableManager_linux is the only consumer of these desktop-Linux ports.
+                // Android also defines _LINUX, so exclude mobile explicitly.
                 host.get_default_routes = []() noexcept { return route::RouteInformationTablePtr(); };
                 host.set_default_routes = [](route::RouteInformationTablePtr) noexcept {};
                 host.get_nics = []() noexcept -> ppp::unordered_map<uint32_t, ppp::string>* { return nullptr; };
