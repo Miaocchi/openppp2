@@ -13,13 +13,23 @@ namespace ppp {
 
             namespace detail {
 
+                inline Json::String ToRuntimeJsonString(
+                    const std::string& value) noexcept {
+                    return Json::String(value.data(), value.size());
+                }
+
+                inline std::string FromRuntimeJsonString(
+                    const Json::String& value) noexcept {
+                    return std::string(value.data(), value.size());
+                }
+
                 inline std::string RuntimeJsonString(
                     const Json::Value& root,
                     const char* name) noexcept {
                     if (!root.isMember(name) || !root[name].isString()) {
                         return std::string();
                     }
-                    return root[name].asString();
+                    return FromRuntimeJsonString(root[name].asString());
                 }
 
                 inline void WriteRuntimeError(
@@ -27,10 +37,10 @@ namespace ppp {
                     const RuntimeError& error) noexcept {
                     Json::Value value(Json::objectValue);
                     value["code"] = error.code;
-                    value["severity"] = error.severity;
+                    value["severity"] = ToRuntimeJsonString(error.severity);
                     value["retryable"] = error.retryable;
-                    value["user_message_key"] = error.user_message_key;
-                    value["diagnostic_detail"] = error.diagnostic_detail;
+                    value["user_message_key"] = ToRuntimeJsonString(error.user_message_key);
+                    value["diagnostic_detail"] = ToRuntimeJsonString(error.diagnostic_detail);
                     root["last_error"] = std::move(value);
                 }
 
@@ -47,16 +57,16 @@ namespace ppp {
                         error.code = value["code"].asUInt();
                     }
                     if (value.isMember("severity") && value["severity"].isString()) {
-                        error.severity = value["severity"].asString();
+                        error.severity = FromRuntimeJsonString(value["severity"].asString());
                     }
                     if (value.isMember("retryable") && value["retryable"].isBool()) {
                         error.retryable = value["retryable"].asBool();
                     }
                     if (value.isMember("user_message_key") && value["user_message_key"].isString()) {
-                        error.user_message_key = value["user_message_key"].asString();
+                        error.user_message_key = FromRuntimeJsonString(value["user_message_key"].asString());
                     }
                     if (value.isMember("diagnostic_detail") && value["diagnostic_detail"].isString()) {
-                        error.diagnostic_detail = value["diagnostic_detail"].asString();
+                        error.diagnostic_detail = FromRuntimeJsonString(value["diagnostic_detail"].asString());
                     }
                 }
 
@@ -69,18 +79,19 @@ namespace ppp {
                 root["generation"] = Json::UInt64(snapshot.generation);
                 root["monotonic_ms"] = Json::UInt64(snapshot.monotonic_ms);
                 root["phase"] = ToString(snapshot.phase);
-                root["role"] = snapshot.role;
-                root["server"] = snapshot.server;
-                root["transport"] = snapshot.transport;
-                root["requested_mux_mode"] = snapshot.requested_mux_mode;
-                root["effective_mux_mode"] = snapshot.effective_mux_mode;
-                root["mux_fallback_reason"] = snapshot.mux_fallback_reason;
-                root["p2p_state"] = snapshot.p2p_state;
-                root["effective_path"] = snapshot.effective_path;
+                root["role"] = detail::ToRuntimeJsonString(snapshot.role);
+                root["server"] = detail::ToRuntimeJsonString(snapshot.server);
+                root["transport"] = detail::ToRuntimeJsonString(snapshot.transport);
+                root["requested_mux_mode"] = detail::ToRuntimeJsonString(snapshot.requested_mux_mode);
+                root["effective_mux_mode"] = detail::ToRuntimeJsonString(snapshot.effective_mux_mode);
+                root["mux_fallback_reason"] = detail::ToRuntimeJsonString(snapshot.mux_fallback_reason);
+                root["p2p_state"] = detail::ToRuntimeJsonString(snapshot.p2p_state);
+                root["effective_path"] = detail::ToRuntimeJsonString(snapshot.effective_path);
                 detail::WriteRuntimeError(root, snapshot.last_error);
 
                 Json::FastWriter writer;
-                std::string json = writer.write(root);
+                const Json::String encoded = writer.write(root);
+                std::string json = detail::FromRuntimeJsonString(encoded);
                 while (!json.empty() && (json.back() == '\n' || json.back() == '\r')) {
                     json.pop_back();
                 }
@@ -115,7 +126,7 @@ namespace ppp {
                     return false;
                 }
 
-                const std::string phase_name = root["phase"].asString();
+                const std::string phase_name = detail::RuntimeJsonString(root, "phase");
                 const RuntimePhase phase = ParseRuntimePhase(phase_name);
                 if (phase == RuntimePhase::Unknown && phase_name != "unknown") {
                     return false;
