@@ -22,7 +22,11 @@
 - Include-boundary check: passing.
 - `ppp.vcxproj` source parity: passing.
 - `ClientConnectionTeardown.cpp` focused syntax compilation: passing.
-- Runtime snapshot focused C++ target: under diagnosis.
+- Runtime snapshot focused C++ target: passing after linking OpenSSL explicitly.
+- Stop coordinator focused C++ target: passing.
+- P2P replay focused C++ target: passing.
+- Focused C++ tests: passing.
+- Full native Linux build: under isolated diagnostic validation.
 - Full native builds: not yet green; do not merge.
 
 ## Deferred to later batches
