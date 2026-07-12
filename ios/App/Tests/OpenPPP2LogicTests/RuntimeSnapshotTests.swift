@@ -47,4 +47,16 @@ final class RuntimeSnapshotTests: XCTestCase {
         """
         XCTAssertThrowsError(try TunnelRuntimeBridge.decodeSnapshot(text))
     }
+
+    func testGenerationAndMonotonicTimeAreRequired() {
+        let missingGeneration = """
+        {"schema_version":1,"monotonic_ms":1,"phase":"idle"}
+        """
+        XCTAssertThrowsError(try TunnelRuntimeBridge.decodeSnapshot(missingGeneration))
+
+        let missingMonotonicTime = """
+        {"schema_version":1,"generation":1,"phase":"idle"}
+        """
+        XCTAssertThrowsError(try TunnelRuntimeBridge.decodeSnapshot(missingMonotonicTime))
+    }
 }
