@@ -318,40 +318,70 @@ bool VEthernetNetworkSwitcher::RedirectDnsServer(
 dns::DnsHostPorts VEthernetNetworkSwitcher::BuildDnsHostPorts(
     const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept {
 
-    const auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
+    const std::weak_ptr<VEthernetNetworkSwitcher> weak_self =
+        std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
     auto datagram_output =
-        [self](const boost::asio::ip::udp::endpoint& sourceEP,
+        [weak_self](const boost::asio::ip::udp::endpoint& sourceEP,
             const boost::asio::ip::udp::endpoint& destinationEP,
             void* packet,
             int packet_size,
             bool caching) noexcept {
+            const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+            if (NULLPTR == self) {
+                return false;
+            }
             return self->DatagramOutput(
                 sourceEP, destinationEP, packet, packet_size, caching);
         };
 
     dns::DnsHostPorts host;
     host.datagram_output = datagram_output;
-    host.get_tap = [self]() noexcept { return self->GetTap(); };
-    host.get_configuration = [self]() noexcept { return self->GetConfiguration(); };
-    host.get_buffer_allocator = [self]() noexcept { return self->GetBufferAllocator(); };
+    host.get_tap =
+        [weak_self]() noexcept -> std::shared_ptr<ppp::tap::ITap> {
+            const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+            return NULLPTR != self ? self->GetTap() : NULLPTR;
+        };
+    host.get_configuration =
+        [weak_self]() noexcept -> std::shared_ptr<ppp::configurations::AppConfiguration> {
+            const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+            return NULLPTR != self ? self->GetConfiguration() : NULLPTR;
+        };
+    host.get_buffer_allocator =
+        [weak_self]() noexcept -> std::shared_ptr<ppp::threading::BufferswapAllocator> {
+            const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+            return NULLPTR != self ? self->GetBufferAllocator() : NULLPTR;
+        };
     host.emplace_timeout =
-        [self](void* key,
+        [weak_self](void* key,
             const std::shared_ptr<ppp::function<void(ppp::threading::Timer*)>>& timeout) noexcept {
+            const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+            if (NULLPTR == self) {
+                return false;
+            }
             return self->EmplaceTimeout(key, timeout);
         };
-    host.delete_timeout = [self](void* key) noexcept { return self->DeleteTimeout(key); };
+    host.delete_timeout =
+        [weak_self](void* key) noexcept {
+            const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+            return NULLPTR != self ? self->DeleteTimeout(key) : false;
+        };
 #if defined(_LINUX)
-    host.get_protector_network = [self]() noexcept { return self->GetProtectorNetwork(); };
+    host.get_protector_network =
+        [weak_self]() noexcept -> std::shared_ptr<ppp::net::ProtectorNetwork> {
+            const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+            return NULLPTR != self ? self->GetProtectorNetwork() : NULLPTR;
+        };
 #endif
     host.handle_resolver_response =
-        [exchanger, datagram_output, self](
+        [exchanger, datagram_output, weak_self](
             const std::shared_ptr<ppp::net::packet::BufferSegment>& messages,
             const boost::asio::ip::udp::endpoint& sourceEP,
             const boost::asio::ip::udp::endpoint& destEP,
             ppp::vector<ppp::Byte> response) noexcept {
             dns::DnsResponseHandlerPorts ports;
+            const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
             const std::shared_ptr<ppp::configurations::AppConfiguration> configuration =
-                self->GetConfiguration();
+                NULLPTR != self ? self->GetConfiguration() : NULLPTR;
             if (NULLPTR != configuration && configuration->udp.dns.cache) {
                 ports.enable_dns_cache = true;
                 ports.write_cache =

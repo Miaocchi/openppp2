@@ -135,6 +135,25 @@ BOOST_AUTO_TEST_CASE(retained_snapshot_survives_cache_invalidation) {
     BOOST_TEST(wiring_test::DnsHostDatagramOutputBytes() == 4);
 }
 
+BOOST_AUTO_TEST_CASE(retained_snapshot_does_not_keep_switcher_alive) {
+    std::weak_ptr<client::VEthernetNetworkSwitcher> weak_switcher;
+    std::shared_ptr<const client_dns::DnsHostPorts> snapshot;
+
+    {
+        const auto switcher = MakeSwitcher(false, true);
+        weak_switcher = switcher;
+        wiring_test::DnsHostWiringTestOwner owner(switcher);
+        snapshot = owner.DnsHostPortsFor(nullptr);
+        BOOST_REQUIRE(NULLPTR != snapshot);
+        BOOST_REQUIRE(snapshot->IsValid());
+    }
+
+    BOOST_TEST(weak_switcher.expired());
+    BOOST_TEST(NULLPTR == snapshot->get_tap());
+    BOOST_TEST(NULLPTR == snapshot->get_configuration());
+    BOOST_TEST(!snapshot->datagram_output({}, {}, nullptr, 0, false));
+}
+
 BOOST_AUTO_TEST_CASE(handle_resolver_response_delegates_to_datagram_output) {
     const auto switcher = MakeSwitcher(false, true);
     wiring_test::ResetDnsHostWiringSpy();

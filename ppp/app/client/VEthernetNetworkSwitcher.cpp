@@ -928,40 +928,70 @@ namespace ppp {
             dns::DnsHostPorts VEthernetNetworkSwitcher::BuildDnsHostPorts(
                 const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept {
 
-                const auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
+                const std::weak_ptr<VEthernetNetworkSwitcher> weak_self =
+                    std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
                 auto datagram_output =
-                    [self](const boost::asio::ip::udp::endpoint& sourceEP,
+                    [weak_self](const boost::asio::ip::udp::endpoint& sourceEP,
                         const boost::asio::ip::udp::endpoint& destinationEP,
                         void* packet,
                         int packet_size,
                         bool caching) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR == self) {
+                            return false;
+                        }
                         return self->DatagramOutput(
                             sourceEP, destinationEP, packet, packet_size, caching);
                     };
 
                 dns::DnsHostPorts host;
                 host.datagram_output = datagram_output;
-                host.get_tap = [self]() noexcept { return self->GetTap(); };
-                host.get_configuration = [self]() noexcept { return self->GetConfiguration(); };
-                host.get_buffer_allocator = [self]() noexcept { return self->GetBufferAllocator(); };
+                host.get_tap =
+                    [weak_self]() noexcept -> std::shared_ptr<ppp::tap::ITap> {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetTap() : NULLPTR;
+                    };
+                host.get_configuration =
+                    [weak_self]() noexcept -> std::shared_ptr<ppp::configurations::AppConfiguration> {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetConfiguration() : NULLPTR;
+                    };
+                host.get_buffer_allocator =
+                    [weak_self]() noexcept -> std::shared_ptr<ppp::threading::BufferswapAllocator> {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetBufferAllocator() : NULLPTR;
+                    };
                 host.emplace_timeout =
-                    [self](void* key,
+                    [weak_self](void* key,
                         const std::shared_ptr<ppp::function<void(ppp::threading::Timer*)>>& timeout) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR == self) {
+                            return false;
+                        }
                         return self->EmplaceTimeout(key, timeout);
                     };
-                host.delete_timeout = [self](void* key) noexcept { return self->DeleteTimeout(key); };
+                host.delete_timeout =
+                    [weak_self](void* key) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->DeleteTimeout(key) : false;
+                    };
 #if defined(_LINUX)
-                host.get_protector_network = [self]() noexcept { return self->GetProtectorNetwork(); };
+                host.get_protector_network =
+                    [weak_self]() noexcept -> std::shared_ptr<ppp::net::ProtectorNetwork> {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetProtectorNetwork() : NULLPTR;
+                    };
 #endif
                 host.handle_resolver_response =
-                    [exchanger, datagram_output, self](
+                    [exchanger, datagram_output, weak_self](
                         const std::shared_ptr<ppp::net::packet::BufferSegment>& messages,
                         const boost::asio::ip::udp::endpoint& sourceEP,
                         const boost::asio::ip::udp::endpoint& destEP,
                         ppp::vector<Byte> response) noexcept {
                         dns::DnsResponseHandlerPorts ports;
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
                         const std::shared_ptr<ppp::configurations::AppConfiguration> configuration =
-                            self->GetConfiguration();
+                            NULLPTR != self ? self->GetConfiguration() : NULLPTR;
                         if (NULLPTR != configuration && configuration->udp.dns.cache) {
                             ports.enable_dns_cache = true;
                             ports.write_cache =
@@ -1022,10 +1052,10 @@ namespace ppp {
                     SynchronizedObjectScope scope(GetSynchronizedObject());
 #endif
 
-                ppp::telemetry::Log(Level::kDebug, "client", "dns_host_ports cache rebuild");
-                dns_host_ports_cache_ = rebuilt_snapshot;
-                dns_host_ports_exchanger_ = exchanger;
-                return dns_host_ports_cache_;
+                    ppp::telemetry::Log(Level::kDebug, "client", "dns_host_ports cache rebuild");
+                    dns_host_ports_cache_ = rebuilt_snapshot;
+                    dns_host_ports_exchanger_ = exchanger;
+                    return dns_host_ports_cache_;
                 }
             }
 
@@ -1062,48 +1092,115 @@ namespace ppp {
             route::RouteHostPorts VEthernetNetworkSwitcher::BuildRouteHostPorts() noexcept {
                 route::RouteHostPorts host;
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                const auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
-                host.get_tap = [self]() noexcept { return self->GetTap(); };
+                const std::weak_ptr<VEthernetNetworkSwitcher> weak_self =
+                    std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
+                host.get_tap =
+                    [weak_self]() noexcept -> std::shared_ptr<ppp::tap::ITap> {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetTap() : NULLPTR;
+                    };
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                host.get_tap_ni = [self]() noexcept { return self->GetTapNetworkInterface(); };
-                host.get_underlying_ni = [self]() noexcept { return self->GetUnderlyingNetworkInterface(); };
+                host.get_tap_ni =
+                    [weak_self]() noexcept -> std::shared_ptr<ClientNetworkInterface> {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetTapNetworkInterface() : NULLPTR;
+                    };
+                host.get_underlying_ni =
+                    [weak_self]() noexcept -> std::shared_ptr<ClientNetworkInterface> {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetUnderlyingNetworkInterface() : NULLPTR;
+                    };
 #else
                 host.get_tap_ni = []() noexcept { return std::shared_ptr<ClientNetworkInterface>(); };
                 host.get_underlying_ni = []() noexcept { return std::shared_ptr<ClientNetworkInterface>(); };
 #endif
-                host.get_rib = [self]() noexcept { return self->GetRib(); };
-                host.set_rib = [self](route::RouteInformationTablePtr rib) noexcept { self->rib_ = std::move(rib); };
-                host.get_fib = [self]() noexcept { return self->GetFib(); };
-                host.set_fib = [self](route::ForwardInformationTablePtr fib) noexcept { self->fib_ = std::move(fib); };
+                host.get_rib =
+                    [weak_self]() noexcept -> route::RouteInformationTablePtr {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetRib() : route::RouteInformationTablePtr();
+                    };
+                host.set_rib =
+                    [weak_self](route::RouteInformationTablePtr rib) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR != self) {
+                            self->rib_ = std::move(rib);
+                        }
+                    };
+                host.get_fib =
+                    [weak_self]() noexcept -> route::ForwardInformationTablePtr {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetFib() : route::ForwardInformationTablePtr();
+                    };
+                host.set_fib =
+                    [weak_self](route::ForwardInformationTablePtr fib) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR != self) {
+                            self->fib_ = std::move(fib);
+                        }
+                    };
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                host.get_route_added = [self]() noexcept { return self->route_added_; };
-                host.set_route_added = [self](bool value) noexcept { self->route_added_ = value; };
-                host.get_route_apply_ready = [self]() noexcept { return self->route_apply_ready_; };
+                host.get_route_added =
+                    [weak_self]() noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->route_added_ : false;
+                    };
+                host.set_route_added =
+                    [weak_self](bool value) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR != self) {
+                            self->route_added_ = value;
+                        }
+                    };
+                host.get_route_apply_ready =
+                    [weak_self]() noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->route_apply_ready_ : false;
+                    };
                 host.add_dns_server_ip =
-                    [self](uint32_t ip, int bucket) noexcept {
+                    [weak_self](uint32_t ip, int bucket) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR == self) {
+                            return;
+                        }
                         if (bucket >= 0 && bucket < static_cast<int>(std::size(self->dns_serverss_))) {
                             self->dns_serverss_[bucket].emplace(ip);
                         }
                     };
                 host.clear_dns_servers =
-                    [self]() noexcept {
+                    [weak_self]() noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR == self) {
+                            return;
+                        }
                         for (auto& dns_servers : self->dns_serverss_) {
                             dns_servers.clear();
                         }
                     };
                 host.get_dns_server_bucket =
-                    [self](int bucket) noexcept -> ppp::unordered_set<uint32_t>* {
+                    [weak_self](int bucket) noexcept -> ppp::unordered_set<uint32_t>* {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR == self) {
+                            return nullptr;
+                        }
                         if (bucket < 0 || bucket >= static_cast<int>(std::size(self->dns_serverss_))) {
                             return nullptr;
                         }
                         return &self->dns_serverss_[bucket];
                     };
                 host.dedupe_dns_servers =
-                    [self]() noexcept {
+                    [weak_self]() noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR == self) {
+                            return;
+                        }
                         ppp::collections::Dictionary::DeduplicationList(self->dns_serverss_[1], self->dns_serverss_[0]);
                     };
                 host.collect_dns_reachability =
-                    [self]() noexcept {
+                    [weak_self]() noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR == self) {
+                            return;
+                        }
                         if (NULLPTR == self->dns_interceptor_ || NULLPTR == self->configuration_) {
                             return;
                         }
@@ -1111,8 +1208,18 @@ namespace ppp {
                         self->dns_interceptor_->CollectReachabilityIps(
                             self->configuration_,
                             self->configuration_->dns.intercept_unmatched,
-                            [self](uint32_t ip) noexcept { self->dns_serverss_[0].emplace(ip); },
-                            [self](uint32_t ip) noexcept { self->dns_serverss_[1].emplace(ip); });
+                            [weak_self](uint32_t ip) noexcept {
+                                const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                                if (NULLPTR != self) {
+                                    self->dns_serverss_[0].emplace(ip);
+                                }
+                            },
+                            [weak_self](uint32_t ip) noexcept {
+                                const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                                if (NULLPTR != self) {
+                                    self->dns_serverss_[1].emplace(ip);
+                                }
+                            });
                     };
 #else
                 // Mobile route/DNS bookkeeping lives in RouteTableManager_mobile, not switcher members.
@@ -1128,7 +1235,11 @@ namespace ppp {
                 // ponytail: non-owning shared_ptr view; DnsInterceptor is owned by dns_interceptor_.
                 // Upgrade path: store shared_ptr if callers need ownership past switcher teardown.
                 host.get_dns_interceptor =
-                    [self]() noexcept -> std::shared_ptr<dns::DnsInterceptor> {
+                    [weak_self]() noexcept -> std::shared_ptr<dns::DnsInterceptor> {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR == self) {
+                            return NULLPTR;
+                        }
                         if (NULLPTR == self->dns_interceptor_) {
                             return NULLPTR;
                         }
@@ -1136,12 +1247,29 @@ namespace ppp {
                             self->dns_interceptor_.get(),
                             [](dns::DnsInterceptor*) noexcept {});
                     };
-                host.get_configuration = [self]() noexcept { return self->GetConfiguration(); };
+                host.get_configuration =
+                    [weak_self]() noexcept -> std::shared_ptr<ppp::configurations::AppConfiguration> {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->GetConfiguration() : NULLPTR;
+                    };
 #if defined(_LINUX)
-                host.get_default_routes = [self]() noexcept { return self->default_routes_; };
+                host.get_default_routes =
+                    [weak_self]() noexcept -> route::RouteInformationTablePtr {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? self->default_routes_ : route::RouteInformationTablePtr();
+                    };
                 host.set_default_routes =
-                    [self](route::RouteInformationTablePtr routes) noexcept { self->default_routes_ = std::move(routes); };
-                host.get_nics = [self]() noexcept { return &self->nics_; };
+                    [weak_self](route::RouteInformationTablePtr routes) noexcept {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        if (NULLPTR != self) {
+                            self->default_routes_ = std::move(routes);
+                        }
+                    };
+                host.get_nics =
+                    [weak_self]() noexcept -> ppp::unordered_map<uint32_t, ppp::string>* {
+                        const std::shared_ptr<VEthernetNetworkSwitcher> self = weak_self.lock();
+                        return NULLPTR != self ? &self->nics_ : nullptr;
+                    };
 #else
                 // default_routes_/nics_ back only the linux route backend; other platforms keep
                 // these ports valid with empty stand-ins because their route managers never call them.
