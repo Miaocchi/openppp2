@@ -95,3 +95,13 @@ BOOST_AUTO_TEST_CASE(unknown_phase_is_rejected) {
         "{\"schema_version\":1,\"generation\":1,\"monotonic_ms\":1,\"phase\":\"teleporting\"}",
         snapshot));
 }
+
+BOOST_AUTO_TEST_CASE(generation_and_monotonic_time_are_required) {
+    runtime::RuntimeSnapshot snapshot;
+    BOOST_TEST(!runtime::ParseRuntimeSnapshot(
+        "{\"schema_version\":1,\"monotonic_ms\":1,\"phase\":\"idle\"}",
+        snapshot));
+    BOOST_TEST(!runtime::ParseRuntimeSnapshot(
+        "{\"schema_version\":1,\"generation\":1,\"phase\":\"idle\"}",
+        snapshot));
+}
