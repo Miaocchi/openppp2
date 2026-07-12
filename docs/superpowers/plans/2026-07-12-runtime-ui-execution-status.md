@@ -1,46 +1,38 @@
 # Runtime/UI Execution Status
 
 > Branch: `codex/runtime-ui-lifecycle-integration`
-> Integration branch: `codex/runtime-ui-lifecycle-integration`
-> Status: Active deferred batch — 4 local commits ahead of origin
+> Status: Gate A substantially complete locally (ahead of origin; not pushed)
 
-## Completed in the foundation batch
+## Gate A
 
-- Runtime Contract v1 C++ DTOs and JSON schema.
-- Shared runtime fixtures for C++, Dart, and Swift.
-- Android and iOS generation-aware runtime stores.
-- Generation-scoped stop coordinator.
-- Desktop teardown DNS-cache recursive-lock fix.
-- P2P replay-window sequence-zero regression fix.
+| Criterion | Status |
+| --- | --- |
+| C++ schema-valid snapshots | Done |
+| Dart/Swift parse fixtures (incl. idle/reconnecting) | Done |
+| TUI renders lifecycle from snapshots | Done (diagnostics still append legacy env lines) |
+| Unknown optional fields ignored | Done |
+| Unsupported schema rejected | Done |
+| Android/iOS phase-driven home controls | Done via RuntimeStore + RuntimeControls |
+| ADR + UI_RUNTIME_CONTRACT.md | Done |
 
-## Completed this session
+Ponytail: mobile still maps platform VPN/linkState → RuntimePhase until native snapshot JSON streams.
 
-### Contract Task 3 — snapshot publisher (`20e333d`)
-- `RuntimeSnapshotPublisher` (mutex-released notify).
-- `RuntimeReadiness` + `GateConnectedPhase`.
-- `PppApplication` start/tick/stop/error publishing.
+## Completed commits (local, unpushed relative to prior origin tip)
 
-### Contract Task 4 — TUI adapter (`4e94c81`)
-- `TuiRuntimeAdapter::BuildStatusLines`.
-- ConsoleUI prefers snapshot phase labels over keyword inference.
+- Publisher / readiness / TUI / DNS ownership / weak callbacks
+- `05eb621` runtime phase control mapping
+- `4cf1ac1` Android home from RuntimeStore
+- `04b94dd` iOS home from RuntimeStore
+- `8a299a9` UI runtime contract ADR + reference doc
 
-### Lifecycle Task 3 — immutable DNS snapshots (`0025fe7`)
-- `DnsHostPortsFor` returns `shared_ptr<const DnsHostPorts>`.
-- Cache publishes immutable snapshots; retained-snapshot regression added.
+## Still deferred (post–Gate A)
 
-### Lifecycle Task 4 — weak callback ownership (`805a953`)
-- DNS/route callbacks capture `weak_ptr` to switcher.
-- Destruction regression: retained snapshot does not keep switcher alive.
-
-## Still deferred
-
-- Android/iOS presentation wiring + ADR/docs (contract Tasks 5–7 UI surfaces).
-- Lifecycle stress + ASan/UBSan CI gates (lifecycle Task 6).
-- UI stop-behavior alignment across platforms (lifecycle Task 7).
-- Architecture/CI enforcement plan.
-- VMUX/P2P validation plan.
+- Native RuntimeSnapshot JSON to mobile (replace ponytail adapters)
+- Gate B: stop matrix, 100-cycle stress, ASan/UBSan CI, UI stop timeout alignment
+- Gate C: architecture/CI enforcement
+- Gate D/E: VMUX / P2P validation
 
 ## Notes
 
-- Branch is **4 commits ahead** of `origin/codex/runtime-ui-lifecycle-integration` (not pushed).
-- Focused C++ runtime + DNS tests: pass.
+- Flutter/Dart not on PATH in this environment; Android tests not executed here.
+- iOS `swift test` / XCBuild had toolchain plist issues in this environment.
