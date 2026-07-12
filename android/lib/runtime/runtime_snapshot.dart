@@ -104,14 +104,22 @@ class RuntimeSnapshot {
     if (version != schemaVersion) {
       throw FormatException('Unsupported runtime schema version: $version');
     }
+    final generation = json['generation'];
+    if (generation is! int || generation < 0) {
+      throw const FormatException('Runtime generation is required');
+    }
+    final monotonicMs = json['monotonic_ms'];
+    if (monotonicMs is! int || monotonicMs < 0) {
+      throw const FormatException('Runtime monotonic_ms is required');
+    }
     final phaseValue = json['phase'];
     if (phaseValue is! String) {
       throw const FormatException('Runtime phase is required');
     }
 
     return RuntimeSnapshot(
-      generation: json['generation'] as int? ?? 0,
-      monotonicMs: json['monotonic_ms'] as int? ?? 0,
+      generation: generation,
+      monotonicMs: monotonicMs,
       phase: RuntimePhase.parse(phaseValue),
       role: json['role'] as String? ?? '',
       server: json['server'] as String? ?? '',
