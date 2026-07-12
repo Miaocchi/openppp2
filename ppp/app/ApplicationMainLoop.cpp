@@ -552,6 +552,8 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
         exchanger = client->GetExchanger();
     }
 
+    PublishRuntimePhase(ResolveRuntimePhase(client, exchanger));
+
     if (!GetTransmissionStatistics(incoming_traffic, outgoing_traffic, statistics_snapshot)) {
         incoming_traffic = 0;
         outgoing_traffic = 0;

@@ -35,7 +35,13 @@
 #include <ppp/app/ApplicationMode.h>
 #include <ppp/diagnostics/PreventReturn.h>
 #include <ppp/diagnostics/Stopwatch.h>
+#include <ppp/app/runtime/RuntimeError.h>
+#include <ppp/app/runtime/RuntimePhase.h>
+#include <ppp/app/runtime/RuntimeSnapshot.h>
+#include <ppp/app/runtime/RuntimeSnapshotPublisher.h>
 #include <ppp/transmissions/ITransmissionStatistics.h>
+
+#include <mutex>
 
 namespace ppp {
 namespace configurations {
@@ -56,6 +62,7 @@ class VirtualEthernetSwitcher;
 
 namespace client {
 class VEthernetNetworkSwitcher;
+class VEthernetExchanger;
 }
 
 struct NetworkInterface;
@@ -115,6 +122,11 @@ public:
      * @return Process exit code; 0 on clean exit, non-zero on error.
      */
     int Run(int argc, char** argv) noexcept;
+
+    /**
+     * @brief Returns runtime snapshot publisher used to expose lifecycle state.
+     */
+    std::shared_ptr<ppp::app::runtime::RuntimeSnapshotPublisher> GetRuntimeSnapshotPublisher() noexcept;
 
 public:
     /**
@@ -264,6 +276,16 @@ public:
      */
     int PreparedArgumentEnvironment(int argc, const char* argv[]) noexcept;
 
+    /**
+     * @brief Begins a new runtime generation and resets transition bookkeeping.
+     */
+    std::uint64_t BeginRuntimeGeneration() noexcept;
+
+    /**
+     * @brief Publishes a lifecycle snapshot with the current generation.
+     */
+    void PublishRuntimePhase(ppp::app::runtime::RuntimePhase phase) noexcept;
+
 protected:
     /**
      * @brief Called on each maintenance tick to update statistics and drive keepalive.
@@ -381,6 +403,46 @@ private:
     bool GetTransmissionStatistics(uint64_t& incoming_traffic, uint64_t& outgoing_traffic, std::shared_ptr<ppp::transmissions::ITransmissionStatistics>& statistics_snapshot) noexcept;
 
 private:
+    /**
+     * @brief Builds an application role label for the runtime snapshot.
+     */
+    ppp::string BuildRuntimeRole() const noexcept;
+
+    /**
+     * @brief Publishes the current runtime error into `runtime_error_snapshot_`.
+     */
+    void OnRuntimeError(int error_code) noexcept;
+
+    /**
+     * @brief Installs the error-code callback used by runtime snapshot publishing.
+     */
+    void RegisterRuntimeErrorCallback() noexcept;
+
+    /**
+     * @brief Removes the error-code callback and releases any callback ownership.
+     */
+    void UnregisterRuntimeErrorCallback() noexcept;
+
+    /**
+     * @brief Updates and publishes a runtime snapshot by phase.
+     */
+    void UpdateAndPublishRuntimeSnapshot(ppp::app::runtime::RuntimePhase phase) noexcept;
+
+    /**
+     * @brief Marks runtime stop as started and prevents duplicate stop publishes.
+     *
+     * @return true on the first stop request for the active generation.
+     */
+    bool TryEnterRuntimeStopSequence() noexcept;
+
+    /**
+     * @brief Resolves runtime phase from network status.
+     */
+    ppp::app::runtime::RuntimePhase ResolveRuntimePhase(
+        const std::shared_ptr<ppp::app::client::VEthernetNetworkSwitcher>& client,
+        const std::shared_ptr<ppp::app::client::VEthernetExchanger>& exchanger) noexcept;
+
+private:
     bool                                                                    client_mode_ = false;         ///< True when running in client or proxy mode.
     bool                                                                    proxy_mode_ = false;          ///< True when running in proxy-only mode.
     ApplicationMode                                                         application_mode_ = ApplicationMode::Server;
@@ -394,6 +456,13 @@ private:
     ppp::diagnostics::Stopwatch                                             stopwatch_;                   ///< Elapsed-time tracker for uptime display.
     ppp::diagnostics::PreventReturn                                         prevent_rerun_;               ///< Guard that prevents re-entrant execution.
     ppp::transmissions::ITransmissionStatistics                             transmission_statistics_;     ///< Accumulated traffic statistics snapshot.
+    std::shared_ptr<ppp::app::runtime::RuntimeSnapshotPublisher>            runtime_snapshot_publisher_;  ///< Live runtime snapshot publisher.
+    std::uint64_t                                                           runtime_generation_ = 0;       ///< Current runtime lifecycle generation.
+    bool                                                                    runtime_stop_publish_started_ = false; ///< Prevents duplicated stop publish.
+    bool                                                                    runtime_information_observed_ = false; ///< Tracks whether peer information was observed.
+    bool                                                                    runtime_error_callback_registered_ = false; ///< Tracks runtime error callback lifecycle.
+    ppp::app::runtime::RuntimeError                                         runtime_error_snapshot_;      ///< Latest captured runtime error.
+    mutable std::mutex                                                      runtime_state_mutex_;         ///< Guards runtime snapshot state.
 };
 
 } // namespace app

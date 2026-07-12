@@ -1,9 +1,12 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/PppApplicationInternal.h>
+#include <ppp/app/runtime/RuntimeReadiness.h>
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
+
+#include <algorithm>
 
 namespace ppp::app {
 
@@ -92,16 +95,278 @@ int PppApplication::Run(int argc, char** argv) noexcept {
     return result_code;
 }
 
+std::shared_ptr<PppApplication> PppApplication::GetDefault() noexcept {
+    return DEFAULT_;
+}
+
+std::shared_ptr<ppp::app::runtime::RuntimeSnapshotPublisher> PppApplication::GetRuntimeSnapshotPublisher() noexcept {
+    std::lock_guard<std::mutex> scope(runtime_state_mutex_);
+    if (NULLPTR == runtime_snapshot_publisher_) {
+        runtime_snapshot_publisher_ = ppp::make_shared_object<ppp::app::runtime::RuntimeSnapshotPublisher>();
+    }
+    return runtime_snapshot_publisher_;
+}
+
+std::uint64_t PppApplication::BeginRuntimeGeneration() noexcept {
+    std::lock_guard<std::mutex> scope(runtime_state_mutex_);
+    ++runtime_generation_;
+    if (0 == runtime_generation_) {
+        runtime_generation_ = 1;
+    }
+    runtime_stop_publish_started_ = false;
+    runtime_information_observed_ = false;
+    runtime_error_snapshot_ = ppp::app::runtime::RuntimeError();
+    return runtime_generation_;
+}
+
+void PppApplication::PublishRuntimePhase(ppp::app::runtime::RuntimePhase phase) noexcept {
+    UpdateAndPublishRuntimeSnapshot(phase);
+}
+
+ppp::string PppApplication::BuildRuntimeRole() const noexcept {
+    if (client_mode_ || application_mode_ == ApplicationMode::Client) {
+        return "client";
+    }
+
+    if (application_mode_ == ApplicationMode::Proxy) {
+        return "proxy";
+    }
+
+    if (application_mode_ == ApplicationMode::Server) {
+        return "server";
+    }
+
+    return "unknown";
+}
+
+void PppApplication::OnRuntimeError(int error_code) noexcept {
+    {
+        std::lock_guard<std::mutex> scope(runtime_state_mutex_);
+        if (0 == runtime_generation_ || runtime_stop_publish_started_) {
+            return;
+        }
+    }
+
+    ppp::app::runtime::RuntimeError snapshot;
+    if (!ppp::diagnostics::IsValidErrorCodeValue(error_code)) {
+        snapshot.code = 0;
+        snapshot.severity = "error";
+        snapshot.retryable = true;
+        snapshot.user_message_key = "UnknownError";
+        snapshot.diagnostic_detail = std::to_string(error_code);
+    }
+    else {
+        ppp::diagnostics::ErrorCode code = static_cast<ppp::diagnostics::ErrorCode>(error_code);
+        snapshot.code = static_cast<std::uint32_t>(error_code);
+        snapshot.severity = ppp::diagnostics::GetErrorSeverityName(ppp::diagnostics::GetErrorSeverity(code));
+        snapshot.retryable = code != ppp::diagnostics::ErrorCode::Success && !ppp::diagnostics::IsErrorFatal(code);
+        snapshot.user_message_key = ppp::diagnostics::FormatErrorString(code);
+        snapshot.diagnostic_detail = ppp::diagnostics::FormatErrorTriplet(code);
+    }
+
+    {
+        std::lock_guard<std::mutex> scope(runtime_state_mutex_);
+        runtime_error_snapshot_ = std::move(snapshot);
+    }
+
+    UpdateAndPublishRuntimeSnapshot(ppp::app::runtime::RuntimePhase::Failed);
+}
+
+void PppApplication::RegisterRuntimeErrorCallback() noexcept {
+    if (runtime_error_callback_registered_) {
+        return;
+    }
+
+    std::weak_ptr<PppApplication> self = shared_from_this();
+    ppp::diagnostics::RegisterErrorHandler(
+        "ppp-runtime-snapshot-error",
+        [self](int error_code) noexcept {
+            std::shared_ptr<PppApplication> owner = self.lock();
+            if (NULLPTR == owner) {
+                return;
+            }
+
+            owner->OnRuntimeError(error_code);
+        });
+
+    runtime_error_callback_registered_ = true;
+}
+
+void PppApplication::UnregisterRuntimeErrorCallback() noexcept {
+    if (!runtime_error_callback_registered_) {
+        return;
+    }
+
+    ppp::diagnostics::RegisterErrorHandler("ppp-runtime-snapshot-error", NULLPTR);
+    runtime_error_callback_registered_ = false;
+}
+
+ppp::app::runtime::RuntimePhase PppApplication::ResolveRuntimePhase(
+    const std::shared_ptr<ppp::app::client::VEthernetNetworkSwitcher>& client,
+    const std::shared_ptr<ppp::app::client::VEthernetExchanger>& exchanger) noexcept {
+    if (NULLPTR == client) {
+        return client_mode_
+            ? ppp::app::runtime::RuntimePhase::Starting
+            : ppp::app::runtime::RuntimePhase::Idle;
+    }
+    if (NULLPTR == exchanger) {
+        return ppp::app::runtime::RuntimePhase::Connecting;
+    }
+
+    auto network_state = exchanger->GetNetworkState();
+    if (network_state == client::VEthernetExchanger::NetworkState_Reconnecting) {
+        return ppp::app::runtime::RuntimePhase::Reconnecting;
+    }
+
+    if (network_state == client::VEthernetExchanger::NetworkState_Established) {
+        // ponytail: route/dns/policy collapse into peer-info observation until
+        // dedicated readiness hooks exist; upgrade path is per-subsystem flags.
+        ppp::app::runtime::RuntimeReadiness readiness;
+        readiness.session = true;
+        readiness.adapter = NULLPTR != client->GetTap();
+        readiness.route = runtime_information_observed_;
+        readiness.dns = runtime_information_observed_;
+        readiness.policy = runtime_information_observed_;
+        return ppp::app::runtime::GateConnectedPhase(
+            ppp::app::runtime::RuntimePhase::Connected,
+            readiness);
+    }
+
+    return runtime_information_observed_
+        ? ppp::app::runtime::RuntimePhase::Handshaking
+        : ppp::app::runtime::RuntimePhase::Connecting;
+}
+
+void PppApplication::UpdateAndPublishRuntimeSnapshot(ppp::app::runtime::RuntimePhase phase) noexcept {
+    std::shared_ptr<ppp::app::runtime::RuntimeSnapshotPublisher> publisher = GetRuntimeSnapshotPublisher();
+    if (NULLPTR == publisher) {
+        return;
+    }
+
+    ppp::app::runtime::RuntimeSnapshot latest = publisher->GetLatest();
+    ppp::app::runtime::RuntimeSnapshot snapshot;
+
+    {
+        std::lock_guard<std::mutex> scope(runtime_state_mutex_);
+        if (0 == runtime_generation_) {
+            return;
+        }
+
+        snapshot.generation = runtime_generation_;
+        snapshot.schema_version = ppp::app::runtime::RuntimeSnapshot::SchemaVersion;
+        snapshot.monotonic_ms = std::max(std::uint64_t(ppp::threading::Executors::GetTickCount()), latest.monotonic_ms);
+        snapshot.phase = phase;
+        snapshot.last_error = runtime_error_snapshot_;
+        snapshot.role = BuildRuntimeRole();
+        snapshot.transport = "";
+        snapshot.requested_mux_mode = "";
+        snapshot.effective_mux_mode = "";
+        snapshot.mux_fallback_reason = "";
+        snapshot.p2p_state = "";
+        snapshot.effective_path = "";
+
+        if (phase == ppp::app::runtime::RuntimePhase::Idle) {
+            snapshot.server.clear();
+            snapshot.role = snapshot.role.empty() ? "server" : snapshot.role;
+            snapshot.transport.clear();
+            snapshot.requested_mux_mode.clear();
+            snapshot.effective_mux_mode.clear();
+            snapshot.mux_fallback_reason.clear();
+            snapshot.p2p_state.clear();
+            snapshot.effective_path.clear();
+            snapshot.last_error = ppp::app::runtime::RuntimeError();
+        }
+
+        if (configuration_ != NULLPTR) {
+            snapshot.requested_mux_mode = configuration_->mux.mode;
+            snapshot.effective_mux_mode = configuration_->GetEffectiveMuxMode();
+        }
+
+        if (client_mode_) {
+            std::shared_ptr<ppp::app::client::VEthernetNetworkSwitcher> client = client_;
+            if (NULLPTR != client) {
+                const ppp::string remote_uri = client->GetRemoteUri();
+                if (!remote_uri.empty()) {
+                    const auto delimiter_pos = remote_uri.rfind('/') + 1;
+                    if (delimiter_pos < remote_uri.size()) {
+                        snapshot.transport = remote_uri.substr(delimiter_pos);
+                        snapshot.server = remote_uri.substr(0, remote_uri.size() - snapshot.transport.size() - 1);
+                    }
+                    else {
+                        snapshot.server = remote_uri;
+                    }
+
+                    if (snapshot.transport == "ppp+ws") {
+                        snapshot.transport = "websocket";
+                    }
+                    else if (snapshot.transport == "ppp+wss") {
+                        snapshot.transport = "websocket-secure";
+                    }
+                    else if (snapshot.transport == "ppp+tcp") {
+                        snapshot.transport = "tcp";
+                    }
+                }
+
+                const auto information_extensions = client->GetInformationExtensions();
+                if (information_extensions.P2P.enabled) {
+                    snapshot.p2p_state = information_extensions.P2P.mode;
+                    snapshot.effective_path = information_extensions.P2P.mode;
+                }
+                else {
+                    snapshot.p2p_state = "direct";
+                    snapshot.effective_path = "tunnel";
+                }
+
+                runtime_information_observed_ = true;
+                if (!client->IsMuxEnabled()) {
+                    snapshot.mux_fallback_reason = "mux disabled";
+                }
+            }
+            else {
+                snapshot.server = "";
+                snapshot.transport = "";
+                snapshot.p2p_state.clear();
+                snapshot.effective_path.clear();
+            }
+        }
+        else {
+            snapshot.server = "";
+            snapshot.transport = "server";
+            snapshot.p2p_state = "";
+            snapshot.effective_path = "";
+        }
+
+        if (latest.generation > snapshot.generation) {
+            return;
+        }
+        if (latest.generation == snapshot.generation && latest.monotonic_ms >= snapshot.monotonic_ms) {
+            snapshot.monotonic_ms = latest.monotonic_ms;
+        }
+        if (phase == ppp::app::runtime::RuntimePhase::Failed && ppp::diagnostics::GetLastErrorCode() == ppp::diagnostics::ErrorCode::Success) {
+            // Keep an empty error detail for protocol-level failed transitions when no dedicated error is available.
+            snapshot.last_error = ppp::app::runtime::RuntimeError();
+        }
+    }
+
+    publisher->Publish(std::move(snapshot));
+}
+
+bool PppApplication::TryEnterRuntimeStopSequence() noexcept {
+    std::lock_guard<std::mutex> scope(runtime_state_mutex_);
+    if (0 == runtime_generation_ || runtime_stop_publish_started_) {
+        return false;
+    }
+
+    runtime_stop_publish_started_ = true;
+    return true;
+}
+
 std::shared_ptr<VirtualEthernetSwitcher> PppApplication::GetServer() noexcept {
     return server_;
 }
 
 std::shared_ptr<VEthernetNetworkSwitcher> PppApplication::GetClient() noexcept {
     return client_;
-}
-
-std::shared_ptr<PppApplication> PppApplication::GetDefault() noexcept {
-    return DEFAULT_;
 }
 
 std::shared_ptr<AppConfiguration> PppApplication::GetConfiguration() noexcept {
@@ -127,7 +392,14 @@ bool PppApplication::ShutdownApplication(bool restart) noexcept {
             return false;
         }
 
+        const bool should_publish_runtime_stop = app->TryEnterRuntimeStopSequence();
+        if (should_publish_runtime_stop) {
+            app->PublishRuntimePhase(ppp::app::runtime::RuntimePhase::Stopping);
+        }
         app->Dispose();
+        if (should_publish_runtime_stop) {
+            app->PublishRuntimePhase(ppp::app::runtime::RuntimePhase::Idle);
+        }
         std::shared_ptr<Timer> timeout = Timer::Timeout(context, 1000, [](Timer*) noexcept { Executors::Exit(); });
         if (NULLPTR == timeout) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTimerStartFailed);

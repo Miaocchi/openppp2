@@ -1,10 +1,9 @@
 # Runtime/UI Execution Status
 
-> Branch: `codex/runtime-ui-lifecycle-foundation`
+> Branch: `codex/runtime-ui-lifecycle-integration`
 > Integration branch: `codex/runtime-ui-lifecycle-integration`
-> Pull request: #39
-> Head: `c4e1820`
-> Status: Draft; native matrix green on latest head; awaiting explicit Ready conversion
+> Pull request: #39 (foundation; merged/synced)
+> Status: Continuing deferred batch — Task 3 publisher integration in progress
 
 ## Completed in the foundation batch
 
@@ -23,33 +22,22 @@
 - Restored `.github/workflows/test.yml` to normal build steps.
 - Build/Unit workflows trigger for PRs targeting the integration branch.
 
-## Validation state (head `c4e1820`)
+## Completed in the publisher batch (Task 3)
 
-- focused C++: pass
-- full C++ unit suite: pass
-- Flutter: pass
-- Swift/iOS logic: pass
-- Go: pass
-- include-boundary / vcxproj parity: pass
-- Linux amd64: pass
-- Linux Cross (aarch64): pass
-- Android arm64-v8a: pass
-- macOS arm64: pass
-- Windows x64 Release: pass
-- Runtime UI PR Diagnostics focused-cpp + full-linux: pass
+- `RuntimeSnapshotPublisher` (mutex-released notify, subscribe/unsubscribe).
+- `RuntimeReadiness` + `GateConnectedPhase` Connected gate.
+- `PppApplication` generation bookkeeping and phase publishing on start/tick/stop/error.
+- Focused tests: publisher, reentrancy, generation, transition gating, snapshot fixtures.
 
 ## Remaining process notes
 
-- PR body could not be updated by this agent token (HTTP 403). Paste `/opt/cursor/artifacts/pr39-body.md` manually if needed.
-- `Runtime UI PR Diagnostics` still lives on the **integration base** branch; remove it there in a follow-up. It is not part of long-term delivery.
 - Keep Draft until the user explicitly asks to mark Ready for Review.
-- Do not merge to `main` from this PR.
+- Do not merge to `main` from unfinished feature PRs without review.
 
 ## Deferred to later batches
 
-- Runtime snapshot publisher integration with `PppApplication`.
-- TUI rendering from snapshots.
-- Android/iOS presentation wiring.
+- TUI rendering from snapshots (Task 4).
+- Android/iOS presentation wiring (Tasks 5–7).
 - Immutable shared DNS host-port snapshots and weak callback ownership.
 - Lifecycle stress and sanitizer gates.
 - VMUX effective-mode presentation and P2P direct-path UI.

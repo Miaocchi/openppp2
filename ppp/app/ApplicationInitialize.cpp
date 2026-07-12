@@ -51,7 +51,14 @@ void PppApplication::Release() noexcept {
     ppp::win32::Win32Native::EnabledConsoleWindowClosedButton(true);
 #endif
 
+    const bool should_publish_runtime_stop = TryEnterRuntimeStopSequence();
+    if (should_publish_runtime_stop) {
+        PublishRuntimePhase(ppp::app::runtime::RuntimePhase::Stopping);
+        PublishRuntimePhase(ppp::app::runtime::RuntimePhase::Idle);
+    }
+
     prevent_rerun_.Close();
+    UnregisterRuntimeErrorCallback();
 }
 
 /**
@@ -172,6 +179,16 @@ int PppApplication::Main(int argc, const char* argv[]) noexcept {
 
     quic_ = ppp::net::proxies::HttpProxy::IsSupportExperimentalQuicProtocol();
 #endif
+
+    const std::uint64_t generation = BeginRuntimeGeneration();
+    if (0 == generation) {
+        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);
+        return -1;
+    }
+
+    RegisterRuntimeErrorCallback();
+    PublishRuntimePhase(ppp::app::runtime::RuntimePhase::Starting);
+    PublishRuntimePhase(ppp::app::runtime::RuntimePhase::PreparingHost);
 
     if (!PreparedLoopbackEnvironment(network_interface_)) {
         if (ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
