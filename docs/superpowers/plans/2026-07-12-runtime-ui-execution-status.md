@@ -3,7 +3,8 @@
 > Branch: `codex/runtime-ui-lifecycle-foundation`
 > Integration branch: `codex/runtime-ui-lifecycle-integration`
 > Pull request: #39
-> Status: In progress; Draft; not approved for merge until full native matrix is green
+> Head: `c4e1820`
+> Status: Draft; native matrix green on latest head; awaiting explicit Ready conversion
 
 ## Completed in the foundation batch
 
@@ -18,19 +19,31 @@
 - RouteHost `get_dns_interceptor` returns a non-owning `shared_ptr` view over `unique_ptr` ownership.
 - Windows proxy TUs include `AppConfiguration.h` after exchanger header slim.
 - Unit-test switcher stub provides `GetProtectorNetwork()` on Linux.
-- Restored `.github/workflows/test.yml` to normal main triggers/build steps (removed temporary diagnostic upload flow).
+- `BuildRouteHostPorts` platform-guards desktop-only and desktop-Linux-only members (Android defines `_LINUX` too).
+- Restored `.github/workflows/test.yml` to normal build steps.
+- Build/Unit workflows trigger for PRs targeting the integration branch.
 
-## Validation state
+## Validation state (head `c4e1820`)
 
-- Include-boundary check: passing locally.
-- `ppp.vcxproj` source parity: passing locally.
-- `ClientConnectionTeardown.cpp` focused syntax compilation: passing locally.
-- Focused C++ targets (`runtime_snapshot_test`, `runtime_stop_coordinator_test`, `p2p_replay_window_test`): passing locally.
-- Full C++ unit suite (`ctest` 30/30): passing locally.
-- Go tests: passing locally.
-- Flutter / Swift: rely on CI (not installed in this environment).
-- Full native Linux/Android/macOS/Windows/Cross: pending workflow_dispatch / PR matrix on latest head.
-- Note: `Runtime UI PR Diagnostics` lives on the **integration base** branch, not in this PR diff. Remove it from the integration branch in a follow-up; do not merge that temporary workflow into main.
+- focused C++: pass
+- full C++ unit suite: pass
+- Flutter: pass
+- Swift/iOS logic: pass
+- Go: pass
+- include-boundary / vcxproj parity: pass
+- Linux amd64: pass
+- Linux Cross (aarch64): pass
+- Android arm64-v8a: pass
+- macOS arm64: pass
+- Windows x64 Release: pass
+- Runtime UI PR Diagnostics focused-cpp + full-linux: pass
+
+## Remaining process notes
+
+- PR body could not be updated by this agent token (HTTP 403). Paste `/opt/cursor/artifacts/pr39-body.md` manually if needed.
+- `Runtime UI PR Diagnostics` still lives on the **integration base** branch; remove it there in a follow-up. It is not part of long-term delivery.
+- Keep Draft until the user explicitly asks to mark Ready for Review.
+- Do not merge to `main` from this PR.
 
 ## Deferred to later batches
 
