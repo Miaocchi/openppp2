@@ -2,8 +2,7 @@
 
 > Branch: `codex/runtime-ui-lifecycle-integration`
 > Integration branch: `codex/runtime-ui-lifecycle-integration`
-> Pull request: #39 (foundation; merged/synced)
-> Status: Continuing deferred batch — Task 3 publisher integration in progress
+> Status: Active deferred batch — 4 local commits ahead of origin
 
 ## Completed in the foundation batch
 
@@ -13,36 +12,35 @@
 - Generation-scoped stop coordinator.
 - Desktop teardown DNS-cache recursive-lock fix.
 - P2P replay-window sequence-zero regression fix.
-- PeerPrefix incomplete-type include fix.
-- Switcher non-movable type made explicit (`= delete`).
-- RouteHost `get_dns_interceptor` returns a non-owning `shared_ptr` view over `unique_ptr` ownership.
-- Windows proxy TUs include `AppConfiguration.h` after exchanger header slim.
-- Unit-test switcher stub provides `GetProtectorNetwork()` on Linux.
-- `BuildRouteHostPorts` platform-guards desktop-only and desktop-Linux-only members (Android defines `_LINUX` too).
-- Restored `.github/workflows/test.yml` to normal build steps.
-- Build/Unit workflows trigger for PRs targeting the integration branch.
 
-## Completed in the publisher batch (Task 3)
+## Completed this session
 
-- `RuntimeSnapshotPublisher` (mutex-released notify, subscribe/unsubscribe).
-- `RuntimeReadiness` + `GateConnectedPhase` Connected gate.
-- `PppApplication` generation bookkeeping and phase publishing on start/tick/stop/error.
-- Focused tests: publisher, reentrancy, generation, transition gating, snapshot fixtures.
+### Contract Task 3 — snapshot publisher (`20e333d`)
+- `RuntimeSnapshotPublisher` (mutex-released notify).
+- `RuntimeReadiness` + `GateConnectedPhase`.
+- `PppApplication` start/tick/stop/error publishing.
 
-## Completed in the TUI batch (Task 4)
+### Contract Task 4 — TUI adapter (`4e94c81`)
+- `TuiRuntimeAdapter::BuildStatusLines`.
+- ConsoleUI prefers snapshot phase labels over keyword inference.
 
-- `TuiRuntimeAdapter::BuildStatusLines` renders phase, mux modes, and failed error triplet.
-- ConsoleUI status bar prefers snapshot phase labels over keyword inference.
-- Main loop feeds snapshot lines into the info pane and keeps traffic in UpdateStatus.
+### Lifecycle Task 3 — immutable DNS snapshots (`0025fe7`)
+- `DnsHostPortsFor` returns `shared_ptr<const DnsHostPorts>`.
+- Cache publishes immutable snapshots; retained-snapshot regression added.
 
-## Remaining process notes
+### Lifecycle Task 4 — weak callback ownership (`805a953`)
+- DNS/route callbacks capture `weak_ptr` to switcher.
+- Destruction regression: retained snapshot does not keep switcher alive.
 
-- Keep Draft until the user explicitly asks to mark Ready for Review.
-- Do not merge to `main` from unfinished feature PRs without review.
+## Still deferred
 
-## Deferred to later batches
+- Android/iOS presentation wiring + ADR/docs (contract Tasks 5–7 UI surfaces).
+- Lifecycle stress + ASan/UBSan CI gates (lifecycle Task 6).
+- UI stop-behavior alignment across platforms (lifecycle Task 7).
+- Architecture/CI enforcement plan.
+- VMUX/P2P validation plan.
 
-- Android/iOS presentation wiring (Tasks 5–7).
-- Immutable shared DNS host-port snapshots and weak callback ownership.
-- Lifecycle stress and sanitizer gates.
-- VMUX effective-mode presentation and P2P direct-path UI.
+## Notes
+
+- Branch is **4 commits ahead** of `origin/codex/runtime-ui-lifecycle-integration` (not pushed).
+- Focused C++ runtime + DNS tests: pass.
