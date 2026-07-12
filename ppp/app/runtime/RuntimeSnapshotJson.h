@@ -133,6 +133,7 @@ namespace ppp {
                 }
 
                 RuntimeSnapshot parsed;
+                parsed.schema_version = root["schema_version"].asUInt();
                 parsed.generation = root["generation"].asUInt64();
                 parsed.monotonic_ms = root["monotonic_ms"].asUInt64();
                 parsed.phase = phase;

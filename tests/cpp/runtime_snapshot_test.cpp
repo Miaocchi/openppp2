@@ -82,6 +82,13 @@ BOOST_AUTO_TEST_CASE(unsupported_schema_is_rejected) {
     BOOST_TEST(!runtime::ParseRuntimeSnapshot(ReadFixture("unsupported-schema.json"), snapshot));
 }
 
+BOOST_AUTO_TEST_CASE(parsed_snapshot_records_schema_version) {
+    runtime::RuntimeSnapshot snapshot;
+    snapshot.schema_version = 0;
+    BOOST_REQUIRE(runtime::ParseRuntimeSnapshot(ReadFixture("idle.json"), snapshot));
+    BOOST_TEST(snapshot.schema_version == 1u);
+}
+
 BOOST_AUTO_TEST_CASE(unknown_optional_fields_are_ignored) {
     runtime::RuntimeSnapshot snapshot;
     BOOST_REQUIRE(runtime::ParseRuntimeSnapshot(ReadFixture("connected.json"), snapshot));

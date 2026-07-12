@@ -1124,7 +1124,11 @@ namespace ppp {
                 // Android also defines _LINUX, so exclude mobile explicitly.
                 host.get_default_routes = []() noexcept { return route::RouteInformationTablePtr(); };
                 host.set_default_routes = [](route::RouteInformationTablePtr) noexcept {};
-                host.get_nics = []() noexcept -> ppp::unordered_map<uint32_t, ppp::string>* { return nullptr; };
+                host.get_nics = []() noexcept -> ppp::unordered_map<uint32_t, ppp::string>* {
+                    // ponytail: empty stand-in; callers must tolerate a shared empty map.
+                    static ppp::unordered_map<uint32_t, ppp::string> empty_nics;
+                    return &empty_nics;
+                };
 #endif
                 return host;
             }
