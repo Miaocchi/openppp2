@@ -22,8 +22,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build clang llvm libboost-all-dev libssl-dev ripgrep >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang llvm libboost-all-dev libssl-dev ripgrep
 
       - name: Include boundary checks
         run: bash tools/check_include_boundaries.sh
@@ -40,30 +40,7 @@ jobs:
             -DENABLE_COVERAGE=ON
 
       - name: Build
-        id: cpp-build
-        continue-on-error: true
-        run: |
-          set +e
-          cmake --build build/test > build/cpp-test-build.log 2>&1
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            echo "C++ build failed; compiler diagnostics:"
-            grep -E "FAILED:|error:|fatal error:|undefined reference|ld: error" build/cpp-test-build.log | tail -n 200 || true
-          fi
-          exit "$status"
-
-      - name: Upload C++ build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cpp-test-build-log
-          path: build/cpp-test-build.log
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Fail after diagnostic upload
-        if: steps.cpp-build.outcome == 'failure'
-        run: exit 1
+        run: cmake --build build/test
 
       - name: Run tests
         run: |
