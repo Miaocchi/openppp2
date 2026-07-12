@@ -1,12 +1,13 @@
 #pragma once
 
-#include <ppp/stdafx.h>
+#include <cstdint>
+#include <string>
 
 namespace ppp {
     namespace app {
         namespace runtime {
 
-            enum class RuntimePhase : uint8_t {
+            enum class RuntimePhase : std::uint8_t {
                 Idle,
                 Starting,
                 PreparingHost,
@@ -36,7 +37,7 @@ namespace ppp {
                 }
             }
 
-            inline RuntimePhase ParseRuntimePhase(const ppp::string& value) noexcept {
+            inline RuntimePhase ParseRuntimePhase(const std::string& value) noexcept {
                 if (value == "idle") return RuntimePhase::Idle;
                 if (value == "starting") return RuntimePhase::Starting;
                 if (value == "preparing_host") return RuntimePhase::PreparingHost;
