@@ -1052,6 +1052,7 @@ namespace ppp {
                 host.set_rib = [self](route::RouteInformationTablePtr rib) noexcept { self->rib_ = std::move(rib); };
                 host.get_fib = [self]() noexcept { return self->GetFib(); };
                 host.set_fib = [self](route::ForwardInformationTablePtr fib) noexcept { self->fib_ = std::move(fib); };
+#if !defined(_ANDROID) && !defined(_IPHONE)
                 host.get_route_added = [self]() noexcept { return self->route_added_; };
                 host.set_route_added = [self](bool value) noexcept { self->route_added_ = value; };
                 host.get_route_apply_ready = [self]() noexcept { return self->route_apply_ready_; };
@@ -1090,6 +1091,17 @@ namespace ppp {
                             [self](uint32_t ip) noexcept { self->dns_serverss_[0].emplace(ip); },
                             [self](uint32_t ip) noexcept { self->dns_serverss_[1].emplace(ip); });
                     };
+#else
+                // Mobile route/DNS bookkeeping lives in RouteTableManager_mobile, not switcher members.
+                host.get_route_added = []() noexcept { return false; };
+                host.set_route_added = [](bool) noexcept {};
+                host.get_route_apply_ready = []() noexcept { return true; };
+                host.add_dns_server_ip = [](uint32_t, int) noexcept {};
+                host.clear_dns_servers = []() noexcept {};
+                host.get_dns_server_bucket = [](int) noexcept -> ppp::unordered_set<uint32_t>* { return nullptr; };
+                host.dedupe_dns_servers = []() noexcept {};
+                host.collect_dns_reachability = []() noexcept {};
+#endif
                 // ponytail: non-owning shared_ptr view; DnsInterceptor is owned by dns_interceptor_.
                 // Upgrade path: store shared_ptr if callers need ownership past switcher teardown.
                 host.get_dns_interceptor =
@@ -1102,10 +1114,17 @@ namespace ppp {
                             [](dns::DnsInterceptor*) noexcept {});
                     };
                 host.get_configuration = [self]() noexcept { return self->GetConfiguration(); };
+#if defined(_LINUX)
                 host.get_default_routes = [self]() noexcept { return self->default_routes_; };
                 host.set_default_routes =
                     [self](route::RouteInformationTablePtr routes) noexcept { self->default_routes_ = std::move(routes); };
                 host.get_nics = [self]() noexcept { return &self->nics_; };
+#else
+                // RouteTableManager_linux is the only consumer of these Linux-only ports.
+                host.get_default_routes = []() noexcept { return route::RouteInformationTablePtr(); };
+                host.set_default_routes = [](route::RouteInformationTablePtr) noexcept {};
+                host.get_nics = []() noexcept -> ppp::unordered_map<uint32_t, ppp::string>* { return nullptr; };
+#endif
                 return host;
             }
 
