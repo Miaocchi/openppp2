@@ -65,7 +65,7 @@ namespace ppp {
             g_evp_simd_auto.store(enabled, std::memory_order_relaxed);
         }
 
-        bool EVP::IsHardwareAccelerated() noexcept {
+        bool EVP::IsHardwareAccelerated() const noexcept {
             return _aes.IsAttached();
         }
 
