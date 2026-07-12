@@ -5,6 +5,7 @@
 
 #include <fstream>
 #include <iterator>
+#include <string>
 
 #ifndef OPENPPP2_RUNTIME_FIXTURE_DIR
 #define OPENPPP2_RUNTIME_FIXTURE_DIR "tests/contracts/runtime-snapshot"
@@ -14,18 +15,19 @@ namespace runtime = ppp::app::runtime;
 
 namespace {
 
-ppp::string ReadFixture(const char* name) {
-    const ppp::string path = ppp::string(OPENPPP2_RUNTIME_FIXTURE_DIR) + "/" + name;
-    std::ifstream input(path.data(), std::ios::binary);
-    BOOST_REQUIRE_MESSAGE(input.good(), "unable to open runtime fixture: " << path.data());
-    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    return ppp::string(text.data(), text.size());
+std::string ReadFixture(const char* name) {
+    const std::string path = std::string(OPENPPP2_RUNTIME_FIXTURE_DIR) + "/" + name;
+    std::ifstream input(path, std::ios::binary);
+    BOOST_REQUIRE_MESSAGE(input.good(), "unable to open runtime fixture: " << path);
+    return std::string(
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>());
 }
 
 }
 
 BOOST_AUTO_TEST_CASE(runtime_phase_round_trip) {
-    BOOST_TEST(ppp::string(runtime::ToString(runtime::RuntimePhase::Connected)) == "connected");
+    BOOST_TEST(std::string(runtime::ToString(runtime::RuntimePhase::Connected)) == "connected");
     BOOST_TEST(
         static_cast<int>(runtime::ParseRuntimePhase("reconnecting")) ==
         static_cast<int>(runtime::RuntimePhase::Reconnecting));
@@ -47,7 +49,7 @@ BOOST_AUTO_TEST_CASE(snapshot_json_preserves_generation_phase_and_error) {
     source.last_error.code = 42;
     source.last_error.retryable = true;
 
-    const ppp::string json = runtime::SerializeRuntimeSnapshot(source);
+    const std::string json = runtime::SerializeRuntimeSnapshot(source);
     runtime::RuntimeSnapshot decoded;
     BOOST_REQUIRE(runtime::ParseRuntimeSnapshot(json, decoded));
     BOOST_TEST(decoded.generation == 7u);
