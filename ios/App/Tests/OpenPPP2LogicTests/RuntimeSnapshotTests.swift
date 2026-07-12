@@ -20,12 +20,29 @@ final class RuntimeSnapshotTests: XCTestCase {
         return try TunnelRuntimeBridge.decodeSnapshot(data)
     }
 
+    func testIdleFixtureDecodesBaseline() throws {
+        let snapshot = try decodeFixture("idle.json")
+        XCTAssertEqual(snapshot.generation, 0)
+        XCTAssertEqual(snapshot.monotonicMs, 0)
+        XCTAssertEqual(snapshot.phase, .idle)
+        XCTAssertEqual(snapshot.effectivePath, "none")
+    }
+
     func testConnectedFixtureDecodesEffectiveModeAndFutureFields() throws {
         let snapshot = try decodeFixture("connected.json")
         XCTAssertEqual(snapshot.generation, 7)
         XCTAssertEqual(snapshot.phase, .connected)
         XCTAssertEqual(snapshot.requestedMuxMode, "flow")
         XCTAssertEqual(snapshot.effectiveMuxMode, "flow")
+    }
+
+    func testReconnectingFixtureDecodesFallbackPathDetail() throws {
+        let snapshot = try decodeFixture("reconnecting.json")
+        XCTAssertEqual(snapshot.generation, 8)
+        XCTAssertEqual(snapshot.phase, .reconnecting)
+        XCTAssertEqual(snapshot.requestedMuxMode, "balance")
+        XCTAssertEqual(snapshot.effectiveMuxMode, "compat")
+        XCTAssertEqual(snapshot.muxFallbackReason, "peer_missing_flow_v2")
     }
 
     func testFailedFixtureDecodesStructuredError() throws {

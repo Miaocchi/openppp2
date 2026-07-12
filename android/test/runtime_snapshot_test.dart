@@ -10,12 +10,29 @@ Map<String, dynamic> readFixture(String name) {
 }
 
 void main() {
+  test('idle fixture decodes as idle baseline', () {
+    final snapshot = RuntimeSnapshot.fromJson(readFixture('idle.json'));
+    expect(snapshot.generation, 0);
+    expect(snapshot.monotonicMs, 0);
+    expect(snapshot.phase, RuntimePhase.idle);
+    expect(snapshot.effectivePath, 'none');
+  });
+
   test('connected fixture decodes effective mode and ignores future fields', () {
     final snapshot = RuntimeSnapshot.fromJson(readFixture('connected.json'));
     expect(snapshot.generation, 7);
     expect(snapshot.phase, RuntimePhase.connected);
     expect(snapshot.requestedMuxMode, 'flow');
     expect(snapshot.effectiveMuxMode, 'flow');
+  });
+
+  test('reconnecting fixture decodes fallback path detail', () {
+    final snapshot = RuntimeSnapshot.fromJson(readFixture('reconnecting.json'));
+    expect(snapshot.generation, 8);
+    expect(snapshot.phase, RuntimePhase.reconnecting);
+    expect(snapshot.requestedMuxMode, 'balance');
+    expect(snapshot.effectiveMuxMode, 'compat');
+    expect(snapshot.muxFallbackReason, 'peer_missing_flow_v2');
   });
 
   test('failed fixture decodes structured error', () {
