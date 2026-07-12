@@ -14,6 +14,7 @@
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
 #include <ppp/app/server/VirtualEthernetManagedServer.h>
 #include <ppp/app/PppApplicationInternal.h>
+#include <ppp/app/tui/TuiRuntimeAdapter.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/LinkTelemetry.h>
 #include <ppp/diagnostics/Telemetry.h>
@@ -559,24 +560,7 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
         outgoing_traffic = 0;
     }
 
-    ppp::string vpn_state = "disconnected";
-    if (NULLPTR != client) {
-        if (NULLPTR == exchanger) {
-            vpn_state = "connecting";
-        } else {
-            NetworkState network_state = exchanger->GetNetworkState();
-            if (network_state == NetworkState::NetworkState_Established) {
-                vpn_state = "established";
-            } else if (network_state == NetworkState::NetworkState_Reconnecting) {
-                vpn_state = "reconnecting";
-            } else {
-                vpn_state = "connecting";
-            }
-        }
-    }
-
-    ppp::string status = "vpn=" + vpn_state;
-    status += " rx=" + ppp::StrFormatByteSize((Int64)incoming_traffic);
+    ppp::string status = "rx=" + ppp::StrFormatByteSize((Int64)incoming_traffic);
     status += " tx=" + ppp::StrFormatByteSize((Int64)outgoing_traffic);
 
     {
@@ -589,11 +573,24 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
         status += ppp::diagnostics::LinkTelemetry::GetQualityGradeName(grade);
     }
 
-    ConsoleUI::GetInstance().UpdateStatus(status);
+    if (std::shared_ptr<ppp::app::runtime::RuntimeSnapshotPublisher> publisher =
+            GetRuntimeSnapshotPublisher()) {
+        const ppp::app::runtime::RuntimeSnapshot snapshot = publisher->GetLatest();
+        ConsoleUI::GetInstance().UpdateRuntimeSnapshot(snapshot);
 
-    ppp::vector<ppp::string> info;
-    GetEnvironmentInformationLines(info, incoming_traffic, outgoing_traffic, statistics_snapshot);
-    ConsoleUI::GetInstance().SetInfoLines(info);
+        ppp::vector<ppp::string> info;
+        for (const std::string& line : ppp::app::tui::BuildStatusLines(snapshot)) {
+            info.emplace_back(line);
+        }
+        GetEnvironmentInformationLines(info, incoming_traffic, outgoing_traffic, statistics_snapshot);
+        ConsoleUI::GetInstance().SetInfoLines(info);
+    }
+    else {
+        ppp::vector<ppp::string> info;
+        GetEnvironmentInformationLines(info, incoming_traffic, outgoing_traffic, statistics_snapshot);
+        ConsoleUI::GetInstance().SetInfoLines(info);
+    }
+    ConsoleUI::GetInstance().UpdateStatus(status);
 
 #if defined(_WIN32)
     ppp::win32::Win32Native::OptimizedProcessWorkingSize();

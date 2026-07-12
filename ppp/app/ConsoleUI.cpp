@@ -21,6 +21,7 @@
 
 #include <ppp/app/ConsoleUI.h>
 #include <ppp/app/PppApplication.h>
+#include <ppp/app/tui/TuiRuntimeAdapter.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
 #include <ppp/threading/Executors.h>
@@ -828,6 +829,16 @@ void ConsoleUI::UpdateStatus(const ppp::string& status_text) noexcept {
     MarkDirty();
 }
 
+void ConsoleUI::UpdateRuntimeSnapshot(
+    const ppp::app::runtime::RuntimeSnapshot& snapshot) noexcept {
+    {
+        std::lock_guard<std::mutex> scope(lock_);
+        vpn_state_text_ = ppp::app::tui::PhaseDisplayName(snapshot.phase);
+        runtime_snapshot_owns_state_ = true;
+    }
+    MarkDirty();
+}
+
 void ConsoleUI::AppendLine(const ppp::string& line) noexcept {
     {
         std::lock_guard<std::mutex> scope(lock_);
@@ -1008,8 +1019,12 @@ void ConsoleUI::DrainStatusQueue() noexcept {
     // Short-lock: write the final computed state back.
     {
         std::lock_guard<std::mutex> scope(lock_);
-        vpn_state_text_ = std::move(last_state);
-        speed_text_      = std::move(last_speed);
+        // Snapshot-owned lifecycle labels win over keyword inference so
+        // Stopping/Failed are never mis-labeled from traffic status strings.
+        if (!runtime_snapshot_owns_state_ && !last_state.empty()) {
+            vpn_state_text_ = std::move(last_state);
+        }
+        speed_text_ = std::move(last_speed);
     }
 }
 

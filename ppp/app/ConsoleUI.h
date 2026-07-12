@@ -34,6 +34,7 @@
 #pragma once
 
 #include <ppp/stdafx.h>
+#include <ppp/app/runtime/RuntimeSnapshot.h>
 
 #if !defined(_WIN32)
 #include <termios.h>
@@ -88,13 +89,22 @@ public:
     /**
      * @brief Updates the VPN-state/speed text shown in the status bar.
      *
-     * The text is parsed for keywords ("established", "disconnect", etc.) to
-     * maintain a human-readable state label, and is forwarded to the right
-     * panel of the status bar.
+     * Throughput fields (`rx=` / `tx=`) update the speed pane. Lifecycle
+     * labels should be driven by @ref UpdateRuntimeSnapshot; keyword parsing
+     * remains only as a fallback when no snapshot has been applied yet.
      *
      * @param status_text Free-form string describing state and throughput.
      */
     void                    UpdateStatus(const ppp::string& status_text) noexcept;
+
+    /**
+     * @brief Applies authoritative runtime snapshot labels to the status bar.
+     *
+     * Phase text replaces keyword-inferred connection state. Traffic speed
+     * continues to arrive via @ref UpdateStatus.
+     */
+    void                    UpdateRuntimeSnapshot(
+        const ppp::app::runtime::RuntimeSnapshot& snapshot) noexcept;
 
     /**
      * @brief Appends one line to the command-output ring buffer.
@@ -423,6 +433,8 @@ private:
     ppp::string                 vpn_state_text_;
     /** @brief Speed text extracted from last UpdateStatus call. */
     ppp::string                 speed_text_;
+    /** @brief True after UpdateRuntimeSnapshot owns the lifecycle label. */
+    bool                        runtime_snapshot_owns_state_ = false;
 
     /** @brief Current input buffer (edited by the input loop). */
     ppp::string                 input_buffer_;

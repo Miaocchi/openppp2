@@ -29,6 +29,12 @@
 - `PppApplication` generation bookkeeping and phase publishing on start/tick/stop/error.
 - Focused tests: publisher, reentrancy, generation, transition gating, snapshot fixtures.
 
+## Completed in the TUI batch (Task 4)
+
+- `TuiRuntimeAdapter::BuildStatusLines` renders phase, mux modes, and failed error triplet.
+- ConsoleUI status bar prefers snapshot phase labels over keyword inference.
+- Main loop feeds snapshot lines into the info pane and keeps traffic in UpdateStatus.
+
 ## Remaining process notes
 
 - Keep Draft until the user explicitly asks to mark Ready for Review.
@@ -36,7 +42,6 @@
 
 ## Deferred to later batches
 
-- TUI rendering from snapshots (Task 4).
 - Android/iOS presentation wiring (Tasks 5–7).
 - Immutable shared DNS host-port snapshots and weak callback ownership.
 - Lifecycle stress and sanitizer gates.
