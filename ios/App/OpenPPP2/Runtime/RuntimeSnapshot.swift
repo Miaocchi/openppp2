@@ -115,8 +115,8 @@ public struct RuntimeSnapshot: Codable, Equatable, Sendable {
             )
         }
 
-        generation = try container.decodeIfPresent(UInt64.self, forKey: .generation) ?? 0
-        monotonicMs = try container.decodeIfPresent(UInt64.self, forKey: .monotonicMs) ?? 0
+        generation = try container.decode(UInt64.self, forKey: .generation)
+        monotonicMs = try container.decode(UInt64.self, forKey: .monotonicMs)
         phase = try container.decode(RuntimePhase.self, forKey: .phase)
         role = try container.decodeIfPresent(String.self, forKey: .role) ?? ""
         server = try container.decodeIfPresent(String.self, forKey: .server) ?? ""
