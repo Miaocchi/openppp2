@@ -4,17 +4,20 @@
 
 #include <json/json.h>
 
+#include <string>
+#include <utility>
+
 namespace ppp {
     namespace app {
         namespace runtime {
 
             namespace detail {
 
-                inline ppp::string RuntimeJsonString(
+                inline std::string RuntimeJsonString(
                     const Json::Value& root,
                     const char* name) noexcept {
                     if (!root.isMember(name) || !root[name].isString()) {
-                        return ppp::string();
+                        return std::string();
                     }
                     return root[name].asString();
                 }
@@ -24,10 +27,10 @@ namespace ppp {
                     const RuntimeError& error) noexcept {
                     Json::Value value(Json::objectValue);
                     value["code"] = error.code;
-                    value["severity"] = error.severity.data();
+                    value["severity"] = error.severity;
                     value["retryable"] = error.retryable;
-                    value["user_message_key"] = error.user_message_key.data();
-                    value["diagnostic_detail"] = error.diagnostic_detail.data();
+                    value["user_message_key"] = error.user_message_key;
+                    value["diagnostic_detail"] = error.diagnostic_detail;
                     root["last_error"] = std::move(value);
                 }
 
@@ -59,25 +62,25 @@ namespace ppp {
 
             }
 
-            inline ppp::string SerializeRuntimeSnapshot(
+            inline std::string SerializeRuntimeSnapshot(
                 const RuntimeSnapshot& snapshot) noexcept {
                 Json::Value root(Json::objectValue);
                 root["schema_version"] = snapshot.schema_version;
                 root["generation"] = Json::UInt64(snapshot.generation);
                 root["monotonic_ms"] = Json::UInt64(snapshot.monotonic_ms);
                 root["phase"] = ToString(snapshot.phase);
-                root["role"] = snapshot.role.data();
-                root["server"] = snapshot.server.data();
-                root["transport"] = snapshot.transport.data();
-                root["requested_mux_mode"] = snapshot.requested_mux_mode.data();
-                root["effective_mux_mode"] = snapshot.effective_mux_mode.data();
-                root["mux_fallback_reason"] = snapshot.mux_fallback_reason.data();
-                root["p2p_state"] = snapshot.p2p_state.data();
-                root["effective_path"] = snapshot.effective_path.data();
+                root["role"] = snapshot.role;
+                root["server"] = snapshot.server;
+                root["transport"] = snapshot.transport;
+                root["requested_mux_mode"] = snapshot.requested_mux_mode;
+                root["effective_mux_mode"] = snapshot.effective_mux_mode;
+                root["mux_fallback_reason"] = snapshot.mux_fallback_reason;
+                root["p2p_state"] = snapshot.p2p_state;
+                root["effective_path"] = snapshot.effective_path;
                 detail::WriteRuntimeError(root, snapshot.last_error);
 
                 Json::FastWriter writer;
-                ppp::string json = writer.write(root);
+                std::string json = writer.write(root);
                 while (!json.empty() && (json.back() == '\n' || json.back() == '\r')) {
                     json.pop_back();
                 }
@@ -85,7 +88,7 @@ namespace ppp {
             }
 
             inline bool ParseRuntimeSnapshot(
-                const ppp::string& json,
+                const std::string& json,
                 RuntimeSnapshot& snapshot) noexcept {
                 if (json.empty()) {
                     return false;
@@ -106,7 +109,7 @@ namespace ppp {
                     return false;
                 }
 
-                const ppp::string phase_name = root["phase"].asString();
+                const std::string phase_name = root["phase"].asString();
                 const RuntimePhase phase = ParseRuntimePhase(phase_name);
                 if (phase == RuntimePhase::Unknown && phase_name != "unknown") {
                     return false;
