@@ -44,4 +44,23 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('generation and monotonic time are required', () {
+    expect(
+      () => RuntimeSnapshot.fromJson({
+        'schema_version': 1,
+        'monotonic_ms': 1,
+        'phase': 'idle',
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () => RuntimeSnapshot.fromJson({
+        'schema_version': 1,
+        'generation': 1,
+        'phase': 'idle',
+      }),
+      throwsFormatException,
+    );
+  });
 }
