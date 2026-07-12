@@ -289,12 +289,14 @@ bool VEthernetNetworkSwitcher::LoadAllDnsRules(const ppp::string&, bool) noexcep
     return false;
 }
 
-const dns::DnsHostPorts& VEthernetNetworkSwitcher::DnsHostPortsFor(
+std::shared_ptr<const dns::DnsHostPorts> VEthernetNetworkSwitcher::DnsHostPortsFor(
     const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept {
 
-    static dns::DnsHostPorts ports;
-    ports = BuildDnsHostPorts(exchanger);
-    return ports;
+    dns::DnsHostPorts ports = BuildDnsHostPorts(exchanger);
+    if (!ports.IsValid()) {
+        return NULLPTR;
+    }
+    return std::make_shared<const dns::DnsHostPorts>(std::move(ports));
 }
 
 void VEthernetNetworkSwitcher::InvalidateDnsHostPorts() noexcept {}

@@ -278,8 +278,12 @@ ANDROID_DNS_REDIRECT_TRACE(
                             IPEndPoint::ToEndPoint<boost::asio::ip::udp>(frame->Source);
                         const boost::asio::ip::udp::endpoint destEP(
                             Ipep::ToAddress(packet->Destination), PPP_DNS_SYS_PORT);
-                        const dns::DnsHostPorts dns_ports = owner_->DnsHostPortsFor(exchanger);
-                        dns_ports.handle_resolver_response(
+                        const std::shared_ptr<const dns::DnsHostPorts> dns_ports =
+                            owner_->DnsHostPortsFor(exchanger);
+                        if (NULLPTR == dns_ports || !dns_ports->IsValid()) {
+                            return false;
+                        }
+                        dns_ports->handle_resolver_response(
                             messages, sourceEP, destEP, ppp::vector<Byte>{});
                     }
                     return true;

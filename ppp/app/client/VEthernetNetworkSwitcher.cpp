@@ -986,29 +986,47 @@ namespace ppp {
                 return host;
             }
 
-            const dns::DnsHostPorts& VEthernetNetworkSwitcher::DnsHostPortsFor(
+            std::shared_ptr<const dns::DnsHostPorts> VEthernetNetworkSwitcher::DnsHostPortsFor(
                 const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept {
 
+                std::shared_ptr<const dns::DnsHostPorts> cached_ports;
+                {
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                SynchronizedObjectScope scope(prdr_);
+                    SynchronizedObjectScope scope(prdr_);
 #else
-                SynchronizedObjectScope scope(GetSynchronizedObject());
+                    SynchronizedObjectScope scope(GetSynchronizedObject());
 #endif
 
-                if (std::shared_ptr<VEthernetExchanger> cached = dns_host_ports_exchanger_.lock();
-                    cached == exchanger && NULLPTR != dns_host_ports_cache_ && dns_host_ports_cache_->IsValid()) {
-                    ppp::telemetry::Log(Level::kDebug, "client", "dns_host_ports cache hit");
-                    return *dns_host_ports_cache_;
+                    if (std::shared_ptr<VEthernetExchanger> cached = dns_host_ports_exchanger_.lock();
+                        cached == exchanger && NULLPTR != dns_host_ports_cache_ && dns_host_ports_cache_->IsValid()) {
+                        ppp::telemetry::Log(Level::kDebug, "client", "dns_host_ports cache hit");
+                        cached_ports = dns_host_ports_cache_;
+                    }
                 }
 
-                if (NULLPTR == dns_host_ports_cache_) {
-                    dns_host_ports_cache_ = std::make_unique<dns::DnsHostPorts>();
+                if (NULLPTR != cached_ports) {
+                    return cached_ports;
                 }
+
+                dns::DnsHostPorts rebuilt_ports = BuildDnsHostPorts(exchanger);
+                if (!rebuilt_ports.IsValid()) {
+                    return NULLPTR;
+                }
+                std::shared_ptr<const dns::DnsHostPorts> rebuilt_snapshot =
+                    std::make_shared<const dns::DnsHostPorts>(std::move(rebuilt_ports));
+
+                {
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                    SynchronizedObjectScope scope(prdr_);
+#else
+                    SynchronizedObjectScope scope(GetSynchronizedObject());
+#endif
 
                 ppp::telemetry::Log(Level::kDebug, "client", "dns_host_ports cache rebuild");
-                *dns_host_ports_cache_ = BuildDnsHostPorts(exchanger);
+                dns_host_ports_cache_ = rebuilt_snapshot;
                 dns_host_ports_exchanger_ = exchanger;
-                return *dns_host_ports_cache_;
+                return dns_host_ports_cache_;
+                }
             }
 
             void VEthernetNetworkSwitcher::InvalidateDnsHostPorts() noexcept {
@@ -1031,8 +1049,13 @@ namespace ppp {
                     return false;
                 }
 
+                const std::shared_ptr<const dns::DnsHostPorts> dns_ports = DnsHostPortsFor(exchanger);
+                if (NULLPTR == dns_ports || !dns_ports->IsValid()) {
+                    return false;
+                }
+
                 return dns_interceptor_->HandleQuery(
-                    DnsHostPortsFor(exchanger),
+                    *dns_ports,
                     exchanger, packet, frame, messages);
             }
 

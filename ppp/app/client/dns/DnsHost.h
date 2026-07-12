@@ -89,7 +89,7 @@ namespace ppp {
                     virtual ~IDnsHost() noexcept = default;
                     virtual DnsHostPorts BuildDnsHostPorts(
                         const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept = 0;
-                    virtual const DnsHostPorts& DnsHostPortsFor(
+                    virtual std::shared_ptr<const DnsHostPorts> DnsHostPortsFor(
                         const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept = 0;
                     virtual void InvalidateDnsHostPorts() noexcept = 0;
                     virtual bool RedirectDnsServer(

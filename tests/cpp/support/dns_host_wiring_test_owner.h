@@ -24,22 +24,23 @@ namespace ppp {
                             const std::shared_ptr<VEthernetNetworkSwitcher>& switcher) noexcept
                             : switcher_(switcher) {}
 
-                        const DnsHostPorts& DnsHostPortsFor(
+                        std::shared_ptr<const DnsHostPorts> DnsHostPortsFor(
                             const std::shared_ptr<VEthernetExchanger>& exchanger) noexcept {
 
                             if (std::shared_ptr<VEthernetExchanger> cached = dns_host_ports_exchanger_.lock();
                                 cached == exchanger && NULLPTR != dns_host_ports_cache_ &&
                                 dns_host_ports_cache_->IsValid()) {
-                                return *dns_host_ports_cache_;
+                                return dns_host_ports_cache_;
                             }
 
-                            if (NULLPTR == dns_host_ports_cache_) {
-                                dns_host_ports_cache_ = std::make_unique<DnsHostPorts>();
+                            DnsHostPorts rebuilt_ports = MakeDnsHostPorts(switcher_, exchanger);
+                            if (!rebuilt_ports.IsValid()) {
+                                return NULLPTR;
                             }
 
-                            *dns_host_ports_cache_ = MakeDnsHostPorts(switcher_, exchanger);
+                            dns_host_ports_cache_ = std::make_shared<const DnsHostPorts>(std::move(rebuilt_ports));
                             dns_host_ports_exchanger_ = exchanger;
-                            return *dns_host_ports_cache_;
+                            return dns_host_ports_cache_;
                         }
 
                         void InvalidateDnsHostPorts() noexcept {
@@ -49,7 +50,7 @@ namespace ppp {
 
                     private:
                         std::shared_ptr<VEthernetNetworkSwitcher> switcher_;
-                        std::unique_ptr<DnsHostPorts> dns_host_ports_cache_;
+                        std::shared_ptr<const DnsHostPorts> dns_host_ports_cache_;
                         std::weak_ptr<VEthernetExchanger> dns_host_ports_exchanger_;
                     };
 

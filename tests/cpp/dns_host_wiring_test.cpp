@@ -88,26 +88,51 @@ BOOST_AUTO_TEST_CASE(same_exchanger_returns_cached_ports_reference) {
     const auto switcher = MakeSwitcher(false, true);
     wiring_test::DnsHostWiringTestOwner owner(switcher);
 
-    const client_dns::DnsHostPorts& first = owner.DnsHostPortsFor(nullptr);
-    const client_dns::DnsHostPorts& second = owner.DnsHostPortsFor(nullptr);
+    const std::shared_ptr<const client_dns::DnsHostPorts> first = owner.DnsHostPortsFor(nullptr);
+    const std::shared_ptr<const client_dns::DnsHostPorts> second = owner.DnsHostPortsFor(nullptr);
 
-    BOOST_TEST(&first == &second);
+    BOOST_TEST(first == second);
+    BOOST_TEST(NULLPTR != first);
 }
 
 BOOST_AUTO_TEST_CASE(invalidate_dns_host_ports_rebuilds_cache) {
     const auto switcher = MakeSwitcher(false, true);
     wiring_test::DnsHostWiringTestOwner owner(switcher);
 
-    const client_dns::DnsHostPorts& cached = owner.DnsHostPortsFor(nullptr);
-    const client_dns::DnsHostPorts& cached_again = owner.DnsHostPortsFor(nullptr);
-    BOOST_TEST(&cached == &cached_again);
+    const std::shared_ptr<const client_dns::DnsHostPorts> cached = owner.DnsHostPortsFor(nullptr);
+    const std::shared_ptr<const client_dns::DnsHostPorts> cached_again = owner.DnsHostPortsFor(nullptr);
+    BOOST_TEST(cached == cached_again);
 
     owner.InvalidateDnsHostPorts();
 
-    const client_dns::DnsHostPorts& rebuilt = owner.DnsHostPortsFor(nullptr);
-    const client_dns::DnsHostPorts& rebuilt_again = owner.DnsHostPortsFor(nullptr);
-    BOOST_TEST(&rebuilt == &rebuilt_again);
-    BOOST_TEST(rebuilt.IsValid());
+    const std::shared_ptr<const client_dns::DnsHostPorts> rebuilt = owner.DnsHostPortsFor(nullptr);
+    const std::shared_ptr<const client_dns::DnsHostPorts> rebuilt_again = owner.DnsHostPortsFor(nullptr);
+    BOOST_TEST(rebuilt == rebuilt_again);
+    BOOST_TEST(cached != rebuilt);
+    BOOST_REQUIRE(NULLPTR != rebuilt);
+    BOOST_TEST(rebuilt->IsValid());
+}
+
+BOOST_AUTO_TEST_CASE(retained_snapshot_survives_cache_invalidation) {
+    const auto switcher = MakeSwitcher(false, true);
+    wiring_test::ResetDnsHostWiringSpy();
+    wiring_test::DnsHostWiringTestOwner owner(switcher);
+
+    const std::shared_ptr<const client_dns::DnsHostPorts> snapshot = owner.DnsHostPortsFor(nullptr);
+    BOOST_REQUIRE(NULLPTR != snapshot);
+    BOOST_REQUIRE(snapshot->IsValid());
+
+    owner.InvalidateDnsHostPorts();
+
+    const auto source = MakeEndpoint("10.0.0.2", 5353);
+    const auto dest = MakeEndpoint("10.0.0.1", 53);
+    auto query = MakeQuerySegment("retained-snapshot");
+    ppp::vector<ppp::Byte> response = { 0x12, 0x34, 0x81, 0x80 };
+
+    snapshot->handle_resolver_response(query, source, dest, std::move(response));
+
+    BOOST_TEST(wiring_test::DnsHostDatagramOutputCalled());
+    BOOST_TEST(wiring_test::DnsHostDatagramOutputBytes() == 4);
 }
 
 BOOST_AUTO_TEST_CASE(handle_resolver_response_delegates_to_datagram_output) {
@@ -159,11 +184,13 @@ BOOST_AUTO_TEST_CASE(expired_exchanger_weak_ptr_still_rebuilds_valid_ports) {
     wiring_test::DnsHostWiringTestOwner owner(switcher);
     auto exchanger = MakeFakeExchanger();
 
-    const client_dns::DnsHostPorts& bound = owner.DnsHostPortsFor(exchanger);
-    BOOST_TEST(bound.IsValid());
+    const std::shared_ptr<const client_dns::DnsHostPorts> bound = owner.DnsHostPortsFor(exchanger);
+    BOOST_REQUIRE(NULLPTR != bound);
+    BOOST_TEST(bound->IsValid());
     exchanger.reset();
-    const client_dns::DnsHostPorts& rebound = owner.DnsHostPortsFor(nullptr);
-    BOOST_TEST(rebound.IsValid());
+    const std::shared_ptr<const client_dns::DnsHostPorts> rebound = owner.DnsHostPortsFor(nullptr);
+    BOOST_REQUIRE(NULLPTR != rebound);
+    BOOST_TEST(rebound->IsValid());
 }
 
 BOOST_AUTO_TEST_CASE(cache_hits_are_faster_than_repeated_rebuilds) {
@@ -205,7 +232,9 @@ BOOST_AUTO_TEST_CASE(isolated_parallel_switchers_remain_valid_under_load) {
                 const auto switcher = MakeSwitcher(false, true);
                 wiring_test::DnsHostWiringTestOwner owner(switcher);
                 for (int i = 0; i < iterations_per_worker; ++i) {
-                    if (!owner.DnsHostPortsFor(nullptr).IsValid()) {
+                    const std::shared_ptr<const client_dns::DnsHostPorts> ports =
+                        owner.DnsHostPortsFor(nullptr);
+                    if (NULLPTR == ports || !ports->IsValid()) {
                         failures.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
@@ -227,14 +256,15 @@ BOOST_AUTO_TEST_CASE(dispatch_dns_fallback_path_uses_resolver_callback) {
     wiring_test::ResetDnsHostWiringSpy();
     wiring_test::DnsHostWiringTestOwner owner(switcher);
 
-    const client_dns::DnsHostPorts& ports = owner.DnsHostPortsFor(nullptr);
+    const std::shared_ptr<const client_dns::DnsHostPorts> ports = owner.DnsHostPortsFor(nullptr);
+    BOOST_REQUIRE(NULLPTR != ports);
     const auto source = MakeEndpoint("10.0.0.2", 5353);
     const auto dest = MakeEndpoint("10.0.0.1", 53);
     auto query = MakeQuerySegment("dispatch-fallback");
     ppp::vector<ppp::Byte> response = { 0x01, 0x02, 0x81, 0x80 };
 
-  // Mirrors ClientPacketDispatchHandler UDP/53 fallback after RedirectDnsServer miss.
-    ports.handle_resolver_response(query, source, dest, std::move(response));
+    // Mirrors ClientPacketDispatchHandler UDP/53 fallback after RedirectDnsServer miss.
+    ports->handle_resolver_response(query, source, dest, std::move(response));
 
     BOOST_TEST(wiring_test::DnsHostDatagramOutputCalled());
     BOOST_TEST(wiring_test::DnsHostDatagramOutputBytes() == 4);

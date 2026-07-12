@@ -10,10 +10,9 @@ struct FakeDnsHost final : client_dns::IDnsHost {
         const std::shared_ptr<ppp::app::client::VEthernetExchanger>&) noexcept override {
         return client_dns::DnsHostPorts{};
     }
-    const client_dns::DnsHostPorts& DnsHostPortsFor(
+    std::shared_ptr<const client_dns::DnsHostPorts> DnsHostPortsFor(
         const std::shared_ptr<ppp::app::client::VEthernetExchanger>&) noexcept override {
-        static client_dns::DnsHostPorts empty;
-        return empty;
+        return std::make_shared<const client_dns::DnsHostPorts>();
     }
     void InvalidateDnsHostPorts() noexcept override {}
     bool RedirectDnsServer(
