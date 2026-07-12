@@ -105,6 +105,12 @@ namespace ppp {
                 if (root["schema_version"].asUInt() != RuntimeSnapshot::SchemaVersion) {
                     return false;
                 }
+                if (!root.isMember("generation") || !root["generation"].isUInt64()) {
+                    return false;
+                }
+                if (!root.isMember("monotonic_ms") || !root["monotonic_ms"].isUInt64()) {
+                    return false;
+                }
                 if (!root.isMember("phase") || !root["phase"].isString()) {
                     return false;
                 }
@@ -116,13 +122,9 @@ namespace ppp {
                 }
 
                 RuntimeSnapshot parsed;
+                parsed.generation = root["generation"].asUInt64();
+                parsed.monotonic_ms = root["monotonic_ms"].asUInt64();
                 parsed.phase = phase;
-                if (root.isMember("generation") && root["generation"].isUInt64()) {
-                    parsed.generation = root["generation"].asUInt64();
-                }
-                if (root.isMember("monotonic_ms") && root["monotonic_ms"].isUInt64()) {
-                    parsed.monotonic_ms = root["monotonic_ms"].asUInt64();
-                }
                 parsed.role = detail::RuntimeJsonString(root, "role");
                 parsed.server = detail::RuntimeJsonString(root, "server");
                 parsed.transport = detail::RuntimeJsonString(root, "transport");
