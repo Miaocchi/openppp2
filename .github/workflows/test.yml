@@ -2,7 +2,7 @@ name: Test · Unit
 
 on:
   push:
-    branches: [feat/unit-tests, main]
+    branches: [feat/unit-tests, main, codex/runtime-ui-lifecycle-foundation]
   pull_request:
     branches: [main]
 
