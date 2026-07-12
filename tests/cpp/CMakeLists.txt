@@ -64,6 +64,7 @@ openppp2_add_cpp_test(runtime_snapshot_test SOURCES
     "${OPENPPP2_ROOT}/common/json/src/json_writer.cpp")
 target_compile_definitions(runtime_snapshot_test PRIVATE
     OPENPPP2_RUNTIME_FIXTURE_DIR=\"${OPENPPP2_ROOT}/tests/contracts/runtime-snapshot\")
+target_link_libraries(runtime_snapshot_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 openppp2_add_cpp_test(runtime_stop_coordinator_test SOURCES
     runtime_stop_coordinator_test.cpp)
 openppp2_add_cpp_test(p2p_replay_window_test SOURCES p2p_replay_window_test.cpp)
