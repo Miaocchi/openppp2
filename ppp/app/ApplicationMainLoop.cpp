@@ -326,34 +326,6 @@ void PppApplication::GetEnvironmentInformationLines(ppp::vector<ppp::string>& li
                 );
                 AppendEnvLine(lines, "Block QUIC", client->IsBlockQUIC() ? "blocked" : "unblocked");
 
-                std::shared_ptr<VEthernetExchanger> exchanger = client->GetExchanger();
-                if (NULLPTR != exchanger) {
-                    ppp::string mux_state;
-                    if (client->IsMuxEnabled()) {
-                        mux_state = ToNetworkStateString(exchanger->GetMuxNetworkState());
-                        mux_state += ", ";
-                        mux_state += stl::to_string<ppp::string>(client->Mux(NULLPTR));
-                        mux_state += "-channel";
-
-                        // Real-time scheduler mode in effect on the client (includes any
-                        // runtime --mux-mode-set override). Turbo is shown when enabled.
-                        if (NULLPTR != configuration_) {
-                            mux_state += ", mode=";
-                            mux_state += configuration_->GetEffectiveMuxMode();
-                            if (configuration_->mux.turbo) {
-                                mux_state += "+turbo";
-                            }
-                        }
-                    } else {
-                        mux_state = "none";
-                    }
-
-                    AppendEnvLine(lines, "Mux State", mux_state);
-                    AppendEnvLine(lines, "Link State", ToNetworkStateString(exchanger->GetNetworkState()));
-                } else {
-                    AppendEnvLine(lines, "Mux State", "none");
-                    AppendEnvLine(lines, "Link State", "none");
-                }
             }
 
             /**

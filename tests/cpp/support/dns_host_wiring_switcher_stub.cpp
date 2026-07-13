@@ -260,9 +260,6 @@ VEthernetNetworkSwitcher::ProtectorNetworkPtr VEthernetNetworkSwitcher::NewProte
     return ProtectorNetworkPtr();
 }
 
-VEthernetNetworkSwitcher::ProtectorNetworkPtr VEthernetNetworkSwitcher::GetProtectorNetwork() noexcept {
-    return ProtectorNetworkPtr();
-}
 #endif
 
 #if !defined(_ANDROID) && !defined(_IPHONE)

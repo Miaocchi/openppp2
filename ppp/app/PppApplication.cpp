@@ -2,6 +2,7 @@
 #include <ppp/app/PppApplicationInternal.h>
 #include <ppp/app/runtime/RuntimeReadiness.h>
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
+#include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
@@ -285,6 +286,7 @@ void PppApplication::UpdateAndPublishRuntimeSnapshot(ppp::app::runtime::RuntimeP
         if (client_mode_) {
             std::shared_ptr<ppp::app::client::VEthernetNetworkSwitcher> client = client_;
             if (NULLPTR != client) {
+#if !defined(_ANDROID) && !defined(_IPHONE)
                 const ppp::string remote_uri = client->GetRemoteUri();
                 if (!remote_uri.empty()) {
                     const auto delimiter_pos = remote_uri.rfind('/') + 1;
@@ -306,6 +308,7 @@ void PppApplication::UpdateAndPublishRuntimeSnapshot(ppp::app::runtime::RuntimeP
                         snapshot.transport = "tcp";
                     }
                 }
+#endif
 
                 const auto information_extensions = client->GetInformationExtensions();
                 if (information_extensions.P2P.enabled) {
