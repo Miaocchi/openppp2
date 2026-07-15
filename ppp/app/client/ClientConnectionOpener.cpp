@@ -147,7 +147,7 @@ namespace ppp {
                 // Mounts the various service objects created and opened by the current constructor.
                 owner_->qos_             = std::move(qos);
                 owner_->exchanger_       = std::move(exchanger);
-                if (NULLPTR != owner_->dns_controller_) {
+                if (!owner_->proxy_only_ && NULLPTR != owner_->dns_controller_) {
                     const auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(owner_->shared_from_this());
                     dns::DnsQueryContext dns_context;
                     dns_context.datagram_output = [self](const auto& source, const auto& destination, void* packet, int size, bool caching) noexcept {
