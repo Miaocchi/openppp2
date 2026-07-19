@@ -482,6 +482,20 @@ class P2PCapabilityWiringTests(unittest.TestCase):
         self.assertIn("assertTrue(libopenppp2.protect_socket_fd(fd))", instrumentation)
         self.assertIn("assertFalse(libopenppp2.isProtectReady())", instrumentation)
         self.assertIn("device-test:", workflow)
+        # Job-level PR skips must stay gone; step-level release-only signing is fine.
+        self.assertNotRegex(
+            workflow,
+            r"device-test:\n(?:.*\n){0,6}\s+if: github\.event_name != 'pull_request'",
+        )
+        self.assertNotRegex(
+            workflow,
+            r"build-apk:\n(?:.*\n){0,6}\s+if: github\.event_name != 'pull_request'",
+        )
+        self.assertIn('"abi":"x86_64","ppp_abi":"x64"', workflow)
+        self.assertIn(
+            'github.event_name == \'pull_request\' && \'{"include":[{"abi":"arm64-v8a","ppp_abi":"aarch64"},{"abi":"x86_64","ppp_abi":"x64"}]}\'',
+            workflow,
+        )
         self.assertIn("openppp2-android-x86_64.zip", workflow)
         self.assertIn("reactivecircus/android-emulator-runner@v2", workflow)
         self.assertIn("api-level: 34", workflow)
@@ -489,7 +503,9 @@ class P2PCapabilityWiringTests(unittest.TestCase):
         self.assertIn("gradle/actions/setup-gradle@v4", workflow)
         self.assertIn("gradle-version: '8.14'", workflow)
         self.assertIn("gradle :app:connectedDebugAndroidTest", workflow)
-        self.assertNotIn("flutter build apk --debug", workflow)
+        self.assertIn("flutter build apk --debug", workflow)
+        self.assertIn("openppp2-android-debug-apk", workflow)
+        self.assertIn("flutter build apk --release", workflow)
         self.assertIn("timeout 15s adb logcat -d", workflow)
 
     def test_ios_uses_provider_owned_udp_transport(self) -> None:
