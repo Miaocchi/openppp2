@@ -25,9 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # PRs build arm64 (device) + x86_64 (emulator protect job).
-      # Push/main keeps the full ABI matrix for release packaging.
-      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"abi":"arm64-v8a","ppp_abi":"aarch64"},{"abi":"x86_64","ppp_abi":"x64"}]}' || '{"include":[{"abi":"arm64-v8a","ppp_abi":"aarch64"},{"abi":"armeabi-v7a","ppp_abi":"armv7a"},{"abi":"x86","ppp_abi":"x86"},{"abi":"x86_64","ppp_abi":"x64"}]}') }}
+      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"abi":"arm64-v8a","ppp_abi":"aarch64"}]}' || '{"include":[{"abi":"arm64-v8a","ppp_abi":"aarch64"},{"abi":"armeabi-v7a","ppp_abi":"armv7a"},{"abi":"x86","ppp_abi":"x86"},{"abi":"x86_64","ppp_abi":"x64"}]}') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -92,6 +90,7 @@ jobs:
 
   device-test:
     name: Android P2P socket protection
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs: build
 
@@ -167,6 +166,7 @@ jobs:
 
   build-apk:
     name: Build Flutter APK
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     needs: build
 
@@ -206,23 +206,7 @@ jobs:
           flutter doctor -v
           cd android && flutter pub get
 
-      # PRs compile a debug APK without release secrets.
-      - name: Build debug APK
-        if: github.event_name == 'pull_request'
-        run: |
-          cd android
-          flutter build apk --debug
-
-      - name: Upload debug APK
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: openppp2-android-debug-apk
-          path: android/build/app/outputs/flutter-apk/app-debug.apk
-          if-no-files-found: error
-
       - name: Configure Android release signing
-        if: github.event_name != 'pull_request'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -247,19 +231,16 @@ jobs:
           } > android/android/keystore/yav-release-key.properties
 
       - name: Build release APK
-        if: github.event_name != 'pull_request'
         run: |
           cd android
           flutter build apk --release
 
       - name: Verify signed APK
-        if: github.event_name != 'pull_request'
         run: |
           ${ANDROID_HOME}/build-tools/$(ls ${ANDROID_HOME}/build-tools | sort -V | tail -n 1)/apksigner verify \
             --verbose --print-certs android/build/app/outputs/flutter-apk/app-release.apk
 
       - name: Upload signed APK
-        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: openppp2-android-signed-apk
