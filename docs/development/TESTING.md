@@ -12,6 +12,18 @@
 
 OpenPPP2 has unit tests for C++, Guardian Go logic, Flutter UI helpers, and iOS shared logic. GitHub Actions workflow **Test - Unit** runs these suites on pull requests to `main`.
 
+## PR vs main CI (functional first)
+
+Pull requests prioritize **functional** coverage that does not need an emulator or signed APK:
+
+| Layer | PR signal (`Test · Unit` + light Android NDK) | Not on every PR (quota) |
+| --- | --- | --- |
+| Shared core | Standalone C++ `ctest`, lifecycle ASan/UBSan, Route/DNS namespace rollback, include/layout gates | Full production `ppp` link tree, live VPN/server smoke |
+| UI / contracts | `flutter test`, Dart/Swift/C++ runtime-contract fixtures, iOS XCTest | Flutter drive / full VpnService UI automation |
+| Android packaging | arm64 NDK compile only | `device-test` emulator protect, signed `build-apk` |
+
+`device-test` and `build-apk` stay on `main` push / `workflow_dispatch`. They prove packaging and one emulator protect path; they are not substitutes for the functional suites above. Physical-device VPN E2E remains manual (`android/tools/vpn_e2e_test.sh`).
+
 ## RED/GREEN Policy
 
 1. Write or preserve a failing regression test first.
