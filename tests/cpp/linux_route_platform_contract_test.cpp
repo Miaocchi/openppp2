@@ -7,14 +7,14 @@
 
 namespace route = ppp::app::client::route;
 
-BOOST_AUTO_TEST_CASE(interface_selection_uses_tap_known_nic_then_underlying) {
+BOOST_AUTO_TEST_CASE(interface_selection_uses_tap_known_nic_then_tap_fallback) {
     const std::unordered_map<uint32_t, std::string> nics = {
         { 20u, "wlan0" },
     };
 
     BOOST_TEST(route::SelectLinuxInterface(10u, 10u, "tap0", "eth0", nics) == "tap0");
     BOOST_TEST(route::SelectLinuxInterface(20u, 10u, "tap0", "eth0", nics) == "wlan0");
-    BOOST_TEST(route::SelectLinuxInterface(30u, 10u, "tap0", "eth0", nics) == "eth0");
+    BOOST_TEST(route::SelectLinuxInterface(30u, 10u, "tap0", "eth0", nics) == "tap0");
 }
 
 BOOST_AUTO_TEST_CASE(platform_delegates_operations_with_stable_interface_snapshot) {
@@ -60,7 +60,7 @@ BOOST_AUTO_TEST_CASE(platform_delegates_operations_with_stable_interface_snapsho
 
     route::RouteSpec spec;
     spec.network = 1u;
-    spec.gateway = 20u;
+    spec.gateway = 30u;
     spec.prefix = 32;
     route::RouteSnapshotPtr snapshot = platform.CaptureDefaults();
     BOOST_REQUIRE(snapshot != nullptr);
@@ -70,7 +70,7 @@ BOOST_AUTO_TEST_CASE(platform_delegates_operations_with_stable_interface_snapsho
     BOOST_TEST(platform.RestoreDefaults(snapshot));
 
     const ppp::vector<ppp::string> expected = {
-        "capture:10", "remove:wlan0", "add:wlan0", "delete:wlan0", "restore:tap0"
+        "capture:10", "remove:wlan0", "add:tap0", "delete:tap0", "restore:tap0"
     };
     BOOST_TEST(calls == expected, boost::test_tools::per_element());
 }
