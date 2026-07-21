@@ -266,7 +266,7 @@ enum L10n {
         "profiles.exported": ("配置已导出", "Profiles exported"),
         "profiles.import": ("导入", "Import"),
         "profiles.invalidSubscription": ("订阅地址无效", "Invalid Subscription URL"),
-        "profiles.invalidSubscription.message": ("订阅地址必须是 http 或 https URL。", "Subscription URL must be an http or https URL."),
+        "profiles.invalidSubscription.message": ("订阅地址必须是 HTTPS URL；仅允许本机开发 HTTP 地址。", "Subscription URL must use HTTPS; only local development HTTP URLs are allowed."),
         "profiles.fetching": ("正在拉取订阅...", "Fetching subscription..."),
         "profiles.subscriptionFailed": ("订阅导入失败", "Subscription Import Failed"),
         "profiles.subscriptionBadResponse": ("响应为空、过大或不是 UTF-8。", "Response is empty, too large, or not UTF-8."),
@@ -966,3 +966,33 @@ extension UIViewController {
         present(alert, animated: true)
     }
 }
+
+func isSecureSubscriptionURL(_ url: URL) -> Bool {
+    guard let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return false }
+    if scheme == "https" { return true }
+    if scheme != "http" { return false }
+    return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+}
+
+final class SecureSubscriptionRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let url = request.url, isSecureSubscriptionURL(url) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+}
+
+private let secureSubscriptionRedirectDelegate = SecureSubscriptionRedirectDelegate()
+let secureSubscriptionSession = URLSession(
+    configuration: .default,
+    delegate: secureSubscriptionRedirectDelegate,
+    delegateQueue: nil
+)
