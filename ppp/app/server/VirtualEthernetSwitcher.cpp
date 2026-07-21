@@ -4292,6 +4292,71 @@ namespace ppp {
                     configuration_->server.subnet;
             }
 
+            static bool ParsePeerPrefixNetwork(const ppp::app::protocol::PeerPrefixRouteEntry& prefix, uint32_t& network) noexcept {
+                network = 0;
+                if (prefix.prefix <= 0 || prefix.prefix > net::native::MAX_PREFIX_VALUE_V4) {
+                    return false;
+                }
+
+                boost::system::error_code ec;
+                boost::asio::ip::address address = StringToAddress(prefix.network, ec);
+                if (ec || !address.is_v4()) {
+                    return false;
+                }
+
+                uint32_t raw = address.to_v4().to_uint();
+                uint32_t mask = ntohl(net::IPEndPoint::PrefixToNetmask(prefix.prefix));
+                network = raw & mask;
+                return network != 0;
+            }
+
+            static bool IsDangerousPeerPrefix(uint32_t network, int prefix) noexcept {
+                uint32_t mask = ntohl(net::IPEndPoint::PrefixToNetmask(prefix));
+                auto in_range = [&](uint32_t base, int base_prefix) noexcept -> bool {
+                    uint32_t base_mask = ntohl(net::IPEndPoint::PrefixToNetmask(base_prefix));
+                    return prefix >= base_prefix && (network & base_mask) == (base & base_mask);
+                };
+
+                if ((network & mask) == 0) {
+                    return true;
+                }
+
+                return in_range(0x00000000u, 8) ||      // 0.0.0.0/8 and default-like routes.
+                    in_range(0x7f000000u, 8) ||         // Loopback.
+                    in_range(0xa9fe0000u, 16) ||        // IPv4 link-local, including metadata endpoints.
+                    in_range(0xe0000000u, 4) ||         // Multicast.
+                    in_range(0xf0000000u, 4);           // Reserved/broadcast space.
+            }
+
+            bool VirtualEthernetSwitcher::IsPeerRouteAnnouncementAllowed(const Int128& session_id, const ppp::app::protocol::PeerPrefixRouteEntry& prefix) const noexcept {
+                if (NULLPTR == configuration_) {
+                    return false;
+                }
+
+                uint32_t requested_network = 0;
+                if (!ParsePeerPrefixNetwork(prefix, requested_network) || IsDangerousPeerPrefix(requested_network, prefix.prefix)) {
+                    return false;
+                }
+
+                ppp::string session_guid = auxiliary::StringAuxiliary::Int128ToGuidString(session_id);
+                for (const AppConfiguration::PeerPrefixRouteConfiguration& allowed : configuration_->server.peer_routing.allowed_routes) {
+                    if (allowed.guid.empty() || ToLower(allowed.guid) != ToLower(session_guid) || allowed.prefix != prefix.prefix) {
+                        continue;
+                    }
+
+                    ppp::app::protocol::PeerPrefixRouteEntry allowed_prefix;
+                    allowed_prefix.network = allowed.network;
+                    allowed_prefix.prefix = allowed.prefix;
+
+                    uint32_t allowed_network = 0;
+                    if (ParsePeerPrefixNetwork(allowed_prefix, allowed_network) && allowed_network == requested_network) {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
             void VirtualEthernetSwitcher::RebuildPeerPrefixRibLocked() noexcept {
                 peer_prefix_rib_.Clear();
                 for (const auto& kv : peer_prefix_gateways_) {
@@ -4411,7 +4476,7 @@ namespace ppp {
                 record.VirtualIP = virtual_ip;
                 record.Exchanger = exchanger;
                 for (const auto& prefix : request.PeerRouteAnnounce.prefixes) {
-                    if (prefix.HasAny()) {
+                    if (prefix.HasAny() && IsPeerRouteAnnouncementAllowed(session_id, prefix)) {
                         record.Prefixes.emplace_back(prefix);
                     }
                 }

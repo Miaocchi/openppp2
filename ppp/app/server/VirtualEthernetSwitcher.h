@@ -809,6 +809,7 @@ namespace ppp {
 
             private:
                 void                                                    RebuildPeerPrefixRibLocked() noexcept;
+                bool                                                    IsPeerRouteAnnouncementAllowed(const Int128& session_id, const ppp::app::protocol::PeerPrefixRouteEntry& prefix) const noexcept;
                 template <typename TTransmission>
                 typename std::enable_if<std::is_base_of<ITransmission, TTransmission>::value, std::shared_ptr<TTransmission>/**/>::type
                 /**
