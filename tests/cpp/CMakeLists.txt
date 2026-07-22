@@ -86,6 +86,7 @@ openppp2_add_cpp_test(client_bypass_route_loader_test SOURCES
     client_bypass_route_loader_test.cpp
     support/ppp_test_stubs.cpp
     "${OPENPPP2_ROOT}/ppp/hash/hash_bytes.cpp")
+openppp2_add_cpp_test(peer_route_snapshot_policy_test SOURCES peer_route_snapshot_policy_test.cpp)
 openppp2_add_cpp_test(exchanger_static_echo_channel_test SOURCES
     exchanger_static_echo_channel_test.cpp
     support/ppp_test_stubs.cpp
