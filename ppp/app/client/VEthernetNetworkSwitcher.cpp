@@ -1,5 +1,6 @@
 #include <ppp/app/client/dns/DnsResponseHandler.h>
 #include <ppp/app/client/ClientNetworkInterfaceResolver.h>
+#include <ppp/app/client/PeerRouteSnapshotPolicy.h>
 #include <ppp/app/client/VEthernetNetworkTcpipStack.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/configurations/AppConfiguration.h>
@@ -634,7 +635,7 @@ namespace ppp {
                     dynamic_peer_routes_.clear();
                 }
                 if (NULLPTR != configuration_ && !configuration_->client.peer_routes.empty()) {
-                    ApplyPeerPrefixRoutes(extensions);
+                    ApplyPeerPrefixRoutes(WithoutDynamicPeerRouteSnapshot(extensions));
                 }
 
                 std::shared_ptr<ppp::transmissions::ITransmissionQoS> qos = qos_;
