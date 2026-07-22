@@ -22,6 +22,9 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.system.OsConstants
 import android.util.Log
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
 import org.json.JSONObject
 import supersocksr.ppp.android.c.libopenppp2
 
@@ -448,11 +451,15 @@ class PppVpnService : VpnService() {
             if (systemHttpProxy) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     val port = parseHttpProxyPort(configJson)
-                    try {
-                        builder.setHttpProxy(ProxyInfo.buildDirectProxy("127.0.0.1", port))
-                        PppLog.write(this, "system http proxy set 127.0.0.1:$port")
-                    } catch (e: Throwable) {
-                        PppLog.write(this, "setHttpProxy failed", e)
+                    if (canBindLoopbackProxyPort(port)) {
+                        try {
+                            builder.setHttpProxy(ProxyInfo.buildDirectProxy("127.0.0.1", port))
+                            PppLog.write(this, "system http proxy set 127.0.0.1:$port")
+                        } catch (e: Throwable) {
+                            PppLog.write(this, "setHttpProxy failed", e)
+                        }
+                    } else {
+                        PppLog.write(this, "system http proxy skipped; 127.0.0.1:$port is already in use")
                     }
                 } else {
                     PppLog.write(this, "system http proxy skipped (requires API 29+)")
@@ -624,6 +631,27 @@ class PppVpnService : VpnService() {
         }
         PppStateStore.set(this, state)
         MainActivity.sendEvent(mapOf("type" to "state", "value" to state))
+    }
+
+    /**
+     * Returns true only when the configured loopback proxy endpoint is not
+     * already owned by another local process. Android publishes this endpoint
+     * to VPN-routed apps before the native proxy thread starts, so advertising
+     * a port that is already bound would let another app receive proxied HTTP
+     * requests or CONNECT metadata.
+     */
+    private fun canBindLoopbackProxyPort(port: Int): Boolean {
+        if (port !in 1..65535) return false
+        return try {
+            ServerSocket().use { socket ->
+                socket.reuseAddress = false
+                socket.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port))
+            }
+            true
+        } catch (e: Throwable) {
+            PppLog.write(this, "loopback proxy port preflight failed for 127.0.0.1:$port", e)
+            false
+        }
     }
 
     /**
