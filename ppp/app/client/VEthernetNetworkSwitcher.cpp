@@ -624,10 +624,16 @@ namespace ppp {
                 }
 
                 if (extensions.PeerRouteTable.HasAny()) {
-                    dynamic_peer_routes_ = extensions.PeerRouteTable.routes;
-                    ApplyPeerPrefixRoutes(extensions);
+                    /*
+                     * Peer route-table snapshots can contain routes derived from
+                     * other clients.  Do not install dynamic routes unless a future
+                     * configuration option explicitly opts the recipient into this
+                     * behavior with policy checks.  Static client.peer-routes below
+                     * continue to be applied when configured locally.
+                     */
+                    dynamic_peer_routes_.clear();
                 }
-                elif (!configuration_->client.peer_routes.empty()) {
+                if (NULLPTR != configuration_ && !configuration_->client.peer_routes.empty()) {
                     ApplyPeerPrefixRoutes(extensions);
                 }
 

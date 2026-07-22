@@ -4426,35 +4426,15 @@ namespace ppp {
                     return false;
                 }
 
-                PeerPrefixGatewayRecord record;
-                record.SessionId = session_id;
-                record.VirtualIP = virtual_ip;
-                record.Exchanger = exchanger;
-                for (const auto& prefix : request.PeerRouteAnnounce.prefixes) {
-                    if (prefix.HasAny()) {
-                        record.Prefixes.emplace_back(prefix);
-                    }
-                }
-
-                if (record.Prefixes.empty()) {
-                    response.PeerRouteAnnounce.action = "reject";
-                    return false;
-                }
-
-                {
-                    SynchronizedObjectScope scope(syncobj_);
-                    peer_prefix_gateways_[session_id] = std::move(record);
-                    RebuildPeerPrefixRibLocked();
-                }
-
-                response.PeerRouteAnnounce.action = "registered";
-                BuildPeerRouteTableSnapshot(response.PeerRouteTable, &session_id);
-
-                if (NULLPTR != configuration_ && configuration_->server.peer_routing.distribute) {
-                    BroadcastPeerRouteTable(nullof<YieldContext>());
-                }
-
-                return true;
+                /*
+                 * Dynamic peer-prefix announcements are client-controlled.  Until
+                 * the server has an authorization model that binds each client to
+                 * an explicit prefix allowlist, do not accept or redistribute these
+                 * routes.  Static client.peer-routes remain available for operators
+                 * that intentionally configure peer gateways on each recipient.
+                 */
+                response.PeerRouteAnnounce.action = "reject";
+                return false;
             }
 
             void VirtualEthernetSwitcher::BroadcastPeerRouteTable(YieldContext& y) noexcept {
