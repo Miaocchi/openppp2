@@ -25,7 +25,7 @@ BOOST_AUTO_TEST_CASE(track_retain_and_release_on_ack) {
 
     std::vector<std::uint64_t> fast;
     std::vector<mux::MuxAckRange> ranges = { {1, 1} };
-    const std::uint64_t sample = rtx.Ack(7, 1, ranges, 1100, 3, fast);
+    const std::uint64_t sample = rtx.Ack(7, 1, ranges, 1100, 3, 0, fast);
 
     BOOST_TEST(sample == 100u); // 1100 - 1000, entry never retransmitted.
     BOOST_TEST(rtx.size() == 1u);
@@ -50,7 +50,7 @@ BOOST_AUTO_TEST_CASE(fast_retransmit_candidates_follow_the_distance_rule) {
     // ACK covers 4..6 with largest 6: seq 1..3 sit at least 3 below largest.
     std::vector<std::uint64_t> fast;
     std::vector<mux::MuxAckRange> ranges = { {4, 6} };
-    rtx.Ack(3, 6, ranges, 2000, 3, fast);
+    rtx.Ack(3, 6, ranges, 2000, 3, 0, fast);
 
     BOOST_TEST(rtx.size() == 3u); // 4..6 released.
     BOOST_REQUIRE_EQUAL(fast.size(), 3u);
@@ -63,7 +63,7 @@ BOOST_AUTO_TEST_CASE(fast_retransmit_candidates_follow_the_distance_rule) {
     std::vector<std::uint64_t> fast_again;
     std::vector<mux::MuxAckRange> ranges_again = { {7, 7} };
     rtx.Track(3, 7, make_frame(7), 10, 1000, 1 << 20);
-    rtx.Ack(3, 6, ranges_again, 2100, 3, fast_again); // largest unchanged at 6
+    rtx.Ack(3, 6, ranges_again, 2100, 3, 0, fast_again); // largest unchanged at 6
     BOOST_TEST(fast_again.empty());
 }
 
@@ -74,7 +74,7 @@ BOOST_AUTO_TEST_CASE(no_rtt_sample_from_retransmitted_frames) {
 
     std::vector<std::uint64_t> fast;
     std::vector<mux::MuxAckRange> ranges = { {1, 1} };
-    const std::uint64_t sample = rtx.Ack(0, 1, ranges, 2000, 3, fast);
+    const std::uint64_t sample = rtx.Ack(0, 1, ranges, 2000, 3, 0, fast);
     BOOST_TEST(sample == 0u); // Karn's rule: retransmitted frames give no sample.
 }
 
@@ -85,15 +85,15 @@ BOOST_AUTO_TEST_CASE(collect_expired_respects_pto_and_count_bound) {
     BOOST_TEST(rtx.Track(0, 3, make_frame(3), 10, 1900, 1 << 20));
 
     std::vector<std::uint64_t> expired;
-    rtx.CollectExpired(2000, 400, 32, expired); // entries idle >= 400ms: seq 1 and 2
+    rtx.CollectExpired(2000, 400, 60000, 32, expired); // entries idle >= 400ms: seq 1 and 2
     BOOST_REQUIRE_EQUAL(expired.size(), 2u);
 
     std::vector<std::uint64_t> bounded;
-    rtx.CollectExpired(2000, 400, 1, bounded);
+    rtx.CollectExpired(2000, 400, 60000, 1, bounded);
     BOOST_REQUIRE_EQUAL(bounded.size(), 1u);
 
     std::vector<std::uint64_t> none;
-    rtx.CollectExpired(1100, 400, 32, none);
+    rtx.CollectExpired(1100, 400, 60000, 32, none);
     BOOST_TEST(none.empty());
 }
 
