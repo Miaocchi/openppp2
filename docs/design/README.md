@@ -1,12 +1,12 @@
 # Design Documents
 > Status: Active
 > Type: Design
-> Last verified: 82643dc
+> Last verified: d9c2bb4
 
 > **Purpose:** Index active, status-bound design evidence that has not become stable reference material.
 > **Audience:** OPENPPP2 maintainers and reviewers.
 > **Status:** Current design index.
-> **Last verified against:** Current design tree, desktop client implementation under `desktop/client/`, and documentation governance, 2026-07-22.
+> **Last verified against:** Current design tree, desktop client implementation under `desktop/client/`, and documentation governance, 2026-08-17.
 > **Parent index:** [Architecture](../architecture/README.md)
 
 Design documents describe behavior before implementation and remain status-bound evidence. Stable behavior moves
@@ -24,4 +24,5 @@ stable-reference claims.
 - [桌面客户端手动节点与启动参数设计](CLIENT_MANUAL_PROFILES_DESIGN_CN.md)
 - [OpenPPP2 Client 管理器 UI/UX 设计](CLIENT_UIUX_DESIGN_CN.md)
 - [VMUX 可靠性子协议设计(ACK + 快速重传 + FEC)](MUX_RELIABILITY_FEC_DESIGN_CN.md)
+- [Netstack2 接入 OpenPPP2 设计](NETSTACK2_INTEGRATION_CN.md)
 - [Client UI mockup](mockups/client-connected.html)
