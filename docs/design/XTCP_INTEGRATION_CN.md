@@ -576,3 +576,25 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 - patchset 0001-0005 合并 sha256: `bf8e25bf32110e755de34be1cb842c299392e6be3f98fd6daebac9695dc6464d`
 - GSO 模式：off/on 双模均属基线；单核 pinned CPU8
 - 基线配对比（KCC 修复+两层优化后，单轮样本）：P1 DL off 1.06-1.09×、P1 DL on 0.59-0.60×、P1 UL on 0.56-0.57×、P16 DL off 1.51-1.57×、P16 DL on 0.91-0.93×、P16 UL on 0.486-0.487×
+
+### 11.6 `XTCP-SHARED-PATH-001` S0：共享资源审计与分片单位定案（2026-09-02，单核基线 `ec3bc66` 之后）
+
+**S0 三个问题的回答：**
+
+1. **P16 的 shared resource 饱和点**：单核 pin 下不是任何一个共享锁，而是"整个 runtime 只有一个执行域"本身（owner strand 串行 = 全部 flow 的 Inject/ACK/定时器）。两轮优化后 queue 延迟已打掉，剩余差距是执行域宽度，不是某个 mutex 热点。
+2. **最小可安全分片单位 = XtcpRuntime 实例**（方案 (a)：N 个完整 runtime，switcher 按 flow 4-tuple hash 路由 Submit）。不用方案 (b)（单 stack 多 strand 驱动）：上游 stack 虽有 per-conn shard 锁（`ShardOf` + `recursive_mutex`），但 accept/listen/timer/回调契约是 stack 全局的，方案 (b) 破坏"回调在 owner 线程"语义；方案 (a) 复用全部已验证 runtime 代码、可回滚、隔离清晰。同一 flow（含 SYN/deferred_syn）按 4-tuple hash 永远落同一 shard，ordering/ACK 状态/generation/close 生命周期天然保持。
+3. **共享资源分类**（S1 实现的约束清单）：
+
+| 资源 | 类 | 说明 |
+|---|---|---|
+| XtcpRuntime::Impl（strand/flows_/listeners_/stack_/backend_/budget/poll timer/handoff/stats） | A | 每 shard 一份（方案 a 即此含义） |
+| ITap 写路径（`_write_mutex` + 单 fd + TAP strand） | D 候选（低危） | 临界区 O(1) push，sync drain 已批量化；内核侧 fd write 本就串行。S1 必须报告 per-shard enqueue p95 证实无新排队 |
+| XtcpPoolLease 全局 BufRef 池（`pool_sync` 单 mutex） | D 候选（中危） | UL 每 包 Acquire 都过这把锁。2 shard 先测量池锁竞争；若 p95 恶化 → per-shard lease |
+| GlobalQueueBudget / flow write_queue 记账 | A（语义变更点） | per-runtime 后全局上限变 32MiB×N——S1 需决策：总量守恒（每 shard 32MiB/N）或按 shard 放大（先 32MiB×N，报告 high-water） |
+| runtime stats / perf JSON | A | 每 shard 独立输出（shard 标签），汇总在矩阵脚本层做 |
+| packet_dispatch_ / switcher OnPacketInput | B（新增路由器） | 解析 4-tuple → hash → shard；复用 XtcpRuntime 的 ParsePacket |
+| crypto/mux/carrier | 不在 XTCP 数据面 | client 侧 flow 经 loopback connector 桥接本地应用，wire 侧在 server 实例；server 线程入口同 pattern 路由 |
+
+**S1 矩阵（冻结）**：P=1/4/16/64 × shards=1/2 × UL/DL × GSO off/on；每 cell 报 SUM Mbps、per-flow p10/p50/p90/min/max、Jain fairness、zero-rate flows、process cores、Mbps/core、ns/B、per-shard packets/bytes/flows/CPU/queue p50/p95/p99/high-water、global budget high-water/rejections/OnReceive(false)。**吞吐与单位 CPU 效率必须同时报告**。
+
+**2-shard 工程门槛（非 CI gate）**：P16/P64 throughput ≥1.5× 1-shard 且 total CPU ≤2.1 cores 且 per-core 效率 ≥0.75× 基线 且 zero-rate=0 且 Jain ≥0.98 且 global rejection ≈ 0 且 OnReceive(false) ≈ 0 且 lifecycle/记账回归零。达 1.6-1.8× 才扩 4 shard；<1.5× 停下找新串行点，不扩规模。KCC/PACING-001 与本战线严格串行，不同时改。
