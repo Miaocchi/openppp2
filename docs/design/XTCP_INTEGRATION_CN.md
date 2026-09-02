@@ -567,3 +567,12 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 | P2 | `XTCP-SHARED-PATH-001` | P16/64/256 shared-path 容量、全局 budget 水位压力矩阵（确定 production 默认值）、fairness 与容量门禁。**首要观察项：P16 upload 的 paired ratio（xtcp/native）已从 ~0.89 漂移至 ~0.67**——native 自身波动不能完全解释该相对比值漂移，须厘清其中 XTCP 额外损失的成分；同时确认 P=4"共享路径候选分水岭"是否可复现升级为定案 |
 | P1 | `XTCP-NDI-MEMORY-001` | C 榜 attribution：不走 TUN、不改 XTCP core 与 tunnel wire，NDI Output 直接进 memory-backed sink、输入由 memory source 喂入，保持相同 packet bytes/MTU/TCP options、单 owner / single-core。回答"去掉 TUN/Tap 后 OpenPPP2 XTCP adapter 自己能跑多少"；对 UL/DL 分开测（RX→NDI direct sink 与 memory source→XTCP TX 分岔），把 NDI/backend ceiling 与 KCC pacing/cwnd ceiling 分开 |
 | P2 | `LWIP-NETIF-MEMORY-001` | C 榜 lwIP 阶梯：in-memory netif → bare TUN → OpenPPP2 VNet → full PPP，与 XTCP 的保留率对比，回答 integration 更适合哪个执行模型 |
+
+**XTCP-SINGLECORE-BASELINE-20260902（单核优化封板锚点，多核结果一律相对此基线报告）：**
+
+- 锚点 commit：本 commit（`XTCP-SINGLECORE-BASELINE-20260902`）；内容冻结于 ba67601（docs）+ 本记录
+- ppp binary sha256: `e68b1e75deac0636577069fa99b8a715ab98f243a913ec871ec6937ba63680fe`（build/xtcp-runtime-root，Release，）
+- XTCP upstream revision: `e79db8fd10a1ee39be2dc3a9361727fcad79d04c`（archive sha256 `fd194478...`）
+- patchset 0001-0005 合并 sha256: `bf8e25bf32110e755de34be1cb842c299392e6be3f98fd6daebac9695dc6464d`
+- GSO 模式：off/on 双模均属基线；单核 pinned CPU8
+- 基线配对比（KCC 修复+两层优化后，单轮样本）：P1 DL off 1.06-1.09×、P1 DL on 0.59-0.60×、P1 UL on 0.56-0.57×、P16 DL off 1.51-1.57×、P16 DL on 0.91-0.93×、P16 UL on 0.486-0.487×
