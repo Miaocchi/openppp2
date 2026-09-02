@@ -13,6 +13,7 @@
 #include <ppp/tap/ITap.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 
 #if defined(_WIN32)
 #include <windows/ppp/tap/TapWindows.h>
@@ -473,6 +474,8 @@ namespace ppp
                     int len = std::max<int>(ec ? -1 : sz, -1);
                     if (len > 0)
                     {
+                        // Lab-only JSONL: successful kernel read completion count and bytes.
+                        ppp::diagnostics::datapath_perf::RecordTunRead(len);
                         PacketInputEventArgs e{ _packet, len };
                         OnInput(e);
                     }
@@ -547,6 +550,8 @@ namespace ppp
                         arm = true;
                     }
                 }
+                // Lab-only JSONL: packet accepted into the single async-write queue.
+                ppp::diagnostics::datapath_perf::RecordTunWriteEnqueued(packet_size);
 
                 if (arm)
                 {
@@ -590,11 +595,16 @@ namespace ppp
             }
 
             std::shared_ptr<Byte> packet = front.first;
+            ppp::diagnostics::datapath_perf::Scope write_scope;
             std::shared_ptr<ITap> self = shared_from_this();
             boost::asio::async_write(*stream, boost::asio::buffer(packet.get(), front.second),
                 boost::asio::bind_executor(*_strand,
-                    [self, this, stream, packet](const boost::system::error_code& ec, std::size_t sz) noexcept
+                    [self, this, stream, packet, write_scope](const boost::system::error_code& ec, std::size_t sz) noexcept
                     {
+                        // Lab-only JSONL: physical kernel-write completion bytes and post-to-completion time.
+                        if (!ec) {
+                            ppp::diagnostics::datapath_perf::RecordTunWriteCompleted((int)sz, write_scope.Elapsed());
+                        }
                         /**
                          * @brief Completion handler finalizes on cancellation errors.
                          */

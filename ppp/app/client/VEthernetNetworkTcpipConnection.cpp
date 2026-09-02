@@ -1,5 +1,6 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/client/VEthernetNetworkTcpipConnection.h>
+#include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
 #include <ppp/app/client/VEthernetNetworkTcpipForwarding.inl>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
@@ -50,8 +51,23 @@ namespace ppp {
                 Update();
             }
 
+            void VEthernetNetworkTcpipConnection::SetExternalFirstLeg(
+                uint64_t runtime_generation,
+                uint64_t flow_generation,
+                const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept {
+                external_runtime_generation_ = runtime_generation;
+                external_flow_generation_ = flow_generation;
+                external_first_leg_hooks_ = hooks;
+            }
+
             /** @brief Finalizes owned forwarding channels. */
             VEthernetNetworkTcpipConnection::~VEthernetNetworkTcpipConnection() noexcept {
+                if (!external_closed_signaled_.exchange(true, std::memory_order_acq_rel)) {
+                    if (std::shared_ptr<xtcp::XtcpFirstLegHooks> hooks = external_first_leg_hooks_.lock()) {
+                        hooks->OnFirstLegClosed(
+                            external_runtime_generation_, external_flow_generation_);
+                    }
+                }
                 Finalize();
             }
 
@@ -84,6 +100,13 @@ namespace ppp {
             void VEthernetNetworkTcpipConnection::Dispose() noexcept {
                 if (IsDisposed()) {
                     return;
+                }
+
+                if (!external_closed_signaled_.exchange(true, std::memory_order_acq_rel)) {
+                    if (std::shared_ptr<xtcp::XtcpFirstLegHooks> hooks = external_first_leg_hooks_.lock()) {
+                        hooks->OnFirstLegClosed(
+                            external_runtime_generation_, external_flow_generation_);
+                    }
                 }
 
                 auto self = shared_from_this();
@@ -499,6 +522,22 @@ namespace ppp {
                         ppp::telemetry::Log(acked ? ppp::telemetry::Level::kDebug : ppp::telemetry::Level::kInfo, "tcpip", "ack accept result=%d remote=%s:%u", acked ? 1 : 0, GetRemoteEndPoint().address().to_string().c_str(), GetRemoteEndPoint().port());
                         return acked;
                     });
+            }
+
+            bool VEthernetNetworkTcpipConnection::AckAccept() noexcept {
+                if (!IsExternal()) {
+                    return TapTcpClient::AckAccept();
+                }
+                if (external_ready_signaled_.exchange(true, std::memory_order_acq_rel)) {
+                    return true;
+                }
+                std::shared_ptr<xtcp::XtcpFirstLegHooks> hooks = external_first_leg_hooks_.lock();
+                if (NULLPTR == hooks) {
+                    return false;
+                }
+                hooks->OnFirstLegReady(
+                    external_runtime_generation_, external_flow_generation_);
+                return Establish();
             }
 
             /**

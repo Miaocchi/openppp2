@@ -1,6 +1,7 @@
 #include <ppp/transmissions/ITcpipTransmission.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 
 /**
  * @file ITcpipTransmission.cpp
@@ -222,12 +223,17 @@ namespace ppp {
             boost::system::error_code read_ec;
             std::size_t bytes_transferred = 0;
             auto buffer = boost::asio::buffer(packet.get(), length);
+            // Lab-only JSONL: exact carrier receive post-to-completion duration.
+            ppp::diagnostics::datapath_perf::Scope receive_scope;
             boost::asio::post(socket->get_executor(),
-                [socket, buffer, &y, &read_ec, &bytes_transferred]() noexcept {
+                [socket, buffer, &y, &read_ec, &bytes_transferred, length, receive_scope]() noexcept {
                     boost::asio::async_read(*socket, buffer,
-                        [&y, &read_ec, &bytes_transferred](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                        [&y, &read_ec, &bytes_transferred, length, receive_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
                             read_ec = ec;
                             bytes_transferred = sz;
+                            if (!ec && sz == (std::size_t)length) {
+                                ppp::diagnostics::datapath_perf::RecordCarrierReceive((int)sz, receive_scope.Elapsed());
+                            }
                             y.R();
                         });
                 });
@@ -281,12 +287,15 @@ namespace ppp {
             std::shared_ptr<IAsynchronousWriteIoQueue> self = shared_from_this();
             auto context = GetContext();
             auto strand = GetStrand();
+            // Lab-only JSONL: physical carrier send post-to-completion duration.
+            ppp::diagnostics::datapath_perf::Scope send_scope;
 
-            auto complete_do_write_bytes_async_callback = [self, this, socket, context, strand, packet, offset, packet_length, cb]() noexcept {
+            auto complete_do_write_bytes_async_callback = [self, this, socket, context, strand, packet, offset, packet_length, cb, send_scope]() noexcept {
                 boost::asio::async_write(*socket, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
-                    [self, this, context, strand, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                    [self, this, context, strand, packet, packet_length, cb, send_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool ok = ec == boost::system::errc::success;
                         if (ok) {
+                            ppp::diagnostics::datapath_perf::RecordCarrierSend((int)sz, send_scope.Elapsed());
                             std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;
                             if (statistics) {
                                 statistics->AddOutgoingTraffic(packet_length);

@@ -12,7 +12,9 @@ Go 1.22 and Node 22 are already in the base image.
 
 | Service | Lint / Test / Build / Run | Notes |
 |---------|---------------------------|-------|
-| C++ standalone unit tests (`tests/cpp`) | lint: `bash tools/check_include_boundaries.sh`, `bash tools/check_vcxproj_sources.sh`; test/build: `scripts/run-cpp-tests.sh` (cmake+ninja+clang → `ctest`); TSan: `scripts/run-cpp-tsan-tests.sh` (separate `build/test-tsan` dir, `ENABLE_TSAN=ON`, mutually exclusive with ASan/UBSan) | Does **not** need the full native dep tree. See `docs/TESTING.md`. |
+| C++ standalone unit tests (`tests/cpp`) | lint: `bash tools/check_include_boundaries.sh`, `bash tools/check_vcxproj_sources.sh`; test/build: `scripts/run-cpp-tests.sh` (cmake+ninja+clang → `ctest`); TSan: `scripts/run-cpp-tsan-tests.sh` (separate `build/test-tsan` dir, `ENABLE_TSAN=ON`, mutually exclusive with ASan/UBSan) | Does **not** need the full native dep tree. See `docs/TESTING.md`. XTCP unit tests are opt-in: configure with `-DENABLE_XTCP_TESTS=ON` (requires `third-party/xtcp`; e.g. the `build/xtcp-lab-tests` dir). |
+| XTCP upstream fault suite | `bash tools/run_xtcp_fault_suite.sh` (needs `third-party/xtcp`; prepare via `bash tools/prepare_xtcp.sh`) | Runs the patched upstream lab tests; 20 cases. See `docs/design/XTCP_INTEGRATION_CN.md`. |
+| Linux netns E2E (XTCP) | `XTCP_SOAK_SECONDS=3 XTCP_E2E_CHURN=16 bash tests/integration/linux/xtcp_tap_netns_e2e.sh` (defaults SOAK=60/CHURN=512; needs root + `ip netns`) | Full battery incl. netem, soak, stats-json and route/DNS rollback. |
 | Go Guardian (`go/guardian`) | test: `go test ./...`; build: `go build .`; run: `./guardian --config=guardian.json` | HTTP API + embedded Web UI on `127.0.0.1:18080`. |
 
 ### Non-obvious caveats

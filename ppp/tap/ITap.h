@@ -240,13 +240,11 @@ namespace ppp
             std::deque<std::pair<std::shared_ptr<Byte>, int>>               _write_queue;
             /** @brief True while an async_write is outstanding on _stream. */
             bool                                                            _write_in_progress = false;
-            /** @brief Reusable buffer for single-copy packet reads.
-             *
-             * Sized to ITap::Mtu + 4 to accommodate the 4-byte address-family
-             * header that Darwin utun prepends to every packet.  On Linux (IFF_NO_PI)
-             * the extra 4 bytes are simply unused.
+            /** @brief Reusable buffer for ordinary MTU-sized packet reads.
+             * Linux VNET/GSO reads are owned by TapLinux with its negotiated
+             * per-instance virtio-header capacity.
              */
-            Byte                                                            _packet[ITap::Mtu + 4];
+            Byte                                                            _packet[ITap::Mtu];
         };
     }
 }

@@ -47,3 +47,69 @@ BOOST_AUTO_TEST_CASE(stats_json_is_a_single_ndjson_record_without_newline) {
     BOOST_TEST(json.find('\n') == std::string::npos);
     BOOST_TEST(json.find('\r') == std::string::npos);
 }
+
+BOOST_AUTO_TEST_CASE(stats_json_omits_optional_runtime_blocks_by_default) {
+    const std::string encoded = runtime::SerializeRuntimeStats(runtime::RuntimeStatsSample());
+    Json::Value root;
+    Json::Reader reader;
+    BOOST_REQUIRE(reader.parse(encoded.data(), encoded.data() + encoded.size(), root));
+    BOOST_TEST(!root.isMember("tcp_stack"));
+    BOOST_TEST(!root.isMember("tap_linux"));
+    BOOST_TEST(!root.isMember("xtcp"));
+}
+
+BOOST_AUTO_TEST_CASE(stats_json_emits_xtcp_block_when_present) {
+    runtime::RuntimeStatsSample sample;
+    sample.has_xtcp = true;
+    sample.xtcp.ingress_submitted = 4096;
+    sample.xtcp.ingress_dropped = 7;
+    sample.xtcp.ingress_injected = 4089;
+    sample.xtcp.flows_opened = 33;
+    sample.xtcp.flows_closed = 30;
+    sample.xtcp.flows_active = 3;
+    sample.xtcp.timer_polls = 981;
+    sample.xtcp.timer_events = 210;
+    sample.xtcp.output_packets = 5100;
+    sample.xtcp.output_bytes = 7340032;
+    sample.xtcp.connector_read_bytes = 1048576;
+    sample.xtcp.connector_written_bytes = 6291456;
+
+    const std::string encoded = runtime::SerializeRuntimeStats(sample);
+    Json::Value root;
+    Json::Reader reader;
+    BOOST_REQUIRE(reader.parse(encoded.data(), encoded.data() + encoded.size(), root));
+    BOOST_REQUIRE(root.isMember("xtcp"));
+    const Json::Value& xtcp = root["xtcp"];
+    BOOST_TEST(xtcp["ingress_submitted"].asUInt64() == 4096u);
+    BOOST_TEST(xtcp["ingress_dropped"].asUInt64() == 7u);
+    BOOST_TEST(xtcp["ingress_injected"].asUInt64() == 4089u);
+    BOOST_TEST(xtcp["flows_opened"].asUInt64() == 33u);
+    BOOST_TEST(xtcp["flows_closed"].asUInt64() == 30u);
+    BOOST_TEST(xtcp["flows_active"].asUInt64() == 3u);
+    BOOST_TEST(xtcp["timer_polls"].asUInt64() == 981u);
+    BOOST_TEST(xtcp["timer_events"].asUInt64() == 210u);
+    BOOST_TEST(xtcp["output_packets"].asUInt64() == 5100u);
+    BOOST_TEST(xtcp["output_bytes"].asUInt64() == 7340032u);
+    BOOST_TEST(xtcp["connector_read_bytes"].asUInt64() == 1048576u);
+    BOOST_TEST(xtcp["connector_written_bytes"].asUInt64() == 6291456u);
+}
+
+BOOST_AUTO_TEST_CASE(stats_json_emits_tcp_stack_and_active_linux_tap_blocks) {
+    runtime::RuntimeStatsSample sample;
+    sample.requested_tcp_stack = "xtcp";
+    sample.active_tcp_stack = "xtcp";
+    sample.has_tap_linux = true;
+    sample.tap_linux.vnet_header = true;
+    sample.tap_linux.gso_merge_active = true;
+
+    const std::string encoded = runtime::SerializeRuntimeStats(sample);
+    Json::Value root;
+    Json::Reader reader;
+    BOOST_REQUIRE(reader.parse(encoded.data(), encoded.data() + encoded.size(), root));
+    BOOST_REQUIRE(root.isMember("tcp_stack"));
+    BOOST_TEST(root["tcp_stack"]["requested"].asString() == "xtcp");
+    BOOST_TEST(root["tcp_stack"]["active"].asString() == "xtcp");
+    BOOST_REQUIRE(root.isMember("tap_linux"));
+    BOOST_TEST(root["tap_linux"]["vnet_header"].asBool());
+    BOOST_TEST(root["tap_linux"]["gso_merge_active"].asBool());
+}

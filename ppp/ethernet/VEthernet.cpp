@@ -1,5 +1,6 @@
 #include <ppp/ethernet/VEthernet.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 /**
  * @file VEthernet.cpp
@@ -474,22 +475,73 @@ namespace ppp
                         /**
                          * @brief Post packet processing to netstack executor in MTA mode.
                          */
+                        const bool handoff_telemetry_enabled = ppp::diagnostics::datapath_perf::IsEnabled();
+                        std::chrono::steady_clock::time_point t0;
+                        if (handoff_telemetry_enabled)
+                        {
+                            t0 = std::chrono::steady_clock::now();
+                        }
                         pbuf* packet = lwip::netstack_pbuf_copy(iphdr, packet_length);
                         if (NULLPTR == packet)
                         {
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                         }
 
+                        std::shared_ptr<ppp::diagnostics::datapath_perf::MtaHandoffObservation> handoff_observation;
+                        if (handoff_telemetry_enabled)
+                        {
+                            std::shared_ptr<boost::asio::io_context> producer_context = Executors::GetCurrent(false);
+                            handoff_observation = std::make_shared<ppp::diagnostics::datapath_perf::MtaHandoffObservation>();
+                            handoff_observation->enabled = true;
+                            handoff_observation->producer_thread_id = GetCurrentThreadId();
+                            handoff_observation->producer_context_token = reinterpret_cast<uintptr_t>(producer_context.get());
+                            handoff_observation->target_context_token = reinterpret_cast<uintptr_t>(executor.get());
+                            handoff_observation->bytes = packet_length < 0 ? 0 : packet_length;
+                            handoff_observation->t0 = t0;
+                            handoff_observation->timeline = std::make_shared<ppp::diagnostics::datapath_perf::MtaHandoffTimeline>();
+                            ppp::diagnostics::datapath_perf::RecordVnetMtaPacketPosted();
+                            handoff_observation->t1 = std::chrono::steady_clock::now();
+                        }
                         auto self = shared_from_this();
                         boost::asio::post(*executor, 
-                            [self, this, packet, packet_length]() noexcept
+                            [self, this, packet, packet_length, handoff_observation]() noexcept
                             {
-                                int status = VETHERNET_INTERNAL::PacketInput(this, packet, packet_length, false);
-                                if (status < 1)
+                                if (handoff_observation)
                                 {
-                                    lwip::netstack_pbuf_free(packet);
+                                    const std::shared_ptr<ppp::diagnostics::datapath_perf::MtaHandoffTimeline>& timeline = handoff_observation->timeline;
+                                    // The target can start before asio::post returns. Publish T2 with release/acquire
+                                    // instead of serializing every laboratory observation through a mutex.
+                                    while (!timeline->post_returned.load(std::memory_order_acquire)) {}
+                                    const std::chrono::steady_clock::time_point t2 = timeline->t2;
+                                    const std::chrono::steady_clock::time_point t3 = std::chrono::steady_clock::now();
+                                    int status = VETHERNET_INTERNAL::PacketInput(this, packet, packet_length, false);
+                                    if (status < 1)
+                                    {
+                                        lwip::netstack_pbuf_free(packet);
+                                    }
+                                    const std::chrono::steady_clock::time_point t4 = std::chrono::steady_clock::now();
+                                    ppp::diagnostics::datapath_perf::RecordVnetMtaHandoffCompleted(
+                                        *handoff_observation, GetCurrentThreadId(), {
+                                            ppp::diagnostics::datapath_perf::ElapsedMicroseconds(handoff_observation->t0, handoff_observation->t1),
+                                            ppp::diagnostics::datapath_perf::ElapsedMicroseconds(handoff_observation->t1, t2),
+                                            ppp::diagnostics::datapath_perf::ElapsedMicroseconds(t2, t3),
+                                            ppp::diagnostics::datapath_perf::ElapsedMicroseconds(t3, t4)
+                                        });
+                                }
+                                else
+                                {
+                                    int status = VETHERNET_INTERNAL::PacketInput(this, packet, packet_length, false);
+                                    if (status < 1)
+                                    {
+                                        lwip::netstack_pbuf_free(packet);
+                                    }
                                 }
                             });
+                        if (handoff_observation)
+                        {
+                            handoff_observation->timeline->t2 = std::chrono::steady_clock::now();
+                            handoff_observation->timeline->post_returned.store(true, std::memory_order_release);
+                        }
                         return true;
                     }
 #endif

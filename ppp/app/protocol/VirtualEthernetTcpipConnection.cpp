@@ -4,6 +4,7 @@
 #include <ppp/net/Ipep.h>
 #include <ppp/net/Socket.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 
 #include <deque>
@@ -25,7 +26,6 @@ namespace ppp {
         namespace protocol {
             static constexpr int kTransmissionBinaryHeaderSize = 3;
             static constexpr int kPlaintextBase94MaxTcpReadSize = (PPP_BUFFER_SIZE / 2) - kTransmissionBinaryHeaderSize;
-
             /**
              * @brief Temporary linklayer helper used during connect/accept handshake.
              */
@@ -700,10 +700,11 @@ namespace ppp {
              * @param buffer Shared receive buffer.
              * @param buffer_size Buffer capacity.
              * @param bytes_transferred Number of valid bytes.
+             * @param transmission_write_accepted_scope Read-to-write-completion timer.
              * @return True when async transmission write is accepted.
              * @note Completion callback decides whether to continue receive loop.
              */
-            bool VirtualEthernetTcpipConnection::ForwardSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size, int bytes_transferred) noexcept {
+            bool VirtualEthernetTcpipConnection::ForwardSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size, int bytes_transferred, ppp::diagnostics::datapath_perf::Scope transmission_write_accepted_scope) noexcept {
                 if (NULLPTR == buffer || buffer_size < 1 || bytes_transferred < 1) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionForwardSocketInvalidArguments);
                     return false;
@@ -727,7 +728,7 @@ namespace ppp {
 
                 auto self = shared_from_this();
                 return transmission->Write(buffer.get(), bytes_transferred,
-                    [self, this, buffer, buffer_size, bytes_transferred](bool ok) noexcept {
+                    [self, this, buffer, buffer_size, bytes_transferred, transmission_write_accepted_scope](bool ok) noexcept {
                         if (!ok) {
                             ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
                                 "tcpip",
@@ -736,6 +737,10 @@ namespace ppp {
                                 (int)ppp::diagnostics::GetLastErrorCode(),
                                 disposed_ ? "yes" : "no",
                                 connected_ ? "yes" : "no");
+                        }
+                        else {
+                            ppp::diagnostics::datapath_perf::RecordTcpipBridgeTransmissionWriteAccepted(
+                                bytes_transferred, transmission_write_accepted_scope.Elapsed());
                         }
                         ForwardSocketToTransmissionOK(ok, buffer, buffer_size);
                     });
@@ -794,18 +799,22 @@ namespace ppp {
                                         connected_ ? "yes" : "no");
                                     Dispose();
                                 }
-                                elif(ForwardSocketToTransmission(buffer, buffer_size, bytes_transferred)) {
-                                    Update();
-                                }
                                 else {
-                                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
-                                        "tcpip",
-                                        "socket->transmission forward failed bytes=%d error=%d disposed=%s connected=%s",
-                                        bytes_transferred,
-                                        (int)ppp::diagnostics::GetLastErrorCode(),
-                                        disposed_ ? "yes" : "no",
-                                        connected_ ? "yes" : "no");
-                                    Dispose();
+                                    ppp::diagnostics::datapath_perf::RecordTcpipBridgeSocketRead(bytes_transferred);
+                                    ppp::diagnostics::datapath_perf::Scope transmission_write_accepted_scope;
+                                    if (ForwardSocketToTransmission(buffer, buffer_size, bytes_transferred, transmission_write_accepted_scope)) {
+                                        Update();
+                                    }
+                                    else {
+                                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                                            "tcpip",
+                                            "socket->transmission forward failed bytes=%d error=%d disposed=%s connected=%s",
+                                            bytes_transferred,
+                                            (int)ppp::diagnostics::GetLastErrorCode(),
+                                            disposed_ ? "yes" : "no",
+                                            connected_ ? "yes" : "no");
+                                        Dispose();
+                                    }
                                 }
                             });
                     });
@@ -888,10 +897,24 @@ namespace ppp {
                         break;
                     }
 
+                    ppp::diagnostics::datapath_perf::RecordTcpipBridgeTransmissionRead(packet_length);
                     any = true;
                     Update();
 
-                    bool ok = ppp::coroutines::asio::async_write(*socket_, boost::asio::buffer(packet.get(), packet_length), y);
+                    bool ok = false;
+                    boost::asio::post(socket_->get_executor(),
+                        [this, &y, &ok, packet, packet_length]() noexcept {
+                            ppp::diagnostics::datapath_perf::Scope socket_write_scope;
+                            boost::asio::async_write(*socket_, boost::asio::buffer(packet.get(), packet_length),
+                                [&y, &ok, packet_length, socket_write_scope](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
+                                    if (!ec && bytes_transferred == static_cast<std::size_t>(packet_length)) {
+                                        ppp::diagnostics::datapath_perf::RecordTcpipBridgeSocketWriteCompleted(packet_length, socket_write_scope.Elapsed());
+                                    }
+                                    ok = ec == boost::system::errc::success;
+                                    y.R();
+                                });
+                        });
+                    y.Suspend();
                     if (ok) {
                         packets_to_socket++;
                         bytes_to_socket += packet_length;

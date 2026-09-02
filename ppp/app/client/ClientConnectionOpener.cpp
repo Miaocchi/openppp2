@@ -2,6 +2,8 @@
 #include <ppp/app/client/ClientNetworkInterfaceResolver.h>
 #include <ppp/app/client/RemoteEndpointLoader.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/VEthernetNetworkTcpipStack.h>
+#include <ppp/app/client/xtcp/XtcpRuntime.h>
 #include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/proxys/VEthernetHttpProxySwitcher.h>
@@ -21,6 +23,7 @@
 #include <common/aggligator/aggligator.h>
 
 #include <chrono>
+#include <cstdlib>
 
 #if defined(_LINUX)
 #include <linux/ppp/net/ProtectorNetwork.h>
@@ -70,6 +73,74 @@ namespace ppp {
                 /** @brief Creates base VEthernet framework before higher-level services. */
                 if (!owner_->VEthernet::Open(tap)) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionOpenFailed);
+                }
+
+                if (owner_->tcp_stack_mode_ == ppp::app::TcpStackMode::Xtcp) {
+#if defined(PPP_ENABLE_XTCP)
+                    const auto self = std::static_pointer_cast<VEthernetNetworkSwitcher>(
+                        owner_->shared_from_this());
+                    const std::weak_ptr<VEthernetNetworkSwitcher> weak = self;
+                    const char* xtcp_perf_json = std::getenv("OPENPPP2_XTCP_PERF_JSON");
+                    const char* output_rejection_flag = std::getenv("OPENPPP2_XTCP_OUTPUT_REJECTION_JSON");
+                    const bool output_rejection_enabled = xtcp_perf_json != nullptr && *xtcp_perf_json != '\0' &&
+                        output_rejection_flag != nullptr && *output_rejection_flag == '1';
+                    const std::shared_ptr<xtcp::XtcpOutputRejectionDiagnostics> output_rejection_diagnostics =
+                        output_rejection_enabled
+                            ? make_shared_object<xtcp::XtcpOutputRejectionDiagnostics>(true) : nullptr;
+                    std::shared_ptr<xtcp::XtcpRuntime> runtime =
+                        make_shared_object<xtcp::XtcpRuntime>(
+                            owner_->GetContext(),
+                            [weak, output_rejection_diagnostics](const void* packet, int size) noexcept {
+                                const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
+                                if (output_rejection_diagnostics == nullptr) {
+                                    return owner && owner->Output(packet, size);
+                                }
+                                const bool vethernet_disposed = owner && owner->IsDisposed();
+                                const bool tap_present = owner && owner->GetTap() != nullptr;
+                                const bool accepted = owner && owner->Output(packet, size);
+                                output_rejection_diagnostics->Record(static_cast<bool>(owner),
+                                    vethernet_disposed, tap_present, accepted);
+                                return accepted;
+                            },
+                            [weak]() noexcept {
+                                const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
+                                const std::shared_ptr<ppp::ethernet::VNetstack> netstack =
+                                    owner ? owner->GetNetstack() : nullptr;
+                                return netstack ? netstack->GetLocalListenerEndpoint()
+                                    : boost::asio::ip::tcp::endpoint();
+                            },
+                            [weak](const boost::asio::ip::tcp::endpoint& localEP,
+                                const boost::asio::ip::tcp::endpoint& remoteEP,
+                                uint16_t source_port, uint64_t runtime_generation,
+                                uint64_t flow_generation,
+                                const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept {
+                                const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
+                                const std::shared_ptr<VEthernetNetworkTcpipStack> netstack =
+                                    owner ? std::dynamic_pointer_cast<VEthernetNetworkTcpipStack>(
+                                        owner->GetNetstack()) : nullptr;
+                                return netstack && netstack->BeginExternalAccept(
+                                    localEP, remoteEP, source_port, runtime_generation,
+                                    flow_generation, hooks);
+                            },
+                            [weak](uint16_t source_port, uint64_t runtime_generation) noexcept {
+                                const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
+                                const std::shared_ptr<ppp::ethernet::VNetstack> netstack =
+                                    owner ? owner->GetNetstack() : nullptr;
+                                if (netstack) {
+                                    netstack->CancelExternalClient(
+                                        source_port, runtime_generation);
+                                }
+                            },
+                            output_rejection_diagnostics);
+                    if (NULLPTR == runtime || !runtime->Start()) {
+                        return ppp::diagnostics::SetLastError(
+                            ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);
+                    }
+                    owner_->xtcp_runtime_ = std::move(runtime);
+#else
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::NetworkProtocolUnsupported);
+#endif
                 }
 
                 ppp::net::asio::vdns::ClearCache();
@@ -133,6 +204,18 @@ namespace ppp {
                     owner_->exchanger_.reset();
                     IDisposable::DisposeReferences(qos, exchanger);
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionOpenFailed);
+                }
+                if (owner_->tcp_stack_mode_ == ppp::app::TcpStackMode::Xtcp) {
+                    const std::shared_ptr<xtcp::XtcpRuntime> runtime = owner_->xtcp_runtime_;
+                    if (NULLPTR == runtime) {
+                        return ppp::diagnostics::SetLastError(
+                            ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);
+                    }
+                    runtime->MarkReady();
+                    if (!runtime->IsReady()) {
+                        return ppp::diagnostics::SetLastError(
+                            ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);
+                    }
                 }
 
                 // Enable the local HTTP PROXY server middleware to provide proxy services directly by the VPN.

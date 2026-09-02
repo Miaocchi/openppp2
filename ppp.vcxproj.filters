@@ -381,6 +381,15 @@
     <ClCompile Include="ppp\app\client\VEthernetNetworkTcpipStack.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\app\client\xtcp\XtcpNdiBackend.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\xtcp\XtcpPoolLease.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\xtcp\XtcpRuntime.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\app\client\VEthernetExchanger.cpp">
       <Filter>源文件</Filter>
     </ClCompile>

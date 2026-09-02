@@ -738,6 +738,23 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
         sample.link.error_count = link.error_count;
         sample.link.success_count = link.success_count;
         sample.runtime = runtime;
+        if (NULLPTR != client) {
+            const char* tcp_stack = ppp::app::GetTcpStackModeName(client->GetTcpStackMode());
+            sample.requested_tcp_stack = tcp_stack;
+            sample.active_tcp_stack = tcp_stack;
+
+            ppp::tap::TapRuntimeStats tap_stats;
+            if (client->GetTapRuntimeStats(tap_stats)) {
+                sample.has_tap_linux = true;
+                sample.tap_linux = tap_stats;
+            }
+
+            ppp::app::runtime::RuntimeXtcpStats xtcp_stats;
+            if (client->GetXtcpRuntimeStats(xtcp_stats)) {
+                sample.has_xtcp = true;
+                sample.xtcp = xtcp_stats;
+            }
+        }
         WriteRuntimeStatsLine(stats_json_path_, sample);
     }
     const std::vector<std::string> runtime_lines =

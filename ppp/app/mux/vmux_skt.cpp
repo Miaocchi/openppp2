@@ -1,6 +1,7 @@
 #include "vmux_skt.h"
 #include "vmux_net.h"
 #include <ppp/configurations/AppConfiguration.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 #include <ppp/diagnostics/Error.h>
 
 /**
@@ -498,6 +499,9 @@ namespace vmux {
         }
 
         rx_queue_.emplace_back(packet{ buffer,  payload_size });
+        if (payload_size > 0) {
+            ppp::diagnostics::datapath_perf::RecordVmuxAccepted(payload_size);
+        }
         if (status_.sending_) {
             return true;
         }
@@ -977,8 +981,12 @@ namespace vmux {
         std::shared_ptr<vmux_skt> self = shared_from_this();
         active();
 
+        ppp::diagnostics::datapath_perf::Scope socket_write_scope;
         auto writing_cb =
-            [self, this, tx_socket, payload, payload_size](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
+            [self, this, tx_socket, payload, payload_size, socket_write_scope](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
+                if (!ec && bytes_transferred == static_cast<std::size_t>(payload_size)) {
+                    ppp::diagnostics::datapath_perf::RecordVmuxSocketWriteCompleted(payload_size, socket_write_scope.Elapsed());
+                }
                 vmux_post_exec(mux_->context_, mux_->strand_, 
                     [self, this, ec, payload, payload_size, bytes_transferred]() noexcept {
                         if (ec == boost::system::errc::success && rx_congestions(-static_cast<int>(bytes_transferred))) {

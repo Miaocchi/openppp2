@@ -4,8 +4,11 @@ project(openppp2_cpp_tests LANGUAGES CXX)
 option(ENABLE_COVERAGE "Enable LLVM coverage instrumentation" OFF)
 option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(ENABLE_TSAN "Enable ThreadSanitizer (cannot be combined with ENABLE_SANITIZERS)" OFF)
+option(ENABLE_XTCP_TESTS "Build the pinned XTCP dependency contract tests" OFF)
 
 get_filename_component(OPENPPP2_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(XTCP_SOURCE_DIR "${OPENPPP2_ROOT}/third-party/xtcp" CACHE PATH
+    "Path to the pinned XTCP source tree")
 
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
@@ -82,6 +85,61 @@ function(openppp2_add_cpp_test target)
     set_tests_properties(${target} PROPERTIES TIMEOUT 120)
 endfunction()
 
+if(ENABLE_XTCP_TESTS)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+        message(FATAL_ERROR "ENABLE_XTCP_TESTS is supported only for Linux desktop builds")
+    endif()
+    if(NOT EXISTS "${XTCP_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "XTCP source tree not found at ${XTCP_SOURCE_DIR}; run tools/prepare_xtcp.sh first")
+    endif()
+
+    set(XTCP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(XTCP_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+    set(XTCP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    set(XTCP_BUILD_PLUGINS OFF CACHE BOOL "" FORCE)
+    set(XTCP_BUILD_LWIP OFF CACHE BOOL "" FORCE)
+    set(XTCP_BUILD_CC_PLUGINS ON CACHE BOOL "" FORCE)
+    set(XTCP_CHECKSUM_VALIDATE ON CACHE BOOL "" FORCE)
+    add_subdirectory("${XTCP_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/xtcp" EXCLUDE_FROM_ALL)
+    if(NOT TARGET xtcp_static)
+        message(FATAL_ERROR "XTCP source tree did not define the required xtcp_static target")
+    endif()
+
+    foreach(_xtcp_test
+            xtcp_dependency_contract_test
+            xtcp_ndi_ownership_test
+            xtcp_listener_gate_test)
+        openppp2_add_cpp_test(${_xtcp_test} SOURCES ${_xtcp_test}.cpp)
+        target_link_libraries(${_xtcp_test} PRIVATE xtcp_static)
+    endforeach()
+
+    openppp2_add_cpp_test(xtcp_runtime_adapter_test SOURCES
+        xtcp_runtime_adapter_test.cpp
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpNdiBackend.cpp"
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpPoolLease.cpp"
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpRuntime.cpp")
+    target_compile_definitions(xtcp_runtime_adapter_test PRIVATE
+        PPP_ENABLE_XTCP=1
+        PPP_XTCP_HAS_TIMER_DEADLINE=1
+        PPP_XTCP_RUNTIME_TESTING=1)
+    target_link_libraries(xtcp_runtime_adapter_test PRIVATE
+        xtcp_static Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+
+    openppp2_add_cpp_test(xtcp_runtime_bridge_test SOURCES
+        xtcp_runtime_bridge_test.cpp
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpNdiBackend.cpp"
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpPoolLease.cpp"
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpRuntime.cpp")
+    target_compile_definitions(xtcp_runtime_bridge_test PRIVATE
+        PPP_ENABLE_XTCP=1
+        PPP_XTCP_HAS_TIMER_DEADLINE=1)
+    target_include_directories(xtcp_runtime_bridge_test PRIVATE
+        "${XTCP_SOURCE_DIR}/tests")
+    target_link_libraries(xtcp_runtime_bridge_test PRIVATE
+        xtcp_static Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
 openppp2_add_cpp_test(runtime_snapshot_test SOURCES
     runtime_snapshot_test.cpp
     "${OPENPPP2_ROOT}/common/json/src/json_reader.cpp"
@@ -102,6 +160,8 @@ openppp2_add_cpp_test(client_lifecycle_stress_test SOURCES
     client_lifecycle_stress_test.cpp)
 openppp2_add_cpp_test(client_bootstrap_policy_test SOURCES
     client_bootstrap_policy_test.cpp)
+openppp2_add_cpp_test(tcp_stack_mode_test SOURCES
+    tcp_stack_mode_test.cpp)
 openppp2_add_cpp_test(client_keepalive_policy_test SOURCES
     client_keepalive_policy_test.cpp)
 openppp2_add_cpp_test(client_reconnection_policy_test SOURCES
@@ -675,6 +735,19 @@ openppp2_add_cpp_test(yield_context_test SOURCES
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
 target_link_libraries(yield_context_test PRIVATE boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+openppp2_add_cpp_test(tun_gso_mergeability_test SOURCES
+    tun_gso_mergeability_test.cpp)
+openppp2_add_cpp_test(tun_gso_coalescer_test SOURCES
+    tun_gso_coalescer_test.cpp)
+openppp2_add_cpp_test(tun_gso_ledger_test SOURCES
+    tun_gso_ledger_test.cpp)
+openppp2_add_cpp_test(tap_vnet_codec_test SOURCES
+    tap_vnet_codec_test.cpp)
+openppp2_add_cpp_test(random_test SOURCES
+    random_test.cpp
+    support/random_test_stubs.cpp
+    "${OPENPPP2_ROOT}/ppp/Random.cpp")
+target_link_libraries(random_test PRIVATE Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 openppp2_add_cpp_test(spinlock_test SOURCES
     spinlock_test.cpp
     support/spinlock_test_stubs.cpp
@@ -749,3 +822,5 @@ openppp2_add_cpp_test(app_configuration_routing_test SOURCES
     app_configuration_routing_test.cpp)
 set_tests_properties(app_configuration_routing_test PROPERTIES
     WORKING_DIRECTORY "${OPENPPP2_ROOT}")
+openppp2_add_cpp_test(mta_handoff_telemetry_test SOURCES
+    mta_handoff_telemetry_test.cpp)

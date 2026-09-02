@@ -3,6 +3,7 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 
 /**
  * @file ITransmission.cpp
@@ -308,7 +309,11 @@ namespace ppp {
                 }
 
                 int messages_size = 0;
+                ppp::diagnostics::datapath_perf::Scope encode_scope;
                 std::shared_ptr<Byte> messages = Encrypt(transmission, (Byte*)packet, packet_length, messages_size);
+                // Lab-only JSONL: plaintext input, framed output, and synchronous Encrypt duration.
+                ppp::diagnostics::datapath_perf::RecordFrameEncode(packet_length,
+                    NULLPTR != messages && messages_size > 0 ? messages_size : 0, encode_scope.Elapsed());
                 if (NULLPTR == messages) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
                     return false;
@@ -320,6 +325,9 @@ namespace ppp {
                     }
                     return false;
                 }
+                // Lab-only JSONL: current accepted carrier queue and all-time high-water.
+                ppp::diagnostics::datapath_perf::ObserveCarrierQueue(
+                    transmission->GetPendingItems(), transmission->GetPendingBytes());
 
                 return true;
             }
@@ -853,27 +861,41 @@ namespace ppp {
 
             if (EVP_protocol && EVP_transport) {
                 // Layer 1: transport cipher.
+                ppp::diagnostics::datapath_perf::Scope transport_encrypt_scope;
                 auto payload = EVP_transport->Encrypt(allocator, data, datalen, payload_len);
                 if (NULLPTR == payload || payload_len != datalen) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed, NULLPTR);
                 }
+                ppp::diagnostics::datapath_perf::RecordFrameTransportEncrypt(datalen,
+                    transport_encrypt_scope.Elapsed());
 
                 // Layer 2: header encryption (protocol cipher).
+                ppp::diagnostics::datapath_perf::Scope header_encrypt_scope;
                 auto header = Transmission_Header_Encrypt(APP, allocator, EVP_protocol,
                     payload_len, header_len, header_kf);
                 if (NULLPTR == header) {
                     return NULLPTR;
                 }
+                ppp::diagnostics::datapath_perf::RecordFrameHeaderEncrypt(header_len,
+                    header_encrypt_scope.Elapsed());
                 
-                // Layer 3: payload obfuscation using header‑derived key.
+                // Layer 3: payload obfuscation using header-derived key.
+                ppp::diagnostics::datapath_perf::Scope payload_encrypt_scope;
                 payload = Transmission_Payload_Encrypt(APP, allocator, header_kf,
                     payload.get(), datalen, payload_len, safest);
                 if (NULLPTR == payload) {
                     return NULLPTR;
                 }
+                ppp::diagnostics::datapath_perf::RecordFramePayloadEncrypt(payload_len,
+                    payload_encrypt_scope.Elapsed());
 
-                return Transmission_Packet_Pack(allocator, header, header_len,
+                ppp::diagnostics::datapath_perf::Scope pack_scope;
+                auto packet = Transmission_Packet_Pack(allocator, header, header_len,
                     payload, payload_len, outlen);
+                if (NULLPTR != packet) {
+                    ppp::diagnostics::datapath_perf::RecordFramePack(outlen, pack_scope.Elapsed());
+                }
+                return packet;
             }
             else {
                 // No transport cipher – only header + payload obfuscation.
@@ -975,10 +997,13 @@ namespace ppp {
                 return NULLPTR;
             }
 
+            ppp::diagnostics::datapath_perf::Scope header_decode_scope;
             int payload_len = Transmission_Header_Decrypt(APP, allocator, EVP_protocol, header.get(), header_kf);
+            const uint64_t header_decode_us = header_decode_scope.Elapsed();
             if (payload_len < 1) {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed, NULLPTR);
             }
+            ppp::diagnostics::datapath_perf::RecordFrameHeaderDecrypt(EVP_HEADER_MSS, header_decode_us);
 
             /** @brief Frame length upper-bound check (P0-4A): reject decoded payloads exceeding PPP_BUFFER_SIZE. */
             if (payload_len > PPP_BUFFER_SIZE) {
@@ -993,19 +1018,28 @@ namespace ppp {
                 return NULLPTR;
             }
 
+            ppp::diagnostics::datapath_perf::Scope payload_decode_scope;
             payload = Transmission_Payload_Decrypt(APP, allocator, header_kf,
                 payload, payload_len, outlen, safest);
             if (NULLPTR == payload) {
                 return NULLPTR;
             }
+            const uint64_t payload_decode_us = payload_decode_scope.Elapsed();
+            ppp::diagnostics::datapath_perf::RecordFramePayloadDecrypt(payload_len, payload_decode_us);
 
+            uint64_t transport_decode_us = 0;
             if (EVP_protocol && EVP_transport) {
+                ppp::diagnostics::datapath_perf::Scope transport_decode_scope;
                 payload = EVP_transport->Decrypt(allocator, payload.get(), payload_len, outlen);
                 if (NULLPTR == payload || payload_len != outlen) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed, NULLPTR);
                 }
+                transport_decode_us = transport_decode_scope.Elapsed();
+                ppp::diagnostics::datapath_perf::RecordFrameTransportDecrypt(outlen, transport_decode_us);
             }
 
+            ppp::diagnostics::datapath_perf::RecordFrameDecode(outlen,
+                header_decode_us + payload_decode_us + transport_decode_us);
             return payload;
         }
 

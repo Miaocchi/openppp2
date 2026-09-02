@@ -10,6 +10,7 @@
 #include <ppp/coroutines/YieldContext.h>
 
 namespace ppp::configurations { class AppConfiguration; }
+namespace ppp::diagnostics::datapath_perf { class Scope; }
 #include <ppp/net/Firewall.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
@@ -235,10 +236,11 @@ namespace ppp {
                  * @param buffer Receive buffer.
                  * @param buffer_size Buffer capacity.
                  * @param bytes_transferred Number of bytes to forward.
+                 * @param transmission_write_accepted_scope Read-to-write-completion timer.
                  * @return True when asynchronous write is accepted.
                  * @note Completion callback decides continuation/disposal.
                  */
-                bool                                                            ForwardSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size, int bytes_transferred) noexcept;
+                bool                                                            ForwardSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size, int bytes_transferred, ppp::diagnostics::datapath_perf::Scope transmission_write_accepted_scope) noexcept;
                 /**
                  * @brief Handles completion of socket-to-transmission forward.
                  * @param ok True when write completed successfully.

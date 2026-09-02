@@ -27,6 +27,29 @@ namespace ppp {
 
             }
 
+            bool VEthernetNetworkTcpipStack::BeginExternalAccept(
+                const boost::asio::ip::tcp::endpoint& localEP,
+                const boost::asio::ip::tcp::endpoint& remoteEP,
+                uint16_t source_port,
+                uint64_t runtime_generation,
+                uint64_t flow_generation,
+                const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept {
+                std::shared_ptr<TapTcpClient> base = BeginAcceptClient(localEP, remoteEP);
+                std::shared_ptr<VEthernetNetworkTcpipConnection> connection =
+                    std::dynamic_pointer_cast<VEthernetNetworkTcpipConnection>(base);
+                if (NULLPTR == connection) {
+                    return false;
+                }
+                connection->SetExternalFirstLeg(
+                    runtime_generation, flow_generation, hooks);
+                if (!RegisterExternalClient(source_port, runtime_generation,
+                        flow_generation, connection)) {
+                    connection->Dispose();
+                    return false;
+                }
+                return true;
+            }
+
             /**
              * @brief Creates a connection handler when exchanger state is established.
              */

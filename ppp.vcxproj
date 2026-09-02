@@ -487,6 +487,9 @@
     <ClCompile Include="ppp\app\client\VEthernetNetworkSwitcher.cpp" />
     <ClCompile Include="ppp\app\client\VEthernetNetworkTcpipConnection.cpp" />
     <ClCompile Include="ppp\app\client\VEthernetNetworkTcpipStack.cpp" />
+    <ClCompile Include="ppp\app\client\xtcp\XtcpNdiBackend.cpp" />
+    <ClCompile Include="ppp\app\client\xtcp\XtcpPoolLease.cpp" />
+    <ClCompile Include="ppp\app\client\xtcp\XtcpRuntime.cpp" />
     <ClCompile Include="ppp\app\protocol\SessionResumeAuthenticator.cpp" />
     <ClCompile Include="ppp\app\protocol\TransportAuthNegotiation.cpp" />
     <ClCompile Include="ppp\app\protocol\VirtualEthernetInformation.cpp" />
