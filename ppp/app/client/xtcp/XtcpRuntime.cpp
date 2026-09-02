@@ -1,6 +1,12 @@
 #include <ppp/stdafx.h>
 #include <ppp/app/client/xtcp/XtcpRuntime.h>
 
+#include <thread>
+
+#if defined(__linux__)
+#include <pthread.h>
+#endif
+
 #include <chrono>
 
 #if defined(PPP_ENABLE_XTCP)
@@ -316,11 +322,23 @@ struct FlowKey final {
 
 struct FlowKeyHash final {
     std::size_t operator()(const FlowKey& key) const noexcept {
-        std::size_t value = static_cast<std::size_t>(key.remote_address);
-        value ^= static_cast<std::size_t>(key.local_address) * 0x9e3779b1u;
-        value ^= static_cast<std::size_t>(key.remote_port) << 16;
-        value ^= static_cast<std::size_t>(key.local_port);
-        return value;
+        // XTCP-SHARED-PATH-001 S1: FNV + murmur finalizer。原 xor-hash 的最低位
+        // 只由 local_port 决定 (remote/local 地址与 remote_port<<16 的低位恒定),
+        // 顺序源端口共享奇偶时 16 条 flow 全部落进同一 shard (实测 100%/0%)。
+        // 逐字段乘法混合 + finalizer 让每个字段影响全部位, 分片均匀。
+        std::uint64_t value = 1469598103934665603ull;
+        value ^= key.remote_address;
+        value *= 1099511628211ull;
+        value ^= key.local_address;
+        value *= 1099511628211ull;
+        value ^= (static_cast<std::uint64_t>(key.remote_port) << 16) ^ key.remote_port;
+        value *= 1099511628211ull;
+        value ^= key.local_port;
+        value *= 1099511628211ull;
+        value ^= value >> 33;
+        value *= 0xff51afd7ed558ccdULL;
+        value ^= value >> 33;
+        return static_cast<std::size_t>(value);
     }
 };
 
@@ -382,6 +400,7 @@ public:
         ::xtcp::core::Endpoint remote;
         ::xtcp::core::Endpoint local;
         std::uint64_t generation = 0;
+        std::size_t shard = 0;  // XTCP-SHARED-PATH-001 S1: owning shard index
         UInt64 connection_id = 0;
         std::uint16_t source_port = 0;
         boost::asio::ip::tcp::socket connector;
@@ -434,15 +453,26 @@ public:
         ExternalAcceptHandler external_accept,
         ExternalCancelHandler external_cancel,
         std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics) noexcept
-        : context_(context), strand_(context ? std::make_shared<Strand>(context->get_executor()) : nullptr),
+        : context_(context),
           output_(std::move(output)), listener_endpoint_(std::move(listener_endpoint)),
           external_accept_(std::move(external_accept)), external_cancel_(std::move(external_cancel)),
-          output_rejection_diagnostics_(std::move(output_rejection_diagnostics)),
-          budget_(kIngressMaxItems, kIngressMaxBytes) {}
+          output_rejection_diagnostics_(std::move(output_rejection_diagnostics)) {}
+
+    ~Impl() noexcept {
+        running_.store(false, std::memory_order_release);
+        if (own_context_) {
+            own_context_->stop();
+        }
+        for (std::thread& t : own_threads_) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+    }
 
     bool Start() noexcept {
         std::lock_guard<std::mutex> lock(state_sync_);
-        if (!context_ || !strand_ || running_.load(std::memory_order_acquire) ||
+        if (!context_ || running_.load(std::memory_order_acquire) ||
             stopping_.load(std::memory_order_acquire)) {
             return false;
         }
@@ -479,61 +509,115 @@ public:
             }
             return true;
         };
-        backend_ = std::unique_ptr<XtcpNdiBackend>(new (std::nothrow) XtcpNdiBackend(counted_output_));
-        if (!backend_) {
-            lease_.reset();
-            return false;
-        }
-        stack_ = std::unique_ptr<::xtcp::XtcpStack>(new (std::nothrow) ::xtcp::XtcpStack(backend_.get()));
-        if (!stack_) {
-            backend_->Stop();
-            backend_.reset();
-            lease_.reset();
-            return false;
-        }
-        // 拥塞控制可选 (XTCP-CC-SELECT-001): 默认 KCC (上游默认, 开发者维护)。
-        // env 可切 bbr/cubic/reno。历史: KCC pacing bug (0005 修复前) 把 DL 锁在
-        // ~216Mbps, CUBIC 因 pacing_rate=0 绕开 -> 曾临时默认 CUBIC; 0005
-        // pacing-burst-quantum 修复后 KCC 追平 CUBIC (P1 DL 398 vs 400, P16 DL
-        // 499 vs 493, UL 一致), 恢复 KCC 默认。保留 env 切换以便回归。
+        // XTCP-SHARED-PATH-001 S1: shard 数 (env OPENPPP2_XTCP_SHARDS, 默认 1)。
+        // 每 shard = 独立 strand/stack/backend/ingress budget/handoff/poll timer/
+        // flow 表; Submit 按 4-tuple hash 路由, 同一 flow (含 SYN) 永远同 shard。
+        int shard_count = 1;
         {
-            const char* cc_env = ::getenv("OPENPPP2_XTCP_CC");
-            const char* cc = (cc_env != nullptr && cc_env[0] != '\0') ? cc_env : "kcc";
-            stack_->SetDefaultCongestionControl(cc);
+            const char* shards_env = ::getenv("OPENPPP2_XTCP_SHARDS");
+            if (shards_env != nullptr && shards_env[0] != '\0') {
+                const long value = ::atol(shards_env);
+                if (1 <= value && value <= 8) {
+                    shard_count = static_cast<int>(value);
+                }
+            }
         }
-        // KCC snd_buf 实验 (XTCP-KCC-SNDBUF-001): 上游默认 64K, 开发者建议 16K-32K。
-        // KCC 是 BBR 风格, pacing_rate = bw_est, FlushPendingSend 的
-        // limit = min(snd_buf, cwnd, snd_wnd)。64K snd_buf 与 KCC pacing 耦合
-        // 可能低估 bw -> pacing 锁 216Mbps。env 可调, 默认不设 (=上游 64K)。
+        const char* cc_env = ::getenv("OPENPPP2_XTCP_CC");
+        const char* cc = (cc_env != nullptr && cc_env[0] != '\0') ? cc_env : "kcc";
+        unsigned long long sndbuf_value = 0;
         {
             const char* sndbuf_env = ::getenv("OPENPPP2_XTCP_SNDBUF_BYTES");
             if (sndbuf_env != nullptr && sndbuf_env[0] != '\0') {
                 const unsigned long long sndbuf = ::atoll(sndbuf_env);
                 if (sndbuf >= 1024) {
-                    stack_->SetSndBuf(static_cast<UInt32>(sndbuf));
+                    sndbuf_value = sndbuf;
                 }
             }
         }
-        stack_->SetAcceptHandler([weak](UInt64 connection_id,
-            const ::xtcp::core::Endpoint& remote,
-            const ::xtcp::core::Endpoint& local) noexcept {
-            const std::shared_ptr<Impl> self = weak.lock();
-            return self && self->OnAccept(connection_id, remote, local);
-        });
-        stack_->SetRecvHandlerChecked([weak](UInt64 connection_id, const Byte* data, UInt32 length) noexcept {
-            const std::shared_ptr<Impl> self = weak.lock();
-            return self && self->OnReceive(connection_id, data, length);
-        });
-        stack_->SetStateHandler([weak](UInt64 connection_id, ::xtcp::core::TcpState state) noexcept {
-            if (const std::shared_ptr<Impl> self = weak.lock()) {
-                self->OnState(connection_id, state);
+        shard_count_ = shard_count;
+        if (shard_count > 1) {
+            // XTCP-SHARED-PATH-001 S1: 默认 context 只在主线程 run (Executors::Run),
+            // strand 再多也没有并行执行域。shards>1 时给 runtime 建专属 io_context
+            // + 每 shard 一个工作线程; 所有 shard strand/poll timer/flow connector
+            // 都跑在这个池上。shards=1 保持外部 context 不变 (行为零变化)。
+            own_context_ = std::make_shared<boost::asio::io_context>();
+            context_ = own_context_;
+        }
+        shards_.resize(static_cast<std::size_t>(shard_count));
+        for (std::size_t i = 0; i < shards_.size(); ++i) {
+            Shard& s = shards_[i];
+            s.index = i;
+            s.strand = std::make_shared<Strand>(context_->get_executor());
+            s.backend = std::unique_ptr<XtcpNdiBackend>(
+                new (std::nothrow) XtcpNdiBackend(counted_output_));
+            if (!s.backend) {
+                for (std::size_t j = 0; j < i; ++j) {
+                    shards_[j].backend->Stop();
+                }
+                shards_.clear();
+                lease_.reset();
+                return false;
             }
-        });
-        generation_.store(budget_.Start(), std::memory_order_release);
+            s.stack = std::unique_ptr<::xtcp::XtcpStack>(
+                new (std::nothrow) ::xtcp::XtcpStack(s.backend.get()));
+            if (!s.stack) {
+                s.backend->Stop();
+                for (std::size_t j = 0; j < i; ++j) {
+                    shards_[j].backend->Stop();
+                }
+                shards_.clear();
+                lease_.reset();
+                return false;
+            }
+            // 拥塞控制可选 (XTCP-CC-SELECT-001): 默认 KCC (上游默认, 开发者维护)。
+            // env 可切 bbr/cubic/reno (0005 修复后 KCC 追平 CUBIC, 恢复默认)。
+            s.stack->SetDefaultCongestionControl(cc);
+            // KCC snd_buf 实验 (XTCP-KCC-SNDBUF-001): env 可调, 默认不设 (=上游 64K)。
+            if (sndbuf_value != 0) {
+                s.stack->SetSndBuf(static_cast<UInt32>(sndbuf_value));
+            }
+            s.stack->SetAcceptHandler([weak, i](UInt64 connection_id,
+                const ::xtcp::core::Endpoint& remote,
+                const ::xtcp::core::Endpoint& local) noexcept {
+                const std::shared_ptr<Impl> self = weak.lock();
+                return self && self->OnAccept(self->shards_[i], connection_id, remote, local);
+            });
+            s.stack->SetRecvHandlerChecked([weak, i](UInt64 connection_id, const Byte* data, UInt32 length) noexcept {
+                const std::shared_ptr<Impl> self = weak.lock();
+                return self && self->OnReceive(self->shards_[i], connection_id, data, length);
+            });
+            s.stack->SetStateHandler([weak, i](UInt64 connection_id, ::xtcp::core::TcpState state) noexcept {
+                if (const std::shared_ptr<Impl> self = weak.lock()) {
+                    self->OnState(self->shards_[i], connection_id, state);
+                }
+            });
+        }
+        {
+            std::uint64_t budget_generation = 0;
+            for (Shard& s : shards_) {
+                budget_generation = s.budget.Start();
+            }
+            generation_.store(budget_generation, std::memory_order_release);
+        }
         running_.store(true, std::memory_order_release);
         ready_.store(false, std::memory_order_release);
+        if (own_context_) {
+            for (int i = 0; i < shard_count; ++i) {
+                own_threads_.emplace_back([own = own_context_]() noexcept {
+#if defined(__linux__)
+                    // 线程名用于 /proc thread dump 诊断 (测试目标不链 stdafx.cpp,
+                    // 故不走 ppp::SetThreadName)。
+                    pthread_setname_np(pthread_self(), "xtcp-io");
+#endif
+                    const auto guard = boost::asio::make_work_guard(*own);
+                    own->run();
+                });
+            }
+        }
         StartPerfDump();
-        SchedulePoll(generation_.load(std::memory_order_acquire));
+        for (Shard& s : shards_) {
+            SchedulePoll(s, generation_.load(std::memory_order_acquire));
+        }
         return true;
     }
 
@@ -550,8 +634,10 @@ public:
             if (!running_.load(std::memory_order_acquire)) {
                 return;
             }
-            budget_.MarkReady(generation);
-            ready_.store(budget_.IsReady(), std::memory_order_release);
+            for (Shard& s : shards_) {
+                s.budget.MarkReady(generation);
+                ready_.store(s.budget.IsReady(), std::memory_order_release);
+            }
         }
     }
 
@@ -564,14 +650,25 @@ public:
         ready_.store(false, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lock(state_sync_);
-            budget_.Stop();
+            for (Shard& s : shards_) {
+                s.budget.Stop();
+            }
         }
-        if (!strand_) {
-            DoStop();
+        if (shards_.empty()) {
+            DoStopFinalize();
             return;
         }
         const std::shared_ptr<Impl> self = shared_from_this();
-        boost::asio::post(*strand_, [self]() noexcept { self->DoStop(); });
+        const std::shared_ptr<std::atomic<int>> remaining =
+            std::make_shared<std::atomic<int>>(static_cast<int>(shards_.size()));
+        for (std::size_t i = 0; i < shards_.size(); ++i) {
+            boost::asio::post(*shards_[i].strand, [self, i, remaining]() noexcept {
+                self->DoStopShard(self->shards_[i]);
+                if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    self->DoStopFinalize();
+                }
+            });
+        }
     }
 
     bool Submit(const void* packet, int packet_length) noexcept {
@@ -580,8 +677,18 @@ public:
             return false;
         }
         const std::uint64_t generation = generation_.load(std::memory_order_acquire);
-        if (!budget_.TryAdmit(generation, static_cast<std::size_t>(packet_length))) {
+        // XTCP-SHARED-PATH-001 S1: 按 4-tuple hash 路由, 同一 flow (含 SYN)
+        // 永远落同一 shard (ordering/ACK 状态/deferred SYN/generation/close
+        // 生命周期因此天然保持)。解析失败的包走 shard 0, 在 ProcessIngress
+        // 里重解析并按原语义静默丢弃。
+        ParsedPacket parsed;
+        const bool has_parsed = ParsePacket(packet, packet_length, parsed);
+        const std::size_t index = has_parsed && shard_count_ > 1
+            ? FlowKeyHash{}(parsed.key) % shards_.size() : 0;
+        Shard& s = shards_[index];
+        if (!s.budget.TryAdmit(generation, static_cast<std::size_t>(packet_length))) {
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+            s.dropped.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
         // XTCP-UL-ZEROCOPY-001: 上游 BufRef 是 zero-copy 语义 (movable, not
@@ -590,7 +697,7 @@ public:
         ::xtcp::buf::BufRef owned = ::xtcp::buf::BufRef::Acquire(
             static_cast<UInt32>(packet_length));
         if (owned.IsEmpty()) {
-            budget_.Release(static_cast<std::size_t>(packet_length));
+            s.budget.Release(static_cast<std::size_t>(packet_length));
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
@@ -601,26 +708,30 @@ public:
         // (owner.dropped 累计 68 万, UL GSO-on 崩到 0.3-0.55x)。改为 Submit 压入
         // handoff 队列, 每个突发只 post 一次 drain 闭包, strand 单次调度消化整批。
         {
-            std::lock_guard<std::mutex> lock(handoff_sync_);
-            HandoffItem& item = handoff_.emplace_back();
+            std::lock_guard<std::mutex> lock(s.handoff_sync);
+            HandoffItem& item = s.handoff.emplace_back();
             item.packet = std::move(owned);
+            item.parsed = parsed;
+            item.has_parsed = has_parsed;
             item.generation = generation;
             item.enqueue_us = NowUs();
         }
         const std::shared_ptr<Impl> self = shared_from_this();
-        if (!handoff_posted_.exchange(true, std::memory_order_acq_rel)) {
+        if (!s.handoff_posted.exchange(true, std::memory_order_acq_rel)) {
             try {
-                boost::asio::post(*strand_, [self]() noexcept { self->DrainIngress(); });
+                boost::asio::post(*s.strand, [self, index]() noexcept {
+                    self->DrainIngress(self->shards_[index]);
+                });
             }
             catch (...) {
                 std::vector<HandoffItem> abandoned;
                 {
-                    std::lock_guard<std::mutex> lock(handoff_sync_);
-                    abandoned.swap(handoff_);
-                    handoff_posted_.store(false, std::memory_order_release);
+                    std::lock_guard<std::mutex> lock(s.handoff_sync);
+                    abandoned.swap(s.handoff);
+                    s.handoff_posted.store(false, std::memory_order_release);
                 }
                 for (HandoffItem& item : abandoned) {
-                    budget_.Release(item.packet.IsEmpty() ? 0 : item.packet.Len());
+                    s.budget.Release(item.packet.IsEmpty() ? 0 : item.packet.Len());
                     stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
                 }
                 return false;
@@ -628,6 +739,7 @@ public:
         }
         stats_.ingress_enqueued.fetch_add(1, std::memory_order_relaxed);
         stats_.ingress_submitted.fetch_add(1, std::memory_order_relaxed);
+        s.enqueued.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
@@ -657,7 +769,13 @@ public:
 
     void OnFirstLegReady(std::uint64_t runtime_generation, std::uint64_t flow_generation) noexcept override {
         const std::shared_ptr<Impl> self = shared_from_this();
-        boost::asio::post(*strand_, [self, runtime_generation, flow_generation]() noexcept {
+        // S1: flow generation 高位带 shard 标签, 直接投递到该 shard strand。
+        const std::size_t shard_index = static_cast<std::size_t>(flow_generation >> 56);
+        if (shard_index >= shards_.size()) {
+            return;
+        }
+        boost::asio::post(*shards_[shard_index].strand,
+            [self, runtime_generation, flow_generation]() noexcept {
             if (!self->IsCurrent(runtime_generation)) {
                 return;
             }
@@ -666,18 +784,25 @@ public:
                 return;
             }
             flow->first_leg_ready = true;
-            if (!flow->deferred_syn.IsEmpty() && self->backend_) {
-                if (self->backend_->Inject(std::move(flow->deferred_syn))) {
+            Shard& s = self->shards_[flow->shard];
+            if (!flow->deferred_syn.IsEmpty() && s.backend) {
+                if (s.backend->Inject(std::move(flow->deferred_syn))) {
                     self->stats_.ingress_injected.fetch_add(1, std::memory_order_relaxed);
+                    s.injected.fetch_add(1, std::memory_order_relaxed);
                 }
             }
-            self->KickPoll();
+            self->KickPoll(s);
         });
     }
 
     void OnFirstLegClosed(std::uint64_t runtime_generation, std::uint64_t flow_generation) noexcept override {
         const std::shared_ptr<Impl> self = shared_from_this();
-        boost::asio::post(*strand_, [self, runtime_generation, flow_generation]() noexcept {
+        const std::size_t shard_index = static_cast<std::size_t>(flow_generation >> 56);
+        if (shard_index >= shards_.size()) {
+            return;
+        }
+        boost::asio::post(*shards_[shard_index].strand,
+            [self, runtime_generation, flow_generation]() noexcept {
             if (!self->IsCurrent(runtime_generation)) {
                 return;
             }
@@ -693,12 +818,14 @@ public:
     // (let the connector drain what the kernel already received; its EOF then
     // closes the first leg gracefully, a reset aborts it).
     void HandlePeerGone(const std::shared_ptr<Flow>& flow, std::uint64_t runtime_generation) noexcept {
+        Shard& s = shards_[flow->shard];
         if (!flow->first_leg_ready) {
-            if (!flow->deferred_syn.IsEmpty() && backend_) {
+            if (!flow->deferred_syn.IsEmpty() && s.backend) {
                 flow->abort_when_ready = true;
-                if (backend_->Inject(std::move(flow->deferred_syn))) {
+                if (s.backend->Inject(std::move(flow->deferred_syn))) {
                     stats_.ingress_injected.fetch_add(1, std::memory_order_relaxed);
-                    KickPoll();
+                    s.injected.fetch_add(1, std::memory_order_relaxed);
+                    KickPoll(s);
                     return;
                 }
                 flow->abort_when_ready = false;
@@ -792,40 +919,79 @@ private:
             generation == generation_.load(std::memory_order_acquire);
     }
 
+    // XTCP-SHARED-PATH-001 S1: 一个执行域 = 一个 shard。flow 4-tuple hash
+    // 亲和路由; shard 表 Start 后不再 resize (handler 捕获 index 安全)。
+    struct HandoffItem final {
+        ::xtcp::buf::BufRef packet;
+        ParsedPacket parsed;
+        bool has_parsed = false;
+        std::uint64_t generation = 0;
+        std::uint64_t enqueue_us = 0;
+    };
+    struct Shard final {
+        std::size_t index = 0;
+        std::shared_ptr<Strand> strand;
+        std::unique_ptr<XtcpNdiBackend> backend;
+        std::unique_ptr<::xtcp::XtcpStack> stack;
+        XtcpIngressBudget budget{kIngressMaxItems, kIngressMaxBytes};
+        std::mutex handoff_sync;
+        std::vector<HandoffItem> handoff;
+        std::atomic<bool> handoff_posted{false};
+        std::shared_ptr<boost::asio::steady_timer> poll_timer;
+        std::unordered_map<FlowKey, std::shared_ptr<Flow>, FlowKeyHash> flows;
+        std::unordered_map<UInt64, FlowKey> connections;
+        std::unordered_map<UInt64, std::pair<::xtcp::core::Endpoint, std::uint32_t>> listener_refs;
+        std::atomic<std::uint64_t> enqueued{0};
+        std::atomic<std::uint64_t> dispatched{0};
+        std::atomic<std::uint64_t> injected{0};
+        std::atomic<std::uint64_t> dropped{0};
+        Stats::Hist queue_delay_us{};
+    };
+
     // XTCP-STRAND-DISPATCH-001: strand 侧批量 drain。Submit 只在 handoff 从空
     // 变非空时 post 一次本闭包, 本函数循环换出整个突发逐包注入, 直到换出为空
     // 才清 handoff_posted_ (同一把锁内检查+清位, 保证 Submit 侧不会有包滞留)。
-    void DrainIngress() noexcept {
+    void DrainIngress(Shard& s) noexcept {
         std::vector<HandoffItem> local;
         for (;;) {
             {
-                std::lock_guard<std::mutex> lock(handoff_sync_);
-                if (handoff_.empty()) {
-                    handoff_posted_.store(false, std::memory_order_release);
+                std::lock_guard<std::mutex> lock(s.handoff_sync);
+                if (s.handoff.empty()) {
+                    s.handoff_posted.store(false, std::memory_order_release);
                     return;
                 }
-                local.swap(handoff_);
+                local.swap(s.handoff);
             }
             for (HandoffItem& item : local) {
-                ProcessIngress(std::move(item.packet), item.generation, item.enqueue_us);
+                ProcessIngress(s, std::move(item.packet), item.generation,
+                    item.enqueue_us, item.parsed, item.has_parsed);
             }
             local.clear();
         }
     }
 
-    void ProcessIngress(::xtcp::buf::BufRef&& packet, std::uint64_t generation, std::uint64_t enqueue_us) noexcept {
+    void ProcessIngress(Shard& s, ::xtcp::buf::BufRef&& packet, std::uint64_t generation,
+        std::uint64_t enqueue_us, const ParsedPacket& item_parsed, bool item_has_parsed) noexcept {
         stats_.ingress_dispatched.fetch_add(1, std::memory_order_relaxed);
-        HistAdd(stats_.queue_delay_us, NowUs() - enqueue_us);
-        budget_.Release(packet.IsEmpty() ? 0 : packet.Len());
-        if (packet.IsEmpty() || !IsCurrent(generation) || !stack_ || !backend_) {
+        s.dispatched.fetch_add(1, std::memory_order_relaxed);
+        const std::uint64_t delay_us = NowUs() - enqueue_us;
+        HistAdd(stats_.queue_delay_us, delay_us);
+        HistAdd(s.queue_delay_us, delay_us);
+        s.budget.Release(packet.IsEmpty() ? 0 : packet.Len());
+        if (packet.IsEmpty() || !IsCurrent(generation) || !s.stack || !s.backend) {
             return;
         }
-        ParsedPacket parsed;
-        if (!ParsePacket(packet.Data(), static_cast<int>(packet.Len()), parsed)) {
-            return;
+        ParsedPacket local;
+        const ParsedPacket* parsed_ptr = &item_parsed;
+        if (!item_has_parsed) {
+            if (!ParsePacket(packet.Data(), static_cast<int>(packet.Len()), local)) {
+                return;
+            }
+            parsed_ptr = &local;
         }
-        const auto existing = flows_.find(parsed.key);
-        if (existing != flows_.end()) {
+        const ParsedPacket& parsed = *parsed_ptr;
+        const auto existing = s.flows.find(parsed.key);
+        if (existing != s.flows.end()) {
             const std::shared_ptr<Flow>& flow = existing->second;
             if (flow->closing) {
                 return;
@@ -836,21 +1002,26 @@ private:
                 }
                 return;
             }
-            if (backend_->Inject(std::move(packet))) {
+            if (s.backend->Inject(std::move(packet))) {
                 stats_.ingress_injected.fetch_add(1, std::memory_order_relaxed);
+                s.injected.fetch_add(1, std::memory_order_relaxed);
             }
-            KickPoll();
+            KickPoll(s);
             return;
         }
         if ((parsed.flags & kTcpSyn) == 0 || (parsed.flags & kTcpAck) != 0 ||
-            flows_.size() >= kMaxFlows) {
+            s.flows.size() >= kMaxFlows) {
             return;
         }
-        StartFlow(parsed, std::move(packet));
+        StartFlow(s, parsed, std::move(packet));
     }
 
-    void StartFlow(const ParsedPacket& parsed, ::xtcp::buf::BufRef&& packet) noexcept {
-        const std::uint64_t flow_generation = ++next_flow_generation_;
+    void StartFlow(Shard& s, const ParsedPacket& parsed, ::xtcp::buf::BufRef&& packet) noexcept {
+        // XTCP-SHARED-PATH-001 S1: flow generation 高位打 shard 标签,
+        // FindFlowGeneration O(1) 定位 shard 且免跨 shard 索引。
+        const std::uint64_t flow_generation =
+            (static_cast<std::uint64_t>(s.index) << 56) |
+            (next_flow_generation_.fetch_add(1, std::memory_order_relaxed) + 1);
         std::shared_ptr<Flow> flow;
         try {
             flow = std::make_shared<Flow>(context_, parsed.key, parsed.remote, parsed.local, flow_generation);
@@ -858,23 +1029,24 @@ private:
         catch (...) {
             return;
         }
+        flow->shard = s.index;
         flow->deferred_syn = std::move(packet);
         if (flow->deferred_syn.IsEmpty()) {
             return;
         }
 
         const UInt64 listener_key = ::xtcp::EndpointKey(parsed.local);
-        auto listener = listener_refs_.find(listener_key);
-        if (listener == listener_refs_.end()) {
-            if (!stack_->Listen(parsed.local)) {
+        auto listener = s.listener_refs.find(listener_key);
+        if (listener == s.listener_refs.end()) {
+            if (!s.stack->Listen(parsed.local)) {
                 return;
             }
-            listener_refs_.emplace(listener_key, std::make_pair(parsed.local, 1u));
+            s.listener_refs.emplace(listener_key, std::make_pair(parsed.local, 1u));
         }
         else {
             ++listener->second.second;
         }
-        flows_.emplace(parsed.key, flow);
+        s.flows.emplace(parsed.key, flow);
         stats_.flows_opened.fetch_add(1, std::memory_order_relaxed);
 
         boost::system::error_code ec;
@@ -911,7 +1083,7 @@ private:
         }
         const std::shared_ptr<Impl> self = shared_from_this();
         flow->connector.async_connect(listener_endpoint,
-            boost::asio::bind_executor(*strand_,
+            boost::asio::bind_executor(*s.strand,
                 [self, flow, runtime_generation](const boost::system::error_code& connect_ec) noexcept {
                     if (!self->IsFlowCurrent(flow, runtime_generation)) {
                         return;
@@ -925,15 +1097,15 @@ private:
                 }));
     }
 
-    bool OnAccept(UInt64 connection_id, const ::xtcp::core::Endpoint& remote,
+    bool OnAccept(Shard& s, UInt64 connection_id, const ::xtcp::core::Endpoint& remote,
         const ::xtcp::core::Endpoint& local) noexcept {
         FlowKey key;
         key.remote_address = remote.addr[0];
         key.local_address = local.addr[0];
         key.remote_port = remote.port;
         key.local_port = local.port;
-        const auto found = flows_.find(key);
-        if (found == flows_.end() || found->second->closing ||
+        const auto found = s.flows.find(key);
+        if (found == s.flows.end() || found->second->closing ||
             found->second->connection_id != 0) {
             return false;
         }
@@ -944,7 +1116,7 @@ private:
             const std::shared_ptr<Impl> self = shared_from_this();
             const std::shared_ptr<Flow> flow = found->second;
             const std::uint64_t runtime_generation = Generation();
-            boost::asio::post(*strand_, [self, flow, runtime_generation]() noexcept {
+            boost::asio::post(*s.strand, [self, flow, runtime_generation]() noexcept {
                 if (self->IsFlowCurrent(flow, runtime_generation)) {
                     self->CloseFlow(flow, false);
                 }
@@ -952,7 +1124,7 @@ private:
             return false;
         }
         try {
-            if (!connections_.emplace(connection_id, key).second) {
+            if (!s.connections.emplace(connection_id, key).second) {
                 return false;
             }
         }
@@ -963,12 +1135,12 @@ private:
         return true;
     }
 
-    bool OnReceive(UInt64 connection_id, const Byte* data, UInt32 length) noexcept {
+    bool OnReceive(Shard& s, UInt64 connection_id, const Byte* data, UInt32 length) noexcept {
         stats_.recv_cb_calls.fetch_add(1, std::memory_order_relaxed);
         if (data != nullptr) {
             stats_.recv_cb_bytes.fetch_add(length, std::memory_order_relaxed);
         }
-        const std::shared_ptr<Flow> flow = FindConnection(connection_id);
+        const std::shared_ptr<Flow> flow = FindConnection(s, connection_id);
         if (!flow || flow->closing || data == nullptr || length == 0) {
             return false;
         }
@@ -1014,7 +1186,7 @@ private:
         const std::shared_ptr<Impl> self = shared_from_this();
         const std::uint64_t runtime_generation = Generation();
         try {
-            boost::asio::post(*strand_, [self, flow, runtime_generation]() noexcept {
+            boost::asio::post(*s.strand, [self, flow, runtime_generation]() noexcept {
                 self->StartWrite(flow, runtime_generation);
             });
         }
@@ -1026,7 +1198,7 @@ private:
         return true;
     }
 
-    void OnState(UInt64 connection_id, ::xtcp::core::TcpState state) noexcept {
+    void OnState(Shard& s, UInt64 connection_id, ::xtcp::core::TcpState state) noexcept {
         if (state != ::xtcp::core::TcpState::kClosed &&
             state != ::xtcp::core::TcpState::kCloseWait &&
             state != ::xtcp::core::TcpState::kTimeWait) {
@@ -1034,11 +1206,11 @@ private:
         }
         const std::shared_ptr<Impl> self = shared_from_this();
         const std::uint64_t runtime_generation = Generation();
-        boost::asio::post(*strand_, [self, connection_id, state, runtime_generation]() noexcept {
+        boost::asio::post(*s.strand, [self, &s, connection_id, state, runtime_generation]() noexcept {
             if (!self->IsCurrent(runtime_generation)) {
                 return;
             }
-            if (const std::shared_ptr<Flow> flow = self->FindConnection(connection_id)) {
+            if (const std::shared_ptr<Flow> flow = self->FindConnection(s, connection_id)) {
                 if (state == ::xtcp::core::TcpState::kCloseWait) {
                     flow->first_leg_eof = true;
                     self->MaybeShutdownConnectorSend(flow, runtime_generation);
@@ -1047,7 +1219,7 @@ private:
                     self->CloseFlow(flow, false);
                 }
             }
-            self->KickPoll();
+            self->KickPoll(s);
         });
     }
 
@@ -1060,7 +1232,7 @@ private:
         flow->read_active = true;
         const std::shared_ptr<Impl> self = shared_from_this();
         flow->connector.async_read_some(boost::asio::buffer(flow->read_buffer),
-            boost::asio::bind_executor(*strand_,
+            boost::asio::bind_executor(*shards_[flow->shard].strand,
                 [self, flow, runtime_generation](const boost::system::error_code& ec,
                     std::size_t length) noexcept {
                     flow->read_active = false;
@@ -1090,9 +1262,10 @@ private:
         if (!IsFlowCurrent(flow, runtime_generation) || flow->pending_read.empty()) {
             return;
         }
+        Shard& s = shards_[flow->shard];
         stats_.stack_send_calls.fetch_add(1, std::memory_order_relaxed);
-        const bool accepted = flow->connection_id != 0 && stack_ &&
-            stack_->Send(flow->connection_id, flow->pending_read.data(),
+        const bool accepted = flow->connection_id != 0 && s.stack &&
+            s.stack->Send(flow->connection_id, flow->pending_read.data(),
                 static_cast<UInt32>(flow->pending_read.size()));
         if (accepted) {
             if (flow->send_stall_start_us != 0) {
@@ -1108,7 +1281,7 @@ private:
                 flow->send_admission_snapshot = {};
             }
             flow->pending_read.clear();
-            KickPoll();
+            KickPoll(s);
             if (flow->connector_read_eof) {
                 BeginFirstLegClose(flow);
             }
@@ -1127,13 +1300,13 @@ private:
             flow->send_admission_blocked = true;
             flow->send_admission_blocked_since_us = NowUs();
             flow->send_admission_snapshot = {};
-            flow->send_admission_snapshot_valid = flow->connection_id != 0 && stack_ &&
-                stack_->ConnLastSendAdmission(flow->connection_id, flow->send_admission_snapshot);
+            flow->send_admission_snapshot_valid = flow->connection_id != 0 && s.stack &&
+                s.stack->ConnLastSendAdmission(flow->connection_id, flow->send_admission_snapshot);
         }
         stats_.send_retry_armed.fetch_add(1, std::memory_order_relaxed);
         flow->retry_timer.expires_after(SendRetryDelay());
         const std::shared_ptr<Impl> self = shared_from_this();
-        flow->retry_timer.async_wait(boost::asio::bind_executor(*strand_,
+        flow->retry_timer.async_wait(boost::asio::bind_executor(*shards_[flow->shard].strand,
             [self, flow, runtime_generation](const boost::system::error_code& ec) noexcept {
                 if (!ec && self->IsFlowCurrent(flow, runtime_generation)) {
                     self->stats_.send_retry_fired.fetch_add(1, std::memory_order_relaxed);
@@ -1166,7 +1339,7 @@ private:
         flow->write_submit_us = submit_us;
         const std::shared_ptr<Impl> self = shared_from_this();
         boost::asio::async_write(flow->connector, boost::asio::buffer(*chunk),
-            boost::asio::bind_executor(*strand_,
+            boost::asio::bind_executor(*shards_[flow->shard].strand,
                 [self, flow, chunk, runtime_generation](const boost::system::error_code& ec,
                     std::size_t) noexcept {
                     // Debit the queued-byte ledger for this chunk exactly once,
@@ -1231,25 +1404,32 @@ private:
         if (!flow || flow->closing || flow->first_leg_close_started) {
             return;
         }
-        if (flow->connection_id == 0 || !stack_) {
+        Shard& s = shards_[flow->shard];
+        if (flow->connection_id == 0 || !s.stack) {
             CloseFlow(flow, false);
             return;
         }
         flow->first_leg_close_started = true;
-        stack_->Close(flow->connection_id);
-        KickPoll();
+        s.stack->Close(flow->connection_id);
+        KickPoll(s);
     }
 
     bool IsFlowCurrent(const std::shared_ptr<Flow>& flow, std::uint64_t runtime_generation) const noexcept {
         if (!flow || flow->closing || !IsCurrent(runtime_generation)) {
             return false;
         }
-        const auto found = flows_.find(flow->key);
-        return found != flows_.end() && found->second == flow;
+        const auto& shard_flows = shards_[flow->shard].flows;
+        const auto found = shard_flows.find(flow->key);
+        return found != shard_flows.end() && found->second == flow;
     }
 
     std::shared_ptr<Flow> FindFlowGeneration(std::uint64_t flow_generation) noexcept {
-        for (const auto& entry : flows_) {
+        // S1: 高位是 shard 标签 (StartFlow 打上), 免跨 shard 扫描。
+        const std::size_t shard_index = static_cast<std::size_t>(flow_generation >> 56);
+        if (shard_index >= shards_.size()) {
+            return nullptr;
+        }
+        for (const auto& entry : shards_[shard_index].flows) {
             if (entry.second->generation == flow_generation) {
                 return entry.second;
             }
@@ -1257,13 +1437,13 @@ private:
         return nullptr;
     }
 
-    std::shared_ptr<Flow> FindConnection(UInt64 connection_id) noexcept {
-        const auto key = connections_.find(connection_id);
-        if (key == connections_.end()) {
+    std::shared_ptr<Flow> FindConnection(Shard& s, UInt64 connection_id) noexcept {
+        const auto key = s.connections.find(connection_id);
+        if (key == s.connections.end()) {
             return nullptr;
         }
-        const auto flow = flows_.find(key->second);
-        return flow == flows_.end() ? nullptr : flow->second;
+        const auto flow = s.flows.find(key->second);
+        return flow == s.flows.end() ? nullptr : flow->second;
     }
 
     void CloseFlow(const std::shared_ptr<Flow>& flow, bool abort_stack) noexcept {
@@ -1284,28 +1464,29 @@ private:
         flow->retry_timer.cancel(ec);
         flow->connector.cancel(ec);
         flow->connector.close(ec);
+        Shard& s = shards_[flow->shard];
         if (flow->connection_id != 0) {
-            connections_.erase(flow->connection_id);
-            if (abort_stack && stack_) {
-                stack_->Abort(flow->connection_id);
+            s.connections.erase(flow->connection_id);
+            if (abort_stack && s.stack) {
+                s.stack->Abort(flow->connection_id);
             }
         }
         const UInt64 listener_key = ::xtcp::EndpointKey(flow->local);
-        const auto listener = listener_refs_.find(listener_key);
-        if (listener != listener_refs_.end()) {
+        const auto listener = s.listener_refs.find(listener_key);
+        if (listener != s.listener_refs.end()) {
             if (listener->second.second > 1) {
                 --listener->second.second;
             }
             else {
-                if (stack_) {
-                    stack_->StopListen(listener->second.first);
+                if (s.stack) {
+                    s.stack->StopListen(listener->second.first);
                 }
-                listener_refs_.erase(listener);
+                s.listener_refs.erase(listener);
             }
         }
-        flows_.erase(flow->key);
+        s.flows.erase(flow->key);
         stats_.flows_closed.fetch_add(1, std::memory_order_relaxed);
-        KickPoll();
+        KickPoll(s);
     }
 
     static std::uint64_t NowUs() noexcept {
@@ -1351,15 +1532,16 @@ private:
 
     void StartPerfDump() noexcept {
         const char* path = ::getenv("OPENPPP2_XTCP_PERF_JSON");
-        if (path == nullptr || path[0] == '\0' || !context_) {
+        if (path == nullptr || path[0] == '\0' || !context_ || shards_.empty()) {
             return;
         }
+        shard_prev_.assign(shards_.size() * 4, 0);
         send_admission_enabled_ = EnvEnabled("OPENPPP2_XTCP_SEND_ADMISSION_JSON");
         ack_release_enabled_ = EnvEnabled("OPENPPP2_XTCP_ACK_RELEASE_JSON");
         output_rejection_enabled_ = EnvEnabled("OPENPPP2_XTCP_OUTPUT_REJECTION_JSON") &&
             output_rejection_diagnostics_ && output_rejection_diagnostics_->Enabled();
         perf_json_path_ = path;
-        boost::asio::post(*strand_, [self = shared_from_this()]() noexcept {
+        boost::asio::post(*shards_[0].strand, [self = shared_from_this()]() noexcept {
             self->perf_out_.open(self->perf_json_path_, std::ios::app);
             if (!self->perf_out_.is_open()) {
                 return;
@@ -1375,7 +1557,7 @@ private:
         perf_dump_timer_ = std::make_shared<boost::asio::steady_timer>(*context_);
         perf_dump_timer_->expires_after(std::chrono::milliseconds(1000));
         const std::shared_ptr<Impl> self = shared_from_this();
-        perf_dump_timer_->async_wait(boost::asio::bind_executor(*strand_,
+        perf_dump_timer_->async_wait(boost::asio::bind_executor(*shards_[0].strand,
             [self](const boost::system::error_code& ec) noexcept {
                 if (ec || !self->running_.load(std::memory_order_acquire)) {
                     return;
@@ -1394,14 +1576,19 @@ private:
     }
 
     void WritePerfLine() noexcept {
+        if (shards_.empty()) {
+            return;
+        }
+        Shard& s0 = shards_[0];
         PerfPrev now_prev;
         // Sample the first live connection's TCP internals (real cwnd /
         // inflight / peer window) so the DL analysis uses stack truth.
+        // S1: TCP/flow/NDI 诊断采样取 shard 0 (诊断口径, 不影响数据面)。
         tcp_sample_ = {};
-        for (const auto& entry : flows_) {
+        for (const auto& entry : s0.flows) {
             const std::shared_ptr<Flow>& flow = entry.second;
-            if (!flow->closing && flow->connection_id != 0 && stack_) {
-                stack_->ConnStats(flow->connection_id, tcp_sample_.inflight,
+            if (!flow->closing && flow->connection_id != 0 && s0.stack) {
+                s0.stack->ConnStats(flow->connection_id, tcp_sample_.inflight,
                     tcp_sample_.cwnd, tcp_sample_.ssthresh, tcp_sample_.snd_wnd,
                     tcp_sample_.retx, tcp_sample_.rto_deadline, tcp_sample_.dup_acks,
                     tcp_sample_.fast_rec, tcp_sample_.front_seq, tcp_sample_.snd_una,
@@ -1429,11 +1616,11 @@ private:
         now_prev.on_receive_rejected_bytes =
             stats_.on_receive_rejected_bytes.load(std::memory_order_relaxed);
     // A2-0: NDI output-path snapshot and per-flow queue distribution.
-        ndi_stats_ = backend_ ? backend_->SnapshotTxStats() : XtcpNdiBackend::TxStats{};
+        ndi_stats_ = s0.backend ? s0.backend->SnapshotTxStats() : XtcpNdiBackend::TxStats{};
         std::uint32_t above_256k = 0;
         std::uint32_t above_1m = 0;
         std::uint32_t above_2m = 0;
-        for (const auto& entry : flows_) {
+        for (const auto& entry : s0.flows) {
             const std::size_t bytes = entry.second->write_bytes;
             if (bytes > 256 * 1024) {
                 ++above_256k;
@@ -1451,8 +1638,8 @@ private:
         now_prev.output_packets = stats_.output_packets.load(std::memory_order_relaxed);
         now_prev.output_bytes = stats_.output_bytes.load(std::memory_order_relaxed);
         now_prev.timer_armed = stats_.timer_armed.load(std::memory_order_relaxed);
-        if (ack_release_enabled_ && stack_) {
-            now_prev.ack_release = stack_->AckReleaseTelemetry();
+        if (ack_release_enabled_ && s0.stack) {
+            now_prev.ack_release = s0.stack->AckReleaseTelemetry();
         }
         if (output_rejection_enabled_) {
             now_prev.output_rejections = output_rejection_diagnostics_->Snapshot();
@@ -1611,7 +1798,7 @@ private:
             UInt64 cwnd_min = 0, cwnd_max = 0;
             UInt64 pacing_due_min = 0, pacing_due_max = 0;
             const std::uint64_t now_us = NowUs();
-            for (const auto& entry : flows_) {
+            for (const auto& entry : s0.flows) {
                 const std::shared_ptr<Flow>& flow = entry.second;
                 if (!flow->send_admission_blocked) {
                     continue;
@@ -1727,6 +1914,51 @@ private:
                 oversize_shape.tcp_option_unknown ? "true" : "false");
         }
 
+        // S1: per-shard 计数 delta (窗口) + 累计 queue 延迟分位。
+        char shard_buf[1280] = {};
+        {
+            std::size_t off = 0;
+            for (std::size_t i = 0; i < shards_.size() && off < sizeof(shard_buf); ++i) {
+                const Shard& s = shards_[i];
+                const std::uint64_t enq = s.enqueued.load(std::memory_order_relaxed);
+                const std::uint64_t disp = s.dispatched.load(std::memory_order_relaxed);
+                const std::uint64_t inj = s.injected.load(std::memory_order_relaxed);
+                const std::uint64_t drp = s.dropped.load(std::memory_order_relaxed);
+                std::uint64_t pe = 0, pd = 0, pi = 0, px = 0;
+                if (shard_prev_.size() == shards_.size() * 4) {
+                    pe = shard_prev_[i * 4];
+                    pd = shard_prev_[i * 4 + 1];
+                    pi = shard_prev_[i * 4 + 2];
+                    px = shard_prev_[i * 4 + 3];
+                }
+                std::uint64_t q_total = 0;
+                for (std::size_t b = 0; b < Stats::kHistBuckets; ++b) {
+                    q_total += s.queue_delay_us[b].load(std::memory_order_relaxed);
+                }
+                const int written = std::snprintf(shard_buf + off, sizeof(shard_buf) - off,
+                    "{\"i\":%zu,\"enq\":%llu,\"disp\":%llu,\"inj\":%llu,\"drop\":%llu,"
+                    "\"q50\":%.0f,\"q95\":%.0f}%s",
+                    i,
+                    (unsigned long long)counter_delta(enq, pe),
+                    (unsigned long long)counter_delta(disp, pd),
+                    (unsigned long long)counter_delta(inj, pi),
+                    (unsigned long long)counter_delta(drp, px),
+                    HistPercentile(s.queue_delay_us, q_total, 0.50),
+                    HistPercentile(s.queue_delay_us, q_total, 0.95),
+                    i + 1 < shards_.size() ? "," : "");
+                if (written < 0) {
+                    break;
+                }
+                off += static_cast<std::size_t>(written);
+            }
+            shard_prev_.resize(shards_.size() * 4);
+            for (std::size_t i = 0; i < shards_.size(); ++i) {
+                shard_prev_[i * 4] = shards_[i].enqueued.load(std::memory_order_relaxed);
+                shard_prev_[i * 4 + 1] = shards_[i].dispatched.load(std::memory_order_relaxed);
+                shard_prev_[i * 4 + 2] = shards_[i].injected.load(std::memory_order_relaxed);
+                shard_prev_[i * 4 + 3] = shards_[i].dropped.load(std::memory_order_relaxed);
+            }
+        }
         char line[5120];
         char ndi_buf[3072];
         std::snprintf(ndi_buf, sizeof(ndi_buf),
@@ -1749,6 +1981,7 @@ private:
             "\"retx\":%u,\"dup_acks\":%u,\"fast_rec\":%u},"
             "\"owner\":{\"posts\":%llu,\"dispatched\":%llu,\"dropped\":%llu,\"injected\":%llu,"
             "\"q_p50_us\":%.0f,\"q_p95_us\":%.0f},"
+            "\"shards\":[%s],"
             "%s"
             "\"queue\":{\"global\":%llu,\"global_high\":%llu,"
             "\"above_256k\":%u,\"above_1m\":%u,\"above_2m\":%u},"
@@ -1788,6 +2021,7 @@ private:
                 ? now_prev.ingress_injected - p.ingress_injected : 0),
             HistPercentile(queue_hist, q_total, 0.50),
             HistPercentile(queue_hist, q_total, 0.95),
+            shard_buf,
             ndi_buf,
             (unsigned long long)stats_.queued_bytes_total.load(std::memory_order_relaxed),
             (unsigned long long)stats_.queued_bytes_highwater.load(std::memory_order_relaxed),
@@ -1815,11 +2049,11 @@ private:
     // (one extra poll at most, <= slack late).
     static constexpr std::int64_t kRearmSlackUs = 50;
 
-    std::chrono::steady_clock::duration PollDelay() const noexcept {
-        if (!stack_) {
+    std::chrono::steady_clock::duration PollDelay(const Shard& s) const noexcept {
+        if (!s.stack) {
             return std::chrono::milliseconds(1);
         }
-        const UInt64 due = stack_->NextTimerDeadlineUs();
+        const UInt64 due = s.stack->NextTimerDeadlineUs();
         if (due == ::xtcp::XtcpStack::kNoTimerDeadline) {
             return std::chrono::milliseconds(kIdlePollIntervalMs);
         }
@@ -1829,47 +2063,52 @@ private:
             : std::chrono::microseconds(due - now);
     }
 
-    void KickPoll() noexcept {
-        if (!running_.load(std::memory_order_acquire) || !stack_ || !poll_timer_) {
+    void KickPoll(Shard& s) noexcept {
+        if (!running_.load(std::memory_order_acquire) || !s.stack || !s.poll_timer) {
             return;
         }
         const std::chrono::steady_clock::time_point target =
-            std::chrono::steady_clock::now() + PollDelay();
-        if (target + std::chrono::microseconds(kRearmSlackUs) < poll_timer_->expiry()) {
+            std::chrono::steady_clock::now() + PollDelay(s);
+        if (target + std::chrono::microseconds(kRearmSlackUs) < s.poll_timer->expiry()) {
             boost::system::error_code ec;
-            poll_timer_->cancel(ec);
-            SchedulePoll(generation_.load(std::memory_order_acquire));
+            s.poll_timer->cancel(ec);
+            SchedulePoll(s, generation_.load(std::memory_order_acquire));
         }
     }
 #else
-    void KickPoll() noexcept {}
+    void KickPoll(Shard&) noexcept {}
 #endif
 
-    void SchedulePoll(std::uint64_t runtime_generation) noexcept {
+    void SchedulePoll(Shard& s, std::uint64_t runtime_generation) noexcept {
         if (!IsCurrent(runtime_generation)) {
             return;
         }
         // XTCP-STRAND-DISPATCH-001: one steady_timer object is created per
-        // runtime and reused; make_shared per poll was a per-packet heap
+        // shard and reused; make_shared per poll was a per-packet heap
         // allocation on bursts.
-        if (!poll_timer_) {
-            poll_timer_ = std::make_shared<boost::asio::steady_timer>(*context_);
+        if (!s.poll_timer) {
+            s.poll_timer = std::make_shared<boost::asio::steady_timer>(*context_);
         }
 #if defined(PPP_XTCP_HAS_TIMER_DEADLINE)
-        poll_timer_->expires_after(PollDelay());
+        s.poll_timer->expires_after(PollDelay(s));
 #else
-        poll_timer_->expires_after(std::chrono::milliseconds(1));
+        s.poll_timer->expires_after(std::chrono::milliseconds(1));
 #endif
         stats_.timer_armed.fetch_add(1, std::memory_order_relaxed);
         const std::shared_ptr<Impl> self = shared_from_this();
-        poll_timer_->async_wait(boost::asio::bind_executor(*strand_,
-            [self, runtime_generation](const boost::system::error_code& ec) noexcept {
-                if (ec || !self->IsCurrent(runtime_generation) || !self->stack_) {
+        const std::size_t shard_index = s.index;
+        s.poll_timer->async_wait(boost::asio::bind_executor(*s.strand,
+            [self, shard_index, runtime_generation](const boost::system::error_code& ec) noexcept {
+                if (ec || !self->IsCurrent(runtime_generation)) {
                     return;
                 }
-                if (self->poll_timer_) {
+                Shard& s = self->shards_[shard_index];
+                if (!s.stack) {
+                    return;
+                }
+                if (s.poll_timer) {
                     const auto overdue = std::chrono::steady_clock::now() -
-                        self->poll_timer_->expiry();
+                        s.poll_timer->expiry();
                     if (overdue.count() > 0) {
                         HistAdd(self->stats_.timer_late_us,
                             static_cast<std::uint64_t>(
@@ -1879,12 +2118,32 @@ private:
                 }
                 self->stats_.timer_polls.fetch_add(1, std::memory_order_relaxed);
                 self->stats_.timer_events.fetch_add(
-                    self->stack_->PollAckTimers(), std::memory_order_relaxed);
-                self->SchedulePoll(runtime_generation);
+                    s.stack->PollAckTimers(), std::memory_order_relaxed);
+                self->SchedulePoll(s, runtime_generation);
             }));
     }
 
-    void DoStop() noexcept {
+    // S1: 每 shard 的 teardown 在自己的 strand 上执行 (与其余在途 handler
+    // 串行); 全部 shard 完成后由最后一个 shard 调 DoStopFinalize 收尾。
+    void DoStopShard(Shard& s) noexcept {
+        if (s.poll_timer) {
+            boost::system::error_code ec;
+            s.poll_timer->cancel(ec);
+            s.poll_timer.reset();
+        }
+        while (!s.flows.empty()) {
+            CloseFlow(s.flows.begin()->second, true);
+        }
+        s.connections.clear();
+        s.listener_refs.clear();
+        s.stack.reset();
+        if (s.backend) {
+            s.backend->Stop();
+            s.backend.reset();
+        }
+    }
+
+    void DoStopFinalize() noexcept {
         if (perf_dump_timer_) {
             boost::system::error_code ec;
             perf_dump_timer_->cancel(ec);
@@ -1894,28 +2153,15 @@ private:
             perf_out_.flush();
             perf_out_.close();
         }
-        if (poll_timer_) {
-            boost::system::error_code ec;
-            poll_timer_->cancel(ec);
-            poll_timer_.reset();
-        }
-        while (!flows_.empty()) {
-            CloseFlow(flows_.begin()->second, true);
-        }
-        connections_.clear();
-        listener_refs_.clear();
-        stack_.reset();
-        if (backend_) {
-            backend_->Stop();
-            backend_.reset();
-        }
         lease_.reset();
+        if (own_context_) {
+            own_context_->stop();
+        }
         stopping_.store(false, std::memory_order_release);
     }
 
 private:
     std::shared_ptr<boost::asio::io_context> context_;
-    std::shared_ptr<Strand> strand_;
     OutputHandler output_;
     OutputHandler counted_output_;
     ListenerEndpointHandler listener_endpoint_;
@@ -1923,28 +2169,13 @@ private:
     ExternalCancelHandler external_cancel_;
     std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics_;
     mutable std::mutex state_sync_;
-    XtcpIngressBudget budget_;
     std::atomic<bool> running_{false};
     std::atomic<bool> ready_{false};
     std::atomic<bool> stopping_{false};
     std::atomic<std::uint64_t> generation_{0};
-    std::uint64_t next_flow_generation_ = 0;
+    std::atomic<std::uint64_t> next_flow_generation_{0};
     Stats stats_;
     std::unique_ptr<XtcpPoolLease> lease_;
-    std::unique_ptr<XtcpNdiBackend> backend_;
-    std::unique_ptr<::xtcp::XtcpStack> stack_;
-    std::shared_ptr<boost::asio::steady_timer> poll_timer_;
-    // XTCP-STRAND-DISPATCH-001: Submit -> strand 批量 handoff。互斥锁只护
-    // push/swap 两次 O(1) 操作, 包体在锁外注入; handoff_posted_ 保证任意时刻
-    // 至多一个 drain 闭包在途。
-    struct HandoffItem final {
-        ::xtcp::buf::BufRef packet;
-        std::uint64_t generation = 0;
-        std::uint64_t enqueue_us = 0;
-    };
-    std::mutex handoff_sync_;
-    std::vector<HandoffItem> handoff_;
-    std::atomic<bool> handoff_posted_{false};
     // Perf diagnostics state (strand-only once Start() armed the dump).
     std::string perf_json_path_;
     bool send_admission_enabled_ = false;
@@ -1970,6 +2201,7 @@ private:
     TcpSample tcp_sample_;
     XtcpNdiBackend::TxStats ndi_stats_;
     XtcpNdiBackend::TxStats ndi_prev_;
+    std::vector<std::uint64_t> shard_prev_;
     // Per-interval NDI aggregates written into the JSON line.
     std::uint64_t ndi_pps_ = 0;
     double ndi_out_p50_us_ = 0.0;
@@ -1982,9 +2214,12 @@ private:
     std::uint32_t flows_above_256k_ = 0;
     std::uint32_t flows_above_1m_ = 0;
     std::uint32_t flows_above_2m_ = 0;
-    std::unordered_map<FlowKey, std::shared_ptr<Flow>, FlowKeyHash> flows_;
-    std::unordered_map<UInt64, FlowKey> connections_;
-    std::unordered_map<UInt64, std::pair<::xtcp::core::Endpoint, std::uint32_t>> listener_refs_;
+    // deque 而非 vector: Shard 含 mutex/atomic 不可移动, deque 元素永不搬迁。
+    std::deque<Shard> shards_;
+    int shard_count_ = 1;
+    // shards>1 时的专属执行池 (XtcpRuntime 独享, 析构时 stop+join)。
+    std::shared_ptr<boost::asio::io_context> own_context_;
+    std::vector<std::thread> own_threads_;
 };
 
 XtcpRuntime::XtcpRuntime(
