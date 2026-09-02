@@ -90,7 +90,7 @@ namespace ppp {
                     std::shared_ptr<xtcp::XtcpRuntime> runtime =
                         make_shared_object<xtcp::XtcpRuntime>(
                             owner_->GetContext(),
-                            [weak, output_rejection_diagnostics](const void* packet, int size) noexcept {
+                            [weak, output_rejection_diagnostics](std::shared_ptr<Byte>&& packet, int size) noexcept {
                                 const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
                                 if (output_rejection_diagnostics == nullptr) {
                                     return owner && owner->Output(packet, size);

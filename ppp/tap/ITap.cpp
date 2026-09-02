@@ -568,23 +568,17 @@ namespace ppp
         };
 
         /**
-         * @brief Issues the next queued write; completions re-enter on the strand.
+         * @brief Issues queued writes; completions re-enter on the strand.
+         *
+         * XTCP-STRAND-DISPATCH-001 (data-plane tier): the TAP fd is
+         * O_NONBLOCK, so a bounded synchronous drain amortizes one strand
+         * dispatch and one epoll round-trip over a whole burst of queued
+         * frames instead of one async_write completion per frame. On EAGAIN
+         * the packet is pushed back and a single async_write re-arms when the
+         * kernel queue drains.
          */
         void ITap::DrainWriteQueue() noexcept
         {
-            std::pair<std::shared_ptr<Byte>, int> front;
-            {
-                std::lock_guard<std::mutex> scope(_write_mutex);
-                if (_write_queue.empty())
-                {
-                    _write_in_progress = false;
-                    return;
-                }
-
-                front = _write_queue.front();
-                _write_queue.pop_front();
-            }
-
             std::shared_ptr<boost::asio::posix::stream_descriptor> stream = GetStream();
             if (NULLPTR == stream || !stream->is_open())
             {
@@ -592,6 +586,60 @@ namespace ppp
                 std::lock_guard<std::mutex> scope(_write_mutex);
                 _write_in_progress = false;
                 return;
+            }
+
+            static constexpr int kTapWriteBatch = 64;
+            int batch = kTapWriteBatch;
+            std::pair<std::shared_ptr<Byte>, int> front;
+            for (;;)
+            {
+                {
+                    std::lock_guard<std::mutex> scope(_write_mutex);
+                    if (_write_queue.empty())
+                    {
+                        _write_in_progress = false;
+                        return;
+                    }
+                    front = _write_queue.front();
+                    _write_queue.pop_front();
+                }
+
+                std::shared_ptr<Byte> packet = front.first;
+                ppp::diagnostics::datapath_perf::Scope write_scope;
+                boost::system::error_code ec;
+                const std::size_t sz = stream->write_some(boost::asio::buffer(packet.get(), front.second), ec);
+                if (ec == boost::asio::error::would_block)
+                {
+                    std::lock_guard<std::mutex> scope(_write_mutex);
+                    _write_queue.push_front(std::move(front));
+                    break;
+                }
+                if (!ec)
+                {
+                    // Lab-only JSONL: physical kernel-write completion bytes and post-to-completion time.
+                    ppp::diagnostics::datapath_perf::RecordTunWriteCompleted((int)sz, write_scope.Elapsed());
+                }
+                if (--batch == 0)
+                {
+                    break;
+                }
+            }
+
+            /**
+             * @brief Queue still has work (EAGAIN backoff or batch budget
+             *        exhausted): keep _write_in_progress and resume with one
+             *        async_write for the front packet; the completion handler
+             *        re-enters this drain.
+             */
+            {
+                std::lock_guard<std::mutex> scope(_write_mutex);
+                if (_write_queue.empty())
+                {
+                    _write_in_progress = false;
+                    return;
+                }
+                front = _write_queue.front();
+                _write_queue.pop_front();
             }
 
             std::shared_ptr<Byte> packet = front.first;

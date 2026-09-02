@@ -249,10 +249,12 @@ public:
         const auto listener_endpoint = echo_->Endpoint();
         runtime_ = std::make_shared<XtcpRuntime>(
             context_,
-            [this](const void* data, int length) noexcept {
+            [this](std::shared_ptr<Byte>&& data, int length) noexcept {
                 std::lock_guard<std::mutex> lock(output_mutex_);
-                const Byte* bytes = static_cast<const Byte*>(data);
-                output_.emplace_back(bytes, bytes + length);
+                const Byte* bytes = data ? data.get() : nullptr;
+                if (bytes != nullptr && length > 0) {
+                    output_.emplace_back(bytes, bytes + length);
+                }
                 return true;
             },
             [listener_endpoint]() noexcept { return listener_endpoint; },

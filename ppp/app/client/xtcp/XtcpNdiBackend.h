@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <mutex>
 
 #if defined(PPP_ENABLE_XTCP)
@@ -15,7 +16,11 @@ namespace ppp::app::client::xtcp {
 #if defined(PPP_ENABLE_XTCP)
 class XtcpNdiBackend final : public ::xtcp::ndi::Backend {
 public:
-    using OutputHandler = std::function<bool(const void*, int)>;
+    // XTCP-STRAND-DISPATCH-001 (data-plane tier): the handler receives an
+    // owning shared_ptr<Byte> (a stack BufRef wrapped by a deleter) so the
+    // TAP write queue can hold the buffer zero-copy instead of copying.
+    // Byte == unsigned char == std::uint8_t.
+    using OutputHandler = std::function<bool(std::shared_ptr<std::uint8_t>&&, int)>;
 
     explicit XtcpNdiBackend(OutputHandler output) noexcept;
 

@@ -8,6 +8,15 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <vector>
+
+namespace {
+std::shared_ptr<Byte> MakeTestBuffer(const Byte* bytes, std::size_t length) noexcept {
+    const std::shared_ptr<std::vector<Byte>> holder =
+        std::make_shared<std::vector<Byte>>(bytes, bytes + length);
+    return std::shared_ptr<Byte>(holder, holder->data());
+}
+}
 
 namespace {
 int failures = 0;
@@ -79,7 +88,7 @@ void TestIPv4PolicyHelpers() {
 void TestProductionNdiOwnership() {
     bool accept = false;
     ppp::app::client::xtcp::XtcpNdiBackend backend(
-        [&accept](const void*, int) noexcept { return accept; });
+        [&accept](std::shared_ptr<Byte>&&, int) noexcept { return accept; });
 
     xtcp::buf::BufRef owned = xtcp::buf::BufRef::Acquire(64);
     CHECK(!owned.IsEmpty());
@@ -200,7 +209,7 @@ std::shared_ptr<ppp::app::client::xtcp::XtcpRuntime> MakeRejectingRuntime(
     using ppp::app::client::xtcp::XtcpRuntime;
     return std::make_shared<XtcpRuntime>(
         context,
-        [calls, diagnostics, saw_oversize_attempt_before_handler](const void*, int) noexcept {
+        [calls, diagnostics, saw_oversize_attempt_before_handler](std::shared_ptr<Byte>&&, int) noexcept {
             ++*calls;
             if (saw_oversize_attempt_before_handler != nullptr) {
                 *saw_oversize_attempt_before_handler =
@@ -232,7 +241,7 @@ void TestRuntimeOutputRejectionPacketShapes() {
         int calls = 0;
         const auto runtime = MakeRejectingRuntime(context, diagnostics, &calls);
         CHECK(runtime->Start());
-        CHECK(!runtime->EmitOutputForTesting(timestamps.bytes, sizeof(timestamps.bytes)));
+        CHECK(!runtime->EmitOutputForTesting(MakeTestBuffer(timestamps.bytes, sizeof(timestamps.bytes)), sizeof(timestamps.bytes)));
         CHECK(calls == 1);
         const auto snapshot = diagnostics->Snapshot();
         CHECK(!snapshot.packet_shape.captured);
@@ -251,7 +260,7 @@ void TestRuntimeOutputRejectionPacketShapes() {
         const auto runtime = MakeRejectingRuntime(
             context, diagnostics, &calls, &saw_oversize_attempt_before_handler);
         CHECK(runtime->Start());
-        CHECK(!runtime->EmitOutputForTesting(timestamps.bytes, sizeof(timestamps.bytes)));
+        CHECK(!runtime->EmitOutputForTesting(MakeTestBuffer(timestamps.bytes, sizeof(timestamps.bytes)), sizeof(timestamps.bytes)));
         CHECK(calls == 1);
         CHECK(saw_oversize_attempt_before_handler);
         const auto snapshot = diagnostics->Snapshot();
@@ -293,7 +302,7 @@ void TestRuntimeOutputRejectionPacketShapes() {
         int calls = 0;
         const auto runtime = MakeRejectingRuntime(context, diagnostics, &calls);
         CHECK(runtime->Start());
-        CHECK(!runtime->EmitOutputForTesting(sack.bytes, sizeof(sack.bytes)));
+        CHECK(!runtime->EmitOutputForTesting(MakeTestBuffer(sack.bytes, sizeof(sack.bytes)), sizeof(sack.bytes)));
         CHECK(calls == 1);
         const auto shape = diagnostics->Snapshot().packet_shape;
         CHECK(shape.captured);
@@ -312,7 +321,7 @@ void TestRuntimeOutputRejectionPacketShapes() {
         int calls = 0;
         const auto runtime = MakeRejectingRuntime(context, diagnostics, &calls);
         CHECK(runtime->Start());
-        CHECK(!runtime->EmitOutputForTesting(malformed.bytes, sizeof(malformed.bytes)));
+        CHECK(!runtime->EmitOutputForTesting(MakeTestBuffer(malformed.bytes, sizeof(malformed.bytes)), sizeof(malformed.bytes)));
         CHECK(calls == 1);
         const auto shape = diagnostics->Snapshot().packet_shape;
         CHECK(shape.captured);
@@ -343,7 +352,7 @@ void TestRuntimeRepeatedStartStop() {
     auto context = std::make_shared<boost::asio::io_context>();
     auto runtime = std::make_shared<ppp::app::client::xtcp::XtcpRuntime>(
         context,
-        [](const void*, int) noexcept { return true; },
+        [](std::shared_ptr<Byte>&&, int) noexcept { return true; },
         []() noexcept { return boost::asio::ip::tcp::endpoint(); },
         [](const boost::asio::ip::tcp::endpoint&,
            const boost::asio::ip::tcp::endpoint&,

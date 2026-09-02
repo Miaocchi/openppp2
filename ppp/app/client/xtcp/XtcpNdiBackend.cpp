@@ -2,7 +2,9 @@
 
 #if defined(PPP_ENABLE_XTCP)
 #include <chrono>
+#include <cstring>
 #include <utility>
+#include <vector>
 
 namespace ppp::app::client::xtcp {
 namespace {
@@ -35,8 +37,37 @@ bool XtcpNdiBackend::Tx(::xtcp::ndi::Packet&& packet) noexcept {
     // the previous Tx entry (the NDI callback cadence).
     const std::uint64_t start_us = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    const bool emitted = packet.data != nullptr && packet.len != 0 &&
-        output(packet.data, static_cast<int>(packet.len));
+    bool emitted = false;
+    if (packet.data != nullptr && packet.len != 0) {
+        if (!packet.owned.IsEmpty()) {
+            // XTCP-STRAND-DISPATCH-001 (data-plane tier): hand the stack's
+            // BufRef to the consumer through an owning shared_ptr; the buffer
+            // returns to the pool when the TAP write completes. No alloc and
+            // no copy on this path. Ownership is RESTORED to packet.owned
+            // when the consumer rejects: a rejected Tx must leave the packet
+            // exactly as it arrived (contract of TestProductionNdiOwnership).
+            struct BufRefHolder final {
+                ::xtcp::buf::BufRef ref;
+            };
+            const std::shared_ptr<BufRefHolder> holder =
+                std::make_shared<BufRefHolder>();
+            holder->ref = std::move(packet.owned);
+            std::shared_ptr<Byte> buffer(holder->ref.Data(),
+                [holder](Byte*) mutable noexcept {});
+            emitted = output(std::move(buffer), static_cast<int>(packet.len));
+            if (!emitted) {
+                packet.owned = std::move(holder->ref);
+            }
+        }
+        else {
+            // Defensive: a Tx packet without a backing BufRef cannot be handed
+            // off zero-copy; copy once so the consumer still owns the bytes.
+            const std::shared_ptr<std::vector<Byte>> holder =
+                std::make_shared<std::vector<Byte>>(packet.data, packet.data + packet.len);
+            std::shared_ptr<Byte> buffer(holder, holder->data());
+            emitted = output(std::move(buffer), static_cast<int>(packet.len));
+        }
+    }
     const std::uint64_t end_us = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     tx_calls_.fetch_add(1, std::memory_order_relaxed);
@@ -53,9 +84,6 @@ bool XtcpNdiBackend::Tx(::xtcp::ndi::Packet&& packet) noexcept {
         return false;
     }
     accepted_.fetch_add(1, std::memory_order_relaxed);
-    if (!packet.owned.IsEmpty()) {
-        ::xtcp::buf::BufRef consumed = std::move(packet.owned);
-    }
     return true;
 }
 

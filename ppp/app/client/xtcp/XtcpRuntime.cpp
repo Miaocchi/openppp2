@@ -238,7 +238,7 @@ bool XtcpRuntime::IsRunning() const noexcept { return false; }
 std::uint64_t XtcpRuntime::Generation() const noexcept { return 0; }
 ppp::app::runtime::RuntimeXtcpStats XtcpRuntime::SnapshotStats() const noexcept { return {}; }
 #if defined(PPP_XTCP_RUNTIME_TESTING)
-bool XtcpRuntime::EmitOutputForTesting(const void*, int) noexcept { return false; }
+bool XtcpRuntime::EmitOutputForTesting(const std::shared_ptr<Byte>&, int) noexcept { return false; }
 #endif
 #else
 namespace {
@@ -451,21 +451,22 @@ public:
             return false;
         }
         const std::weak_ptr<Impl> weak = shared_from_this();
-        counted_output_ = [weak, handler = output_](const void* data, int length) noexcept {
+        counted_output_ = [weak, handler = output_](std::shared_ptr<Byte>&& data, int length) noexcept {
             if (!handler) {
                 return false;
             }
+            const Byte* raw = data ? data.get() : nullptr;
             if (const std::shared_ptr<Impl> self = weak.lock()) {
                 if (self->output_rejection_diagnostics_ &&
                     self->output_rejection_diagnostics_->Enabled()) {
-                    self->output_rejection_diagnostics_->RecordOversizeOutputAttempt(data, length);
+                    self->output_rejection_diagnostics_->RecordOversizeOutputAttempt(raw, length);
                 }
             }
-            if (!handler(data, length)) {
+            if (!handler(std::move(data), length)) {
                 if (const std::shared_ptr<Impl> self = weak.lock()) {
                     if (self->output_rejection_diagnostics_ &&
                         self->output_rejection_diagnostics_->Enabled()) {
-                        self->output_rejection_diagnostics_->RecordRejectedPacketShape(data, length);
+                        self->output_rejection_diagnostics_->RecordRejectedPacketShape(raw, length);
                     }
                 }
                 return false;
@@ -537,8 +538,8 @@ public:
     }
 
 #if defined(PPP_XTCP_RUNTIME_TESTING)
-    bool EmitOutputForTesting(const void* data, int length) noexcept {
-        return counted_output_ && counted_output_(data, length);
+    bool EmitOutputForTesting(const std::shared_ptr<Byte>& data, int length) noexcept {
+        return counted_output_ && counted_output_(std::shared_ptr<Byte>(data), length);
     }
 #endif
 
@@ -2018,7 +2019,7 @@ ppp::app::runtime::RuntimeXtcpStats XtcpRuntime::SnapshotStats() const noexcept 
     return impl_ ? impl_->SnapshotStats() : ppp::app::runtime::RuntimeXtcpStats{};
 }
 #if defined(PPP_XTCP_RUNTIME_TESTING)
-bool XtcpRuntime::EmitOutputForTesting(const void* data, int length) noexcept {
+bool XtcpRuntime::EmitOutputForTesting(const std::shared_ptr<Byte>& data, int length) noexcept {
     return impl_ && impl_->EmitOutputForTesting(data, length);
 }
 #endif

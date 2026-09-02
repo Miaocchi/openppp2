@@ -72,7 +72,9 @@ private:
 
 class XtcpRuntime final : public std::enable_shared_from_this<XtcpRuntime> {
 public:
-    using OutputHandler = std::function<bool(const void*, int)>;
+    // XTCP-STRAND-DISPATCH-001 (data-plane tier): owning-buffer output so the
+    // stack's BufRef reaches the TAP write queue zero-copy.
+    using OutputHandler = std::function<bool(std::shared_ptr<std::uint8_t>&&, int)>;
     using ListenerEndpointHandler = std::function<boost::asio::ip::tcp::endpoint()>;
     using ExternalAcceptHandler = std::function<bool(
         const boost::asio::ip::tcp::endpoint&,
@@ -101,7 +103,7 @@ public:
     std::uint64_t Generation() const noexcept;
     ppp::app::runtime::RuntimeXtcpStats SnapshotStats() const noexcept;
 #if defined(PPP_XTCP_RUNTIME_TESTING)
-    bool EmitOutputForTesting(const void* data, int length) noexcept;
+    bool EmitOutputForTesting(const std::shared_ptr<std::uint8_t>& data, int length) noexcept;
 #endif
 
 private:
