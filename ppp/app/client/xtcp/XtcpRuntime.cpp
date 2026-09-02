@@ -1757,6 +1757,9 @@ private:
             recv_calls != 0 ? static_cast<double>(recv_bytes) / recv_calls : 0.0,
             (unsigned long long)out_pkts, (unsigned long long)out_bytes,
             out_pkts != 0 ? static_cast<double>(out_bytes) / out_pkts : 0.0,
+            tcp_sample_.cwnd, tcp_sample_.inflight, tcp_sample_.snd_wnd,
+            tcp_sample_.ssthresh, tcp_sample_.retx, tcp_sample_.dup_acks,
+            tcp_sample_.fast_rec,
             (unsigned long long)(now_prev.ingress_enqueued >= p.ingress_enqueued
                 ? now_prev.ingress_enqueued - p.ingress_enqueued : 0),
             (unsigned long long)(now_prev.ingress_dispatched >= p.ingress_dispatched
@@ -1765,9 +1768,6 @@ private:
                 ? now_prev.ingress_dropped - p.ingress_dropped : 0),
             (unsigned long long)(now_prev.ingress_injected >= p.ingress_injected
                 ? now_prev.ingress_injected - p.ingress_injected : 0),
-            tcp_sample_.cwnd, tcp_sample_.inflight, tcp_sample_.snd_wnd,
-            tcp_sample_.ssthresh, tcp_sample_.retx, tcp_sample_.dup_acks,
-            tcp_sample_.fast_rec,
             HistPercentile(queue_hist, q_total, 0.50),
             HistPercentile(queue_hist, q_total, 0.95),
             ndi_buf,
