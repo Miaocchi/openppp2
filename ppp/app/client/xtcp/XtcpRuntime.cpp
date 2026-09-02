@@ -579,52 +579,51 @@ public:
             return false;
         }
         const std::uint64_t generation = generation_.load(std::memory_order_acquire);
-        {
-            std::lock_guard<std::mutex> lock(state_sync_);
-            if (!budget_.Accepts(generation) ||
-                !budget_.TryReserve(static_cast<std::size_t>(packet_length))) {
-                stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
-                return false;
-            }
-        }
-        std::shared_ptr<std::vector<Byte>> copy;
-        try {
-            copy = std::make_shared<std::vector<Byte>>(static_cast<std::size_t>(packet_length));
-        }
-        catch (...) {
-            std::lock_guard<std::mutex> lock(state_sync_);
-            budget_.Release(static_cast<std::size_t>(packet_length));
+        if (!budget_.TryAdmit(generation, static_cast<std::size_t>(packet_length))) {
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
-        std::memcpy(copy->data(), packet, static_cast<std::size_t>(packet_length));
         // XTCP-UL-ZEROCOPY-001: 上游 BufRef 是 zero-copy 语义 (movable, not
-        // copyable)。此前 Submit -> vector 分配+memcpy, 然后 InjectCopy 再
-        // BufRef::Acquire+memcpy, 每 UL 包 2 次分配 + 2 次拷贝。这里改为
-        // 直接在 Submit 分配一次 BufRef, ProcessIngress 直接注入, StartFlow
-        // 把 SYN 的 BufRef 移交给 deferred_syn, 全程 1 次分配 + 1 次拷贝。
+        // copyable)。Submit 直接分配一次 BufRef, ProcessIngress 直接注入,
+        // StartFlow 把 SYN 的 BufRef 移交给 deferred_syn, 全程 1 次分配 + 1 次拷贝。
         ::xtcp::buf::BufRef owned = ::xtcp::buf::BufRef::Acquire(
             static_cast<UInt32>(packet_length));
         if (owned.IsEmpty()) {
-            std::lock_guard<std::mutex> lock(state_sync_);
             budget_.Release(static_cast<std::size_t>(packet_length));
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
         std::memcpy(owned.Data(), packet, static_cast<std::size_t>(packet_length));
         owned.SetLen(static_cast<UInt32>(packet_length));
-        const std::shared_ptr<Impl> self = shared_from_this();
-        const std::uint64_t enqueue_us = NowUs();
-        try {
-            boost::asio::post(*strand_, [self, owned = std::move(owned), generation, enqueue_us]() mutable noexcept {
-                self->ProcessIngress(std::move(owned), generation, enqueue_us);
-            });
+        // XTCP-STRAND-DISPATCH-001 批量投递: 每包一次 asio::post 在 64KB 突发
+        // (~44 段) 下把 strand 变成 post 风暴, in-flight 打满 budget 上限后丢包
+        // (owner.dropped 累计 68 万, UL GSO-on 崩到 0.3-0.55x)。改为 Submit 压入
+        // handoff 队列, 每个突发只 post 一次 drain 闭包, strand 单次调度消化整批。
+        {
+            std::lock_guard<std::mutex> lock(handoff_sync_);
+            HandoffItem& item = handoff_.emplace_back();
+            item.packet = std::move(owned);
+            item.generation = generation;
+            item.enqueue_us = NowUs();
         }
-        catch (...) {
-            std::lock_guard<std::mutex> lock(state_sync_);
-            budget_.Release(static_cast<std::size_t>(packet_length));
-            stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
-            return false;
+        const std::shared_ptr<Impl> self = shared_from_this();
+        if (!handoff_posted_.exchange(true, std::memory_order_acq_rel)) {
+            try {
+                boost::asio::post(*strand_, [self]() noexcept { self->DrainIngress(); });
+            }
+            catch (...) {
+                std::vector<HandoffItem> abandoned;
+                {
+                    std::lock_guard<std::mutex> lock(handoff_sync_);
+                    abandoned.swap(handoff_);
+                    handoff_posted_.store(false, std::memory_order_release);
+                }
+                for (HandoffItem& item : abandoned) {
+                    budget_.Release(item.packet.IsEmpty() ? 0 : item.packet.Len());
+                    stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                }
+                return false;
+            }
         }
         stats_.ingress_enqueued.fetch_add(1, std::memory_order_relaxed);
         stats_.ingress_submitted.fetch_add(1, std::memory_order_relaxed);
@@ -792,13 +791,31 @@ private:
             generation == generation_.load(std::memory_order_acquire);
     }
 
+    // XTCP-STRAND-DISPATCH-001: strand 侧批量 drain。Submit 只在 handoff 从空
+    // 变非空时 post 一次本闭包, 本函数循环换出整个突发逐包注入, 直到换出为空
+    // 才清 handoff_posted_ (同一把锁内检查+清位, 保证 Submit 侧不会有包滞留)。
+    void DrainIngress() noexcept {
+        std::vector<HandoffItem> local;
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lock(handoff_sync_);
+                if (handoff_.empty()) {
+                    handoff_posted_.store(false, std::memory_order_release);
+                    return;
+                }
+                local.swap(handoff_);
+            }
+            for (HandoffItem& item : local) {
+                ProcessIngress(std::move(item.packet), item.generation, item.enqueue_us);
+            }
+            local.clear();
+        }
+    }
+
     void ProcessIngress(::xtcp::buf::BufRef&& packet, std::uint64_t generation, std::uint64_t enqueue_us) noexcept {
         stats_.ingress_dispatched.fetch_add(1, std::memory_order_relaxed);
         HistAdd(stats_.queue_delay_us, NowUs() - enqueue_us);
-        {
-            std::lock_guard<std::mutex> lock(state_sync_);
-            budget_.Release(packet.IsEmpty() ? 0 : packet.Len());
-        }
+        budget_.Release(packet.IsEmpty() ? 0 : packet.Len());
         if (packet.IsEmpty() || !IsCurrent(generation) || !stack_ || !backend_) {
             return;
         }
@@ -1790,6 +1807,12 @@ private:
     // KickPoll() so a freshly armed earlier deadline preempts a pending wait;
     // the idle watchdog bounds the wait when nothing is armed.
     static constexpr std::uint64_t kIdlePollIntervalMs = 10;
+    // XTCP-STRAND-DISPATCH-001: re-arm slack. With pacing (0005) the stack's
+    // next deadline advances on every flush; re-arming (cancel + async_wait)
+    // per packet on a burst burns the strand on timer churn. A new deadline
+    // less than this much earlier than the armed one rides the pending wait
+    // (one extra poll at most, <= slack late).
+    static constexpr std::int64_t kRearmSlackUs = 50;
 
     std::chrono::steady_clock::duration PollDelay() const noexcept {
         if (!stack_) {
@@ -1811,7 +1834,7 @@ private:
         }
         const std::chrono::steady_clock::time_point target =
             std::chrono::steady_clock::now() + PollDelay();
-        if (target < poll_timer_->expiry()) {
+        if (target + std::chrono::microseconds(kRearmSlackUs) < poll_timer_->expiry()) {
             boost::system::error_code ec;
             poll_timer_->cancel(ec);
             SchedulePoll(generation_.load(std::memory_order_acquire));
@@ -1825,7 +1848,12 @@ private:
         if (!IsCurrent(runtime_generation)) {
             return;
         }
-        poll_timer_ = std::make_shared<boost::asio::steady_timer>(*context_);
+        // XTCP-STRAND-DISPATCH-001: one steady_timer object is created per
+        // runtime and reused; make_shared per poll was a per-packet heap
+        // allocation on bursts.
+        if (!poll_timer_) {
+            poll_timer_ = std::make_shared<boost::asio::steady_timer>(*context_);
+        }
 #if defined(PPP_XTCP_HAS_TIMER_DEADLINE)
         poll_timer_->expires_after(PollDelay());
 #else
@@ -1905,6 +1933,17 @@ private:
     std::unique_ptr<XtcpNdiBackend> backend_;
     std::unique_ptr<::xtcp::XtcpStack> stack_;
     std::shared_ptr<boost::asio::steady_timer> poll_timer_;
+    // XTCP-STRAND-DISPATCH-001: Submit -> strand 批量 handoff。互斥锁只护
+    // push/swap 两次 O(1) 操作, 包体在锁外注入; handoff_posted_ 保证任意时刻
+    // 至多一个 drain 闭包在途。
+    struct HandoffItem final {
+        ::xtcp::buf::BufRef packet;
+        std::uint64_t generation = 0;
+        std::uint64_t enqueue_us = 0;
+    };
+    std::mutex handoff_sync_;
+    std::vector<HandoffItem> handoff_;
+    std::atomic<bool> handoff_posted_{false};
     // Perf diagnostics state (strand-only once Start() armed the dump).
     std::string perf_json_path_;
     bool send_admission_enabled_ = false;
