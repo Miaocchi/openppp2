@@ -250,6 +250,32 @@ bool XtcpRuntime::EmitOutputForTesting(const std::shared_ptr<Byte>&, int) noexce
 namespace {
 constexpr std::size_t kIngressMaxItems = 1024;
 constexpr std::size_t kIngressMaxBytes = 8 * 1024 * 1024;
+// XTCP-KCC-SNDBUF-001 (post-0005 sweep): with a large per-conn snd_buf the
+// peer can offer far more in-flight data than the 1024-item ingress budget
+// absorbs during the initial 16-flow burst, and the resulting loss spiral
+// wedges the run (P16 DL sndbuf>=512K). Both caps get env overrides so the
+// lab can size the budget with the snd_buf sweep; defaults unchanged.
+std::size_t IngressMaxItems() noexcept {
+    const char* env = ::getenv("OPENPPP2_XTCP_INGRESS_ITEMS");
+    if (env != nullptr && env[0] != '\0') {
+        const long long value = ::atoll(env);
+        if (value >= 1024 && value <= 65536) {
+            return static_cast<std::size_t>(value);
+        }
+    }
+    return kIngressMaxItems;
+}
+
+std::size_t IngressMaxBytes() noexcept {
+    const char* env = ::getenv("OPENPPP2_XTCP_INGRESS_BYTES");
+    if (env != nullptr && env[0] != '\0') {
+        const long long value = ::atoll(env);
+        if (value >= 8ll * 1024 * 1024 && value <= 1024ll * 1024 * 1024) {
+            return static_cast<std::size_t>(value);
+        }
+    }
+    return kIngressMaxBytes;
+}
 constexpr std::size_t kMaxFlows = 4096;
 constexpr std::size_t kConnectorReadBytes = 64 * 1024;
 // Per-flow bridge queue cap for XTCP -> connector data. Rejecting a segment
@@ -933,7 +959,7 @@ private:
         std::shared_ptr<Strand> strand;
         std::unique_ptr<XtcpNdiBackend> backend;
         std::unique_ptr<::xtcp::XtcpStack> stack;
-        XtcpIngressBudget budget{kIngressMaxItems, kIngressMaxBytes};
+        XtcpIngressBudget budget{IngressMaxItems(), IngressMaxBytes()};
         std::mutex handoff_sync;
         std::vector<HandoffItem> handoff;
         std::atomic<bool> handoff_posted{false};

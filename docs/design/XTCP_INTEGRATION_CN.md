@@ -621,3 +621,22 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 4. `process_cores_ok`/`zero_migrations` fail 为本环境 perf task_clock 遥测缺失（基线已记录），吞吐与正确性检查全过。
 
 **S2 工作项（按优先级）**：① IO 同址消除跨 context 投递税（解锁 shards=2 默认化与 P1 回归）；② P64 DL stall 根因（posts=0 指向 server 侧/隧道路径）；③ 达标后再议 4 shard 扩展。
+
+**`XTCP-KCC-PACING-001` 第一轮定案（2026-09-02，binary `1c69ff13`，单核 CPU8，DL GSO-on）：**
+
+**根因（perf 铁证）**：DL 发送被 **snd_buf=64K 准入门**卡死，与 cwnd/pacing 无关——64K 时 `inflight` 峰值恰 62640B、`send.rejected≈906/s`、**stall 960ms/1000ms**（发送侧 96% 时间等 1ms 重试定时器）。旧"512K 无效/4M 崩到 25M"结论是 **0005 之前**的测量；0005 的 burst quantum 已消除旧失败模式。
+
+**snd_buf 扫参（DL GSO-on，配对同设置）**：
+
+| snd_buf | P1 | P4 | P16 |
+|---|---:|---:|---:|
+| 64K（默认）| 399（0.58× nat）| 521 | 514（0.92× nat）|
+| 128K | 474 | 551 | 513 |
+| 512K | **527** | **584（0.93× nat）** | **WEDGE** |
+| 1M | **544（0.80× nat）** | — | **WEDGE** |
+
+**P16 ≥512K wedge 机制**（诊断实锤）：大 snd_buf 破坏自时钟——server 无界 offer（16 流 × 1MB pending）→ client ingress budget（1024 items）瞬时溢出（实测 drop=184/534）→ 丢包 → server RTO/重传风暴 → 载荷挤压载波与 client ingress → 互相饿死；client 主线程 94.7% CPU 自旋在重试环上（shards=2 / 大 ingress budget 均不能解——溢出是触发点，自持机制在丢包螺旋）。**P16 包络：snd_buf ≤128K**，修复 offered-load 形状是上游工作（S2）。
+
+**已加旋钮**：`OPENPPP2_XTCP_INGRESS_ITEMS/BYTES`（默认 1024/8MB 不变，仅实验室用）；矩阵 runner `--xtcp-send-retry-us`（复测证明重试节奏非杠杆：1ms=544 vs 200µs=517，反而更差）。
+
+**结论**：DL GSO-on 的 snd_buf 扫参把 P1 从 0.58× 拉到 **0.80×**、P4 到 **0.93×** native；P16 已在 0.92×。残余 P1 差距（544 vs 684）限速者转为队列膨胀的有效 RTT（BDP 环），需载波/TAP 排队治理。默认 snd_buf 维持 64K（per-concurrency 包络未自动化前不变）。

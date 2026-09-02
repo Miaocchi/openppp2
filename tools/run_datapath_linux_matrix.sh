@@ -20,6 +20,7 @@ DATAPATH_TELEMETRY=false
 XTCP_PERF=false
 XTCP_CC=""
 XTCP_SHARDS=""
+XTCP_SEND_RETRY_US=""
 XTCP_SNDBUF=""
 NETEM_DELAY_MS=""
 STALL_DIAGNOSTICS=false
@@ -93,6 +94,7 @@ while (($#)); do
     --xtcp-perf) XTCP_PERF=true; shift ;;
     --xtcp-cc) need_value "$@"; XTCP_CC="$2"; shift 2 ;;
     --xtcp-shards) need_value "$@"; XTCP_SHARDS="$2"; shift 2 ;;
+    --xtcp-send-retry-us) need_value "$@"; XTCP_SEND_RETRY_US="$2"; shift 2 ;;
     --xtcp-sndbuf) need_value "$@"; XTCP_SNDBUF="$2"; shift 2 ;;
     --netem-delay-ms) need_value "$@"; NETEM_DELAY_MS="$2"; shift 2 ;;
     --stall-diagnostics) STALL_DIAGNOSTICS=true; shift ;;
@@ -507,6 +509,10 @@ PY
   fi
   if [[ -n "$XTCP_SNDBUF" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_SNDBUF_BYTES=${XTCP_SNDBUF}")
+  fi
+  if [[ -n "$XTCP_SEND_RETRY_US" && "$stack" == xtcp ]]; then
+    client_env+=("OPENPPP2_XTCP_LAB_SEND_RETRY_US=${XTCP_SEND_RETRY_US}")
+    server_env+=("OPENPPP2_XTCP_LAB_SEND_RETRY_US=${XTCP_SEND_RETRY_US}")
   fi
   if [[ -n "$XTCP_SHARDS" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_SHARDS=${XTCP_SHARDS}")
