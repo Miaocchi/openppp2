@@ -650,3 +650,17 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 **③ 延迟定位（iperf RTT）**：UL P1 xtcp mean_rtt=1.4ms vs native 0.8ms（max 尖峰 26ms 值得后续追查）；P16 两侧相当（13.7 vs 16.0ms）。DL 侧 stall 51% @ inflight≈sndbuf 属满管道自时钟正常形态——真正的 DL/UL 共同天花板是**client 接收端每包 ~20µs**（TAP 读→dispatch→XTCP RX→connector→内核 loopback→VNet RX→TAP 写约 8-10 级流水 vs native 内核 1.7µs/包）。下一个大杠杆是端到端 GSO-RX（server 发 64KB super-frame、上游 Inject 内部分段，44× 减包率）——上游 0006 级工作，本轮不做。
 
 **本轮后单核对位（GSO-on）**：P1 UL 0.67×、P16 UL 0.60×（shards=2 时 0.78×）、P1 DL 0.80×（sndbuf=1M）、P4 DL 0.93×、P16 DL 0.92×。DL 已全面进入 0.8-1.5× 带；UL 是剩余主战场。
+
+**全优化 binary 刷新表（`bccd3d3d`，单核 CPU8，GSO-on，1 轮；`build/final-refresh-a|b|c`）：**
+
+| cell | native | xtcp | ratio | 此前 |
+|---|---:|---:|---:|---:|
+| P1 UL on | 874.5 | 575.6 | **0.66** | 0.55 |
+| P4 UL on | 804.6 | 594.4 | **0.74** | 0.41 |
+| P16 UL on | 652.5 | 445.8 | **0.68** | 0.46 |
+| P1 DL on | 691.7 | 376.6 | 0.54（sndbuf=512K → **0.77**）| 0.58 |
+| P4 DL on | 605.1 | 459.7 | 0.76（512K → **0.86**）| 0.82 |
+| P16 DL on | 537.1 | 521.9 | **0.97** | 0.92 |
+| P64 UL on（2×CPU shards=2+批写）| — | **491.3** | jain 0.967，zero 0/64 | jain 0.51-0.77、12-19 零速流 |
+
+**本轮研究总结**：全部 GSO-on 对位比抬升至 0.66-0.97×（起点 0.41-0.92×）；P64 UL 饥饿由分片+批写联合解决。剩余边界：① UL 接收端双栈每包 ~20µs（端到端 GSO-RX=上游 0006 级）；② P16 snd_buf≥512K offered-load wedge（上游）；③ P64 DL stall（既有，server 侧）。
