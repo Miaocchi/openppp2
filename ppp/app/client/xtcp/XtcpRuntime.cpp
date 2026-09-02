@@ -297,6 +297,22 @@ std::size_t ConnectorWriteCap() noexcept {
 }
 // Runtime-wide queued-byte budget across all flows. The per-flow cap alone is
 // not a resource guard (4MiB x kMaxFlows), so admission also checks this sum.
+// XTCP-UL-WRITE-BATCH-002: gather queued connector chunks into one
+// async_write (one writev per batch) instead of one syscall + one completion
+// per ~1.4KB segment. WRITE-BATCH-001 failed at a 256KB single chunk (loopback
+// reader latency); the batch cap bounds that latency while still amortizing
+// the syscall. 0/1 disables batching (A/B baseline).
+std::size_t ConnectorBatchBytes() noexcept {
+    const char* env = ::getenv("OPENPPP2_XTCP_CONNECTOR_BATCH_BYTES");
+    if (env != nullptr && env[0] != '\0') {
+        const long long value = ::atoll(env);
+        if (value >= 0 && value <= 256ll * 1024) {
+            return static_cast<std::size_t>(value);
+        }
+    }
+    return 32 * 1024;
+}
+
 std::size_t GlobalQueueBudget() noexcept {
     const char* env = ::getenv("OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES");
     if (env != nullptr) {
@@ -435,6 +451,8 @@ public:
         std::array<Byte, kConnectorReadBytes> read_buffer{};
         std::vector<Byte> pending_read;
         std::deque<std::shared_ptr<std::vector<Byte>>> write_queue;
+        std::vector<boost::asio::const_buffer> write_buffers_;
+        std::vector<std::shared_ptr<std::vector<Byte>>> write_in_flight_;
         std::size_t write_bytes = 0;
         bool connector_connected = false;
         bool connector_read_eof = false;
@@ -457,6 +475,11 @@ public:
         // Perf diagnostic (strand-only): when Send admission rejected this
         // chunk, when the chunk finally went through; feeds send_stall_us.
         std::uint64_t send_stall_start_us = 0;
+        // XTCP-KCC-PACING-001: consecutive SendData rejections back the retry
+        // cadence off exponentially (1ms -> 32ms) so a persistently full
+        // snd_buf cannot turn N flows into a N*1K/s retry storm that spins
+        // the executor and amplifies offered load (P16 sndbuf>=512K wedge).
+        std::uint32_t send_retry_shift = 0;
         // Optional transition-only SendData rejection snapshot. No packet
         // pointer is retained, and a successful admission clears this state.
         bool send_admission_blocked = false;
@@ -1307,6 +1330,7 @@ private:
                 flow->send_admission_snapshot = {};
             }
             flow->pending_read.clear();
+            flow->send_retry_shift = 0;
             KickPoll(s);
             if (flow->connector_read_eof) {
                 BeginFirstLegClose(flow);
@@ -1330,7 +1354,8 @@ private:
                 s.stack->ConnLastSendAdmission(flow->connection_id, flow->send_admission_snapshot);
         }
         stats_.send_retry_armed.fetch_add(1, std::memory_order_relaxed);
-        flow->retry_timer.expires_after(SendRetryDelay());
+        flow->retry_timer.expires_after(SendRetryDelay() * (1u << flow->send_retry_shift));
+        flow->send_retry_shift = std::min<std::uint32_t>(flow->send_retry_shift + 1, 5);
         const std::shared_ptr<Impl> self = shared_from_this();
         flow->retry_timer.async_wait(boost::asio::bind_executor(*shards_[flow->shard].strand,
             [self, flow, runtime_generation](const boost::system::error_code& ec) noexcept {
@@ -1350,12 +1375,26 @@ private:
             MaybeShutdownConnectorSend(flow, runtime_generation);
             return;
         }
-        // 注: XTCP-UL-WRITE-BATCH-001 (合并 write_queue 为一次 async_write) 已回滚——
-        // A/B 实测 UL on 崩到 2.6Mbps (256KB 单次写超时), off 366 vs 375 略降。
-        // 证明 UL 瓶颈不在 write 合并; 真瓶颈是 strand 串行投递 (owner q_p50=128us)。
+        // 注: XTCP-UL-WRITE-BATCH-001 (256KB 单块) 已回滚——UL on 崩到 2.6Mbps。
+        // WRITE-BATCH-002 重试小批量 gather-write: strand 串行投递修复 (0005/S1)
+        // 之后 per-segment syscall+completion 才成为可观测成本 (avg_wr~1.4KB)。
+        // 批量 cap 默认 32KB (env 可回退为 1=逐段), 不等待攒批、只收割已排队块。
         flow->write_active = true;
-        const std::shared_ptr<std::vector<Byte>> chunk = flow->write_queue.front();
-        flow->in_flight_bytes = chunk->size();
+        const std::size_t batch_cap = ConnectorBatchBytes();
+        std::size_t total = 0;
+        flow->write_buffers_.clear();
+        flow->write_in_flight_.clear();
+        while (!flow->write_queue.empty()) {
+            const std::shared_ptr<std::vector<Byte>>& chunk = flow->write_queue.front();
+            if (!flow->write_in_flight_.empty() && total + chunk->size() > batch_cap) {
+                break;
+            }
+            total += chunk->size();
+            flow->write_buffers_.emplace_back(chunk->data(), chunk->size());
+            flow->write_in_flight_.push_back(chunk);
+            flow->write_queue.pop_front();
+        }
+        flow->in_flight_bytes = total;
         const std::uint64_t submit_us = NowUs();
         if (flow->write_last_complete_us != 0) {
             HistAdd(stats_.write_gap_us,
@@ -1364,16 +1403,18 @@ private:
         }
         flow->write_submit_us = submit_us;
         const std::shared_ptr<Impl> self = shared_from_this();
-        boost::asio::async_write(flow->connector, boost::asio::buffer(*chunk),
+        boost::asio::async_write(flow->connector, flow->write_buffers_,
             boost::asio::bind_executor(*shards_[flow->shard].strand,
-                [self, flow, chunk, runtime_generation](const boost::system::error_code& ec,
+                [self, flow, total, runtime_generation](const boost::system::error_code& ec,
                     std::size_t) noexcept {
-                    // Debit the queued-byte ledger for this chunk exactly once,
+                    // Debit the queued-byte ledger for this batch exactly once,
                     // regardless of the outcome.
                     self->stats_.queued_bytes_total.fetch_sub(
                         std::exchange(flow->in_flight_bytes, 0),
                         std::memory_order_relaxed);
                     flow->write_active = false;
+                    flow->write_buffers_.clear();
+                    flow->write_in_flight_.clear();
                     if (!self->IsFlowCurrent(flow, runtime_generation)) {
                         return;
                     }
@@ -1392,14 +1433,10 @@ private:
                             NowUs() - std::exchange(flow->write_submit_us, 0));
                         flow->write_last_complete_us = NowUs();
                     }
-                    flow->write_bytes = chunk->size() <= flow->write_bytes
-                        ? flow->write_bytes - chunk->size() : 0;
+                    flow->write_bytes = total <= flow->write_bytes
+                        ? flow->write_bytes - total : 0;
                     self->stats_.connector_write_ops.fetch_add(1, std::memory_order_relaxed);
-                    self->stats_.connector_written_bytes.fetch_add(
-                        static_cast<std::uint64_t>(chunk->size()), std::memory_order_relaxed);
-                    if (!flow->write_queue.empty()) {
-                        flow->write_queue.pop_front();
-                    }
+                    self->stats_.connector_written_bytes.fetch_add(total, std::memory_order_relaxed);
                     self->StartWrite(flow, runtime_generation);
                 }));
     }

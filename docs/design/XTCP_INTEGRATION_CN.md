@@ -640,3 +640,13 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 **已加旋钮**：`OPENPPP2_XTCP_INGRESS_ITEMS/BYTES`（默认 1024/8MB 不变，仅实验室用）；矩阵 runner `--xtcp-send-retry-us`（复测证明重试节奏非杠杆：1ms=544 vs 200µs=517，反而更差）。
 
 **结论**：DL GSO-on 的 snd_buf 扫参把 P1 从 0.58× 拉到 **0.80×**、P4 到 **0.93×** native；P16 已在 0.92×。残余 P1 差距（544 vs 684）限速者转为队列膨胀的有效 RTT（BDP 环），需载波/TAP 排队治理。默认 snd_buf 维持 64K（per-concurrency 包络未自动化前不变）。
+
+**逼近 native 第二轮（2026-09-02，binary `bccd3d3d`，单核 CPU8 除注明外）：**
+
+**① `XTCP-UL-WRITE-BATCH-002`（connector gather-write）**：与已证伪的 001（256KB 单块）不同，按 cap=32KB 收割已排队块做一次 `async_write`（内核 writev 聚合），不等待攒批；env `OPENPPP2_XTCP_CONNECTOR_BATCH_BYTES`（1=逐段，A/B 基线）。UL GSO-on 实测：P1 478→**582**（+22%，0.67× nat）、P16 331→**433**（+31%，0.60× nat）；与 shards=2 叠加 P16 UL on 达 **557**（0.78× nat，比本轮起点 +68%）。`conn.wr_ops` 从 ~21K/s 降一个量级。
+
+**② SendData 重试指数退避**：连续拒绝按 1ms→32ms 退避（成功复位）。P16 sndbuf≥512K wedge **依旧**（退避只消 CPU 自旋，不破丢包螺旋）——offered-load 形状确认为上游 S2 工作；退避保留（降低拒绝风暴的 CPU 浪费）。
+
+**③ 延迟定位（iperf RTT）**：UL P1 xtcp mean_rtt=1.4ms vs native 0.8ms（max 尖峰 26ms 值得后续追查）；P16 两侧相当（13.7 vs 16.0ms）。DL 侧 stall 51% @ inflight≈sndbuf 属满管道自时钟正常形态——真正的 DL/UL 共同天花板是**client 接收端每包 ~20µs**（TAP 读→dispatch→XTCP RX→connector→内核 loopback→VNet RX→TAP 写约 8-10 级流水 vs native 内核 1.7µs/包）。下一个大杠杆是端到端 GSO-RX（server 发 64KB super-frame、上游 Inject 内部分段，44× 减包率）——上游 0006 级工作，本轮不做。
+
+**本轮后单核对位（GSO-on）**：P1 UL 0.67×、P16 UL 0.60×（shards=2 时 0.78×）、P1 DL 0.80×（sndbuf=1M）、P4 DL 0.93×、P16 DL 0.92×。DL 已全面进入 0.8-1.5× 带；UL 是剩余主战场。
