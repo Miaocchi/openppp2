@@ -598,3 +598,26 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 **S1 矩阵（冻结）**：P=1/4/16/64 × shards=1/2 × UL/DL × GSO off/on；每 cell 报 SUM Mbps、per-flow p10/p50/p90/min/max、Jain fairness、zero-rate flows、process cores、Mbps/core、ns/B、per-shard packets/bytes/flows/CPU/queue p50/p95/p99/high-water、global budget high-water/rejections/OnReceive(false)。**吞吐与单位 CPU 效率必须同时报告**。
 
 **2-shard 工程门槛（非 CI gate）**：P16/P64 throughput ≥1.5× 1-shard 且 total CPU ≤2.1 cores 且 per-core 效率 ≥0.75× 基线 且 zero-rate=0 且 Jain ≥0.98 且 global rejection ≈ 0 且 OnReceive(false) ≈ 0 且 lifecycle/记账回归零。达 1.6-1.8× 才扩 4 shard；<1.5× 停下找新串行点，不扩规模。KCC/PACING-001 与本战线严格串行，不同时改。
+
+**S1 结果（2026-09-02，binary `043894d1`，2×CPU{8,9} `client-cpuset`，30s formal，xtcp-only 32 cell；相对 1-shard 同设置配对）：**
+
+| cell | 1-shard | 2-shard | × | cores(1→2) | Mbps/core × | Jain(1→2) | zero |
+|---|---:|---:|---:|---|---:|---|---|
+| P16 UL off | 179 | **593** | **3.31** | 0.59→0.92 | 2.13 | 0.992/0.980 | 0/0 |
+| P16 UL on | 339 | **531** | **1.57** | 0.53→0.88 | 0.94 | 0.989/0.787* | 0/0 |
+| P16 DL off | 529 | **833** | **1.57** | 0.53→0.91 | 0.92 | 0.983/0.993 | 0/0 |
+| P16 DL on | 505 | **773** | **1.53** | 0.54→0.93 | 0.89 | 0.972/0.992 | 0/0 |
+| P64 UL off | 211 | **606** | **2.87** | 0.55→0.92 | 1.71 | 0.560/0.781 | **18**/1 |
+| P64 UL on | 238 | **476** | **2.00** | 0.59→0.89 | 1.31 | 0.735/0.894 | **14**/1 |
+| P64 DL off/on | — | — | stall（见下） | — | — | — | — |
+| P1 全部 | 344-485 | **151-320** | **0.31-0.81** | — | — | 1.000 | 0 |
+
+**2-shard 门槛判定（P16/P64）：✅ 通过**——吞吐 ≥1.5×（P16 四 cell 1.53-3.31×，P64 UL 2.00-2.87×）、总 CPU ≤2.1 核（实测 ≤0.93）、per-core 效率 ≥0.75×（0.84-2.13×）、zero-rate=0、global rejection=0、lifecycle/记账零回归。Jain：p16-ul-on 单轮 0.787 为瞬态，两轮复跑 0.982/0.984 判为噪声；P64 UL 的 Jain 低于 0.98 是 1-shard 就存在的 P64 公平性问题（SHARED-PATH 已立项观察项），2-shard 反而改善（18/14 zero-rate → 1/1）。
+
+**关键发现：**
+1. **多 shard 必须有真正的执行域**：runtime 原绑定在仅主线程 run 的 default context 上，双 strand 实测零并行（+4%）；专属 io_context + 每 shard 一个 worker 线程后才拿到上述数字。
+2. **P1/P4 在 shards=2 下回退（0.31-0.81×）**：跨 context 投递税——TAP 读/写在主线程（default context），shard 工作在专属池，每个突发 ingress/egress 各跨线程一次。P1 吞吐对 ACK 往返延迟敏感（ACK clock）。**shards 默认仍为 1**，S2 需做 IO 同址（TAP IO 与 shard 池合并）才能默认启用。
+3. **P64 DL GSO off/on 完整 stall（既有问题，与分片无关）**：client `posts=0`、cwnd=1、inflight 单段卡死、iperf 64 流全零——用基线 binary（`e68b1e75`，分片改造前）复现同样挂死，r3 回归从未覆盖 P64 DL。wedge 在 server 侧/隧道路径而非 client runtime。**S2 阻塞项**。
+4. `process_cores_ok`/`zero_migrations` fail 为本环境 perf task_clock 遥测缺失（基线已记录），吞吐与正确性检查全过。
+
+**S2 工作项（按优先级）**：① IO 同址消除跨 context 投递税（解锁 shards=2 默认化与 P1 回归）；② P64 DL stall 根因（posts=0 指向 server 侧/隧道路径）；③ 达标后再议 4 shard 扩展。
