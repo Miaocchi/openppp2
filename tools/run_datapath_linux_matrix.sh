@@ -19,6 +19,7 @@ DRY_RUN=false
 DATAPATH_TELEMETRY=false
 XTCP_PERF=false
 XTCP_CC=""
+XTCP_SHARDS=""
 XTCP_SNDBUF=""
 NETEM_DELAY_MS=""
 STALL_DIAGNOSTICS=false
@@ -54,6 +55,7 @@ iperf3 parallel flows, not OpenPPP2's client.concurrent setting.
   --datapath-telemetry       Retain datapath NDJSON plus boundary signals
   --xtcp-perf                Retain optional 1-second XTCP diagnostic NDJSON
   --xtcp-cc NAME             XTCP congestion control (kcc/bbr/cubic/reno; default kcc)
+  --xtcp-shards N            XTCP runtime shards via OPENPPP2_XTCP_SHARDS (XTCP stack only)
   --xtcp-sndbuf BYTES        XTCP per-conn send buffer (bytes; default 64K upstream)
   --netem-delay-ms MS        Add netem RTT delay on client-server veth (ms)
   --stall-diagnostics        Force datapath, XTCP perf, and GSO ledger capture
@@ -90,6 +92,7 @@ while (($#)); do
     --datapath-telemetry) DATAPATH_TELEMETRY=true; shift ;;
     --xtcp-perf) XTCP_PERF=true; shift ;;
     --xtcp-cc) need_value "$@"; XTCP_CC="$2"; shift 2 ;;
+    --xtcp-shards) need_value "$@"; XTCP_SHARDS="$2"; shift 2 ;;
     --xtcp-sndbuf) need_value "$@"; XTCP_SNDBUF="$2"; shift 2 ;;
     --netem-delay-ms) need_value "$@"; NETEM_DELAY_MS="$2"; shift 2 ;;
     --stall-diagnostics) STALL_DIAGNOSTICS=true; shift ;;
@@ -136,11 +139,13 @@ case "$CPU_PROFILE" in
   none)
     [[ -z "$AFFINITY_CPUS" && "$SYSTEM_CPU_STAT" == false && "$PROCESS_PERF_STAT" == false ]] || { echo "CPU affinity/perf options require a non-none --cpu-profile" >&2; exit 2; }
     ;;
-  client-vnet-isolated|client-single-core)
+  client-vnet-isolated|client-single-core|client-cpuset)
     [[ "$AFFINITY_CPUS" =~ ^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*))*$ ]] || { echo "--affinity-cpus must be a comma-separated list of CPU integers" >&2; exit 2; }
     IFS=, read -r -a CPU_LIST <<<"$AFFINITY_CPUS"
     if [[ "$CPU_PROFILE" == client-vnet-isolated ]]; then
       [[ "${#CPU_LIST[@]}" -ge 2 ]] || { echo "--client-vnet-isolated requires at least two affinity CPUs" >&2; exit 2; }
+    elif [[ "$CPU_PROFILE" == client-cpuset ]]; then
+      [[ "${#CPU_LIST[@]}" -ge 1 ]] || { echo "--client-cpuset requires at least one affinity CPU" >&2; exit 2; }
     else
       [[ "${#CPU_LIST[@]}" -eq 1 ]] || { echo "--client-single-core requires exactly one affinity CPU" >&2; exit 2; }
     fi
@@ -160,7 +165,7 @@ case "$CPU_PROFILE" in
     ;;
   *) echo "unsupported --cpu-profile: $CPU_PROFILE" >&2; exit 2 ;;
 esac
-[[ "$SYSTEM_CPU_STAT" == false || "$CPU_PROFILE" == client-vnet-isolated || "$CPU_PROFILE" == client-single-core ]] || { echo "--system-cpu-stat requires --cpu-profile client-vnet-isolated or client-single-core" >&2; exit 2; }
+[[ "$SYSTEM_CPU_STAT" == false || "$CPU_PROFILE" == client-vnet-isolated || "$CPU_PROFILE" == client-single-core || "$CPU_PROFILE" == client-cpuset ]] || { echo "--system-cpu-stat requires a non-none --cpu-profile" >&2; exit 2; }
 
 IFS=, read -r -a STACK_LIST <<<"$STACKS"
 IFS=, read -r -a TAP_GSO_LIST <<<"$TAP_GSO_MODES"
@@ -270,6 +275,8 @@ run_cell() (
     for tid in "${client_tids[@]}"; do
       if [[ "$CPU_PROFILE" == client-single-core ]]; then
         target="$single_core_cpu"
+      elif [[ "$CPU_PROFILE" == client-cpuset ]]; then
+        target="$AFFINITY_CPUS"
       else
         target="$remaining_cpus"; [[ "$tid" == "${vnet_tids[0]}" ]] && target="$single_core_cpu"
       fi
@@ -501,6 +508,10 @@ PY
   if [[ -n "$XTCP_SNDBUF" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_SNDBUF_BYTES=${XTCP_SNDBUF}")
   fi
+  if [[ -n "$XTCP_SHARDS" && "$stack" == xtcp ]]; then
+    client_env+=("OPENPPP2_XTCP_SHARDS=${XTCP_SHARDS}")
+    server_env+=("OPENPPP2_XTCP_SHARDS=${XTCP_SHARDS}")
+  fi
   if [[ "$STALL_DIAGNOSTICS" == true && "$stack" == xtcp ]]; then
     tun_output_diagnostics=true
     output_rejection_diagnostics=true
@@ -540,8 +551,8 @@ PY
   ip -n "$ns_c" route replace 192.0.2.0/24 dev "$tun_dev"
   ip -n "$ns_c" route get "$target_ip" >"$state_dir/target-route.txt"
   ip -n "$ns_c" -d link show "$tun_dev" >"$state_dir/tun-link.txt" 2>&1 || true
-  printf 'label=%s\nround=%s\nrequested_tcp_stack=%s\nparallel_flows=%s\nclient_concurrent=%s\ndirection=%s\nduration=%s\nomit=%s\niperf_timeout=%s\nppp_bin=%s\ntun_device=%s\nrequested_tap_gso=%s\ndatapath_telemetry=%s\nxtcp_perf=%s\nxtcp_cc=%s\nstall_diagnostics=%s\ncpu_profile=%s\naffinity_cpus=%s\nsystem_cpu_stat=%s\nprocess_perf_stat=%s\ntun_output_diagnostics=%s\nxtcp_output_rejection_json=%s\n' \
-    "$LABEL" "$round" "$stack" "$p" "$concurrent" "$direction" "$DURATION" "$OMIT" "$IPERF_TIMEOUT" "$PPP_BIN" "$tun_dev" "$tap_gso" "$DATAPATH_TELEMETRY" "$XTCP_PERF" "$XTCP_CC" "$STALL_DIAGNOSTICS" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" "$SYSTEM_CPU_STAT" "$PROCESS_PERF_STAT" "$tun_output_diagnostics" "$output_rejection_diagnostics" >"$state_dir/metadata.txt"
+  printf 'label=%s\nround=%s\nrequested_tcp_stack=%s\nparallel_flows=%s\nclient_concurrent=%s\ndirection=%s\nduration=%s\nomit=%s\niperf_timeout=%s\nppp_bin=%s\ntun_device=%s\nrequested_tap_gso=%s\ndatapath_telemetry=%s\nxtcp_perf=%s\nxtcp_cc=%s\nxtcp_shards=%s\nstall_diagnostics=%s\ncpu_profile=%s\naffinity_cpus=%s\nsystem_cpu_stat=%s\nprocess_perf_stat=%s\ntun_output_diagnostics=%s\nxtcp_output_rejection_json=%s\n' \
+    "$LABEL" "$round" "$stack" "$p" "$concurrent" "$direction" "$DURATION" "$OMIT" "$IPERF_TIMEOUT" "$PPP_BIN" "$tun_dev" "$tap_gso" "$DATAPATH_TELEMETRY" "$XTCP_PERF" "$XTCP_CC" "${XTCP_SHARDS:-none}" "$STALL_DIAGNOSTICS" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" "$SYSTEM_CPU_STAT" "$PROCESS_PERF_STAT" "$tun_output_diagnostics" "$output_rejection_diagnostics" >"$state_dir/metadata.txt"
 
   local -a iperf_args=(-c "$target_ip" -p "$iperf_port" -P "$p" -t "$DURATION" -O "$OMIT" --json)
   local iperf_status=0
