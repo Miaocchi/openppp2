@@ -76,6 +76,15 @@ namespace ppp {
                     uint64_t flow_generation,
                     const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept;
 
+                /** @brief XTCP-VNET-BRIDGE-BYPASS-001: registers and directly adopts the XTCP-side socketpair fd (fd >= 0), falling back to the listener pairing path when fd < 0. */
+                bool BeginExternalAcceptWithFd(
+                    const boost::asio::ip::tcp::endpoint& localEP,
+                    const boost::asio::ip::tcp::endpoint& remoteEP,
+                    uint16_t source_port,
+                    uint64_t runtime_generation,
+                    uint64_t flow_generation,
+                    const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks, int fd) noexcept;
+
             protected:
                 /**
                  * @brief Returns the connect timeout in milliseconds for outbound sockets.

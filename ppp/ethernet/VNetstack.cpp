@@ -420,6 +420,42 @@ namespace ppp {
             return external_clients_.emplace(source_port, std::move(entry)).second;
         }
 
+        bool VNetstack::CompleteExternalAcceptWithFd(uint16_t source_port,
+            uint64_t runtime_generation, int fd,
+            const boost::asio::ip::tcp::endpoint& natEP) noexcept {
+            if (fd < 0) {
+                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceOpenFailed);
+            }
+            std::shared_ptr<TapTcpClient> pcb;
+            {
+                SynchronizedObjectScope scope(syncobj_);
+                const auto found = external_clients_.find(source_port);
+                if (found == external_clients_.end() ||
+                    found->second.runtime_generation != runtime_generation) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceOpenFailed);
+                }
+                pcb = std::move(found->second.client);
+                external_clients_.erase(found);
+            }
+            if (NULLPTR == pcb || pcb->IsDisposed()) {
+                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceOpenFailed);
+            }
+            std::shared_ptr<boost::asio::ip::tcp::socket> socket = pcb->NewAsynchronousSocket(fd, natEP);
+            if (NULLPTR == socket) {
+                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceOpenFailed);
+            }
+            bool ok = pcb->EndAccept(socket, natEP);
+            if (ok) {
+                ok = pcb->BeginAccept();
+            }
+            if (!ok) {
+                ppp::telemetry::Count("vnetstack.accept.fail.end_accept", 1);
+                return false;
+            }
+            ppp::telemetry::Count("vnetstack.accept.external_fd", 1);
+            return true;
+        }
+
         void VNetstack::CancelExternalClient(uint16_t source_port,
             uint64_t runtime_generation) noexcept {
             std::shared_ptr<TapTcpClient> client;

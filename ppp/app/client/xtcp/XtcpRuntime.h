@@ -82,7 +82,8 @@ public:
         std::uint16_t,
         std::uint64_t,
         std::uint64_t,
-        const std::weak_ptr<XtcpFirstLegHooks>&)>;
+        const std::weak_ptr<XtcpFirstLegHooks>&,
+        int fd)>;
     using ExternalCancelHandler = std::function<void(std::uint16_t, std::uint64_t)>;
 
     XtcpRuntime(

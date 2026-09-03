@@ -113,14 +113,14 @@ namespace ppp {
                                 const boost::asio::ip::tcp::endpoint& remoteEP,
                                 uint16_t source_port, uint64_t runtime_generation,
                                 uint64_t flow_generation,
-                                const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept {
+                                const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks, int fd) noexcept {
                                 const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
                                 const std::shared_ptr<VEthernetNetworkTcpipStack> netstack =
                                     owner ? std::dynamic_pointer_cast<VEthernetNetworkTcpipStack>(
                                         owner->GetNetstack()) : nullptr;
-                                return netstack && netstack->BeginExternalAccept(
+                                return netstack && netstack->BeginExternalAcceptWithFd(
                                     localEP, remoteEP, source_port, runtime_generation,
-                                    flow_generation, hooks);
+                                    flow_generation, hooks, fd);
                             },
                             [weak](uint16_t source_port, uint64_t runtime_generation) noexcept {
                                 const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();

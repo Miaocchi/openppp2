@@ -6,6 +6,11 @@
 #if defined(__linux__)
 #include <pthread.h>
 #endif
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <chrono>
 
@@ -505,12 +510,9 @@ std::size_t GsoSplit(const uint8_t* frame, std::size_t length,
         t[7] = static_cast<uint8_t>(seq);
         t[16] = 0; t[17] = 0;
         uint32_t partial = GsoChecksumRaw(w + 12, 8);
-        const uint8_t pseudo[4] = {0, 6,
-            static_cast<uint8_t>((doff + this_payload) >> 8),
-            static_cast<uint8_t>(doff + this_payload)};
-        for (uint8_t byte : pseudo) {
-            partial += static_cast<uint32_t>(byte) << 8;
-        }
+        // 伪首部 (协议=6, TCP 长度) 按 BE16 字对求和。
+        partial += static_cast<uint32_t>(0x0006);
+        partial += static_cast<uint32_t>(doff + this_payload);
         const uint16_t tcp_csum = GsoChecksum(t, doff + this_payload, partial);
         t[16] = static_cast<uint8_t>(tcp_csum >> 8);
         t[17] = static_cast<uint8_t>(tcp_csum);
@@ -686,6 +688,10 @@ public:
                 }
             }
         }
+        unix_bridge_ = []() noexcept {
+            const char* env = ::getenv("OPENPPP2_XTCP_UNIX_BRIDGE");
+            return env != nullptr && env[0] == '1' && env[1] == '\0';
+        }();
         shard_count_ = shard_count;
         if (shard_count > 1) {
             // XTCP-SHARED-PATH-001 S1: 默认 context 只在主线程 run (Executors::Run),
@@ -1205,7 +1211,8 @@ private:
                 }
                 return;
             }
-            if (s.backend->Inject(std::move(packet))) {
+            const bool injected = s.backend->Inject(std::move(packet));
+            if (injected) {
                 stats_.ingress_injected.fetch_add(1, std::memory_order_relaxed);
                 s.injected.fetch_add(1, std::memory_order_relaxed);
             }
@@ -1252,18 +1259,55 @@ private:
         s.flows.emplace(parsed.key, flow);
         stats_.flows_opened.fetch_add(1, std::memory_order_relaxed);
 
+        int bridge_fd = -1;
         boost::system::error_code ec;
-        flow->connector.open(boost::asio::ip::tcp::v4(), ec);
-        if (!ec) {
-            flow->connector.bind(boost::asio::ip::tcp::endpoint(
-                boost::asio::ip::address_v4::loopback(), 0), ec);
-        }
-        if (ec) {
+        if (unix_bridge_) {
+#if !defined(_WIN32)
+            // XTCP-VNET-BRIDGE-BYPASS-001: AF_UNIX socketpair 替代内核 loopback
+            // TCP 桥。内核 TCP 的 sendmsg/ACK/定时器/skb 拷贝链（profile 实测
+            // ~25-30% 单核）换成纯队列 socketpair; fd1 交 netstack 采纳。
+            int fds[2] = {-1, -1};
+            if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+                CloseFlow(flow, false);
+                return;
+            }
+            // fd0 交给 asio (必须 O_NONBLOCK); fd1 留给 netstack 泵的阻塞 read。
+            const int flags0 = ::fcntl(fds[0], F_GETFL, 0);
+            ::fcntl(fds[0], F_SETFL, flags0 | O_NONBLOCK);
+            flow->connector.assign(boost::asio::ip::tcp::v4(), fds[0], ec);
+            if (ec) {
+                ::close(fds[0]);
+                ::close(fds[1]);
+                CloseFlow(flow, false);
+                return;
+            }
+            // 合成 source_port: netstack 注册键, 不与真实监听/应用端口耦合。
+            const std::uint32_t slot =
+                next_external_port_.fetch_add(1, std::memory_order_relaxed) % 16384u;
+            flow->source_port = static_cast<std::uint16_t>(49152u + slot);
+            bridge_fd = fds[1];
+            (void)0;
+#else
             CloseFlow(flow, false);
             return;
+#endif
         }
-        flow->source_port = flow->connector.local_endpoint(ec).port();
+        else {
+            flow->connector.open(boost::asio::ip::tcp::v4(), ec);
+            if (!ec) {
+                flow->connector.bind(boost::asio::ip::tcp::endpoint(
+                    boost::asio::ip::address_v4::loopback(), 0), ec);
+            }
+            if (ec) {
+                CloseFlow(flow, false);
+                return;
+            }
+            flow->source_port = flow->connector.local_endpoint(ec).port();
+        }
         if (ec || flow->source_port == 0 || !external_accept_) {
+            if (bridge_fd >= 0) {
+                ::close(bridge_fd);
+            }
             CloseFlow(flow, false);
             return;
         }
@@ -1274,8 +1318,19 @@ private:
         std::weak_ptr<XtcpFirstLegHooks> hooks = shared_from_this();
         const std::uint64_t runtime_generation = Generation();
         if (!external_accept_(local_endpoint, remote_endpoint, flow->source_port,
-                runtime_generation, flow_generation, hooks)) {
+                runtime_generation, flow_generation, hooks, bridge_fd)) {
+            if (bridge_fd >= 0) {
+                ::close(bridge_fd);
+            }
             CloseFlow(flow, false);
+            return;
+        }
+        if (bridge_fd >= 0) {
+            // XTCP-VNET-BRIDGE-BYPASS-001: socketpair 路径无 listener connect
+            // 完成回调, 这里直接置位连接态并启动 connector 读循环 (泵的双向
+            // 数据面由此接通); fd1 所有权已移交 netstack。
+            flow->connector_connected = true;
+            StartRead(flow, runtime_generation);
             return;
         }
         const boost::asio::ip::tcp::endpoint listener_endpoint = listener_endpoint_
@@ -2434,9 +2489,11 @@ private:
     // deque 而非 vector: Shard 含 mutex/atomic 不可移动, deque 元素永不搬迁。
     std::deque<Shard> shards_;
     int shard_count_ = 1;
+    std::atomic<std::uint32_t> next_external_port_{0};
     // shards>1 时的专属执行池 (XtcpRuntime 独享, 析构时 stop+join)。
     std::shared_ptr<boost::asio::io_context> own_context_;
     std::vector<std::thread> own_threads_;
+    bool unix_bridge_ = false;
 };
 
 XtcpRuntime::XtcpRuntime(

@@ -220,7 +220,7 @@ std::shared_ptr<ppp::app::client::xtcp::XtcpRuntime> MakeRejectingRuntime(
         []() noexcept { return boost::asio::ip::tcp::endpoint(); },
         [](const boost::asio::ip::tcp::endpoint&, const boost::asio::ip::tcp::endpoint&,
            std::uint16_t, std::uint64_t, std::uint64_t,
-           const std::weak_ptr<XtcpFirstLegHooks>&) noexcept { return false; },
+           const std::weak_ptr<XtcpFirstLegHooks>&, int) noexcept { return false; },
         [](std::uint16_t, std::uint64_t) noexcept {}, diagnostics);
 }
 
@@ -357,7 +357,7 @@ void TestRuntimeRepeatedStartStop() {
         [](const boost::asio::ip::tcp::endpoint&,
            const boost::asio::ip::tcp::endpoint&,
            std::uint16_t, std::uint64_t, std::uint64_t,
-           const std::weak_ptr<ppp::app::client::xtcp::XtcpFirstLegHooks>&) noexcept {
+           const std::weak_ptr<ppp::app::client::xtcp::XtcpFirstLegHooks>&, int) noexcept {
             return false;
         },
         [](std::uint16_t, std::uint64_t) noexcept {});

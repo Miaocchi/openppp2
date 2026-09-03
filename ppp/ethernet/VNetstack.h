@@ -307,6 +307,8 @@ namespace ppp {
             bool                                                            RegisterExternalClient(uint16_t source_port, uint64_t runtime_generation, uint64_t flow_generation, const std::shared_ptr<TapTcpClient>& client) noexcept;
             /** @brief Cancels a pending exact external registration. */
             void                                                            CancelExternalClient(uint16_t source_port, uint64_t runtime_generation) noexcept;
+            /** @brief XTCP-VNET-BRIDGE-BYPASS-001: adopts a caller-provided AF_UNIX fd for a pre-registered external client (skips the kernel loopback listener accept). */
+            bool                                                            CompleteExternalAcceptWithFd(uint16_t source_port, uint64_t runtime_generation, int fd, const boost::asio::ip::tcp::endpoint& natEP) noexcept;
 
 #if defined(_IPHONE) || defined(IPHONE)
             /** @brief Emits server payload to the TUN client as a TCP segment (iOS ctcp). */

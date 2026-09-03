@@ -34,6 +34,12 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+
+#if !defined(_WIN32)
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 #include <vector>
 
 namespace {
@@ -262,7 +268,44 @@ public:
                    const boost::asio::ip::tcp::endpoint& remote,
                    std::uint16_t source_port, std::uint64_t runtime_generation,
                    std::uint64_t flow_generation,
-                   const std::weak_ptr<XtcpFirstLegHooks>& hooks) noexcept {
+                   const std::weak_ptr<XtcpFirstLegHooks>& hooks, int fd) noexcept {
+                if (fd >= 0) {
+                    // XTCP-VNET-BRIDGE-BYPASS-001: socketpair 路径 - 用阻塞双线程
+                    // 中继 fd <-> echo server, 模拟 netstack 泵的 socket 语义。
+                    std::thread([this, fd]() noexcept {
+                        const int srv = ::socket(AF_INET, SOCK_STREAM, 0);
+                        if (srv < 0) {
+                            ::close(fd);
+                            return;
+                        }
+                        sockaddr_in addr{};
+                        addr.sin_family = AF_INET;
+                        addr.sin_port = htons(static_cast<uint16_t>(echo_->Endpoint().port()));
+                        addr.sin_addr.s_addr = htonl(0x7F000001);
+                        if (::connect(srv, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+                            ::close(srv);
+                            ::close(fd);
+                            return;
+                        }
+                        auto pump = [](int a, int b) noexcept {
+                            char buf[65536];
+                            ssize_t n;
+                            while ((n = ::read(a, buf, sizeof(buf))) > 0) {
+                                std::size_t off = 0;
+                                while (off < static_cast<std::size_t>(n)) {
+                                    ssize_t w = ::send(b, buf + off, static_cast<std::size_t>(n) - off, MSG_NOSIGNAL);
+                                    if (w <= 0) return;
+                                    off += static_cast<std::size_t>(w);
+                                }
+                            }
+                            ::shutdown(b, SHUT_WR);
+                        };
+                        std::thread up([pump, fd, srv]() noexcept { pump(fd, srv); ::close(srv); });
+                        std::thread down([pump, fd, srv]() noexcept { pump(srv, fd); ::close(fd); });
+                        up.detach();
+                        down.detach();
+                    }).detach();
+                }
                 std::lock_guard<std::mutex> lock(flows_mutex_);
                 AcceptedFlow flow;
                 flow.first_leg_local = local;
@@ -332,6 +375,8 @@ public:
     void ReadyLastFlow() {
         AcceptedFlow flow = LastAccepted();
         if (const std::shared_ptr<XtcpFirstLegHooks> hooks = flow.hooks.lock()) {
+            std::fprintf(stderr, "[bp-dbg] test ReadyLastFlow hooks_locked=%d gen=%llu\n",
+                (int)(flow.hooks.lock() != nullptr), (unsigned long long)flow.flow_generation);
             hooks->OnFirstLegReady(flow.runtime_generation, flow.flow_generation);
         }
     }
@@ -590,6 +635,7 @@ void TestQueuedBytesAccounting() {
 } // namespace
 
 int main() {
+    ::setenv("OPENPPP2_XTCP_UNIX_BRIDGE", "1", 1);
     xtcp::buf::InitPools();
     TestEndpointByteOrder();
     TestHandshakeAndBidirectionalData();

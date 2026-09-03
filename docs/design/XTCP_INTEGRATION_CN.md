@@ -677,3 +677,11 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 **实测（P16 UL GSO-on）**：合并 cap 4→48 仅 +10（读 syscall 占比小）；单核组合 ~459（起点 331，+39%）；**2×CPU{8,9} + shards=2 + 48 段 + 批写 = 602.2 Mbps = 0.92× native 单核**（全程 +97%），jain 0.895（单轮）。
 
 **1.2× 结论（诚实评估）**：DL off 多 cell 已达 1.46-1.57×；DL on 0.77-0.97×；**UL on 单核被 loopback 桥税封顶在 ~0.7×，量化路径 = 桥旁路**（复用 iOS 原生直注模式 `DeliverNativePayload`/`EmitNativeToClient`：XTCP recv 直接注入 VNet TCP，砍掉 25-30% 桥成本，预计单核 ~0.9-1.0×、叠加 shards=2 后 2 核上 1.1-1.3×）——列为下一个独立工作项 `XTCP-VNET-BRIDGE-BYPASS-001`。
+
+**`XTCP-VNET-BRIDGE-BYPASS-001` 第一阶段实验（socketpair 桥，binary `9b121d06`+）：**
+
+用 `AF_UNIX SOCK_STREAM` 对替代 XTCP Flow 与 VNet 泵之间的内核 loopback TCP（`OPENPPP2_XTCP_UNIX_BRIDGE=1`，默认关；fd 经 `BeginExternalAcceptWithFd` 直接采纳，跳过 listener accept 配对）。本地 bridge 测试全场景（握手/双向/半关/RST/churn/记账）135/135 通过。
+
+**netns A/B 实测（GSO-on 单核）**：P1 UL **+8%**（561→608，0.70× nat）；P16 UL **-24%**（455→348）；P1 DL **-25%**；P16 DL 持平。**混合收益，默认保持关闭**——unix socket 泵的 per-write 唤醒/拷贝成本在多流下反超内核 TCP loopback 的合并收益。真正的桥消除需要纯用户态内存直递（绕过 vmux 泵的 socket 语义），涉及 netstack 抽象层重构，规模超本轮，记录为后续方向。
+
+**逼近 native 总账（会话全程，GSO-on 单核对位）**：P1 UL 0.55→**0.65-0.70×**、P4 UL 0.41→**0.74×**、P16 UL 0.46→**0.68-0.78×**（shards=2）、P1 DL 0.58→**0.77×**（sndbuf 512K）、P4 DL 0.82→**0.86×**、P16 DL 0.92→**0.97×**、DL off **1.05-1.57×（含 >1.2× 达标 cell）**。剩余结构性差距 = 隧道 AES（双方共担 ~17%）+ 双用户态栈 + TAP 拷贝；集成层低成本杠杆已尽，进一步需要：① VNet 泵直递重构 ② 端到端 GSO-RX（上游 0006）③ 隧道密码套件 GCM 化（协议层）。
