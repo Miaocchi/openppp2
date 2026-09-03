@@ -21,6 +21,8 @@ XTCP_PERF=false
 XTCP_CC=""
 XTCP_SHARDS=""
 XTCP_SEND_RETRY_US=""
+TAP_GSO_SEGMENTS=""
+XTCP_GSO_RX=""
 XTCP_SNDBUF=""
 NETEM_DELAY_MS=""
 STALL_DIAGNOSTICS=false
@@ -95,6 +97,8 @@ while (($#)); do
     --xtcp-cc) need_value "$@"; XTCP_CC="$2"; shift 2 ;;
     --xtcp-shards) need_value "$@"; XTCP_SHARDS="$2"; shift 2 ;;
     --xtcp-send-retry-us) need_value "$@"; XTCP_SEND_RETRY_US="$2"; shift 2 ;;
+    --tap-gso-segments) need_value "$@"; TAP_GSO_SEGMENTS="$2"; shift 2 ;;
+    --xtcp-gso-rx) need_value "$@"; XTCP_GSO_RX="$2"; shift 2 ;;
     --xtcp-sndbuf) need_value "$@"; XTCP_SNDBUF="$2"; shift 2 ;;
     --netem-delay-ms) need_value "$@"; NETEM_DELAY_MS="$2"; shift 2 ;;
     --stall-diagnostics) STALL_DIAGNOSTICS=true; shift ;;
@@ -493,7 +497,10 @@ client["client"].pop("mappings", None)
 PY
 
   local -a tap_env=("OPENPPP2_TAP_GSO_MERGE_DISABLE=1")
-  [[ "$tap_gso" == on ]] && tap_env=("OPENPPP2_TAP_GSO_MERGE=1")
+  if [[ "$tap_gso" == on ]]; then
+    tap_env=("OPENPPP2_TAP_GSO_MERGE=1")
+    [[ -n "${TAP_GSO_SEGMENTS:-}" ]] && tap_env+=("OPENPPP2_TAP_GSO_SEGMENTS=${TAP_GSO_SEGMENTS}")
+  fi
   local -a server_env=("${tap_env[@]}") client_env=("${tap_env[@]}")
   if [[ "$DATAPATH_TELEMETRY" == true ]]; then
     server_env+=("OPENPPP2_DATAPATH_PERF_JSON=${state_dir}/datapath-server.jsonl")
@@ -509,6 +516,9 @@ PY
   fi
   if [[ -n "$XTCP_SNDBUF" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_SNDBUF_BYTES=${XTCP_SNDBUF}")
+  fi
+  if [[ -n "${XTCP_GSO_RX:-}" && "$stack" == xtcp ]]; then
+    client_env+=("OPENPPP2_XTCP_GSO_RX=${XTCP_GSO_RX}")
   fi
   if [[ -n "$XTCP_SEND_RETRY_US" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_LAB_SEND_RETRY_US=${XTCP_SEND_RETRY_US}")

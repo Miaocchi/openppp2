@@ -417,6 +417,109 @@ bool ParsePacket(const void* packet, int packet_length, ParsedPacket& parsed) no
     return parsed.key.remote_port != 0 && parsed.key.local_port != 0;
 }
 
+// XTCP-SHARED-PATH-001 GSO-RX: the peer (kernel TSO or our TAP coalescer)
+// delivers >MTU TCPv4 super-frames; split them back into MSS-sized segments
+// here so the stack keeps its per-MSS invariants. Contiguous payload slices
+// with per-split seq/length/checksum fixup; options are copied verbatim
+// (same TSval on every split is valid). OPENPPP2_XTCP_GSO_RX=0 disables.
+constexpr std::size_t kGsoRxMtu = 1500;
+
+uint32_t GsoChecksumRaw(const uint8_t* data, std::size_t length) noexcept {
+    uint32_t sum = 0;
+    std::size_t i = 0;
+    while (i + 2 <= length) {
+        sum += static_cast<uint32_t>(data[i] << 8) | data[i + 1];
+        i += 2;
+    }
+    if (i < length) {
+        sum += static_cast<uint32_t>(data[i]) << 8;
+    }
+    return sum;
+}
+
+uint16_t GsoChecksum(const uint8_t* data, std::size_t length, uint32_t sum = 0) noexcept {
+    std::size_t i = 0;
+    while (i + 2 <= length) {
+        sum += static_cast<uint32_t>(data[i] << 8) | data[i + 1];
+        i += 2;
+    }
+    if (i < length) {
+        sum += static_cast<uint32_t>(data[i]) << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return static_cast<uint16_t>(~sum);
+}
+
+std::size_t GsoSplit(const uint8_t* frame, std::size_t length,
+    const ParsedPacket& parsed, ::xtcp::buf::BufRef* out, std::size_t out_cap) noexcept {
+    const std::size_t ihl = static_cast<std::size_t>(frame[0] & 0x0F) * 4;
+    if (ihl < 20 || length < ihl + 20) {
+        return 0;
+    }
+    const std::size_t total_len = static_cast<std::size_t>(frame[2] << 8) | frame[3];
+    if (total_len > length) {
+        return 0;
+    }
+    const uint8_t* tcp = frame + ihl;
+    const std::size_t doff = static_cast<std::size_t>(tcp[12] >> 4) * 4;
+    if (doff < 20 || ihl + doff > total_len) {
+        return 0;
+    }
+    const std::size_t payload = total_len - ihl - doff;
+    const std::size_t seg_payload = kGsoRxMtu - ihl - doff;
+    if (seg_payload == 0) {
+        return 0;
+    }
+    const std::size_t count = (payload + seg_payload - 1) / seg_payload;
+    if (count > out_cap) {
+        return 0;
+    }
+    const uint32_t seq0 = (static_cast<uint32_t>(tcp[4]) << 24) |
+        (static_cast<uint32_t>(tcp[5]) << 16) |
+        (static_cast<uint32_t>(tcp[6]) << 8) | tcp[7];
+    for (std::size_t k = 0; k < count; ++k) {
+        const std::size_t off = k * seg_payload;
+        const std::size_t this_payload = off + seg_payload <= payload ? seg_payload : payload - off;
+        const std::size_t seg_len = ihl + doff + this_payload;
+        ::xtcp::buf::BufRef ref = ::xtcp::buf::BufRef::Acquire(static_cast<UInt32>(seg_len));
+        if (ref.IsEmpty()) {
+            return 0;
+        }
+        uint8_t* w = ref.Data();
+        std::memcpy(w, frame, ihl + doff);
+        std::memcpy(w + ihl + doff, frame + ihl + doff + off, this_payload);
+        const uint16_t ip_total = static_cast<uint16_t>(seg_len);
+        w[2] = static_cast<uint8_t>(ip_total >> 8);
+        w[3] = static_cast<uint8_t>(ip_total);
+        w[10] = 0; w[11] = 0;
+        const uint16_t ip_csum = GsoChecksum(w, ihl);
+        w[10] = static_cast<uint8_t>(ip_csum >> 8);
+        w[11] = static_cast<uint8_t>(ip_csum);
+        const uint32_t seq = seq0 + static_cast<uint32_t>(off);
+        uint8_t* t = w + ihl;
+        t[4] = static_cast<uint8_t>(seq >> 24);
+        t[5] = static_cast<uint8_t>(seq >> 16);
+        t[6] = static_cast<uint8_t>(seq >> 8);
+        t[7] = static_cast<uint8_t>(seq);
+        t[16] = 0; t[17] = 0;
+        uint32_t partial = GsoChecksumRaw(w + 12, 8);
+        const uint8_t pseudo[4] = {0, 6,
+            static_cast<uint8_t>((doff + this_payload) >> 8),
+            static_cast<uint8_t>(doff + this_payload)};
+        for (uint8_t byte : pseudo) {
+            partial += static_cast<uint32_t>(byte) << 8;
+        }
+        const uint16_t tcp_csum = GsoChecksum(t, doff + this_payload, partial);
+        t[16] = static_cast<uint8_t>(tcp_csum >> 8);
+        t[17] = static_cast<uint8_t>(tcp_csum);
+        ref.SetLen(static_cast<UInt32>(seg_len));
+        out[k] = std::move(ref);
+    }
+    return count;
+}
+
 boost::asio::ip::address_v4 ToAddress(std::uint32_t network_address) noexcept {
     return boost::asio::ip::address_v4(IPv4AddressBytes(network_address));
 }
@@ -735,6 +838,57 @@ public:
         const std::size_t index = has_parsed && shard_count_ > 1
             ? FlowKeyHash{}(parsed.key) % shards_.size() : 0;
         Shard& s = shards_[index];
+        // XTCP-SHARED-PATH-001 GSO-RX: >MTU TCPv4 超帧拆回 MSS 段再入队,
+        // 每段独立预算/注入; 同一 5-tuple 永远同 shard, 顺序由 seq 保持。
+        static const bool gso_rx = []() noexcept {
+            const char* env = ::getenv("OPENPPP2_XTCP_GSO_RX");
+            return env == nullptr || env[0] != '0' || env[1] != '\0';
+        }();
+        ::xtcp::buf::BufRef splits[64];
+        std::size_t split_count = 0;
+        if (has_parsed && gso_rx && packet_length > static_cast<int>(kGsoRxMtu)) {
+            split_count = GsoSplit(static_cast<const uint8_t*>(packet), static_cast<std::size_t>(packet_length), parsed, splits, 64);
+            if (split_count == 0) {
+                stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            std::size_t admitted = 0;
+            for (; admitted < split_count; ++admitted) {
+                if (!s.budget.TryAdmit(generation, splits[admitted].Len())) {
+                    break;
+                }
+            }
+            if (admitted != split_count) {
+                for (std::size_t k = 0; k < admitted; ++k) {
+                    s.budget.Release(splits[k].Len());
+                }
+                stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                s.dropped.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            const std::uint64_t enqueue_us = NowUs();
+            {
+                std::lock_guard<std::mutex> lock(s.handoff_sync);
+                for (std::size_t k = 0; k < split_count; ++k) {
+                    HandoffItem& item = s.handoff.emplace_back();
+                    item.packet = std::move(splits[k]);
+                    item.parsed = parsed;
+                    item.has_parsed = true;
+                    item.generation = generation;
+                    item.enqueue_us = enqueue_us;
+                }
+            }
+            const std::shared_ptr<Impl> self = shared_from_this();
+            if (!s.handoff_posted.exchange(true, std::memory_order_acq_rel)) {
+                boost::asio::post(*s.strand, [self, index]() noexcept {
+                    self->DrainIngress(self->shards_[index]);
+                });
+            }
+            stats_.ingress_enqueued.fetch_add(split_count, std::memory_order_relaxed);
+            stats_.ingress_submitted.fetch_add(split_count, std::memory_order_relaxed);
+            s.enqueued.fetch_add(split_count, std::memory_order_relaxed);
+            return true;
+        }
         if (!s.budget.TryAdmit(generation, static_cast<std::size_t>(packet_length))) {
             stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
             s.dropped.fetch_add(1, std::memory_order_relaxed);

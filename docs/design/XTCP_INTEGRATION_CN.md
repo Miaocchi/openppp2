@@ -664,3 +664,16 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 | P64 UL on（2×CPU shards=2+批写）| — | **491.3** | jain 0.967，zero 0/64 | jain 0.51-0.77、12-19 零速流 |
 
 **本轮研究总结**：全部 GSO-on 对位比抬升至 0.66-0.97×（起点 0.41-0.92×）；P64 UL 饥饿由分片+批写联合解决。剩余边界：① UL 接收端双栈每包 ~20µs（端到端 GSO-RX=上游 0006 级）；② P16 snd_buf≥512K offered-load wedge（上游）；③ P64 DL stall（既有，server 侧）。
+
+**逼近 native 第三轮：端到端 GSO 超帧链（binary `c6578e8c`，P16 UL GSO-on 主战场）：**
+
+**perf profile 实锤（client，UL on，单核）**：aesni+cfb128 ≈17.4%（隧道解密，native 同付）、**内核 loopback 桥（tcp_sendmsg→tcp_write_xmit→loopback RX→skb 拷贝→唤醒）≈25-30%**（XTCP 专属税，native 无此桥）、TcpChecksum 2.2%、mutex/syscall/copy 各 2-4%。接收端每包 ~20µs 的主要成分不是 XTCP 栈本身，而是**桥**。
+
+**本轮落地**：
+1. `TunGsoCoalescer` 合并上限 env 化（`OPENPPP2_TAP_GSO_SEGMENTS`，默认 4=历史行为，≤48=64KB 超帧）；TAP vnet 基础设施（IFF_VNET_HDR/TUNSETOFFLOAD/BuildGso）本就完整，超帧实测可过内核 netns 链（native 11KB 读即 TSO 超帧）。
+2. **GSO-RX 分段器**（Submit 层，>MTU 帧拆回 MSS 段，seq/长度/校验和逐段修正，env `OPENPPP2_XTCP_GSO_RX` 默认开）——并实测证明**可关**：整帧直通 Inject（>MSS 段对接收端合法）与分段等价，拆不拆不是瓶颈。
+3. runner `--tap-gso-segments/--xtcp-gso-rx` 旗标。
+
+**实测（P16 UL GSO-on）**：合并 cap 4→48 仅 +10（读 syscall 占比小）；单核组合 ~459（起点 331，+39%）；**2×CPU{8,9} + shards=2 + 48 段 + 批写 = 602.2 Mbps = 0.92× native 单核**（全程 +97%），jain 0.895（单轮）。
+
+**1.2× 结论（诚实评估）**：DL off 多 cell 已达 1.46-1.57×；DL on 0.77-0.97×；**UL on 单核被 loopback 桥税封顶在 ~0.7×，量化路径 = 桥旁路**（复用 iOS 原生直注模式 `DeliverNativePayload`/`EmitNativeToClient`：XTCP recv 直接注入 VNet TCP，砍掉 25-30% 桥成本，预计单核 ~0.9-1.0×、叠加 shards=2 后 2 核上 1.1-1.3×）——列为下一个独立工作项 `XTCP-VNET-BRIDGE-BYPASS-001`。

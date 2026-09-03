@@ -10,6 +10,8 @@
 #include <functional>
 #include <mutex>
 #include <utility>
+#include <vector>
+#include <cstdlib>
 
 #include <endian.h>
 #include <sys/types.h>
@@ -25,6 +27,20 @@ class TunGsoCoalescer final {
 public:
     static constexpr size_t kSegmentCap = 4;
     static constexpr size_t kMaxPacketBytes = 1500;
+    // XTCP-SHARED-PATH-001 follow-up: the merge cap is runtime-tunable
+    // (OPENPPP2_TAP_GSO_SEGMENTS, default 4 = historical behavior, up to 48 =
+    // ~64KB super-frames) so the lab can push GSO frames end-to-end without
+    // touching the strict-v1 admission rules.
+    static size_t SegmentCap() noexcept {
+        const char* env = ::getenv("OPENPPP2_TAP_GSO_SEGMENTS");
+        if (env != nullptr && env[0] != '\0') {
+            const long long value = ::atoll(env);
+            if (value >= 1 && value <= 48) {
+                return static_cast<size_t>(value);
+            }
+        }
+        return kSegmentCap;
+    }
     static constexpr size_t kVirtioHeaderBytes = sizeof(virtio_net_hdr);
     static constexpr uint64_t kHoldNs = 100000; // 100 us
     using Writer = std::function<ssize_t(const uint8_t*, size_t)>;
@@ -109,7 +125,9 @@ public:
     using Observer = std::function<void(const Event&)>;
 
     explicit TunGsoCoalescer(Writer writer, Observer observer = {}) noexcept
-        : writer_(std::move(writer)), observer_(std::move(observer)) {}
+        : segment_cap_(SegmentCap()),
+          superpacket_(kVirtioHeaderBytes + SegmentCap() * kMaxPacketBytes),
+          writer_(std::move(writer)), observer_(std::move(observer)) {}
 
     static uint64_t NowNs() noexcept {
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -162,7 +180,7 @@ public:
         else Append(packet, length, parsed);
 
         if (parsed.payload < gso_size_) return Flush(FlushReason::ShortTail, now_ns);
-        if (count_ == kSegmentCap) return Flush(FlushReason::Cap, now_ns);
+        if (count_ == segment_cap_) return Flush(FlushReason::Cap, now_ns);
         return true;
     }
 
@@ -385,6 +403,7 @@ private:
     ssize_t last_written_bytes_ = 0;
     uint64_t last_write_monotonic_ns_ = 0;
     bool enabled_ = true;
+    size_t segment_cap_ = kSegmentCap;
     size_t count_ = 0, ihl_ = 0, doff_ = 0, gso_size_ = 0;
     uint64_t started_ns_ = 0;
     uint32_t next_seq_ = 0;
@@ -396,7 +415,7 @@ private:
     std::array<std::array<uint8_t, kMaxPacketBytes>, kSegmentCap> original_{};
     std::array<size_t, kSegmentCap> original_sizes_{};
     std::array<uint8_t, kVirtioHeaderBytes + kMaxPacketBytes> ordinary_{};
-    std::array<uint8_t, kVirtioHeaderBytes + kSegmentCap * kMaxPacketBytes> superpacket_{};
+    std::vector<uint8_t> superpacket_;
 };
 
 // Decodes coalescer events for one synchronous Push() call. The persistent
