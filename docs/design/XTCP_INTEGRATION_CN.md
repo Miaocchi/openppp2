@@ -4,6 +4,41 @@
 > Type: Design
 > Last verified revision: `e79db8fd10a1ee39be2dc3a9361727fcad79d04c`
 
+## 0. 现状总览（2026-09-02，`XTCP-SINGLECORE-BASELINE-20260902` 之后）
+
+> 本文其余章节按时间线记录实验细节；本节是当前状态的唯一起点摘要。
+
+**工作树/提交链**（自冻结锚点起 15 个 commit，全部本地未推送）：
+`1dc9872` telemetry 实参错位修复 → `0379b6e` 集成 runtime base → `b9dccde` patchset 0001-0005（KCC pacing/wscale）→ `5b54ada` 输出零拷贝+TAP 批写 → `7fdc83b` flow-hash 分片 S1 → `f54e8e8` snd_buf 扫参 → `9aec143` connector 批写+退避 → `4d6a5b9` GSO 超帧链+GSO-RX → `6baad28` socketpair 桥实验。binary：`build/xtcp-runtime-root/bin/ppp`（随每 commit 重建验证）。
+
+**对 native 性能（单核 CPU8，paired，详见 §11.4.4/11.4.5/11.6）**：
+
+| 场景 | 会话起点 | 当前 | 备注 |
+|---|---:|---:|---|
+| DL GSO-off | 1.05-1.46× | **1.05-1.57×** | 多 cell >1.2× ✓ |
+| DL GSO-on | 0.58-0.92× | **0.54-0.97×** | sndbuf 包络：P1/P4 用 512K；P16 ≤128K（≥512K wedge=上游 offered-load）|
+| UL GSO-off | 0.83-1.07× | 持平 | |
+| UL GSO-on | 0.41-0.55× | **0.65-0.74×** | shards=2（2 核）P16 达 **0.78-0.92×** |
+
+P16 UL GSO-on 全程：305 → **602 Mbps**（2 核 shards=2+48 段 GSO+批写，+97%）。
+
+**多核（S1 已过 2-shard 门槛，§11.6）**：flow-hash 分片 env `OPENPPP2_XTCP_SHARDS`；P16 吞吐 1.53-3.31×、CPU ≤0.93 核、zero-rate=0；P64 UL 饥饿解决（jain 0.51→0.967）。**P64 DL stall 为既有问题**（基线 binary 复现，server 侧 wedge）。
+
+**旋钮一览（全部 env/runner flag，默认值不变）**：`OPENPPP2_XTCP_SHARDS` / `--xtcp-cc`（默认 kcc）/ `--xtcp-sndbuf` / `--xtcp-unix-bridge`（实验，混合收益）/ `--tap-gso-segments` / `--xtcp-gso-rx` / `OPENPPP2_XTCP_INGRESS_ITEMS/BYTES` / `--xtcp-send-retry-us`（已证非杠杆）/ `OPENPPP2_XTCP_CONNECTOR_BATCH_BYTES`（默认 32K 批写）。
+
+**已证伪/勿重试**：connector write 合并 256KB 单块；snd_buf 大值 + P16；重试周期缩短；SetRcvBuf/SetSndBuf 4MB（0005 前）。
+
+**验证状态**：xtcp 门禁 5/5、lab 135/135、三栈 72 cell + S1 30 cell + 全程 netns 实测全 PASS；每 commit 中间态单独构建验证。
+
+**剩余差距与下一杠杆（按预期收益）**：
+1. `XTCP-VNET-BRIDGE-BYPASS-001` 后续：纯用户态泵直递（本轮 socketpair 实验混合收益，见 §11.6 末）；
+2. 端到端 GSO-RX（上游 0006：Inject 原生接受超帧，44× 减包率）；
+3. 隧道密码 GCM 化（协议层；AES-CFB ~17% 单核双方共担，改善绝对吞吐）；
+4. P64 DL stall 根因（server 侧 wedge，`posts=0` 特征）；
+5. KCC-PACING-001 残余：载波/TAP 队列治理（有效 RTT 1.9ms vs 物理 0.4ms）。
+
+**1.2× 结论**：DL-off 已达标；GSO-on 全线 1.2× 需上列 ①②（结构性重构），集成层低成本杠杆已尽。
+
 ## 1. 状态与范围
 
 XTCP 依赖来自已确认授权的内部仓库。许可证不再阻断内部 laboratory 集成。源码通过 `tools/prepare_xtcp.sh` 固定下载并校验，解包目录中的 `.openppp2-xtcp-revision` 必须等于上述 revision。
