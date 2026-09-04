@@ -147,5 +147,8 @@ docs/superpowers/
 # Python tooling caches
 __pycache__/
 work/
-work/
 .gitnexus/
+
+# Local crash-analysis report and agent workflow state (not for version control)
+docs/CRASH_ANALYSIS_CN.md
+.opencode/
