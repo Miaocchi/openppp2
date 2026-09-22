@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <ppp/tap/TxGsoMetadata.h>
 
 #include <endian.h>
 #include <netinet/in.h>
@@ -78,6 +79,25 @@ inline uint16_t FoldChecksum(uint32_t sum) noexcept {
         sum = (sum & 0xffffU) + (sum >> 16U);
     }
     return static_cast<uint16_t>(~sum);
+}
+
+inline bool BuildTcpV4GsoHeader(const uint8_t* packet, size_t packet_size,
+    const ppp::tap::TxGsoMetadata& metadata, virtio_net_hdr& header) noexcept {
+    if (metadata.Type() != ppp::tap::TxGsoType::TcpV4 ||
+        metadata.ChecksumState() != ppp::tap::TxChecksumState::Complete) {
+        return false;
+    }
+    const auto validated = ppp::tap::TxGsoMetadata::ParseTcpV4(
+        packet, packet_size, metadata.GsoSize(), metadata.Segments());
+    if (!validated || validated->HeaderLength() != metadata.HeaderLength()) {
+        return false;
+    }
+    std::memset(&header, 0, sizeof(header));
+    header.flags = 0;
+    header.gso_type = VIRTIO_NET_HDR_GSO_TCPV4;
+    header.hdr_len = htole16(metadata.HeaderLength());
+    header.gso_size = htole16(metadata.GsoSize());
+    return true;
 }
 
 inline bool ReadHeader(const uint8_t* frame, size_t frame_size, size_t header_size, virtio_net_hdr& header) noexcept {
@@ -178,6 +198,23 @@ inline bool ParseTcpV4Gso(uint8_t* frame, size_t frame_size, size_t header_size,
 
     packet.gso_size = gso_size;
     result = packet;
+    return true;
+}
+
+inline bool CompleteTcpV4GsoChecksums(TcpV4GsoFrame& frame) noexcept {
+    if (frame.ip == nullptr || frame.packet_size == 0 || frame.ihl < 20 ||
+        frame.header_size < frame.ihl + 20 || frame.header_size > frame.packet_size) {
+        return false;
+    }
+
+    frame.ip[10] = 0;
+    frame.ip[11] = 0;
+    WriteBE16(frame.ip + 10, FoldChecksum(ChecksumSum(frame.ip, frame.ihl)));
+
+    uint8_t* tcp = frame.ip + frame.ihl;
+    tcp[16] = 0;
+    tcp[17] = 0;
+    WriteBE16(tcp + 16, TcpChecksum(frame));
     return true;
 }
 

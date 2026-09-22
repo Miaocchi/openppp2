@@ -31,7 +31,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <unordered_map>
@@ -238,7 +240,8 @@ XtcpRuntime::XtcpRuntime(
     ListenerEndpointHandler,
     ExternalAcceptHandler,
     ExternalCancelHandler,
-    std::shared_ptr<XtcpOutputRejectionDiagnostics>) noexcept {}
+    std::shared_ptr<XtcpOutputRejectionDiagnostics>,
+    bool) noexcept {}
 XtcpRuntime::~XtcpRuntime() noexcept = default;
 bool XtcpRuntime::Start() noexcept { return false; }
 void XtcpRuntime::MarkReady() noexcept {}
@@ -249,10 +252,25 @@ bool XtcpRuntime::IsRunning() const noexcept { return false; }
 std::uint64_t XtcpRuntime::Generation() const noexcept { return 0; }
 ppp::app::runtime::RuntimeXtcpStats XtcpRuntime::SnapshotStats() const noexcept { return {}; }
 #if defined(PPP_XTCP_RUNTIME_TESTING)
-bool XtcpRuntime::EmitOutputForTesting(const std::shared_ptr<Byte>&, int) noexcept { return false; }
+bool XtcpRuntime::EmitOutputForTesting(const std::shared_ptr<Byte>&, int,
+    std::optional<ppp::tap::TxGsoMetadata>) noexcept { return false; }
 #endif
 #else
 namespace {
+std::atomic<std::uint64_t> g_next_runtime_instance_id{0};
+
+std::uint64_t AllocateRuntimeInstanceId() noexcept {
+    std::uint64_t last_issued = g_next_runtime_instance_id.load(std::memory_order_relaxed);
+    for (;;) {
+        const std::uint64_t id = last_issued == std::numeric_limits<std::uint64_t>::max()
+            ? 1 : last_issued + 1;
+        if (g_next_runtime_instance_id.compare_exchange_weak(last_issued, id,
+                std::memory_order_relaxed, std::memory_order_relaxed)) {
+            return id;
+        }
+    }
+}
+
 constexpr std::size_t kIngressMaxItems = 1024;
 constexpr std::size_t kIngressMaxBytes = 8 * 1024 * 1024;
 // XTCP-KCC-SNDBUF-001 (post-0005 sweep): with a large per-conn snd_buf the
@@ -283,10 +301,15 @@ std::size_t IngressMaxBytes() noexcept {
 }
 constexpr std::size_t kMaxFlows = 4096;
 constexpr std::size_t kConnectorReadBytes = 64 * 1024;
+constexpr std::size_t kGsoRxMtu = 1500;
+constexpr std::size_t kGsoRxDirectMtu = 24 * 1024;
+constexpr std::size_t kGsoRxBridgeMtu = 12 * 1024;
+constexpr std::size_t kDirectReadBudget = 32 * 1024 * 1024;
+constexpr std::size_t kDirectReadFlowBudget = 16 * 1024;
 // Per-flow bridge queue cap for XTCP -> connector data. Rejecting a segment
-// here makes the stack withhold the ACK (peer RTOs), so this threshold trades
-// memory for retransmission avoidance; OPENPPP2_XTCP_WRITE_CAP_BYTES overrides
-// it for the cap-sweep experiment.
+// makes the stack advertise backpressure; write completion explicitly reopens
+// the receive window after both per-flow and global queues reach low watermarks.
+// OPENPPP2_XTCP_WRITE_CAP_BYTES overrides it for cap-sweep experiments.
 std::size_t ConnectorWriteCap() noexcept {
     const char* env = ::getenv("OPENPPP2_XTCP_WRITE_CAP_BYTES");
     if (env != nullptr) {
@@ -341,6 +364,23 @@ std::chrono::microseconds SendRetryDelay() noexcept {
         }
     }
     return std::chrono::milliseconds(1);
+}
+
+std::size_t GsoRxDirectMtu(std::size_t active_flows, bool direct_bridge) noexcept {
+    const char* env = ::getenv("OPENPPP2_XTCP_GRO_BYTES");
+    if (env != nullptr && env[0] != '\0') {
+        const unsigned long long value = ::atoll(env);
+        if (value >= kGsoRxMtu && value <= ::xtcp::buf::kMaxPoolPayload) {
+            return static_cast<std::size_t>(value);
+        }
+    }
+    if (direct_bridge) {
+        return kGsoRxBridgeMtu;
+    }
+    if (active_flows < 4) {
+        return kGsoRxMtu;
+    }
+    return kGsoRxDirectMtu;
 }
 
 bool EnvEnabled(const char* name) noexcept {
@@ -422,13 +462,10 @@ bool ParsePacket(const void* packet, int packet_length, ParsedPacket& parsed) no
     return parsed.key.remote_port != 0 && parsed.key.local_port != 0;
 }
 
-// XTCP-SHARED-PATH-001 GSO-RX: the peer (kernel TSO or our TAP coalescer)
-// delivers >MTU TCPv4 super-frames; split them back into MSS-sized segments
-// here so the stack keeps its per-MSS invariants. Contiguous payload slices
-// with per-split seq/length/checksum fixup; options are copied verbatim
-// (same TSval on every split is valid). OPENPPP2_XTCP_GSO_RX=0 disables.
-constexpr std::size_t kGsoRxMtu = 1500;
-
+// Split a TCPv4 super-frame into bounded GRO chunks. The default keeps native
+// GRO for four or more active flows while single-flow traffic stays on the
+// stable MSS path. OPENPPP2_XTCP_GSO_RX=1 forces MSS splitting and
+// OPENPPP2_XTCP_GRO_BYTES overrides the direct-GRO chunk size.
 uint32_t GsoChecksumRaw(const uint8_t* data, std::size_t length) noexcept {
     uint32_t sum = 0;
     std::size_t i = 0;
@@ -458,7 +495,7 @@ uint16_t GsoChecksum(const uint8_t* data, std::size_t length, uint32_t sum = 0) 
 }
 
 std::size_t GsoSplit(const uint8_t* frame, std::size_t length,
-    const ParsedPacket& parsed, ::xtcp::buf::BufRef* out, std::size_t out_cap) noexcept {
+    std::size_t target_mtu, ::xtcp::buf::BufRef* out, std::size_t out_cap) noexcept {
     const std::size_t ihl = static_cast<std::size_t>(frame[0] & 0x0F) * 4;
     if (ihl < 20 || length < ihl + 20) {
         return 0;
@@ -473,10 +510,10 @@ std::size_t GsoSplit(const uint8_t* frame, std::size_t length,
         return 0;
     }
     const std::size_t payload = total_len - ihl - doff;
-    const std::size_t seg_payload = kGsoRxMtu - ihl - doff;
-    if (seg_payload == 0) {
+    if (target_mtu <= ihl + doff) {
         return 0;
     }
+    const std::size_t seg_payload = target_mtu - ihl - doff;
     const std::size_t count = (payload + seg_payload - 1) / seg_payload;
     if (count > out_cap) {
         return 0;
@@ -541,7 +578,8 @@ public:
             const ::xtcp::core::Endpoint& local_endpoint,
             std::uint64_t generation_value) noexcept
             : key(flow_key), remote(remote_endpoint), local(local_endpoint),
-              generation(generation_value), connector(*context), retry_timer(*context) {}
+              generation(generation_value), connector(*context), retry_timer(*context),
+              resume_timer(*context) {}
 
         FlowKey key;
         ::xtcp::core::Endpoint remote;
@@ -550,21 +588,41 @@ public:
         std::size_t shard = 0;  // XTCP-SHARED-PATH-001 S1: owning shard index
         UInt64 connection_id = 0;
         std::uint16_t source_port = 0;
+        std::shared_ptr<XtcpSecondLegHooks> direct_second_leg;
+        bool direct_bridge = false;
         boost::asio::ip::tcp::socket connector;
         boost::asio::steady_timer retry_timer;
+        boost::asio::steady_timer resume_timer;
         ::xtcp::buf::BufRef deferred_syn;
         std::array<Byte, kConnectorReadBytes> read_buffer{};
         std::vector<Byte> pending_read;
+        struct DirectReadItem final {
+            XtcpDirectReadReservation reservation;
+            std::shared_ptr<Byte> payload;
+            std::uint64_t admitted_us = 0;
+        };
+        std::deque<DirectReadItem> direct_read_queue;
+        std::size_t direct_read_bytes = 0;
         std::deque<std::shared_ptr<std::vector<Byte>>> write_queue;
         std::vector<boost::asio::const_buffer> write_buffers_;
         std::vector<std::shared_ptr<std::vector<Byte>>> write_in_flight_;
         std::size_t write_bytes = 0;
         bool connector_connected = false;
         bool connector_read_eof = false;
+        bool direct_peer_eof = false;
+        bool second_leg_close_requested = false;
         bool connector_send_shutdown = false;
         bool first_leg_ready = false;
         bool first_leg_eof = false;
         bool first_leg_close_started = false;
+        bool connector_receive_backpressured = false;
+        bool resume_pending = false;
+        bool resume_capacity_available = false;
+        bool resume_terminal = false;
+        bool resume_recheck_posted = false;
+        bool receive_rejected = false;
+        std::uint32_t upload_budget_blocked_bytes = 0;
+        std::uint8_t resume_retries = 0;
         // The ppp-side forwarding for this flow is gone: the connector's peer
         // socket is closed or about to be. The read side still drains whatever
         // the kernel already received (EOF then closes the first leg
@@ -580,6 +638,8 @@ public:
         // Perf diagnostic (strand-only): when Send admission rejected this
         // chunk, when the chunk finally went through; feeds send_stall_us.
         std::uint64_t send_stall_start_us = 0;
+        // Timestamp carried only while OPENPPP2_XTCP_PERF_JSON is active.
+        std::uint64_t direct_send_accepted_us = 0;
         // XTCP-KCC-PACING-001: consecutive SendData rejections back the retry
         // cadence off exponentially (1ms -> 32ms) so a persistently full
         // snd_buf cannot turn N flows into a N*1K/s retry storm that spins
@@ -606,9 +666,11 @@ public:
         ListenerEndpointHandler listener_endpoint,
         ExternalAcceptHandler external_accept,
         ExternalCancelHandler external_cancel,
-        std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics) noexcept
+        std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics,
+        bool tx_gso_supported) noexcept
         : context_(context),
-          output_(std::move(output)), listener_endpoint_(std::move(listener_endpoint)),
+          output_(std::move(output)), tx_gso_supported_(tx_gso_supported),
+          listener_endpoint_(std::move(listener_endpoint)),
           external_accept_(std::move(external_accept)), external_cancel_(std::move(external_cancel)),
           output_rejection_diagnostics_(std::move(output_rejection_diagnostics)) {}
 
@@ -634,8 +696,36 @@ public:
         if (!lease_) {
             return false;
         }
+        CompleteAndClearDirectReads();
+        direct_flows_.store(0, std::memory_order_relaxed);
+        connector_receive_blocked_.store(0, std::memory_order_relaxed);
+        stats_.Reset();
+        perf_json_enabled_.store(false, std::memory_order_relaxed);
+        send_admission_enabled_ = false;
+        ack_release_enabled_ = false;
+        output_rejection_enabled_ = false;
+        perf_prev_ = {};
+        tcp_sample_ = {};
+        ndi_stats_ = {};
+        ndi_prev_ = {};
+        shard_prev_.clear();
+        ndi_pps_ = 0;
+        ndi_out_p50_us_ = 0.0;
+        ndi_out_p95_us_ = 0.0;
+        ndi_out_p99_us_ = 0.0;
+        ndi_iv_p50_us_ = 0.0;
+        ndi_iv_p95_us_ = 0.0;
+        ndi_batch_avg_ = 0.0;
+        ndi_batch_max_ = 0;
+        flows_above_256k_ = 0;
+        flows_above_1m_ = 0;
+        flows_above_2m_ = 0;
+        std::atomic_store_explicit(&direct_queue_telemetry_,
+            std::make_shared<ppp::app::runtime::XtcpDirectQueueTelemetry>(),
+            std::memory_order_release);
         const std::weak_ptr<Impl> weak = shared_from_this();
-        counted_output_ = [weak, handler = output_](std::shared_ptr<Byte>&& data, int length) noexcept {
+        counted_output_ = [weak, handler = output_](std::shared_ptr<Byte>&& data, int length,
+            std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
             if (!handler) {
                 return false;
             }
@@ -646,7 +736,7 @@ public:
                     self->output_rejection_diagnostics_->RecordOversizeOutputAttempt(raw, length);
                 }
             }
-            if (!handler(std::move(data), length)) {
+            if (!handler(std::move(data), length, gso)) {
                 if (const std::shared_ptr<Impl> self = weak.lock()) {
                     if (self->output_rejection_diagnostics_ &&
                         self->output_rejection_diagnostics_->Enabled()) {
@@ -707,7 +797,7 @@ public:
             s.index = i;
             s.strand = std::make_shared<Strand>(context_->get_executor());
             s.backend = std::unique_ptr<XtcpNdiBackend>(
-                new (std::nothrow) XtcpNdiBackend(counted_output_));
+                new (std::nothrow) XtcpNdiBackend(counted_output_, tx_gso_supported_));
             if (!s.backend) {
                 for (std::size_t j = 0; j < i; ++j) {
                     shards_[j].backend->Stop();
@@ -757,6 +847,16 @@ public:
             }
             generation_.store(budget_generation, std::memory_order_release);
         }
+        if (!InitializeUploadBudget()) {
+            for (Shard& s : shards_) {
+                s.backend->Stop();
+                s.stack.reset();
+                s.backend.reset();
+            }
+            shards_.clear();
+            lease_.reset();
+            return false;
+        }
         running_.store(true, std::memory_order_release);
         ready_.store(false, std::memory_order_release);
         if (own_context_) {
@@ -776,12 +876,14 @@ public:
         for (Shard& s : shards_) {
             SchedulePoll(s, generation_.load(std::memory_order_acquire));
         }
+        runtime_instance_id_.store(AllocateRuntimeInstanceId(), std::memory_order_release);
         return true;
     }
 
 #if defined(PPP_XTCP_RUNTIME_TESTING)
-    bool EmitOutputForTesting(const std::shared_ptr<Byte>& data, int length) noexcept {
-        return counted_output_ && counted_output_(std::shared_ptr<Byte>(data), length);
+    bool EmitOutputForTesting(const std::shared_ptr<Byte>& data, int length,
+        std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+        return counted_output_ && counted_output_(std::shared_ptr<Byte>(data), length, gso);
     }
 #endif
 
@@ -844,16 +946,21 @@ public:
         const std::size_t index = has_parsed && shard_count_ > 1
             ? FlowKeyHash{}(parsed.key) % shards_.size() : 0;
         Shard& s = shards_[index];
-        // XTCP-SHARED-PATH-001 GSO-RX: >MTU TCPv4 超帧拆回 MSS 段再入队,
-        // 每段独立预算/注入; 同一 5-tuple 永远同 shard, 顺序由 seq 保持。
-        static const bool gso_rx = []() noexcept {
-            const char* env = ::getenv("OPENPPP2_XTCP_GSO_RX");
-            return env == nullptr || env[0] != '0' || env[1] != '\0';
-        }();
+        // Preserve large GRO chunks for multi-flow traffic, bounded by the
+        // largest XTCP pool tier. Single-flow traffic keeps MSS-sized chunks.
+        static const bool gso_rx = EnvEnabled("OPENPPP2_XTCP_GSO_RX");
         ::xtcp::buf::BufRef splits[64];
         std::size_t split_count = 0;
-        if (has_parsed && gso_rx && packet_length > static_cast<int>(kGsoRxMtu)) {
-            split_count = GsoSplit(static_cast<const uint8_t*>(packet), static_cast<std::size_t>(packet_length), parsed, splits, 64);
+        const std::uint64_t opened = stats_.flows_opened.load(std::memory_order_relaxed);
+        const std::uint64_t closed = stats_.flows_closed.load(std::memory_order_relaxed);
+        const std::size_t active_flows = static_cast<std::size_t>(
+            opened >= closed ? opened - closed : 0);
+        const std::size_t gso_rx_target = gso_rx
+            ? kGsoRxMtu : GsoRxDirectMtu(active_flows,
+                direct_flows_.load(std::memory_order_relaxed) != 0);
+        if (has_parsed && packet_length > static_cast<int>(gso_rx_target)) {
+            split_count = GsoSplit(static_cast<const uint8_t*>(packet),
+                static_cast<std::size_t>(packet_length), gso_rx_target, splits, 64);
             if (split_count == 0) {
                 stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
                 return false;
@@ -958,6 +1065,23 @@ public:
 
     ppp::app::runtime::RuntimeXtcpStats SnapshotStats() const noexcept {
         ppp::app::runtime::RuntimeXtcpStats snapshot;
+        snapshot.runtime_generation = Generation();
+        snapshot.runtime_instance_id = runtime_instance_id_.load(std::memory_order_acquire);
+        snapshot.direct_bridge_starts =
+            stats_.direct_bridge_starts.load(std::memory_order_relaxed);
+        snapshot.direct_bridge_active = direct_flows_.load(std::memory_order_relaxed);
+        snapshot.direct_bridge_fallbacks =
+            stats_.direct_bridge_fallbacks.load(std::memory_order_relaxed);
+        snapshot.direct_upload_accepted_chunks =
+            stats_.direct_upload_accepted_chunks.load(std::memory_order_relaxed);
+        snapshot.direct_upload_accepted_bytes =
+            stats_.direct_upload_accepted_bytes.load(std::memory_order_relaxed);
+        snapshot.direct_download_accepted_bytes =
+            stats_.direct_download_accepted_bytes.load(std::memory_order_relaxed);
+        snapshot.direct_upload_writable_callbacks =
+            stats_.direct_upload_writable_callbacks.load(std::memory_order_relaxed);
+        snapshot.direct_download_writable_callbacks =
+            stats_.direct_download_writable_callbacks.load(std::memory_order_relaxed);
         snapshot.ingress_submitted = stats_.ingress_submitted.load(std::memory_order_relaxed);
         snapshot.ingress_dropped = stats_.ingress_dropped.load(std::memory_order_relaxed);
         snapshot.ingress_injected = stats_.ingress_injected.load(std::memory_order_relaxed);
@@ -969,39 +1093,334 @@ public:
         snapshot.timer_events = stats_.timer_events.load(std::memory_order_relaxed);
         snapshot.output_packets = stats_.output_packets.load(std::memory_order_relaxed);
         snapshot.output_bytes = stats_.output_bytes.load(std::memory_order_relaxed);
+        for (const Shard& shard : shards_) {
+            if (shard.backend) {
+                if (shard.backend->Caps() == ::xtcp::ndi::kCapTsoTx) {
+                    snapshot.ndi_gso_enabled = true;
+                }
+                const XtcpNdiBackend::TxStats ndi = shard.backend->SnapshotTxStats();
+                snapshot.ndi_gso_packets += ndi.gso_packets;
+                snapshot.ndi_gso_bytes += ndi.gso_bytes;
+                snapshot.ndi_gso_rejected += ndi.gso_rejected;
+            }
+        }
         snapshot.connector_read_bytes = stats_.connector_read_bytes.load(std::memory_order_relaxed);
         snapshot.connector_written_bytes = stats_.connector_written_bytes.load(std::memory_order_relaxed);
         snapshot.queued_bytes = stats_.queued_bytes_total.load(std::memory_order_relaxed);
         snapshot.queued_bytes_highwater = stats_.queued_bytes_highwater.load(std::memory_order_relaxed);
+        snapshot.resume_requested = stats_.resume_requested.load(std::memory_order_relaxed);
+        snapshot.resume_effective = stats_.resume_effective.load(std::memory_order_relaxed);
+        snapshot.resume_result_not_blocked =
+            stats_.resume_result_not_blocked.load(std::memory_order_relaxed);
+        snapshot.resume_result_window_full =
+            stats_.resume_result_window_full.load(std::memory_order_relaxed);
+        snapshot.resume_result_connection_missing =
+            stats_.resume_result_connection_missing.load(std::memory_order_relaxed);
+        snapshot.resume_pending = stats_.resume_pending.load(std::memory_order_relaxed);
+        snapshot.resume_coalesced = stats_.resume_coalesced.load(std::memory_order_relaxed);
+        snapshot.resume_terminal = stats_.resume_terminal.load(std::memory_order_relaxed);
+        snapshot.resume_retry = stats_.resume_retry.load(std::memory_order_relaxed);
+        snapshot.resume_window_full_retry =
+            stats_.resume_window_full_retry.load(std::memory_order_relaxed);
+        snapshot.direct_download_chunks = stats_.direct_download_chunks.load(std::memory_order_relaxed);
+        snapshot.direct_download_rejected = stats_.direct_download_rejected.load(std::memory_order_relaxed);
+        snapshot.direct_upload_rejected = stats_.direct_upload_rejected.load(std::memory_order_relaxed);
+        snapshot.upload_budget_rejected = stats_.upload_budget_rejected.load(std::memory_order_relaxed);
+        if (auto budget = std::atomic_load_explicit(&upload_budget_, std::memory_order_acquire)) {
+            const auto state = budget->Snapshot();
+            snapshot.upload_budget_bytes = state.bytes;
+            snapshot.upload_budget_items = state.items;
+            snapshot.upload_budget_max_bytes = state.max_bytes;
+            snapshot.upload_budget_max_items = state.max_items;
+            snapshot.upload_budget_waiters = state.waiters;
+            snapshot.upload_budget_wake_events = state.wake_events;
+            snapshot.upload_budget_fairness_switches = state.fairness_switches;
+        }
+        snapshot.upload_budget_wake_empty =
+            stats_.upload_budget_wake_empty.load(std::memory_order_relaxed);
+        if (const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry =
+                std::atomic_load_explicit(&direct_queue_telemetry_, std::memory_order_acquire)) {
+            const ppp::app::runtime::XtcpDirectQueueSnapshot direct_queue = telemetry->Snapshot();
+            snapshot.direct_upload_queue_bytes = direct_queue.bytes;
+            snapshot.direct_upload_queue_items = direct_queue.items;
+            snapshot.direct_upload_backpressured = direct_queue.backpressured;
+            snapshot.direct_upload_writer_active = direct_queue.writer_active;
+            snapshot.direct_upload_writer_progress_age_ms = direct_queue.writer_progress_age_ms;
+        }
+        snapshot.second_leg_close_requested =
+            stats_.second_leg_close_requested.load(std::memory_order_relaxed);
+        snapshot.second_leg_close_duplicate_suppressed =
+            stats_.second_leg_close_duplicate_suppressed.load(std::memory_order_relaxed);
+        snapshot.degraded_half_close = stats_.degraded_half_close.load(std::memory_order_relaxed);
+        snapshot.direct_download_queue_bytes =
+            direct_read_bytes_.load(std::memory_order_relaxed);
+        snapshot.direct_download_queue_bytes_highwater =
+            stats_.direct_download_queue_bytes_highwater.load(std::memory_order_relaxed);
         return snapshot;
     }
 
     void OnFirstLegReady(std::uint64_t runtime_generation, std::uint64_t flow_generation) noexcept override {
+        PostFirstLegReady(runtime_generation, flow_generation, {});
+    }
+
+    void OnFirstLegDirectReady(std::uint64_t runtime_generation,
+        std::uint64_t flow_generation,
+        const std::shared_ptr<XtcpSecondLegHooks>& second_leg) noexcept override {
+        if (!second_leg || !IsCurrent(runtime_generation)) {
+            PostFirstLegReady(runtime_generation, flow_generation, {});
+            return;
+        }
+        const std::size_t shard_index = static_cast<std::size_t>(flow_generation >> 56);
+        if (flow_generation == 0 || shard_index >= shards_.size()) {
+            return;
+        }
+        try {
+            {
+                std::lock_guard<std::mutex> lock(direct_read_sync_);
+                direct_second_legs_[flow_generation] = second_leg;
+            }
+            second_leg->SetDirectQueueTelemetry(std::atomic_load_explicit(
+                &direct_queue_telemetry_, std::memory_order_acquire));
+        }
+        catch (...) {
+            return;
+        }
+        PostFirstLegReady(runtime_generation, flow_generation, second_leg);
+    }
+
+    void PostFirstLegReady(std::uint64_t runtime_generation, std::uint64_t flow_generation,
+        const std::shared_ptr<XtcpSecondLegHooks>& second_leg) noexcept {
         const std::shared_ptr<Impl> self = shared_from_this();
         // S1: flow generation 高位带 shard 标签, 直接投递到该 shard strand。
         const std::size_t shard_index = static_cast<std::size_t>(flow_generation >> 56);
         if (shard_index >= shards_.size()) {
             return;
         }
+        try {
+            boost::asio::post(*shards_[shard_index].strand,
+                [self, runtime_generation, flow_generation, second_leg]() noexcept {
+                if (!self->IsCurrent(runtime_generation)) {
+                    if (second_leg) {
+                        self->EraseDirectSecondLeg(flow_generation, second_leg);
+                    }
+                    return;
+                }
+                const std::shared_ptr<Flow> flow = self->FindFlowGeneration(flow_generation);
+                if (!flow || flow->closing || flow->first_leg_ready) {
+                    if (second_leg) {
+                        self->EraseDirectSecondLeg(flow_generation, second_leg);
+                    }
+                    return;
+                }
+                flow->direct_second_leg = second_leg;
+                flow->direct_bridge = static_cast<bool>(second_leg);
+                if (flow->direct_bridge) {
+                    self->direct_flows_.fetch_add(1, std::memory_order_relaxed);
+                    self->stats_.direct_bridge_starts.fetch_add(1, std::memory_order_relaxed);
+                }
+                flow->first_leg_ready = true;
+                Shard& s = self->shards_[flow->shard];
+                if (!flow->deferred_syn.IsEmpty() && s.backend) {
+                    if (s.backend->Inject(std::move(flow->deferred_syn))) {
+                        self->stats_.ingress_injected.fetch_add(1, std::memory_order_relaxed);
+                        s.injected.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                self->KickPoll(s);
+            });
+        }
+        catch (...) {
+            if (second_leg) {
+                EraseDirectSecondLeg(flow_generation, second_leg);
+            }
+        }
+    }
+
+    XtcpDirectResult OnSecondLegPayload(XtcpDirectReadReservation& reservation,
+        const std::shared_ptr<Byte>& payload) noexcept override {
+        if (!payload || reservation.runtime_generation == 0 || reservation.flow_generation == 0 ||
+            reservation.length == 0 || !IsCurrent(reservation.runtime_generation)) {
+            return XtcpDirectResult::Closed;
+        }
+        if (reservation.token == 0 && !AllocateDirectReadToken(reservation)) {
+            return XtcpDirectResult::Closed;
+        }
+
+        std::uint64_t current = 0;
+        {
+            std::lock_guard<std::mutex> lock(direct_read_sync_);
+            if (!IsCurrent(reservation.runtime_generation)) {
+                return XtcpDirectResult::Closed;
+            }
+            const auto second_leg = direct_second_legs_.find(reservation.flow_generation);
+            if (second_leg == direct_second_legs_.end()) {
+                return XtcpDirectResult::Closed;
+            }
+            if (direct_read_reservations_.find(reservation.flow_generation) !=
+                direct_read_reservations_.end() || reservation.length > kDirectReadFlowBudget) {
+                stats_.direct_download_rejected.fetch_add(1, std::memory_order_relaxed);
+                return XtcpDirectResult::Backpressured;
+            }
+            current = direct_read_bytes_.load(std::memory_order_relaxed);
+            if (current >= kDirectReadBudget || reservation.length > kDirectReadBudget - current) {
+                stats_.direct_download_rejected.fetch_add(1, std::memory_order_relaxed);
+                return XtcpDirectResult::Backpressured;
+            }
+            try {
+                DirectReadReservation active;
+                active.reservation = reservation;
+                active.second_leg = second_leg->second;
+                direct_read_reservations_.emplace(reservation.flow_generation, std::move(active));
+            }
+            catch (...) {
+                return XtcpDirectResult::Closed;
+            }
+            direct_read_bytes_.fetch_add(reservation.length, std::memory_order_relaxed);
+        }
+        {
+            const std::uint64_t queued = current + reservation.length;
+            std::uint64_t highwater =
+                stats_.direct_download_queue_bytes_highwater.load(std::memory_order_relaxed);
+            while (queued > highwater &&
+                   !stats_.direct_download_queue_bytes_highwater.compare_exchange_weak(
+                       highwater, queued, std::memory_order_relaxed)) {
+            }
+        }
+
+        const std::size_t shard_index = static_cast<std::size_t>(reservation.flow_generation >> 56);
+        if (shard_index >= shards_.size()) {
+            CompleteDirectRead(reservation, XtcpDirectCompletion::Terminal);
+            return XtcpDirectResult::Closed;
+        }
+        const std::uint64_t admitted_us = perf_json_enabled_.load(std::memory_order_relaxed)
+            ? NowUs() : 0;
+        const std::shared_ptr<Impl> self = shared_from_this();
+        try {
+            boost::asio::post(*shards_[shard_index].strand,
+                [self, reservation, payload, admitted_us]() noexcept {
+                    if (admitted_us != 0) {
+                        HistAdd(self->stats_.direct_handoff_admit_to_shard_us,
+                            NowUs() - admitted_us);
+                    }
+                    if (!self->IsCurrent(reservation.runtime_generation)) {
+                        self->CompleteDirectRead(reservation, XtcpDirectCompletion::Terminal);
+                        return;
+                    }
+                    const std::shared_ptr<Flow> flow =
+                        self->FindFlowGeneration(reservation.flow_generation);
+                    if (!flow || flow->closing) {
+                        self->CompleteDirectRead(reservation, XtcpDirectCompletion::Terminal);
+                        return;
+                    }
+                    try {
+                        flow->direct_read_queue.push_back({reservation, payload, admitted_us});
+                        flow->direct_read_bytes += reservation.length;
+                    }
+                    catch (...) {
+                        self->CompleteDirectRead(reservation, XtcpDirectCompletion::Terminal);
+                        self->CloseFlow(flow, true);
+                        return;
+                    }
+                    self->TrySendPending(flow, reservation.runtime_generation);
+                });
+        }
+        catch (...) {
+            CompleteDirectRead(reservation, XtcpDirectCompletion::Terminal);
+            return XtcpDirectResult::Closed;
+        }
+        stats_.direct_download_chunks.fetch_add(1, std::memory_order_relaxed);
+        stats_.direct_download_accepted_bytes.fetch_add(reservation.length, std::memory_order_relaxed);
+        return XtcpDirectResult::Accepted;
+    }
+
+    void OnSecondLegWritable(std::uint64_t runtime_generation,
+        std::uint64_t flow_generation) noexcept override {
+        stats_.direct_upload_writable_callbacks.fetch_add(1, std::memory_order_relaxed);
+        stats_.resume_requested.fetch_add(1, std::memory_order_relaxed);
+        const std::size_t shard_index = static_cast<std::size_t>(flow_generation >> 56);
+        if (shard_index >= shards_.size()) {
+            stats_.resume_terminal.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const std::shared_ptr<Impl> self = shared_from_this();
         boost::asio::post(*shards_[shard_index].strand,
             [self, runtime_generation, flow_generation]() noexcept {
-            if (!self->IsCurrent(runtime_generation)) {
-                return;
-            }
-            const std::shared_ptr<Flow> flow = self->FindFlowGeneration(flow_generation);
-            if (!flow || flow->closing || flow->first_leg_ready) {
-                return;
-            }
-            flow->first_leg_ready = true;
-            Shard& s = self->shards_[flow->shard];
-            if (!flow->deferred_syn.IsEmpty() && s.backend) {
-                if (s.backend->Inject(std::move(flow->deferred_syn))) {
-                    self->stats_.ingress_injected.fetch_add(1, std::memory_order_relaxed);
-                    s.injected.fetch_add(1, std::memory_order_relaxed);
+                if (!self->IsCurrent(runtime_generation)) {
+                    self->stats_.resume_terminal.fetch_add(1, std::memory_order_relaxed);
+                    return;
                 }
-            }
-            self->KickPoll(s);
-        });
+                const std::shared_ptr<Flow> flow = self->FindFlowGeneration(flow_generation);
+                if (!flow || flow->closing || flow->connection_id == 0) {
+                    self->stats_.resume_terminal.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+                if (flow->resume_capacity_available) {
+                    self->stats_.resume_coalesced.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+                flow->resume_capacity_available = true;
+                self->BeginResume(flow);
+                self->AttemptResume(flow, runtime_generation);
+            });
+    }
+
+    void OnSecondLegClosed(std::uint64_t runtime_generation,
+        std::uint64_t flow_generation) noexcept override {
+        const std::size_t shard_index = static_cast<std::size_t>(flow_generation >> 56);
+        if (shard_index >= shards_.size()) {
+            return;
+        }
+        const std::shared_ptr<Impl> self = shared_from_this();
+        try {
+            boost::asio::post(*shards_[shard_index].strand,
+                [self, runtime_generation, flow_generation]() noexcept {
+                    if (!self->IsCurrent(runtime_generation)) {
+                        return;
+                    }
+                    const std::shared_ptr<Flow> flow = self->FindFlowGeneration(flow_generation);
+                    if (!flow || flow->closing) {
+                        return;
+                    }
+                    if (flow->direct_peer_eof) {
+                        self->stats_.second_leg_close_duplicate_suppressed.fetch_add(
+                            1, std::memory_order_relaxed);
+                        return;
+                    }
+                    flow->direct_peer_eof = true;
+                    if (flow->direct_read_queue.empty() && flow->pending_read.empty()) {
+                        self->BeginFirstLegClose(flow);
+                    }
+                });
+        }
+        catch (...) {
+        }
+    }
+
+    void OnDirectBridgeFallback(std::uint64_t runtime_generation,
+        std::uint64_t flow_generation) noexcept override {
+        if (flow_generation == 0 || !IsCurrent(runtime_generation)) {
+            return;
+        }
+        const std::size_t shard_index = static_cast<std::size_t>(flow_generation >> 56);
+        if (shard_index >= shards_.size()) {
+            return;
+        }
+        const std::shared_ptr<Impl> self = shared_from_this();
+        try {
+            boost::asio::post(*shards_[shard_index].strand,
+                [self, runtime_generation, flow_generation]() noexcept {
+                    if (!self->IsCurrent(runtime_generation)) {
+                        return;
+                    }
+                    const std::shared_ptr<Flow> flow = self->FindFlowGeneration(flow_generation);
+                    if (flow && !flow->closing) {
+                        self->stats_.direct_bridge_fallbacks.fetch_add(1,
+                            std::memory_order_relaxed);
+                    }
+                });
+        }
+        catch (...) {
+        }
     }
 
     void OnFirstLegClosed(std::uint64_t runtime_generation, std::uint64_t flow_generation) noexcept override {
@@ -1021,12 +1440,141 @@ public:
         });
     }
 
-    // The ppp-side forwarding object for this flow was disposed. Depending on
-    // how far the flow got, this is either a refused/failed connect (answer
-    // the app's pending SYN with RST) or an established second leg going away
-    // (let the connector drain what the kernel already received; its EOF then
-    // closes the first leg gracefully, a reset aborts it).
+    void BeginResume(const std::shared_ptr<Flow>& flow) noexcept {
+        if (!flow || flow->resume_pending || flow->resume_terminal) {
+            return;
+        }
+        flow->resume_pending = true;
+        stats_.resume_pending.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void FinishResume(const std::shared_ptr<Flow>& flow, bool terminal) noexcept {
+        if (!flow) {
+            return;
+        }
+        if (flow->resume_pending) {
+            flow->resume_pending = false;
+            stats_.resume_pending.fetch_sub(1, std::memory_order_relaxed);
+        }
+        boost::system::error_code ec;
+        flow->resume_timer.cancel(ec);
+        flow->resume_recheck_posted = false;
+        flow->resume_retries = 0;
+        if (terminal && !flow->resume_terminal) {
+            flow->resume_terminal = true;
+            stats_.resume_terminal.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    void ScheduleResumeRecheck(
+        const std::shared_ptr<Flow>& flow, std::uint64_t runtime_generation) noexcept {
+        if (!flow || flow->resume_recheck_posted || flow->resume_terminal ||
+            flow->resume_retries >= 2) {
+            return;
+        }
+        flow->resume_recheck_posted = true;
+        ++flow->resume_retries;
+        stats_.resume_retry.fetch_add(1, std::memory_order_relaxed);
+        const std::shared_ptr<Impl> self = shared_from_this();
+        if (flow->resume_retries == 1) {
+            boost::asio::post(*shards_[flow->shard].strand,
+                [self, flow, runtime_generation]() noexcept {
+                    flow->resume_recheck_posted = false;
+                    if (!self->IsFlowCurrent(flow, runtime_generation)) {
+                        self->FinishResume(flow, true);
+                        return;
+                    }
+                    self->AttemptResume(flow, runtime_generation);
+                });
+            return;
+        }
+        flow->resume_timer.expires_after(std::chrono::milliseconds(10));
+        flow->resume_timer.async_wait(boost::asio::bind_executor(*shards_[flow->shard].strand,
+            [self, flow, runtime_generation](const boost::system::error_code& ec) noexcept {
+                flow->resume_recheck_posted = false;
+                if (ec) {
+                    return;
+                }
+                if (!self->IsFlowCurrent(flow, runtime_generation)) {
+                    self->FinishResume(flow, true);
+                    return;
+                }
+                self->AttemptResume(flow, runtime_generation);
+            }));
+    }
+
+    void AttemptResume(
+        const std::shared_ptr<Flow>& flow, std::uint64_t runtime_generation) noexcept {
+        if (!flow || !flow->resume_pending || flow->resume_terminal) {
+            return;
+        }
+        if (!IsFlowCurrent(flow, runtime_generation) || flow->connection_id == 0) {
+            FinishResume(flow, true);
+            return;
+        }
+        Shard& s = shards_[flow->shard];
+        if (!s.stack) {
+            FinishResume(flow, true);
+            return;
+        }
+        ::xtcp::core::ReceiveStateSnapshot receive_state;
+        const ::xtcp::core::ReceiveResumeResult result =
+            s.stack->ResumeReceiveDetailed(flow->connection_id, &receive_state);
+        switch (result) {
+        case ::xtcp::core::ReceiveResumeResult::kResumed:
+            stats_.resume_effective.fetch_add(1, std::memory_order_relaxed);
+            flow->receive_rejected = false;
+            flow->resume_capacity_available = false;
+            FinishResume(flow, false);
+            KickPoll(s);
+            break;
+        case ::xtcp::core::ReceiveResumeResult::kNotBlocked:
+            stats_.resume_result_not_blocked.fetch_add(1, std::memory_order_relaxed);
+            if (flow->receive_rejected && flow->resume_retries < 2) {
+                ScheduleResumeRecheck(flow, runtime_generation);
+            }
+            else if (flow->resume_retries == 0) {
+                ScheduleResumeRecheck(flow, runtime_generation);
+            }
+            else {
+                FinishResume(flow, false);
+            }
+            break;
+        case ::xtcp::core::ReceiveResumeResult::kReceiveWindowFull:
+            // Application backpressure is gone even though OOO occupancy still
+            // makes the protocol window zero. Consume this level notification;
+            // retaining it would coalesce future writable edges indefinitely.
+            stats_.resume_result_window_full.fetch_add(1, std::memory_order_relaxed);
+            flow->receive_rejected = false;
+            flow->resume_capacity_available = false;
+            FinishResume(flow, false);
+            KickPoll(s);
+            break;
+        case ::xtcp::core::ReceiveResumeResult::kConnectionMissing:
+            stats_.resume_result_connection_missing.fetch_add(1, std::memory_order_relaxed);
+            flow->resume_capacity_available = false;
+            FinishResume(flow, true);
+            break;
+        }
+    }
+
+    // The ppp-side forwarding object for this flow was disposed. Direct
+    // bridges cannot retain kernel-buffered connector data, so they abort
+    // immediately, including during the direct-ready handoff window.
     void HandlePeerGone(const std::shared_ptr<Flow>& flow, std::uint64_t runtime_generation) noexcept {
+        if (!flow || flow->closing || flow->peer_gone) {
+            return;
+        }
+        bool direct_pending = flow->direct_bridge;
+        if (!direct_pending) {
+            std::lock_guard<std::mutex> lock(direct_read_sync_);
+            direct_pending = direct_second_legs_.find(flow->generation) != direct_second_legs_.end();
+        }
+        if (direct_pending) {
+            CloseFlow(flow, true);
+            return;
+        }
+        flow->peer_gone = true;
         Shard& s = shards_[flow->shard];
         if (!flow->first_leg_ready) {
             if (!flow->deferred_syn.IsEmpty() && s.backend) {
@@ -1042,7 +1590,6 @@ public:
             CloseFlow(flow, true);
             return;
         }
-        flow->peer_gone = true;
         // Upload data still queued for the connector can never be delivered;
         // drop it. The in-flight chunk is debited by its own completion
         // handler, so only the not-yet-submitted remainder is refunded here.
@@ -1071,6 +1618,11 @@ private:
         // Perf diagnostics for the env-gated JSON dump (see Start()); all
         // relaxed, none read on the stable stats path.
         std::atomic<std::uint64_t> timer_armed{0};
+        std::atomic<std::uint64_t> timer_kick_requests{0};
+        std::atomic<std::uint64_t> timer_kick_due_now{0};
+        std::atomic<std::uint64_t> timer_kick_lead_us_sum{0};
+        std::atomic<std::uint64_t> timer_rearm_attempts{0};
+        std::atomic<std::uint64_t> timer_rearm_suppressed_slack{0};
         std::atomic<std::uint64_t> connector_read_calls{0};
         std::atomic<std::uint64_t> connector_write_ops{0};
         std::atomic<std::uint64_t> recv_cb_calls{0};
@@ -1086,6 +1638,32 @@ private:
         std::atomic<std::uint64_t> ingress_dispatched{0};
         std::atomic<std::uint64_t> on_receive_rejected{0};
         std::atomic<std::uint64_t> on_receive_rejected_bytes{0};
+        std::atomic<std::uint64_t> resume_requested{0};
+        std::atomic<std::uint64_t> resume_effective{0};
+        std::atomic<std::uint64_t> resume_result_not_blocked{0};
+        std::atomic<std::uint64_t> resume_result_window_full{0};
+        std::atomic<std::uint64_t> resume_result_connection_missing{0};
+        std::atomic<std::uint64_t> resume_pending{0};
+        std::atomic<std::uint64_t> resume_coalesced{0};
+        std::atomic<std::uint64_t> resume_terminal{0};
+        std::atomic<std::uint64_t> resume_retry{0};
+        std::atomic<std::uint64_t> resume_window_full_retry{0};
+        std::atomic<std::uint64_t> direct_bridge_starts{0};
+        std::atomic<std::uint64_t> direct_bridge_fallbacks{0};
+        std::atomic<std::uint64_t> direct_upload_accepted_chunks{0};
+        std::atomic<std::uint64_t> direct_upload_accepted_bytes{0};
+        std::atomic<std::uint64_t> direct_download_accepted_bytes{0};
+        std::atomic<std::uint64_t> direct_upload_writable_callbacks{0};
+        std::atomic<std::uint64_t> direct_download_writable_callbacks{0};
+        std::atomic<std::uint64_t> direct_download_chunks{0};
+        std::atomic<std::uint64_t> direct_download_rejected{0};
+        std::atomic<std::uint64_t> direct_upload_rejected{0};
+        std::atomic<std::uint64_t> upload_budget_rejected{0};
+        std::atomic<std::uint64_t> upload_budget_wake_empty{0};
+        std::atomic<std::uint64_t> second_leg_close_requested{0};
+        std::atomic<std::uint64_t> second_leg_close_duplicate_suppressed{0};
+        std::atomic<std::uint64_t> degraded_half_close{0};
+        std::atomic<std::uint64_t> direct_download_queue_bytes_highwater{0};
         std::atomic<std::uint64_t> queued_bytes_total{0};
         std::atomic<std::uint64_t> queued_bytes_highwater{0};
         // log2(us) histograms: bucket b counts samples in [2^b, 2^(b+1)).
@@ -1095,6 +1673,93 @@ private:
         Hist timer_late_us{};
         Hist write_cycle_us{};
         Hist write_gap_us{};
+        Hist direct_handoff_admit_to_shard_us{};
+        Hist direct_handoff_admit_to_accept_us{};
+        Hist direct_handoff_accept_to_writable_us{};
+
+        void Reset() noexcept {
+            ingress_submitted.store(0, std::memory_order_relaxed);
+            ingress_dropped.store(0, std::memory_order_relaxed);
+            ingress_injected.store(0, std::memory_order_relaxed);
+            flows_opened.store(0, std::memory_order_relaxed);
+            flows_closed.store(0, std::memory_order_relaxed);
+            timer_polls.store(0, std::memory_order_relaxed);
+            timer_events.store(0, std::memory_order_relaxed);
+            output_packets.store(0, std::memory_order_relaxed);
+            output_bytes.store(0, std::memory_order_relaxed);
+            connector_read_bytes.store(0, std::memory_order_relaxed);
+            connector_written_bytes.store(0, std::memory_order_relaxed);
+            timer_armed.store(0, std::memory_order_relaxed);
+            timer_kick_requests.store(0, std::memory_order_relaxed);
+            timer_kick_due_now.store(0, std::memory_order_relaxed);
+            timer_kick_lead_us_sum.store(0, std::memory_order_relaxed);
+            timer_rearm_attempts.store(0, std::memory_order_relaxed);
+            timer_rearm_suppressed_slack.store(0, std::memory_order_relaxed);
+            connector_read_calls.store(0, std::memory_order_relaxed);
+            connector_write_ops.store(0, std::memory_order_relaxed);
+            recv_cb_calls.store(0, std::memory_order_relaxed);
+            recv_cb_bytes.store(0, std::memory_order_relaxed);
+            write_queue_highwater.store(0, std::memory_order_relaxed);
+            stack_send_calls.store(0, std::memory_order_relaxed);
+            stack_send_rejected.store(0, std::memory_order_relaxed);
+            send_retry_armed.store(0, std::memory_order_relaxed);
+            send_retry_fired.store(0, std::memory_order_relaxed);
+            send_stall_us_sum.store(0, std::memory_order_relaxed);
+            send_stall_events.store(0, std::memory_order_relaxed);
+            ingress_enqueued.store(0, std::memory_order_relaxed);
+            ingress_dispatched.store(0, std::memory_order_relaxed);
+            on_receive_rejected.store(0, std::memory_order_relaxed);
+            on_receive_rejected_bytes.store(0, std::memory_order_relaxed);
+            resume_requested.store(0, std::memory_order_relaxed);
+            resume_effective.store(0, std::memory_order_relaxed);
+            resume_result_not_blocked.store(0, std::memory_order_relaxed);
+            resume_result_window_full.store(0, std::memory_order_relaxed);
+            resume_result_connection_missing.store(0, std::memory_order_relaxed);
+            resume_pending.store(0, std::memory_order_relaxed);
+            resume_coalesced.store(0, std::memory_order_relaxed);
+            resume_terminal.store(0, std::memory_order_relaxed);
+            resume_retry.store(0, std::memory_order_relaxed);
+            resume_window_full_retry.store(0, std::memory_order_relaxed);
+            direct_bridge_starts.store(0, std::memory_order_relaxed);
+            direct_bridge_fallbacks.store(0, std::memory_order_relaxed);
+            direct_upload_accepted_chunks.store(0, std::memory_order_relaxed);
+            direct_upload_accepted_bytes.store(0, std::memory_order_relaxed);
+            direct_download_accepted_bytes.store(0, std::memory_order_relaxed);
+            direct_upload_writable_callbacks.store(0, std::memory_order_relaxed);
+            direct_download_writable_callbacks.store(0, std::memory_order_relaxed);
+            direct_download_chunks.store(0, std::memory_order_relaxed);
+            direct_download_rejected.store(0, std::memory_order_relaxed);
+            direct_upload_rejected.store(0, std::memory_order_relaxed);
+            upload_budget_rejected.store(0, std::memory_order_relaxed);
+            upload_budget_wake_empty.store(0, std::memory_order_relaxed);
+            second_leg_close_requested.store(0, std::memory_order_relaxed);
+            second_leg_close_duplicate_suppressed.store(0, std::memory_order_relaxed);
+            degraded_half_close.store(0, std::memory_order_relaxed);
+            direct_download_queue_bytes_highwater.store(0, std::memory_order_relaxed);
+            queued_bytes_total.store(0, std::memory_order_relaxed);
+            queued_bytes_highwater.store(0, std::memory_order_relaxed);
+            for (std::atomic<std::uint64_t>& bucket : queue_delay_us) {
+                bucket.store(0, std::memory_order_relaxed);
+            }
+            for (std::atomic<std::uint64_t>& bucket : timer_late_us) {
+                bucket.store(0, std::memory_order_relaxed);
+            }
+            for (std::atomic<std::uint64_t>& bucket : write_cycle_us) {
+                bucket.store(0, std::memory_order_relaxed);
+            }
+            for (std::atomic<std::uint64_t>& bucket : write_gap_us) {
+                bucket.store(0, std::memory_order_relaxed);
+            }
+            for (std::atomic<std::uint64_t>& bucket : direct_handoff_admit_to_shard_us) {
+                bucket.store(0, std::memory_order_relaxed);
+            }
+            for (std::atomic<std::uint64_t>& bucket : direct_handoff_admit_to_accept_us) {
+                bucket.store(0, std::memory_order_relaxed);
+            }
+            for (std::atomic<std::uint64_t>& bucket : direct_handoff_accept_to_writable_us) {
+                bucket.store(0, std::memory_order_relaxed);
+            }
+        }
     };
     // Histogram helpers (bucket = floor(log2(us)), clamped).
     static void HistAdd(Stats::Hist& hist, std::uint64_t us) noexcept {
@@ -1157,6 +1822,96 @@ private:
         Stats::Hist queue_delay_us{};
     };
 
+    bool InitializeUploadBudget() noexcept {
+        try {
+            auto budget = std::atomic_load_explicit(&upload_budget_, std::memory_order_acquire);
+            if (!budget) {
+                // One shared cap for connector and direct uploads. Keep the
+                // same object on restart: old in-flight owners still count.
+                budget = std::make_shared<XtcpUploadBudget>(GlobalQueueBudget(), 64 * 1024);
+            }
+            const std::weak_ptr<Impl> weak = shared_from_this();
+            const std::weak_ptr<boost::asio::io_context> context = context_;
+            const std::uint64_t generation = Generation();
+            std::vector<std::weak_ptr<Strand>> targets;
+            for (const Shard& s : shards_) targets.emplace_back(s.strand);
+            auto posted = std::make_shared<std::array<std::atomic<bool>, 8>>();
+            for (auto& flag : *posted) flag.store(false, std::memory_order_relaxed);
+            budget->SetWakeHandler([weak, context, generation, targets = std::move(targets), posted]() {
+                // Weak executors avoid a cycle from a stopped io_context's
+                // pending write -> credit -> budget -> io_context.
+                const auto live_context = context.lock();
+                const auto self = weak.lock();
+                if (!live_context || !self || !self->IsCurrent(generation)) return;
+                for (std::size_t i = 0; i < targets.size(); ++i) {
+                    const auto strand = targets[i].lock();
+                    if (!strand || (*posted)[i].exchange(true, std::memory_order_acq_rel)) continue;
+                    try {
+                        boost::asio::post(*strand, [weak, generation, i, posted]() noexcept {
+                            (*posted)[i].store(false, std::memory_order_release);
+                            if (const auto current = weak.lock()) {
+                                if (current->IsCurrent(generation)) {
+                                    current->ResumeUploadBudgetWaiters(current->shards_[i], generation);
+                                }
+                            }
+                        });
+                    }
+                    catch (...) {
+                        (*posted)[i].store(false, std::memory_order_release);
+                        throw;
+                    }
+                }
+            });
+            std::atomic_store_explicit(&upload_budget_, std::move(budget), std::memory_order_release);
+            return true;
+        }
+        catch (...) { return false; }
+    }
+
+    void ResumeUploadBudgetWaiters(Shard& s, std::uint64_t generation) noexcept {
+        const auto budget = std::atomic_load_explicit(&upload_budget_, std::memory_order_acquire);
+        if (!budget || !s.stack) return;
+        std::vector<XtcpUploadBudget::WaitToken> tokens;
+        try {
+            tokens = budget->WaiterTokens();
+        }
+        catch (...) { return; }
+        bool resumed = false;
+        for (const auto token : tokens) {
+            // Output during resume may close a flow reentrantly; never keep
+            // iterators into the live flow map across an external callback.
+            if (!IsCurrent(generation) || !s.stack) return;
+            const std::shared_ptr<Flow> flow = FindFlowGeneration(token);
+            if (!flow || flow->shard != s.index) continue;
+            const auto needed = flow->upload_budget_blocked_bytes;
+            if (!needed || flow->closing || flow->peer_gone || !flow->connection_id) {
+                budget->CancelWait(token);
+                flow->upload_budget_blocked_bytes = 0;
+                continue;
+            }
+            if (!budget->AwaitCapacity(token, needed)) continue;
+            flow->upload_budget_blocked_bytes = 0;
+            if (flow->direct_second_leg) {
+                stats_.resume_requested.fetch_add(1, std::memory_order_relaxed);
+                flow->resume_capacity_available = true;
+                BeginResume(flow);
+                AttemptResume(flow, generation);
+                // A successful attempt removes the token when it reserves
+                // credit. Any token still queued did not make progress and
+                // must yield the head position to the next flow.
+                budget->RotateWait(token);
+            }
+            else {
+                s.stack->ResumeReceiveDetailed(flow->connection_id);
+                resumed = true;
+            }
+        }
+        if (!resumed && !tokens.empty()) {
+            stats_.upload_budget_wake_empty.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (resumed) KickPoll(s);
+    }
+
     // XTCP-STRAND-DISPATCH-001: strand 侧批量 drain。Submit 只在 handoff 从空
     // 变非空时 post 一次本闭包, 本函数循环换出整个突发逐包注入, 直到换出为空
     // 才清 handoff_posted_ (同一把锁内检查+清位, 保证 Submit 侧不会有包滞留)。
@@ -1215,6 +1970,9 @@ private:
             if (injected) {
                 stats_.ingress_injected.fetch_add(1, std::memory_order_relaxed);
                 s.injected.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (flow->resume_pending && !flow->closing) {
+                AttemptResume(flow, generation);
             }
             KickPoll(s);
             return;
@@ -1317,11 +2075,10 @@ private:
             ToAddress(parsed.key.local_address), parsed.key.local_port);
         std::weak_ptr<XtcpFirstLegHooks> hooks = shared_from_this();
         const std::uint64_t runtime_generation = Generation();
+        // A non-negative bridge descriptor transfers to the callback at
+        // invocation, including when the callback rejects this flow.
         if (!external_accept_(local_endpoint, remote_endpoint, flow->source_port,
                 runtime_generation, flow_generation, hooks, bridge_fd)) {
-            if (bridge_fd >= 0) {
-                ::close(bridge_fd);
-            }
             CloseFlow(flow, false);
             return;
         }
@@ -1407,16 +2164,74 @@ private:
             // flow control keeps moving until the close lands on the app.
             return true;
         }
-        const std::size_t global_budget = GlobalQueueBudget();
-        if (length > kConnectorReadBytes + ConnectorWriteCap() - flow->write_bytes ||
-            stats_.queued_bytes_total.load(std::memory_order_relaxed) + length > global_budget) {
+        const auto direct = flow->direct_second_leg;
+        if (!direct && length > kConnectorReadBytes + ConnectorWriteCap() - flow->write_bytes) {
+            if (!flow->connector_receive_backpressured) {
+                flow->connector_receive_backpressured = true;
+                connector_receive_blocked_.fetch_add(1, std::memory_order_relaxed);
+            }
             stats_.on_receive_rejected.fetch_add(1, std::memory_order_relaxed);
             stats_.on_receive_rejected_bytes.fetch_add(length, std::memory_order_relaxed);
             return false;
         }
+        const auto budget = std::atomic_load_explicit(&upload_budget_, std::memory_order_acquire);
+        auto credit = budget
+            ? budget->TryReserveFor(flow->generation, length)
+            : XtcpUploadBudget::Reservation{};
+        if (!credit) {
+            flow->upload_budget_blocked_bytes = length;
+            if (budget) {
+                budget->AwaitCapacity(flow->generation, length);
+                budget->RotateWait(flow->generation);
+            }
+            stats_.upload_budget_rejected.fetch_add(1, std::memory_order_relaxed);
+            if (direct) {
+                flow->receive_rejected = true;
+                stats_.direct_upload_rejected.fetch_add(1, std::memory_order_relaxed);
+            }
+            stats_.on_receive_rejected.fetch_add(1, std::memory_order_relaxed);
+            stats_.on_receive_rejected_bytes.fetch_add(length, std::memory_order_relaxed);
+            return false;
+        }
+        flow->upload_budget_blocked_bytes = 0;
+        if (budget) {
+            budget->CancelWait(flow->generation);
+        }
+        if (direct) {
+            const XtcpDirectResult result = direct->SendToPeer(data, length, std::move(credit));
+            if (result == XtcpDirectResult::Accepted) {
+                stats_.direct_upload_accepted_chunks.fetch_add(1, std::memory_order_relaxed);
+                stats_.direct_upload_accepted_bytes.fetch_add(length, std::memory_order_relaxed);
+                flow->receive_rejected = false;
+                flow->resume_capacity_available = false;
+                if (flow->resume_pending) {
+                    FinishResume(flow, false);
+                }
+                return true;
+            }
+            if (result == XtcpDirectResult::Closed) {
+                flow->peer_gone = true;
+                const std::shared_ptr<Impl> self = shared_from_this();
+                boost::asio::post(*s.strand, [self, flow]() noexcept {
+                    if (!flow->closing) {
+                        self->CloseFlow(flow, true);
+                    }
+                });
+                return true;
+            }
+            stats_.direct_upload_rejected.fetch_add(1, std::memory_order_relaxed);
+            stats_.on_receive_rejected.fetch_add(1, std::memory_order_relaxed);
+            stats_.on_receive_rejected_bytes.fetch_add(length, std::memory_order_relaxed);
+            flow->receive_rejected = true;
+            if (flow->resume_capacity_available) {
+                BeginResume(flow);
+                ScheduleResumeRecheck(flow, Generation());
+            }
+            return false;
+        }
         try {
-            flow->write_queue.emplace_back(
-                std::make_shared<std::vector<Byte>>(data, data + length));
+            auto payload = std::make_shared<XtcpUploadChunk>(data, length, std::move(credit));
+            flow->write_queue.emplace_back(payload, &payload->bytes);
         }
         catch (...) {
             return false;
@@ -1441,18 +2256,9 @@ private:
                        global_high, total, std::memory_order_relaxed)) {
             }
         }
-        const std::shared_ptr<Impl> self = shared_from_this();
-        const std::uint64_t runtime_generation = Generation();
-        try {
-            boost::asio::post(*s.strand, [self, flow, runtime_generation]() noexcept {
-                self->StartWrite(flow, runtime_generation);
-            });
-        }
-        catch (...) {
-            flow->write_queue.pop_back();
-            flow->write_bytes -= length;
-            return false;
-        }
+        // The callback already runs on the shard strand. Posting again adds
+        // one scheduler round-trip per receive delivery.
+        StartWrite(flow, Generation());
         return true;
     }
 
@@ -1471,7 +2277,12 @@ private:
             if (const std::shared_ptr<Flow> flow = self->FindConnection(s, connection_id)) {
                 if (state == ::xtcp::core::TcpState::kCloseWait) {
                     flow->first_leg_eof = true;
-                    self->MaybeShutdownConnectorSend(flow, runtime_generation);
+                    if (flow->direct_bridge) {
+                        self->RequestSecondLegClose(flow);
+                    }
+                    else {
+                        self->MaybeShutdownConnectorSend(flow, runtime_generation);
+                    }
                 }
                 else {
                     self->CloseFlow(flow, false);
@@ -1484,7 +2295,7 @@ private:
     void StartRead(const std::shared_ptr<Flow>& flow, std::uint64_t runtime_generation) noexcept {
         if (!IsFlowCurrent(flow, runtime_generation) || flow->read_active ||
             !flow->connector_connected || flow->connector_read_eof ||
-            !flow->pending_read.empty()) {
+            !flow->pending_read.empty() || flow->direct_bridge) {
             return;
         }
         flow->read_active = true;
@@ -1517,14 +2328,21 @@ private:
     }
 
     void TrySendPending(const std::shared_ptr<Flow>& flow, std::uint64_t runtime_generation) noexcept {
-        if (!IsFlowCurrent(flow, runtime_generation) || flow->pending_read.empty()) {
+        if (!IsFlowCurrent(flow, runtime_generation) ||
+            (flow->pending_read.empty() && flow->direct_read_queue.empty())) {
             return;
         }
         Shard& s = shards_[flow->shard];
+        const bool direct_payload = flow->pending_read.empty();
+        const Byte* send_data = direct_payload
+            ? flow->direct_read_queue.front().payload.get()
+            : flow->pending_read.data();
+        const UInt32 send_length = direct_payload
+            ? flow->direct_read_queue.front().reservation.length
+            : static_cast<UInt32>(flow->pending_read.size());
         stats_.stack_send_calls.fetch_add(1, std::memory_order_relaxed);
         const bool accepted = flow->connection_id != 0 && s.stack &&
-            s.stack->Send(flow->connection_id, flow->pending_read.data(),
-                static_cast<UInt32>(flow->pending_read.size()));
+            s.stack->Send(flow->connection_id, send_data, send_length);
         if (accepted) {
             if (flow->send_stall_start_us != 0) {
                 stats_.send_stall_us_sum.fetch_add(
@@ -1538,9 +2356,36 @@ private:
                 flow->send_admission_blocked_since_us = 0;
                 flow->send_admission_snapshot = {};
             }
-            flow->pending_read.clear();
+            if (direct_payload) {
+                const Flow::DirectReadItem item = std::move(flow->direct_read_queue.front());
+                if (item.admitted_us != 0) {
+                    const std::uint64_t accepted_us = NowUs();
+                    HistAdd(stats_.direct_handoff_admit_to_accept_us,
+                        accepted_us - item.admitted_us);
+                    flow->direct_send_accepted_us = accepted_us;
+                }
+                flow->direct_read_queue.pop_front();
+                flow->direct_read_bytes = send_length <= flow->direct_read_bytes
+                    ? flow->direct_read_bytes - send_length : 0;
+                CompleteDirectRead(item.reservation, XtcpDirectCompletion::Accepted);
+            }
+            else {
+                flow->pending_read.clear();
+            }
             flow->send_retry_shift = 0;
             KickPoll(s);
+            if (direct_payload) {
+                if (!flow->direct_read_queue.empty()) {
+                    const std::shared_ptr<Impl> self = shared_from_this();
+                    boost::asio::post(*s.strand, [self, flow, runtime_generation]() noexcept {
+                        self->TrySendPending(flow, runtime_generation);
+                    });
+                }
+                else if (flow->direct_peer_eof) {
+                    BeginFirstLegClose(flow);
+                }
+                return;
+            }
             if (flow->connector_read_eof) {
                 BeginFirstLegClose(flow);
             }
@@ -1646,8 +2491,45 @@ private:
                         ? flow->write_bytes - total : 0;
                     self->stats_.connector_write_ops.fetch_add(1, std::memory_order_relaxed);
                     self->stats_.connector_written_bytes.fetch_add(total, std::memory_order_relaxed);
+                    self->ScheduleConnectorReceiveResume(runtime_generation);
                     self->StartWrite(flow, runtime_generation);
                 }));
+    }
+
+    void ScheduleConnectorReceiveResume(std::uint64_t runtime_generation) noexcept {
+        if (connector_receive_blocked_.load(std::memory_order_relaxed) == 0 ||
+            stats_.queued_bytes_total.load(std::memory_order_relaxed) > GlobalQueueBudget() / 2) {
+            return;
+        }
+        const std::shared_ptr<Impl> self = shared_from_this();
+        for (std::size_t shard_index = 0; shard_index < shards_.size(); ++shard_index) {
+            boost::asio::post(*shards_[shard_index].strand,
+                [self, runtime_generation, shard_index]() noexcept {
+                    if (!self->IsCurrent(runtime_generation)) {
+                        return;
+                    }
+                    Shard& shard = self->shards_[shard_index];
+                    bool resumed = false;
+                    for (const auto& entry : shard.flows) {
+                        const std::shared_ptr<Flow>& candidate = entry.second;
+                        if (!candidate->connector_receive_backpressured || candidate->closing ||
+                            candidate->write_bytes > ConnectorWriteCap() / 2) {
+                            continue;
+                        }
+                        candidate->connector_receive_backpressured = false;
+                        self->connector_receive_blocked_.fetch_sub(1, std::memory_order_relaxed);
+                        self->stats_.resume_requested.fetch_add(1, std::memory_order_relaxed);
+                        if (candidate->connection_id != 0 && shard.stack &&
+                            shard.stack->ResumeReceive(candidate->connection_id)) {
+                            self->stats_.resume_effective.fetch_add(1, std::memory_order_relaxed);
+                            resumed = true;
+                        }
+                    }
+                    if (resumed) {
+                        self->KickPoll(shard);
+                    }
+                });
+        }
     }
 
     void MaybeShutdownConnectorSend(
@@ -1672,6 +2554,119 @@ private:
         flow->connector_send_shutdown = true;
     }
 
+    struct DirectReadReservation final {
+        XtcpDirectReadReservation reservation;
+        std::shared_ptr<XtcpSecondLegHooks> second_leg;
+    };
+
+    bool AllocateDirectReadToken(XtcpDirectReadReservation& reservation) noexcept {
+        std::uint64_t current = next_direct_read_token_.load(std::memory_order_relaxed);
+        for (;;) {
+            if (current == std::numeric_limits<std::uint64_t>::max()) {
+                return false;
+            }
+            const std::uint64_t token = current + 1;
+            if (next_direct_read_token_.compare_exchange_weak(current, token,
+                    std::memory_order_relaxed, std::memory_order_relaxed)) {
+                reservation.token = token;
+                return true;
+            }
+        }
+    }
+
+    void EraseDirectSecondLeg(std::uint64_t flow_generation,
+        const std::shared_ptr<XtcpSecondLegHooks>& expected = {}) noexcept {
+        std::lock_guard<std::mutex> lock(direct_read_sync_);
+        const auto found = direct_second_legs_.find(flow_generation);
+        if (found != direct_second_legs_.end() && (!expected || found->second == expected)) {
+            direct_second_legs_.erase(found);
+        }
+    }
+
+    bool ExtractDirectRead(const XtcpDirectReadReservation& reservation,
+        DirectReadReservation& extracted) noexcept {
+        std::lock_guard<std::mutex> lock(direct_read_sync_);
+        const auto found = direct_read_reservations_.find(reservation.flow_generation);
+        if (found == direct_read_reservations_.end() ||
+            !found->second.reservation.IsSame(reservation)) {
+            return false;
+        }
+        extracted = std::move(found->second);
+        direct_read_reservations_.erase(found);
+        direct_read_bytes_.fetch_sub(reservation.length, std::memory_order_relaxed);
+        return true;
+    }
+
+    void CompleteDirectRead(const XtcpDirectReadReservation& reservation,
+        XtcpDirectCompletion completion) noexcept {
+        DirectReadReservation extracted;
+        if (!ExtractDirectRead(reservation, extracted) || !extracted.second_leg) {
+            return;
+        }
+        if (completion == XtcpDirectCompletion::Accepted) {
+            if (const std::shared_ptr<Flow> flow = FindFlowGeneration(reservation.flow_generation)) {
+                if (flow->direct_send_accepted_us != 0) {
+                    HistAdd(stats_.direct_handoff_accept_to_writable_us,
+                        NowUs() - std::exchange(flow->direct_send_accepted_us, 0));
+                }
+            }
+        }
+        bool delivered = false;
+        try {
+            extracted.second_leg->OnDownloadComplete(reservation, completion);
+            delivered = true;
+        }
+        catch (...) {
+        }
+        if (delivered && completion == XtcpDirectCompletion::Accepted) {
+            stats_.direct_download_writable_callbacks.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    void CompleteAllDirectReads(std::uint64_t flow_generation) noexcept {
+        DirectReadReservation extracted;
+        {
+            std::lock_guard<std::mutex> lock(direct_read_sync_);
+            const auto found = direct_read_reservations_.find(flow_generation);
+            if (found == direct_read_reservations_.end()) {
+                return;
+            }
+            extracted = std::move(found->second);
+            direct_read_reservations_.erase(found);
+            direct_read_bytes_.fetch_sub(extracted.reservation.length, std::memory_order_relaxed);
+        }
+        if (extracted.second_leg) {
+            try {
+                extracted.second_leg->OnDownloadComplete(extracted.reservation,
+                    XtcpDirectCompletion::Terminal);
+            }
+            catch (...) {
+            }
+        }
+    }
+
+    void CompleteAndClearDirectReads() noexcept {
+        std::unordered_map<std::uint64_t, DirectReadReservation> abandoned;
+        std::unordered_map<std::uint64_t, std::shared_ptr<XtcpSecondLegHooks>> hooks;
+        {
+            std::lock_guard<std::mutex> lock(direct_read_sync_);
+            abandoned.swap(direct_read_reservations_);
+            hooks.swap(direct_second_legs_);
+            direct_read_bytes_.store(0, std::memory_order_relaxed);
+        }
+        for (const auto& entry : abandoned) {
+            const DirectReadReservation& reservation = entry.second;
+            if (reservation.second_leg) {
+                try {
+                    reservation.second_leg->OnDownloadComplete(reservation.reservation,
+                        XtcpDirectCompletion::Terminal);
+                }
+                catch (...) {
+                }
+            }
+        }
+    }
+
     void BeginFirstLegClose(const std::shared_ptr<Flow>& flow) noexcept {
         if (!flow || flow->closing || flow->first_leg_close_started) {
             return;
@@ -1684,6 +2679,24 @@ private:
         flow->first_leg_close_started = true;
         s.stack->Close(flow->connection_id);
         KickPoll(s);
+    }
+
+    // Called only from the owning shard strand. Mark before invoking the
+    // second leg so any later close path observes the request as completed.
+    void RequestSecondLegClose(const std::shared_ptr<Flow>& flow) noexcept {
+        if (!flow || !flow->direct_bridge) {
+            return;
+        }
+        if (flow->second_leg_close_requested) {
+            stats_.second_leg_close_duplicate_suppressed.fetch_add(
+                1, std::memory_order_relaxed);
+            return;
+        }
+        flow->second_leg_close_requested = true;
+        stats_.second_leg_close_requested.fetch_add(1, std::memory_order_relaxed);
+        if (const std::shared_ptr<XtcpSecondLegHooks> direct = flow->direct_second_leg) {
+            direct->ClosePeerSend();
+        }
     }
 
     bool IsFlowCurrent(const std::shared_ptr<Flow>& flow, std::uint64_t runtime_generation) const noexcept {
@@ -1722,13 +2735,38 @@ private:
         if (!flow || flow->closing) {
             return;
         }
+        if (flow->resume_pending) {
+            FinishResume(flow, true);
+        }
+        flow->resume_capacity_available = false;
         flow->closing = true;
+        flow->upload_budget_blocked_bytes = 0;
+        if (const auto budget = std::atomic_load_explicit(&upload_budget_,
+                std::memory_order_acquire)) {
+            budget->CancelWait(flow->generation);
+        }
+        if (flow->connector_receive_backpressured) {
+            flow->connector_receive_backpressured = false;
+            connector_receive_blocked_.fetch_sub(1, std::memory_order_relaxed);
+        }
+        CompleteAllDirectReads(flow->generation);
+        EraseDirectSecondLeg(flow->generation);
+        if (flow->direct_bridge) {
+            direct_flows_.fetch_sub(1, std::memory_order_relaxed);
+            flow->direct_bridge = false;
+        }
+        flow->direct_read_queue.clear();
+        flow->direct_read_bytes = 0;
+        flow->direct_second_leg.reset();
         // Refund only the not-yet-submitted tail; the in-flight chunk is
         // debited by its own completion handler even after cancellation.
         const std::size_t unsubmitted =
             flow->write_bytes >= flow->in_flight_bytes
                 ? flow->write_bytes - flow->in_flight_bytes : 0;
         stats_.queued_bytes_total.fetch_sub(unsubmitted, std::memory_order_relaxed);
+        // Pending callbacks may retain Flow after close. Release abandoned
+        // queue credit now, but leave write_in_flight_ alive until completion.
+        flow->write_queue.clear();
         if (external_cancel_ && flow->source_port != 0) {
             external_cancel_(flow->source_port, Generation());
         }
@@ -1793,13 +2831,24 @@ private:
         std::uint64_t output_packets = 0;
         std::uint64_t output_bytes = 0;
         std::uint64_t timer_armed = 0;
+        std::uint64_t timer_kick_requests = 0;
+        std::uint64_t timer_kick_due_now = 0;
+        std::uint64_t timer_kick_lead_us_sum = 0;
+        std::uint64_t timer_rearm_attempts = 0;
+        std::uint64_t timer_rearm_suppressed_slack = 0;
         ::xtcp::core::AckReleaseTelemetrySnapshot ack_release;
+        ::xtcp::core::TsoGateTelemetrySnapshot tso_gate;
         XtcpOutputRejectionSnapshot output_rejections;
         // Plain snapshots of the atomic histograms (copyable).
         std::uint64_t queue_delay_us[Stats::kHistBuckets] = {};
         std::uint64_t timer_late_us[Stats::kHistBuckets] = {};
         std::uint64_t write_cycle_us[Stats::kHistBuckets] = {};
         std::uint64_t write_gap_us[Stats::kHistBuckets] = {};
+        std::uint64_t direct_handoff_admit_to_shard_us[Stats::kHistBuckets] = {};
+        std::uint64_t direct_handoff_admit_to_accept_us[Stats::kHistBuckets] = {};
+        std::uint64_t direct_handoff_accept_to_writable_us[Stats::kHistBuckets] = {};
+        std::uint64_t direct_second_leg_handler_us[Stats::kHistBuckets] = {};
+        std::uint64_t direct_second_leg_accepted_wait_to_resume_us[Stats::kHistBuckets] = {};
     };
 
     void StartPerfDump() noexcept {
@@ -1808,6 +2857,11 @@ private:
             return;
         }
         shard_prev_.assign(shards_.size() * 4, 0);
+        perf_json_enabled_.store(true, std::memory_order_relaxed);
+        if (const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry =
+                std::atomic_load_explicit(&direct_queue_telemetry_, std::memory_order_acquire)) {
+            telemetry->EnableTiming();
+        }
         send_admission_enabled_ = EnvEnabled("OPENPPP2_XTCP_SEND_ADMISSION_JSON");
         ack_release_enabled_ = EnvEnabled("OPENPPP2_XTCP_ACK_RELEASE_JSON");
         output_rejection_enabled_ = EnvEnabled("OPENPPP2_XTCP_OUTPUT_REJECTION_JSON") &&
@@ -1910,17 +2964,84 @@ private:
         now_prev.output_packets = stats_.output_packets.load(std::memory_order_relaxed);
         now_prev.output_bytes = stats_.output_bytes.load(std::memory_order_relaxed);
         now_prev.timer_armed = stats_.timer_armed.load(std::memory_order_relaxed);
-        if (ack_release_enabled_ && s0.stack) {
-            now_prev.ack_release = s0.stack->AckReleaseTelemetry();
+        now_prev.timer_kick_requests = stats_.timer_kick_requests.load(std::memory_order_relaxed);
+        now_prev.timer_kick_due_now = stats_.timer_kick_due_now.load(std::memory_order_relaxed);
+        now_prev.timer_kick_lead_us_sum =
+            stats_.timer_kick_lead_us_sum.load(std::memory_order_relaxed);
+        now_prev.timer_rearm_attempts = stats_.timer_rearm_attempts.load(std::memory_order_relaxed);
+        now_prev.timer_rearm_suppressed_slack =
+            stats_.timer_rearm_suppressed_slack.load(std::memory_order_relaxed);
+        if (ack_release_enabled_) {
+            const auto add_ack_release = [](::xtcp::core::AckReleaseTelemetrySnapshot& total,
+                                            const ::xtcp::core::AckReleaseTelemetrySnapshot& value) noexcept {
+                total.valid_acks += value.valid_acks;
+                total.ack_advance_events += value.ack_advance_events;
+                total.ack_advance_bytes += value.ack_advance_bytes;
+                total.pending_flush_attempts += value.pending_flush_attempts;
+                total.tx_sink_packets += value.tx_sink_packets;
+                total.tx_sink_bytes += value.tx_sink_bytes;
+                total.pending_flush_pacing += value.pending_flush_pacing;
+                total.pending_flush_window_cwnd += value.pending_flush_window_cwnd;
+                total.pending_flush_fast_recovery_pipe += value.pending_flush_fast_recovery_pipe;
+                total.pending_flush_packet_allocation += value.pending_flush_packet_allocation;
+                total.rate_change_events += value.rate_change_events;
+                total.rate_change_with_pending += value.rate_change_with_pending;
+                total.rate_change_old_rate_sum += value.rate_change_old_rate_sum;
+                total.rate_change_new_rate_sum += value.rate_change_new_rate_sum;
+                total.rate_change_flush_packets += value.rate_change_flush_packets;
+                total.rate_change_flush_bytes += value.rate_change_flush_bytes;
+                total.rate_change_deadline_active += value.rate_change_deadline_active;
+                total.rate_change_deadline_remaining_us_sum +=
+                    value.rate_change_deadline_remaining_us_sum;
+            };
+            const auto add_tso_gate = [](::xtcp::core::TsoGateTelemetrySnapshot& total,
+                                         const ::xtcp::core::TsoGateTelemetrySnapshot& value) noexcept {
+                total.direct_candidates += value.direct_candidates;
+                total.direct_disabled += value.direct_disabled;
+                total.direct_pending += value.direct_pending;
+                total.direct_outstanding += value.direct_outstanding;
+                total.direct_fast_recovery += value.direct_fast_recovery;
+                total.direct_window_cwnd += value.direct_window_cwnd;
+                total.direct_pacing += value.direct_pacing;
+                total.direct_pool_limit += value.direct_pool_limit;
+                total.direct_emitted += value.direct_emitted;
+                total.flush_candidates += value.flush_candidates;
+                total.flush_disabled += value.flush_disabled;
+                total.flush_outstanding += value.flush_outstanding;
+                total.flush_fast_recovery += value.flush_fast_recovery;
+                total.flush_window_cwnd += value.flush_window_cwnd;
+                total.flush_pacing += value.flush_pacing;
+                total.flush_emitted += value.flush_emitted;
+            };
+            for (const Shard& shard : shards_) {
+                if (shard.stack) {
+                    add_ack_release(now_prev.ack_release, shard.stack->AckReleaseTelemetry());
+                    add_tso_gate(now_prev.tso_gate, shard.stack->TsoGateTelemetry());
+                }
+            }
         }
         if (output_rejection_enabled_) {
             now_prev.output_rejections = output_rejection_diagnostics_->Snapshot();
+        }
+        ppp::app::runtime::XtcpDirectQueueSnapshot direct_queue;
+        if (const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry =
+                std::atomic_load_explicit(&direct_queue_telemetry_, std::memory_order_acquire)) {
+            direct_queue = telemetry->Snapshot();
         }
         for (std::size_t i = 0; i < Stats::kHistBuckets; ++i) {
             now_prev.queue_delay_us[i] = stats_.queue_delay_us[i].load(std::memory_order_relaxed);
             now_prev.timer_late_us[i] = stats_.timer_late_us[i].load(std::memory_order_relaxed);
             now_prev.write_cycle_us[i] = stats_.write_cycle_us[i].load(std::memory_order_relaxed);
             now_prev.write_gap_us[i] = stats_.write_gap_us[i].load(std::memory_order_relaxed);
+            now_prev.direct_handoff_admit_to_shard_us[i] =
+                stats_.direct_handoff_admit_to_shard_us[i].load(std::memory_order_relaxed);
+            now_prev.direct_handoff_admit_to_accept_us[i] =
+                stats_.direct_handoff_admit_to_accept_us[i].load(std::memory_order_relaxed);
+            now_prev.direct_handoff_accept_to_writable_us[i] =
+                stats_.direct_handoff_accept_to_writable_us[i].load(std::memory_order_relaxed);
+            now_prev.direct_second_leg_handler_us[i] = direct_queue.second_leg_handler_us[i];
+            now_prev.direct_second_leg_accepted_wait_to_resume_us[i] =
+                direct_queue.second_leg_accepted_wait_to_resume_us[i];
         }
         const PerfPrev& p = perf_prev_;
         const std::uint64_t send_calls = now_prev.stack_send_calls >= p.stack_send_calls
@@ -1983,6 +3104,47 @@ private:
             gap_hist[i].store(delta, std::memory_order_relaxed);
             g_total += delta;
         }
+        Stats::Hist handoff_admit_to_shard_hist{};
+        Stats::Hist handoff_admit_to_accept_hist{};
+        Stats::Hist handoff_accept_to_writable_hist{};
+        Stats::Hist direct_second_leg_handler_hist{};
+        Stats::Hist direct_second_leg_accepted_wait_to_resume_hist{};
+        std::uint64_t handoff_admit_to_shard_total = 0;
+        std::uint64_t handoff_admit_to_accept_total = 0;
+        std::uint64_t handoff_accept_to_writable_total = 0;
+        std::uint64_t direct_second_leg_handler_total = 0;
+        std::uint64_t direct_second_leg_accepted_wait_to_resume_total = 0;
+        for (std::size_t i = 0; i < Stats::kHistBuckets; ++i) {
+            const std::uint64_t admit_to_shard =
+                now_prev.direct_handoff_admit_to_shard_us[i] > p.direct_handoff_admit_to_shard_us[i]
+                    ? now_prev.direct_handoff_admit_to_shard_us[i] - p.direct_handoff_admit_to_shard_us[i] : 0;
+            handoff_admit_to_shard_hist[i].store(admit_to_shard, std::memory_order_relaxed);
+            handoff_admit_to_shard_total += admit_to_shard;
+            const std::uint64_t admit_to_accept =
+                now_prev.direct_handoff_admit_to_accept_us[i] > p.direct_handoff_admit_to_accept_us[i]
+                    ? now_prev.direct_handoff_admit_to_accept_us[i] - p.direct_handoff_admit_to_accept_us[i] : 0;
+            handoff_admit_to_accept_hist[i].store(admit_to_accept, std::memory_order_relaxed);
+            handoff_admit_to_accept_total += admit_to_accept;
+            const std::uint64_t accept_to_writable =
+                now_prev.direct_handoff_accept_to_writable_us[i] > p.direct_handoff_accept_to_writable_us[i]
+                    ? now_prev.direct_handoff_accept_to_writable_us[i] - p.direct_handoff_accept_to_writable_us[i] : 0;
+            handoff_accept_to_writable_hist[i].store(accept_to_writable, std::memory_order_relaxed);
+            handoff_accept_to_writable_total += accept_to_writable;
+            const std::uint64_t second_leg_handler =
+                now_prev.direct_second_leg_handler_us[i] > p.direct_second_leg_handler_us[i]
+                    ? now_prev.direct_second_leg_handler_us[i] - p.direct_second_leg_handler_us[i] : 0;
+            direct_second_leg_handler_hist[i].store(second_leg_handler, std::memory_order_relaxed);
+            direct_second_leg_handler_total += second_leg_handler;
+            const std::uint64_t second_leg_wait =
+                now_prev.direct_second_leg_accepted_wait_to_resume_us[i] >
+                    p.direct_second_leg_accepted_wait_to_resume_us[i]
+                    ? now_prev.direct_second_leg_accepted_wait_to_resume_us[i] -
+                        p.direct_second_leg_accepted_wait_to_resume_us[i] : 0;
+            direct_second_leg_accepted_wait_to_resume_hist[i].store(
+                second_leg_wait, std::memory_order_relaxed);
+            direct_second_leg_accepted_wait_to_resume_total += second_leg_wait;
+        }
+
         // A2-0 NDI deltas: per-interval packet rate and wall-time percentiles.
         ndi_pps_ = ndi_stats_.tx_calls >= ndi_prev_.tx_calls
             ? ndi_stats_.tx_calls - ndi_prev_.tx_calls : 0;
@@ -2026,15 +3188,28 @@ private:
         const std::uint64_t ndi_attempts = counter_delta(ndi_stats_.attempts, ndi_prev_.attempts);
         const std::uint64_t ndi_accepted = counter_delta(ndi_stats_.accepted, ndi_prev_.accepted);
         const std::uint64_t ndi_rejected = counter_delta(ndi_stats_.rejected, ndi_prev_.rejected);
-        char ack_release_buf[1024] = {};
+        const std::uint64_t ndi_gso_packets = counter_delta(ndi_stats_.gso_packets, ndi_prev_.gso_packets);
+        const std::uint64_t ndi_gso_bytes = counter_delta(ndi_stats_.gso_bytes, ndi_prev_.gso_bytes);
+        const std::uint64_t ndi_gso_rejected = counter_delta(ndi_stats_.gso_rejected, ndi_prev_.gso_rejected);
+        char ack_release_buf[4096] = {};
         if (ack_release_enabled_) {
             const ::xtcp::core::AckReleaseTelemetrySnapshot& ack = now_prev.ack_release;
             const ::xtcp::core::AckReleaseTelemetrySnapshot& ack_prev = p.ack_release;
-            std::snprintf(ack_release_buf, sizeof(ack_release_buf),
+            const ::xtcp::core::TsoGateTelemetrySnapshot& tso = now_prev.tso_gate;
+            const ::xtcp::core::TsoGateTelemetrySnapshot& tso_prev = p.tso_gate;
+            const int ack_release_written = std::snprintf(ack_release_buf, sizeof(ack_release_buf),
                 "\"ack\":{\"valid\":%llu,\"advance_events\":%llu,\"advance_bytes\":%llu},"
                 "\"pending_flush\":{\"attempts\":%llu,\"tx_sink_packets\":%llu,"
                 "\"tx_sink_bytes\":%llu,\"pacing\":%llu,\"window_cwnd\":%llu,"
                 "\"fast_recovery_pipe\":%llu,\"packet_allocation\":%llu},"
+                "\"rate_change\":{\"events\":%llu,\"with_pending\":%llu,"
+                "\"old_rate_sum\":%llu,\"new_rate_sum\":%llu,\"flush_packets\":%llu,"
+                "\"flush_bytes\":%llu,\"deadline_active\":%llu,\"deadline_remaining_us_sum\":%llu},"
+                "\"tso_gate\":{\"direct\":{\"candidates\":%llu,\"disabled\":%llu,"
+                "\"pending\":%llu,\"outstanding\":%llu,\"fast_recovery\":%llu,"
+                "\"window_cwnd\":%llu,\"pacing\":%llu,\"pool_limit\":%llu,\"emitted\":%llu},"
+                "\"flush\":{\"candidates\":%llu,\"disabled\":%llu,\"outstanding\":%llu,"
+                "\"fast_recovery\":%llu,\"window_cwnd\":%llu,\"pacing\":%llu,\"emitted\":%llu}},"
                 "\"ndi_acceptance\":{\"attempts\":%llu,\"accepted\":%llu,\"rejected\":%llu},",
                 (unsigned long long)counter_delta(ack.valid_acks, ack_prev.valid_acks),
                 (unsigned long long)counter_delta(ack.ack_advance_events, ack_prev.ack_advance_events),
@@ -2048,8 +3223,44 @@ private:
                     ack_prev.pending_flush_fast_recovery_pipe),
                 (unsigned long long)counter_delta(ack.pending_flush_packet_allocation,
                     ack_prev.pending_flush_packet_allocation),
+                (unsigned long long)counter_delta(ack.rate_change_events, ack_prev.rate_change_events),
+                (unsigned long long)counter_delta(ack.rate_change_with_pending,
+                    ack_prev.rate_change_with_pending),
+                (unsigned long long)counter_delta(ack.rate_change_old_rate_sum,
+                    ack_prev.rate_change_old_rate_sum),
+                (unsigned long long)counter_delta(ack.rate_change_new_rate_sum,
+                    ack_prev.rate_change_new_rate_sum),
+                (unsigned long long)counter_delta(ack.rate_change_flush_packets,
+                    ack_prev.rate_change_flush_packets),
+                (unsigned long long)counter_delta(ack.rate_change_flush_bytes,
+                    ack_prev.rate_change_flush_bytes),
+                (unsigned long long)counter_delta(ack.rate_change_deadline_active,
+                    ack_prev.rate_change_deadline_active),
+                (unsigned long long)counter_delta(ack.rate_change_deadline_remaining_us_sum,
+                    ack_prev.rate_change_deadline_remaining_us_sum),
+                (unsigned long long)counter_delta(tso.direct_candidates, tso_prev.direct_candidates),
+                (unsigned long long)counter_delta(tso.direct_disabled, tso_prev.direct_disabled),
+                (unsigned long long)counter_delta(tso.direct_pending, tso_prev.direct_pending),
+                (unsigned long long)counter_delta(tso.direct_outstanding, tso_prev.direct_outstanding),
+                (unsigned long long)counter_delta(tso.direct_fast_recovery, tso_prev.direct_fast_recovery),
+                (unsigned long long)counter_delta(tso.direct_window_cwnd, tso_prev.direct_window_cwnd),
+                (unsigned long long)counter_delta(tso.direct_pacing, tso_prev.direct_pacing),
+                (unsigned long long)counter_delta(tso.direct_pool_limit, tso_prev.direct_pool_limit),
+                (unsigned long long)counter_delta(tso.direct_emitted, tso_prev.direct_emitted),
+                (unsigned long long)counter_delta(tso.flush_candidates, tso_prev.flush_candidates),
+                (unsigned long long)counter_delta(tso.flush_disabled, tso_prev.flush_disabled),
+                (unsigned long long)counter_delta(tso.flush_outstanding, tso_prev.flush_outstanding),
+                (unsigned long long)counter_delta(tso.flush_fast_recovery, tso_prev.flush_fast_recovery),
+                (unsigned long long)counter_delta(tso.flush_window_cwnd, tso_prev.flush_window_cwnd),
+                (unsigned long long)counter_delta(tso.flush_pacing, tso_prev.flush_pacing),
+                (unsigned long long)counter_delta(tso.flush_emitted, tso_prev.flush_emitted),
                 (unsigned long long)ndi_attempts, (unsigned long long)ndi_accepted,
                 (unsigned long long)ndi_rejected);
+            if (ack_release_written < 0 ||
+                static_cast<std::size_t>(ack_release_written) >= sizeof(ack_release_buf)) {
+                perf_prev_ = now_prev;
+                return;
+            }
         }
         ndi_prev_ = ndi_stats_;
 
@@ -2076,7 +3287,7 @@ private:
                     continue;
                 }
                 ++blocked;
-                blocked_bytes += flow->pending_read.size();
+                blocked_bytes += flow->pending_read.size() + flow->direct_read_bytes;
                 max_current_us = std::max(max_current_us,
                     now_us > flow->send_admission_blocked_since_us
                         ? now_us - flow->send_admission_blocked_since_us : 0);
@@ -2231,16 +3442,23 @@ private:
                 shard_prev_[i * 4 + 3] = shards_[i].dropped.load(std::memory_order_relaxed);
             }
         }
-        char line[5120];
-        char ndi_buf[3072];
-        std::snprintf(ndi_buf, sizeof(ndi_buf),
+        char line[8192];
+        char ndi_buf[4096];
+        const int ndi_written = std::snprintf(ndi_buf, sizeof(ndi_buf),
             "%s%s%s\"ndi\":{\"pps\":%llu,\"out_p50_us\":%.0f,\"out_p95_us\":%.0f,\"out_p99_us\":%.0f,"
-            "\"iv_p50_us\":%.0f,\"iv_p95_us\":%.0f,\"batch_avg\":%.1f,\"batch_max\":%u},",
+            "\"iv_p50_us\":%.0f,\"iv_p95_us\":%.0f,\"batch_avg\":%.1f,\"batch_max\":%u},"
+            "\"ndi_gso\":{\"packets\":%llu,\"bytes\":%llu,\"rejected\":%llu},",
             ack_release_buf, admission_buf, output_rejection_buf, (unsigned long long)ndi_pps_,
             ndi_out_p50_us_, ndi_out_p95_us_, ndi_out_p99_us_,
             ndi_iv_p50_us_, ndi_iv_p95_us_,
-            ndi_batch_avg_, (unsigned)ndi_batch_max_);
-        std::snprintf(line, sizeof(line),
+            ndi_batch_avg_, (unsigned)ndi_batch_max_,
+            (unsigned long long)ndi_gso_packets, (unsigned long long)ndi_gso_bytes,
+            (unsigned long long)ndi_gso_rejected);
+        if (ndi_written < 0 || static_cast<std::size_t>(ndi_written) >= sizeof(ndi_buf)) {
+            perf_prev_ = now_prev;
+            return;
+        }
+        const int line_written = std::snprintf(line, sizeof(line),
             "{\"send\":{\"calls\":%llu,\"rejected\":%llu,\"stall_ms\":%.3f,\"events\":%llu},"
             "\"conn\":{\"rd_calls\":%llu,\"rd_bytes\":%llu,\"avg_rd\":%.0f,"
             "\"wr_ops\":%llu,\"wr_bytes\":%llu,\"avg_wr\":%.0f,\"q_high\":%llu,"
@@ -2257,7 +3475,18 @@ private:
             "%s"
             "\"queue\":{\"global\":%llu,\"global_high\":%llu,"
             "\"above_256k\":%u,\"above_1m\":%u,\"above_2m\":%u},"
-            "\"timer\":{\"armed\":%llu,\"late_n\":%llu,\"late_p50_us\":%.0f,\"late_p95_us\":%.0f}}",
+            "\"direct\":{\"second_leg_close_requested\":%llu,"
+            "\"second_leg_close_duplicate_suppressed\":%llu,"
+            "\"degraded_half_close\":%llu,\"download_queue_bytes\":%llu,"
+            "\"download_queue_bytes_highwater\":%llu,\"handoff\":{"
+            "\"admit_to_shard\":{\"count\":%llu,\"p50_us\":%.0f,\"p95_us\":%.0f},"
+            "\"admit_to_accept\":{\"count\":%llu,\"p50_us\":%.0f,\"p95_us\":%.0f},"
+            "\"accept_to_writable\":{\"count\":%llu,\"p50_us\":%.0f,\"p95_us\":%.0f}},"
+            "\"second_leg\":{\"handler\":{\"count\":%llu,\"p50_us\":%.0f,\"p95_us\":%.0f},"
+            "\"accepted_wait_to_resume\":{\"count\":%llu,\"p50_us\":%.0f,\"p95_us\":%.0f}}},"
+            "\"timer\":{\"armed\":%llu,\"kick_requests\":%llu,\"kick_due_now\":%llu,"
+            "\"kick_lead_us_sum\":%llu,\"rearm_attempts\":%llu,\"rearm_suppressed_slack\":%llu,"
+            "\"late_n\":%llu,\"late_p50_us\":%.0f,\"late_p95_us\":%.0f}}",
             (unsigned long long)send_calls,
             (unsigned long long)send_rejected,
             static_cast<double>(stall_us) / 1000.0,
@@ -2298,12 +3527,50 @@ private:
             (unsigned long long)stats_.queued_bytes_total.load(std::memory_order_relaxed),
             (unsigned long long)stats_.queued_bytes_highwater.load(std::memory_order_relaxed),
             flows_above_256k_, flows_above_1m_, flows_above_2m_,
+            (unsigned long long)stats_.second_leg_close_requested.load(std::memory_order_relaxed),
+            (unsigned long long)stats_.second_leg_close_duplicate_suppressed.load(std::memory_order_relaxed),
+            (unsigned long long)stats_.degraded_half_close.load(std::memory_order_relaxed),
+            (unsigned long long)direct_read_bytes_.load(std::memory_order_relaxed),
+            (unsigned long long)stats_.direct_download_queue_bytes_highwater.load(std::memory_order_relaxed),
+            (unsigned long long)handoff_admit_to_shard_total,
+            HistPercentile(handoff_admit_to_shard_hist, handoff_admit_to_shard_total, 0.50),
+            HistPercentile(handoff_admit_to_shard_hist, handoff_admit_to_shard_total, 0.95),
+            (unsigned long long)handoff_admit_to_accept_total,
+            HistPercentile(handoff_admit_to_accept_hist, handoff_admit_to_accept_total, 0.50),
+            HistPercentile(handoff_admit_to_accept_hist, handoff_admit_to_accept_total, 0.95),
+            (unsigned long long)handoff_accept_to_writable_total,
+            HistPercentile(handoff_accept_to_writable_hist, handoff_accept_to_writable_total, 0.50),
+            HistPercentile(handoff_accept_to_writable_hist, handoff_accept_to_writable_total, 0.95),
+            (unsigned long long)direct_second_leg_handler_total,
+            HistPercentile(direct_second_leg_handler_hist, direct_second_leg_handler_total, 0.50),
+            HistPercentile(direct_second_leg_handler_hist, direct_second_leg_handler_total, 0.95),
+            (unsigned long long)direct_second_leg_accepted_wait_to_resume_total,
+            HistPercentile(direct_second_leg_accepted_wait_to_resume_hist,
+                direct_second_leg_accepted_wait_to_resume_total, 0.50),
+            HistPercentile(direct_second_leg_accepted_wait_to_resume_hist,
+                direct_second_leg_accepted_wait_to_resume_total, 0.95),
             (unsigned long long)(now_prev.timer_armed >= p.timer_armed
                 ? now_prev.timer_armed - p.timer_armed : 0),
+            (unsigned long long)(now_prev.timer_kick_requests >= p.timer_kick_requests
+                ? now_prev.timer_kick_requests - p.timer_kick_requests : 0),
+            (unsigned long long)(now_prev.timer_kick_due_now >= p.timer_kick_due_now
+                ? now_prev.timer_kick_due_now - p.timer_kick_due_now : 0),
+            (unsigned long long)(now_prev.timer_kick_lead_us_sum >= p.timer_kick_lead_us_sum
+                ? now_prev.timer_kick_lead_us_sum - p.timer_kick_lead_us_sum : 0),
+            (unsigned long long)(now_prev.timer_rearm_attempts >= p.timer_rearm_attempts
+                ? now_prev.timer_rearm_attempts - p.timer_rearm_attempts : 0),
+            (unsigned long long)(now_prev.timer_rearm_suppressed_slack >=
+                p.timer_rearm_suppressed_slack
+                ? now_prev.timer_rearm_suppressed_slack - p.timer_rearm_suppressed_slack : 0),
             (unsigned long long)l_total,
             HistPercentile(late_hist, l_total, 0.50),
             HistPercentile(late_hist, l_total, 0.95));
-        perf_out_ << line << '\n';
+        if (line_written < 0 || static_cast<std::size_t>(line_written) >= sizeof(line)) {
+            perf_prev_ = now_prev;
+            return;
+        }
+        perf_out_.write(line, line_written);
+        perf_out_.put('\n');
         perf_out_.flush();
         perf_prev_ = now_prev;
     }
@@ -2339,12 +3606,32 @@ private:
         if (!running_.load(std::memory_order_acquire) || !s.stack || !s.poll_timer) {
             return;
         }
-        const std::chrono::steady_clock::time_point target =
-            std::chrono::steady_clock::now() + PollDelay(s);
+        const bool observe = perf_json_enabled_.load(std::memory_order_relaxed);
+        if (observe) {
+            stats_.timer_kick_requests.fetch_add(1, std::memory_order_relaxed);
+        }
+        const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+        const std::chrono::steady_clock::time_point target = now + PollDelay(s);
+        if (observe) {
+            if (target <= now) {
+                stats_.timer_kick_due_now.fetch_add(1, std::memory_order_relaxed);
+            }
+            else {
+                stats_.timer_kick_lead_us_sum.fetch_add(static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(target - now).count()),
+                    std::memory_order_relaxed);
+            }
+        }
         if (target + std::chrono::microseconds(kRearmSlackUs) < s.poll_timer->expiry()) {
+            if (observe) {
+                stats_.timer_rearm_attempts.fetch_add(1, std::memory_order_relaxed);
+            }
             boost::system::error_code ec;
             s.poll_timer->cancel(ec);
             SchedulePoll(s, generation_.load(std::memory_order_acquire));
+        }
+        else if (observe && target < s.poll_timer->expiry()) {
+            stats_.timer_rearm_suppressed_slack.fetch_add(1, std::memory_order_relaxed);
         }
     }
 #else
@@ -2425,6 +3712,12 @@ private:
             perf_out_.flush();
             perf_out_.close();
         }
+        CompleteAndClearDirectReads();
+        direct_flows_.store(0, std::memory_order_relaxed);
+        connector_receive_blocked_.store(0, std::memory_order_relaxed);
+        std::atomic_store_explicit(&direct_queue_telemetry_,
+            std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>{},
+            std::memory_order_release);
         lease_.reset();
         if (own_context_) {
             own_context_->stop();
@@ -2436,6 +3729,7 @@ private:
     std::shared_ptr<boost::asio::io_context> context_;
     OutputHandler output_;
     OutputHandler counted_output_;
+    bool tx_gso_supported_ = false;
     ListenerEndpointHandler listener_endpoint_;
     ExternalAcceptHandler external_accept_;
     ExternalCancelHandler external_cancel_;
@@ -2445,7 +3739,17 @@ private:
     std::atomic<bool> ready_{false};
     std::atomic<bool> stopping_{false};
     std::atomic<std::uint64_t> generation_{0};
+    std::atomic<std::uint64_t> runtime_instance_id_{0};
     std::atomic<std::uint64_t> next_flow_generation_{0};
+    std::atomic<std::uint64_t> direct_read_bytes_{0};
+    std::mutex direct_read_sync_;
+    std::unordered_map<std::uint64_t, DirectReadReservation> direct_read_reservations_;
+    std::unordered_map<std::uint64_t, std::shared_ptr<XtcpSecondLegHooks>> direct_second_legs_;
+    std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> direct_queue_telemetry_;
+    std::shared_ptr<XtcpUploadBudget> upload_budget_;
+    std::atomic<std::uint64_t> next_direct_read_token_{0};
+    std::atomic<std::uint32_t> direct_flows_{0};
+    std::atomic<std::uint32_t> connector_receive_blocked_{0};
     Stats stats_;
     std::unique_ptr<XtcpPoolLease> lease_;
     // Perf diagnostics state (strand-only once Start() armed the dump).
@@ -2453,6 +3757,7 @@ private:
     bool send_admission_enabled_ = false;
     bool ack_release_enabled_ = false;
     bool output_rejection_enabled_ = false;
+    std::atomic<bool> perf_json_enabled_{false};
     std::shared_ptr<boost::asio::steady_timer> perf_dump_timer_;
     std::ofstream perf_out_;
     PerfPrev perf_prev_;
@@ -2502,11 +3807,13 @@ XtcpRuntime::XtcpRuntime(
     ListenerEndpointHandler listener_endpoint,
     ExternalAcceptHandler external_accept,
     ExternalCancelHandler external_cancel,
-    std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics) noexcept {
+    std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics,
+    bool tx_gso_supported) noexcept {
     try {
         impl_ = std::make_shared<Impl>(context, std::move(output),
             std::move(listener_endpoint), std::move(external_accept),
-            std::move(external_cancel), std::move(output_rejection_diagnostics));
+            std::move(external_cancel), std::move(output_rejection_diagnostics),
+            tx_gso_supported);
     }
     catch (...) {}
 }
@@ -2528,8 +3835,9 @@ ppp::app::runtime::RuntimeXtcpStats XtcpRuntime::SnapshotStats() const noexcept 
     return impl_ ? impl_->SnapshotStats() : ppp::app::runtime::RuntimeXtcpStats{};
 }
 #if defined(PPP_XTCP_RUNTIME_TESTING)
-bool XtcpRuntime::EmitOutputForTesting(const std::shared_ptr<Byte>& data, int length) noexcept {
-    return impl_ && impl_->EmitOutputForTesting(data, length);
+bool XtcpRuntime::EmitOutputForTesting(const std::shared_ptr<Byte>& data, int length,
+    std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+    return impl_ && impl_->EmitOutputForTesting(data, length, gso);
 }
 #endif
 #endif

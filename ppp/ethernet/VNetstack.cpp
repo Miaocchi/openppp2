@@ -426,22 +426,33 @@ namespace ppp {
             if (fd < 0) {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceOpenFailed);
             }
+            const auto close_unadopted_fd = [fd]() noexcept {
+                Socket::Closesocket(fd);
+            };
             std::shared_ptr<TapTcpClient> pcb;
+            bool registered = false;
             {
                 SynchronizedObjectScope scope(syncobj_);
                 const auto found = external_clients_.find(source_port);
-                if (found == external_clients_.end() ||
-                    found->second.runtime_generation != runtime_generation) {
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceOpenFailed);
+                if (found != external_clients_.end() &&
+                    found->second.runtime_generation == runtime_generation) {
+                    pcb = std::move(found->second.client);
+                    external_clients_.erase(found);
+                    registered = true;
                 }
-                pcb = std::move(found->second.client);
-                external_clients_.erase(found);
+            }
+            if (!registered) {
+                close_unadopted_fd();
+                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceOpenFailed);
             }
             if (NULLPTR == pcb || pcb->IsDisposed()) {
+                close_unadopted_fd();
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceOpenFailed);
             }
             std::shared_ptr<boost::asio::ip::tcp::socket> socket = pcb->NewAsynchronousSocket(fd, natEP);
             if (NULLPTR == socket) {
+                close_unadopted_fd();
+                pcb->Dispose();
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceOpenFailed);
             }
             bool ok = pcb->EndAccept(socket, natEP);
@@ -450,6 +461,7 @@ namespace ppp {
             }
             if (!ok) {
                 ppp::telemetry::Count("vnetstack.accept.fail.end_accept", 1);
+                pcb->Dispose();
                 return false;
             }
             ppp::telemetry::Count("vnetstack.accept.external_fd", 1);

@@ -19,6 +19,7 @@
 #include <ppp/IDisposable.h>
 #include <ppp/net/asio/vdns.h>
 #include <ppp/net/IPEndPoint.h>
+#include <ppp/net/Socket.h>
 #include <ppp/net/native/rib.h>
 #include <common/aggligator/aggligator.h>
 
@@ -90,14 +91,22 @@ namespace ppp {
                     std::shared_ptr<xtcp::XtcpRuntime> runtime =
                         make_shared_object<xtcp::XtcpRuntime>(
                             owner_->GetContext(),
-                            [weak, output_rejection_diagnostics](std::shared_ptr<Byte>&& packet, int size) noexcept {
+                            [weak, output_rejection_diagnostics](std::shared_ptr<Byte>&& packet, int size,
+                                std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
                                 const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
+                                const auto emit = [&]() noexcept {
+                                    if (!owner) {
+                                        return false;
+                                    }
+                                    return gso ? owner->OutputGso(packet, size, *gso)
+                                               : owner->Output(packet, size);
+                                };
                                 if (output_rejection_diagnostics == nullptr) {
-                                    return owner && owner->Output(packet, size);
+                                    return emit();
                                 }
                                 const bool vethernet_disposed = owner && owner->IsDisposed();
                                 const bool tap_present = owner && owner->GetTap() != nullptr;
-                                const bool accepted = owner && owner->Output(packet, size);
+                                const bool accepted = emit();
                                 output_rejection_diagnostics->Record(static_cast<bool>(owner),
                                     vethernet_disposed, tap_present, accepted);
                                 return accepted;
@@ -118,9 +127,15 @@ namespace ppp {
                                 const std::shared_ptr<VEthernetNetworkTcpipStack> netstack =
                                     owner ? std::dynamic_pointer_cast<VEthernetNetworkTcpipStack>(
                                         owner->GetNetstack()) : nullptr;
-                                return netstack && netstack->BeginExternalAcceptWithFd(
-                                    localEP, remoteEP, source_port, runtime_generation,
-                                    flow_generation, hooks, fd);
+                                if (netstack) {
+                                    return netstack->BeginExternalAcceptWithFd(
+                                        localEP, remoteEP, source_port, runtime_generation,
+                                        flow_generation, hooks, fd);
+                                }
+                                if (fd >= 0) {
+                                    ppp::net::Socket::Closesocket(fd);
+                                }
+                                return false;
                             },
                             [weak](uint16_t source_port, uint64_t runtime_generation) noexcept {
                                 const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
@@ -131,7 +146,8 @@ namespace ppp {
                                         source_port, runtime_generation);
                                 }
                             },
-                            output_rejection_diagnostics);
+                            output_rejection_diagnostics,
+                            owner_->SupportsTxGso());
                     if (NULLPTR == runtime || !runtime->Start()) {
                         return ppp::diagnostics::SetLastError(
                             ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);

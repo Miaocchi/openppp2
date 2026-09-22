@@ -25,12 +25,17 @@ TAP_GSO_SEGMENTS=""
 XTCP_GSO_RX=""
 XTCP_UNIX_BRIDGE=""
 XTCP_SNDBUF=""
+XTCP_MEMORY_BRIDGE=false
+XTCP_NDI_TSO_TX=false
+XTCP_DIRECT_UPLOAD_GATHER_BYTES=""
 NETEM_DELAY_MS=""
 STALL_DIAGNOSTICS=false
 CPU_PROFILE="none"
 AFFINITY_CPUS=""
 SYSTEM_CPU_STAT=false
 PROCESS_PERF_STAT=false
+PAIRED_PERFORMANCE_GATE="off"
+PAIRED_PERFORMANCE_THRESHOLD="1.20"
 LABEL="linux-datapath-matrix"
 
 usage() {
@@ -51,16 +56,27 @@ iperf3 parallel flows, not OpenPPP2's client.concurrent setting.
   --iperf-timeout SEC        Per-cell iperf watchdog; default duration + omit + 30
   --client-concurrent N      OpenPPP2 client.concurrent; default: 1
   --tap-gso LIST             off,on list (default: off)
-  --cpu-profile PROFILE      none|client-vnet-isolated (default: none)
+  --cpu-profile PROFILE      none|client-vnet-isolated|client-single-core|client-cpuset
   --affinity-cpus LIST       Distinct online client CPU IDs, required by CPU profile
-  --system-cpu-stat          Record selected-CPU perf stat (client-vnet-isolated only)
-  --process-perf-stat        Record client-process perf stat
+  --system-cpu-stat          Record selected-CPU capacity perf stat (non-none profiles)
+  --process-perf-stat        Record PPP process perf stat (automatic for client-single-core)
+  --paired-performance-gate MODE
+                             XTCP/native gate: off|warn|fail (default: off)
+  --paired-performance-threshold RATIO
+                             Minimum XTCP/native goodput ratio (default: 1.20)
   --dry-run                  Print rotated cells without requiring root, tools, or PPP
   --datapath-telemetry       Retain datapath NDJSON plus boundary signals
   --xtcp-perf                Retain optional 1-second XTCP diagnostic NDJSON
   --xtcp-cc NAME             XTCP congestion control (kcc/bbr/cubic/reno; default kcc)
   --xtcp-shards N            XTCP runtime shards via OPENPPP2_XTCP_SHARDS (XTCP stack only)
+  --xtcp-send-retry-us USEC  XTCP laboratory send retry interval
+  --tap-gso-segments N       TAP GSO merge segment cap
+  --xtcp-gso-rx VALUE        XTCP GSO receive override
+  --xtcp-unix-bridge VALUE   XTCP Unix bridge override
   --xtcp-sndbuf BYTES        XTCP per-conn send buffer (bytes; default 64K upstream)
+  --xtcp-memory-bridge       Enable the opt-in single-owner userspace bridge
+  --xtcp-ndi-tso-tx         Enable the opt-in NDI TSO transmit capability
+  --xtcp-direct-upload-gather-bytes BYTES  Direct upload writer gather cap; 0/1 disables (default: 32768)
   --netem-delay-ms MS        Add netem RTT delay on client-server veth (ms)
   --stall-diagnostics        Force datapath, XTCP perf, and GSO ledger capture
   --label NAME               Metadata label (default: linux-datapath-matrix)
@@ -92,6 +108,8 @@ while (($#)); do
     --affinity-cpus) need_value "$@"; AFFINITY_CPUS="$2"; shift 2 ;;
     --system-cpu-stat) SYSTEM_CPU_STAT=true; shift ;;
     --process-perf-stat) PROCESS_PERF_STAT=true; shift ;;
+    --paired-performance-gate) need_value "$@"; PAIRED_PERFORMANCE_GATE="$2"; shift 2 ;;
+    --paired-performance-threshold) need_value "$@"; PAIRED_PERFORMANCE_THRESHOLD="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     --datapath-telemetry) DATAPATH_TELEMETRY=true; shift ;;
     --xtcp-perf) XTCP_PERF=true; shift ;;
@@ -102,6 +120,9 @@ while (($#)); do
     --xtcp-gso-rx) need_value "$@"; XTCP_GSO_RX="$2"; shift 2 ;;
     --xtcp-unix-bridge) need_value "$@"; XTCP_UNIX_BRIDGE="$2"; shift 2 ;;
     --xtcp-sndbuf) need_value "$@"; XTCP_SNDBUF="$2"; shift 2 ;;
+    --xtcp-memory-bridge) XTCP_MEMORY_BRIDGE=true; shift ;;
+    --xtcp-ndi-tso-tx) XTCP_NDI_TSO_TX=true; shift ;;
+    --xtcp-direct-upload-gather-bytes) need_value "$@"; XTCP_DIRECT_UPLOAD_GATHER_BYTES="$2"; shift 2 ;;
     --netem-delay-ms) need_value "$@"; NETEM_DELAY_MS="$2"; shift 2 ;;
     --stall-diagnostics) STALL_DIAGNOSTICS=true; shift ;;
     --label) need_value "$@"; LABEL="$2"; shift 2 ;;
@@ -118,6 +139,9 @@ if [[ -z "$IPERF_TIMEOUT" ]]; then
 fi
 [[ "$IPERF_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "--iperf-timeout must be a positive integer" >&2; exit 2; }
 [[ -z "$CLIENT_CONCURRENT" || "$CLIENT_CONCURRENT" =~ ^[1-9][0-9]*$ ]] || { echo "--client-concurrent must be positive" >&2; exit 2; }
+[[ "$PAIRED_PERFORMANCE_GATE" == off || "$PAIRED_PERFORMANCE_GATE" == warn || "$PAIRED_PERFORMANCE_GATE" == fail ]] || { echo "--paired-performance-gate must be off, warn, or fail" >&2; exit 2; }
+[[ "$PAIRED_PERFORMANCE_THRESHOLD" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ && ! "$PAIRED_PERFORMANCE_THRESHOLD" =~ ^0*([.]0*)?$ ]] || { echo "--paired-performance-threshold must be positive" >&2; exit 2; }
+[[ -z "$XTCP_DIRECT_UPLOAD_GATHER_BYTES" || "$XTCP_DIRECT_UPLOAD_GATHER_BYTES" =~ ^[0-9]+$ ]] || { echo "--xtcp-direct-upload-gather-bytes must be a non-negative integer" >&2; exit 2; }
 if [[ "$STALL_DIAGNOSTICS" == true ]]; then
   DATAPATH_TELEMETRY=true
   XTCP_PERF=true
@@ -156,6 +180,7 @@ case "$CPU_PROFILE" in
       [[ "${#CPU_LIST[@]}" -ge 1 ]] || { echo "--client-cpuset requires at least one affinity CPU" >&2; exit 2; }
     else
       [[ "${#CPU_LIST[@]}" -eq 1 ]] || { echo "--client-single-core requires exactly one affinity CPU" >&2; exit 2; }
+      PROCESS_PERF_STAT=true
     fi
     declare -A seen_cpus=()
     for cpu in "${CPU_LIST[@]}"; do
@@ -211,8 +236,8 @@ if [[ "$DRY_RUN" == true ]]; then
           mode_slot=$(( (mode_index + round - 1) % ${#MODE_LIST[@]} ))
           mode="${MODE_LIST[$mode_slot]}"
           IFS=/ read -r stack tap_gso <<<"$mode"
-          printf 'round=%s stack=%s tap_gso=%s parallel_flows=%s direction=%s cpu_profile=%s affinity_cpus=%s cell_path=round-%s/%s-gso-%s-p%s-%s\n' \
-            "$round" "$stack" "$tap_gso" "$p" "$direction" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" "$round" "$stack" "$tap_gso" "$p" "$direction"
+          printf 'round=%s stack=%s tap_gso=%s parallel_flows=%s direction=%s cpu_profile=%s affinity_cpus=%s xtcp_memory_bridge=%s xtcp_ndi_tso_tx=%s xtcp_direct_upload_gather_bytes=%s paired_performance_gate=%s paired_performance_threshold=%s cell_path=round-%s/%s-gso-%s-p%s-%s\n' \
+            "$round" "$stack" "$tap_gso" "$p" "$direction" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" "$XTCP_MEMORY_BRIDGE" "$XTCP_NDI_TSO_TX" "${XTCP_DIRECT_UPLOAD_GATHER_BYTES:-default}" "$PAIRED_PERFORMANCE_GATE" "$PAIRED_PERFORMANCE_THRESHOLD" "$round" "$stack" "$tap_gso" "$p" "$direction"
         done
       done
     done
@@ -227,9 +252,16 @@ if [[ "$CPU_PROFILE" != none ]]; then command -v taskset >/dev/null || { echo "-
 if [[ "$SYSTEM_CPU_STAT" == true || "$PROCESS_PERF_STAT" == true ]]; then command -v perf >/dev/null || { echo "CPU perf stat requested but perf is unavailable" >&2; exit 1; }; fi
 
 mkdir -p "$ARTIFACT_DIR"
-printf 'label=%s\nppp_bin=%s\nstacks=%s\nparallel=%s\ndirections=%s\nrounds=%s\nduration=%s\nomit=%s\niperf_timeout=%s\nclient_concurrent=%s\ntap_gso_modes=%s\ndatapath_telemetry=%s\nxtcp_perf=%s\nstall_diagnostics=%s\ncpu_profile=%s\naffinity_cpus=%s\nsystem_cpu_stat=%s\nprocess_perf_stat=%s\ntun_output_diagnostics=stall_diagnostics_xtcp_only\nxtcp_output_rejection_json=stall_diagnostics_xtcp_only\n' \
+python3 "$ROOT/tools/datapath_matrix_metadata.py" --root "$ROOT" --ppp-bin "$PPP_BIN" \
+  --json-output "$ARTIFACT_DIR/version-fingerprint.json" --text-output "$ARTIFACT_DIR/version-fingerprint.txt"
+printf 'label=%s\nppp_bin=%s\nstacks=%s\nparallel=%s\ndirections=%s\nrounds=%s\nduration=%s\nomit=%s\niperf_timeout=%s\nclient_concurrent=%s\ntap_gso_modes=%s\ndatapath_telemetry=%s\nxtcp_perf=%s\nxtcp_cc=%s\nxtcp_shards=%s\nxtcp_send_retry_us=%s\ntap_gso_segments=%s\nxtcp_gso_rx=%s\nxtcp_unix_bridge=%s\nxtcp_sndbuf=%s\nxtcp_direct_upload_gather_bytes=%s\nxtcp_gro_bytes=%s\nxtcp_ingress_items=%s\nxtcp_ingress_bytes=%s\nxtcp_connector_batch_bytes=%s\nxtcp_write_cap_bytes=%s\nxtcp_global_queue_bytes=%s\nxtcp_memory_bridge=%s\nxtcp_ndi_tso_tx=%s\nnetem_delay_ms=%s\nstall_diagnostics=%s\ncpu_profile=%s\naffinity_cpus=%s\nsystem_cpu_stat=%s\nprocess_perf_stat=%s\npaired_performance_gate_mode=%s\npaired_performance_gate_threshold=%s\ntun_output_diagnostics=stall_diagnostics_xtcp_only\nxtcp_output_rejection_json=stall_diagnostics_xtcp_only\n' \
   "$LABEL" "$PPP_BIN" "$STACKS" "$PARALLEL" "$DIRECTIONS" "$ROUNDS" "$DURATION" "$OMIT" "$IPERF_TIMEOUT" \
-  "${CLIENT_CONCURRENT:-per-P}" "$TAP_GSO_MODES" "$DATAPATH_TELEMETRY" "$XTCP_PERF" "$STALL_DIAGNOSTICS" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" "$SYSTEM_CPU_STAT" "$PROCESS_PERF_STAT" >"$ARTIFACT_DIR/matrix-metadata.txt"
+  "${CLIENT_CONCURRENT:-per-P}" "$TAP_GSO_MODES" "$DATAPATH_TELEMETRY" "$XTCP_PERF" "${XTCP_CC:-${OPENPPP2_XTCP_CC:-default}}" "${XTCP_SHARDS:-${OPENPPP2_XTCP_SHARDS:-default}}" \
+  "${XTCP_SEND_RETRY_US:-${OPENPPP2_XTCP_LAB_SEND_RETRY_US:-default}}" "${TAP_GSO_SEGMENTS:-${OPENPPP2_TAP_GSO_SEGMENTS:-default}}" "${XTCP_GSO_RX:-${OPENPPP2_XTCP_GSO_RX:-default}}" "${XTCP_UNIX_BRIDGE:-${OPENPPP2_XTCP_UNIX_BRIDGE:-default}}" "${XTCP_SNDBUF:-${OPENPPP2_XTCP_SNDBUF_BYTES:-default}}" \
+  "${XTCP_DIRECT_UPLOAD_GATHER_BYTES:-default}" "${OPENPPP2_XTCP_GRO_BYTES:-default}" "${OPENPPP2_XTCP_INGRESS_ITEMS:-default}" "${OPENPPP2_XTCP_INGRESS_BYTES:-default}" "${OPENPPP2_XTCP_CONNECTOR_BATCH_BYTES:-default}" \
+  "${OPENPPP2_XTCP_WRITE_CAP_BYTES:-default}" "${OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES:-default}" "$XTCP_MEMORY_BRIDGE" "$XTCP_NDI_TSO_TX" "${NETEM_DELAY_MS:-none}" "$STALL_DIAGNOSTICS" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" \
+  "$SYSTEM_CPU_STAT" "$PROCESS_PERF_STAT" "$PAIRED_PERFORMANCE_GATE" "$PAIRED_PERFORMANCE_THRESHOLD" >"$ARTIFACT_DIR/matrix-metadata.txt"
+while IFS= read -r metadata_line; do printf '%s\n' "$metadata_line"; done <"$ARTIFACT_DIR/version-fingerprint.txt" >>"$ARTIFACT_DIR/matrix-metadata.txt"
 
 run_cell() (
   set -euo pipefail
@@ -248,7 +280,9 @@ run_cell() (
   ns_c="pppmat-c-${suffix}"; ns_s="pppmat-s-${suffix}"; ns_t="pppmat-t-${suffix}"
   server_port=20000; iperf_port=5201; server_ip=198.51.100.1; target_ip=192.0.2.2
   local cpu_affinity_verified=false cpu_snapshots_verified=true cpu_start_ns="" cpu_end_ns=""
-  local cpu_process_perf_pid="" cpu_system_perf_pid="" cpu_process_perf_failed=false cpu_system_perf_failed=false
+  local cpu_process_perf_pid="" cpu_iperf_perf_pid="" cpu_system_perf_pid=""
+  local cpu_process_perf_failed=false cpu_iperf_perf_failed=false cpu_system_perf_failed=false
+  local isolation_state="$state_dir/cpu-isolation-state.json" isolation_active=false isolation_restore_failed=false
   local clock_ticks="$(getconf CLK_TCK)"
 
   pin_cpu_profile() {
@@ -303,6 +337,20 @@ run_cell() (
     local monotonic_ns
     if ! monotonic_ns="$(python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))')"; then cpu_snapshots_verified=false; return 0; fi
     [[ "$boundary" == start ]] && cpu_start_ns="$monotonic_ns" || cpu_end_ns="$monotonic_ns"
+    if [[ "$CPU_PROFILE" == client-single-core ]]; then
+      local -a termination_args=()
+      [[ "$boundary" != end ]] || termination_args=(--allow-terminated-process "iperf=$iperf_pid")
+      if ! python3 "$ROOT/tools/datapath_cpu_isolation.py" threads \
+        --output "$state_dir/cpu-${boundary}-affinity.json" --target-cpu "${CPU_LIST[0]}" \
+        --process "ppp=$client_pid" --process "iperf=$iperf_pid" "${termination_args[@]}"; then
+        cpu_affinity_verified=false
+        cpu_snapshots_verified=false
+      fi
+      if [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$state_dir/cpu-${boundary}-affinity.json" 2>/dev/null)" != pass ]]; then
+        cpu_affinity_verified=false
+        cpu_snapshots_verified=false
+      fi
+    fi
     {
       printf 'monotonic_ns=%s\nclient_pid=%s\n' "$monotonic_ns" "$client_pid"
       for thread_path in "/proc/$client_pid"/task/*; do
@@ -328,17 +376,23 @@ run_cell() (
 
   start_cpu_measurement() {
     [[ "$CPU_PROFILE" != none ]] || return 0
-    capture_cpu_boundary start
     # NOTE: no `-- sleep` workload. perf stat with a workload command sits in
     # do_wait for the child and ignores SIGINT, which wedges the runner's
     # unbounded wait. Without a workload, SIGINT terminates perf and flushes
     # the CSV; --timeout is only an orphan bound (never fires in a healthy run).
+    # Start every perf attachment before the formal start snapshot so migration
+    # counters cover the complete formal interval.
     if [[ "$PROCESS_PERF_STAT" == true ]]; then
       perf stat -x, -e task-clock,context-switches,cpu-migrations --timeout=$(( (IPERF_TIMEOUT + 60) * 1000 )) -p "$client_pid" -o "$state_dir/cpu-process-perf.csv" >/dev/null 2>&1 & cpu_process_perf_pid=$!
+    fi
+    if [[ "$CPU_PROFILE" == client-single-core ]]; then
+      perf stat -x, -e task-clock,context-switches,cpu-migrations --timeout=$(( (IPERF_TIMEOUT + 60) * 1000 )) -p "$iperf_pid" -o "$state_dir/cpu-iperf-perf.csv" >/dev/null 2>&1 & cpu_iperf_perf_pid=$!
     fi
     if [[ "$SYSTEM_CPU_STAT" == true ]]; then
       perf stat -x, -e task-clock,context-switches,cpu-migrations --timeout=$(( (IPERF_TIMEOUT + 60) * 1000 )) -a -C "$AFFINITY_CPUS" -o "$state_dir/cpu-system-perf.csv" >/dev/null 2>&1 & cpu_system_perf_pid=$!
     fi
+    sleep 0.05
+    capture_cpu_boundary start
   }
 
   stop_cpu_perf() {
@@ -364,9 +418,44 @@ run_cell() (
     [[ "$CPU_PROFILE" != none ]] || return 0
     capture_cpu_boundary end
     if ! stop_cpu_perf "$cpu_process_perf_pid"; then cpu_process_perf_failed=true; fi
+    if ! stop_cpu_perf "$cpu_iperf_perf_pid"; then cpu_iperf_perf_failed=true; fi
     if ! stop_cpu_perf "$cpu_system_perf_pid"; then cpu_system_perf_failed=true; fi
-    printf 'affinity_verified=%s\nsnapshots_verified=%s\nprocess_perf_failed=%s\nsystem_perf_failed=%s\nclock_ticks=%s\nformal_start_ns=%s\nformal_end_ns=%s\n' \
-      "$cpu_affinity_verified" "$cpu_snapshots_verified" "$cpu_process_perf_failed" "$cpu_system_perf_failed" "$clock_ticks" "$cpu_start_ns" "$cpu_end_ns" >"$state_dir/cpu-measurement-status.txt"
+    printf 'affinity_verified=%s\nsnapshots_verified=%s\nprocess_perf_failed=%s\niperf_perf_failed=%s\nsystem_perf_failed=%s\nclock_ticks=%s\nformal_start_ns=%s\nformal_end_ns=%s\n' \
+      "$cpu_affinity_verified" "$cpu_snapshots_verified" "$cpu_process_perf_failed" "$cpu_iperf_perf_failed" "$cpu_system_perf_failed" "$clock_ticks" "$cpu_start_ns" "$cpu_end_ns" >"$state_dir/cpu-measurement-status.txt"
+  }
+
+  isolation_phase() {
+    local phase="$1"
+    [[ "$CPU_PROFILE" == client-single-core ]] || return 0
+    if ! ip netns exec "$ns_c" python3 "$ROOT/tools/datapath_cpu_isolation.py" "$phase" --state "$isolation_state"; then
+      cp "$isolation_state" "$state_dir/cpu-isolation-${phase}.json" 2>/dev/null || true
+      return 1
+    fi
+    cp "$isolation_state" "$state_dir/cpu-isolation-${phase}.json"
+  }
+
+  setup_cpu_isolation() {
+    [[ "$CPU_PROFILE" == client-single-core ]] || return 0
+    if ! ip netns exec "$ns_c" python3 "$ROOT/tools/datapath_cpu_isolation.py" snapshot \
+      --state "$isolation_state" --target-cpu "${CPU_LIST[0]}" --namespace "$ns_c" \
+      --device xc-veth --persistent-device xc-veth --device "$tun_dev"; then
+      cp "$isolation_state" "$state_dir/cpu-isolation-snapshot.json" 2>/dev/null || true
+      return 1
+    fi
+    cp "$isolation_state" "$state_dir/cpu-isolation-snapshot.json"
+    isolation_active=true
+    isolation_phase apply
+    isolation_phase readback
+  }
+
+  restore_cpu_isolation() {
+    [[ "$isolation_active" == true && -f "$isolation_state" ]] || return 0
+    if isolation_phase restore; then
+      isolation_active=false
+      return 0
+    fi
+    isolation_restore_failed=true
+    return 1
   }
 
   snapshot_process() {
@@ -443,8 +532,12 @@ run_cell() (
     local status=$?
     set +e
     [[ -z "$watchdog_pid" ]] || kill "$watchdog_pid" 2>/dev/null || true
+    if ! restore_cpu_isolation; then
+      [[ "$status" -ne 0 ]] || status=1
+    fi
     [[ -z "$iperf_pid" ]] || kill "$iperf_pid" 2>/dev/null || true
     [[ -z "$cpu_process_perf_pid" ]] || kill -INT "$cpu_process_perf_pid" 2>/dev/null || true
+    [[ -z "$cpu_iperf_perf_pid" ]] || kill -INT "$cpu_iperf_perf_pid" 2>/dev/null || true
     [[ -z "$cpu_system_perf_pid" ]] || kill -INT "$cpu_system_perf_pid" 2>/dev/null || true
     [[ -z "$client_pid" ]] || kill "$client_pid" 2>/dev/null || true
     for pid in "${pids[@]:-}"; do kill "$pid" 2>/dev/null || true; done
@@ -457,7 +550,9 @@ run_cell() (
     rm -rf "/etc/netns/${ns_c}" "$state_dir"
     exit "$status"
   }
-  trap cleanup_cell EXIT INT TERM
+  trap cleanup_cell EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   ip netns add "$ns_c"; ip netns add "$ns_s"; ip netns add "$ns_t"
   ip link add xc-veth type veth peer name xs-veth
@@ -519,6 +614,15 @@ PY
   if [[ -n "$XTCP_SNDBUF" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_SNDBUF_BYTES=${XTCP_SNDBUF}")
   fi
+  if [[ "$XTCP_MEMORY_BRIDGE" == true && "$stack" == xtcp ]]; then
+    client_env+=("OPENPPP2_XTCP_MEMORY_BRIDGE=1")
+  fi
+  if [[ "$XTCP_NDI_TSO_TX" == true && "$stack" == xtcp ]]; then
+    client_env+=("OPENPPP2_XTCP_NDI_TSO_TX=1")
+  fi
+  if [[ -n "$XTCP_DIRECT_UPLOAD_GATHER_BYTES" && "$stack" == xtcp ]]; then
+    client_env+=("OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_BYTES=${XTCP_DIRECT_UPLOAD_GATHER_BYTES}")
+  fi
   if [[ -n "${XTCP_GSO_RX:-}" && "$stack" == xtcp ]]; then
     client_env+=("OPENPPP2_XTCP_GSO_RX=${XTCP_GSO_RX}")
   fi
@@ -549,16 +653,25 @@ PY
     -u OPENPPP2_DATAPATH_PERF_JSON -u OPENPPP2_DATAPATH_PERF_MEASUREMENT_BOUNDARIES -u OPENPPP2_XTCP_PERF_JSON \
     -u OPENPPP2_XTCP_SEND_ADMISSION_JSON -u OPENPPP2_XTCP_ACK_RELEASE_JSON -u OPENPPP2_DATAPATH_GSO_LEDGER \
     -u OPENPPP2_DATAPATH_TUN_OUTPUT_DIAGNOSTICS -u OPENPPP2_XTCP_OUTPUT_REJECTION_JSON \
+    -u OPENPPP2_XTCP_MEMORY_BRIDGE -u OPENPPP2_XTCP_NDI_TSO_TX \
+    -u OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_BYTES \
     "${server_env[@]}" stdbuf -oL -eL "$PPP_BIN" --mode=server --config="$state_dir/server.json" \
     >"$state_dir/server.log" 2>&1 & pids+=("$!")
   sleep 2
   kill -0 "${pids[0]}" 2>/dev/null || { echo "server exited: $cell_dir/server.log" >&2; exit 1; }
   ip netns exec "$ns_t" iperf3 -s -1 -p "$iperf_port" >"$state_dir/iperf-server.log" 2>&1 & pids+=("$!")
+  local -a client_cpu_prefix=() iperf_cpu_prefix=()
+  if [[ "$CPU_PROFILE" == client-single-core ]]; then
+    client_cpu_prefix=(taskset -c "${CPU_LIST[0]}")
+    iperf_cpu_prefix=(taskset -c "${CPU_LIST[0]}")
+  fi
   ip netns exec "$ns_c" env -u OPENPPP2_TAP_GSO_MERGE -u OPENPPP2_TAP_GSO_MERGE_DISABLE \
     -u OPENPPP2_DATAPATH_PERF_JSON -u OPENPPP2_DATAPATH_PERF_MEASUREMENT_BOUNDARIES -u OPENPPP2_XTCP_PERF_JSON \
     -u OPENPPP2_XTCP_SEND_ADMISSION_JSON -u OPENPPP2_XTCP_ACK_RELEASE_JSON -u OPENPPP2_DATAPATH_GSO_LEDGER \
     -u OPENPPP2_DATAPATH_TUN_OUTPUT_DIAGNOSTICS -u OPENPPP2_XTCP_OUTPUT_REJECTION_JSON \
-    "${client_env[@]}" stdbuf -oL -eL "$PPP_BIN" --mode=client --config="$state_dir/client.json" \
+    -u OPENPPP2_XTCP_MEMORY_BRIDGE -u OPENPPP2_XTCP_NDI_TSO_TX \
+    -u OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_BYTES \
+    "${client_env[@]}" "${client_cpu_prefix[@]}" stdbuf -oL -eL "$PPP_BIN" --mode=client --config="$state_dir/client.json" \
     "--tcp-stack=${stack}" --stats-json="$state_dir/stats.ndjson" >"$state_dir/client.log" 2>&1 &
   client_pid=$!
   sleep 3
@@ -570,21 +683,40 @@ PY
   done
   [[ -n "$tun_dev" ]] || { echo "client TUN missing" >&2; exit 1; }
   pin_cpu_profile
+  setup_cpu_isolation
   ip -n "$ns_c" route replace 192.0.2.0/24 dev "$tun_dev"
   ip -n "$ns_c" route get "$target_ip" >"$state_dir/target-route.txt"
   ip -n "$ns_c" -d link show "$tun_dev" >"$state_dir/tun-link.txt" 2>&1 || true
-  printf 'label=%s\nround=%s\nrequested_tcp_stack=%s\nparallel_flows=%s\nclient_concurrent=%s\ndirection=%s\nduration=%s\nomit=%s\niperf_timeout=%s\nppp_bin=%s\ntun_device=%s\nrequested_tap_gso=%s\ndatapath_telemetry=%s\nxtcp_perf=%s\nxtcp_cc=%s\nxtcp_shards=%s\nstall_diagnostics=%s\ncpu_profile=%s\naffinity_cpus=%s\nsystem_cpu_stat=%s\nprocess_perf_stat=%s\ntun_output_diagnostics=%s\nxtcp_output_rejection_json=%s\n' \
-    "$LABEL" "$round" "$stack" "$p" "$concurrent" "$direction" "$DURATION" "$OMIT" "$IPERF_TIMEOUT" "$PPP_BIN" "$tun_dev" "$tap_gso" "$DATAPATH_TELEMETRY" "$XTCP_PERF" "$XTCP_CC" "${XTCP_SHARDS:-none}" "$STALL_DIAGNOSTICS" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" "$SYSTEM_CPU_STAT" "$PROCESS_PERF_STAT" "$tun_output_diagnostics" "$output_rejection_diagnostics" >"$state_dir/metadata.txt"
+  printf 'label=%s\nround=%s\nrequested_tcp_stack=%s\nparallel_flows=%s\nclient_concurrent=%s\ndirection=%s\nduration=%s\nomit=%s\niperf_timeout=%s\nppp_bin=%s\ntun_device=%s\nrequested_tap_gso=%s\ndatapath_telemetry=%s\nxtcp_perf=%s\nxtcp_cc=%s\nxtcp_shards=%s\nxtcp_memory_bridge=%s\nxtcp_ndi_tso_tx=%s\nxtcp_direct_upload_gather_bytes=%s\nstall_diagnostics=%s\ncpu_profile=%s\naffinity_cpus=%s\nsystem_cpu_stat=%s\nprocess_perf_stat=%s\ntun_output_diagnostics=%s\nxtcp_output_rejection_json=%s\n' \
+    "$LABEL" "$round" "$stack" "$p" "$concurrent" "$direction" "$DURATION" "$OMIT" "$IPERF_TIMEOUT" "$PPP_BIN" "$tun_dev" "$tap_gso" "$DATAPATH_TELEMETRY" "$XTCP_PERF" "$XTCP_CC" "${XTCP_SHARDS:-none}" "$XTCP_MEMORY_BRIDGE" "$XTCP_NDI_TSO_TX" "${XTCP_DIRECT_UPLOAD_GATHER_BYTES:-default}" "$STALL_DIAGNOSTICS" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" "$SYSTEM_CPU_STAT" "$PROCESS_PERF_STAT" "$tun_output_diagnostics" "$output_rejection_diagnostics" >"$state_dir/metadata.txt"
+  while IFS= read -r metadata_line; do printf '%s\n' "$metadata_line"; done <"$ARTIFACT_DIR/matrix-metadata.txt" >>"$state_dir/metadata.txt"
 
   local -a iperf_args=(-c "$target_ip" -p "$iperf_port" -P "$p" -t "$DURATION" -O "$OMIT" --json)
   local iperf_status=0
   [[ "$direction" == dl ]] && iperf_args+=(-R)
-  ip netns exec "$ns_c" iperf3 "${iperf_args[@]}" >"$state_dir/iperf-${direction}-p${p}.json" 2>&1 &
+  ip netns exec "$ns_c" "${iperf_cpu_prefix[@]}" iperf3 "${iperf_args[@]}" >"$state_dir/iperf-${direction}-p${p}.json" 2>&1 &
   iperf_pid=$!
+  if [[ "$CPU_PROFILE" == client-single-core ]]; then
+    for _ in $(seq 1 100); do
+      [[ "$(cat "/proc/$iperf_pid/comm" 2>/dev/null || true)" == iperf3 ]] && break
+      kill -0 "$iperf_pid" 2>/dev/null || break
+      sleep 0.01
+    done
+    python3 "$ROOT/tools/datapath_cpu_isolation.py" threads \
+      --output "$state_dir/cpu-launch-affinity.json" --target-cpu "${CPU_LIST[0]}" \
+      --process "ppp=$client_pid" --process "iperf=$iperf_pid" >/dev/null
+  fi
   watchdog_iperf & watchdog_pid=$!
   sleep "$OMIT"
   if [[ "$DATAPATH_TELEMETRY" == true ]]; then kill -USR1 "$client_pid"; fi
   start_cpu_measurement
+  if [[ "$CPU_PROFILE" == client-single-core ]]; then
+    while kill -0 "$iperf_pid" 2>/dev/null; do
+      [[ "$(ps -o stat= -p "$iperf_pid" 2>/dev/null | tr -d ' ')" == Z* ]] && break
+      sleep 0.1
+    done
+    end_cpu_measurement
+  fi
   if wait "$iperf_pid"; then
     iperf_status=0
   else
@@ -604,9 +736,12 @@ PY
     echo "iperf failed ($iperf_status)" >&2
     exit "$iperf_status"
   fi
-  iperf_pid=""
   if [[ "$DATAPATH_TELEMETRY" == true ]]; then kill -USR1 "$client_pid"; fi
-  end_cpu_measurement
+  if [[ "$CPU_PROFILE" != client-single-core ]]; then
+    end_cpu_measurement
+  fi
+  iperf_pid=""
+  restore_cpu_isolation || true
   if [[ "$DATAPATH_TELEMETRY" == true ]]; then sleep 0.2; fi
   # stats-json is emitted on a one-second tick; retain a post-traffic sample.
   sleep 2
@@ -684,7 +819,10 @@ if cpu_profile != "none":
         "proc_stat_start": "cpu-start-proc-stat.txt", "proc_stat_end": "cpu-end-proc-stat.txt",
         "softirqs_start": "cpu-start-softirqs.txt", "softirqs_end": "cpu-end-softirqs.txt",
         "ksoftirqd_start": "cpu-start-ksoftirqd.txt", "ksoftirqd_end": "cpu-end-ksoftirqd.txt",
-        "process_perf": "cpu-process-perf.csv", "system_perf": "cpu-system-perf.csv",
+        "process_perf": "cpu-process-perf.csv", "iperf_perf": "cpu-iperf-perf.csv", "system_perf": "cpu-system-perf.csv",
+        "affinity_launch": "cpu-launch-affinity.json", "affinity_start": "cpu-start-affinity.json", "affinity_end": "cpu-end-affinity.json",
+        "isolation_snapshot": "cpu-isolation-snapshot.json", "isolation_apply": "cpu-isolation-apply.json",
+        "isolation_readback": "cpu-isolation-readback.json", "isolation_restore": "cpu-isolation-restore.json",
         "status": "cpu-measurement-status.txt",
     }
     for line in (state / cpu_raw_files["status"]).read_text(encoding="utf-8").splitlines() if (state / cpu_raw_files["status"]).is_file() else []:
@@ -700,7 +838,7 @@ def cpu_flag(name):
 cpu_measurement = build_measurement(
     profile=cpu_profile, affinity_cpus=[int(cpu) for cpu in affinity_cpus.split(",") if cpu],
     affinity_verified=cpu_flag("affinity_verified"),
-    collection_verified=cpu_flag("snapshots_verified") and not (cpu_flag("process_perf_failed") or cpu_flag("system_perf_failed")),
+    collection_verified=cpu_flag("snapshots_verified") and not (cpu_flag("process_perf_failed") or cpu_flag("iperf_perf_failed") or cpu_flag("system_perf_failed")),
     formal_start_ns=int(cpu_status["formal_start_ns"]) if cpu_status.get("formal_start_ns", "").isdigit() else None,
     formal_end_ns=int(cpu_status["formal_end_ns"]) if cpu_status.get("formal_end_ns", "").isdigit() else None,
     payload_bytes=payload_bytes,
@@ -726,6 +864,9 @@ if cpu_profile != "none":
     from datapath_qualifier import qualify_cell
     qualification = qualify_cell(result, state)
     (cell / "qualification.json").write_text(json.dumps(qualification, indent=2) + "\n", encoding="utf-8")
+    if cpu_profile == "client-single-core" and qualification["status"] != "pass":
+        result["status"] = "fail"
+        (cell / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 with (state / "metadata.txt").open("a", encoding="utf-8") as metadata_file:
     metadata_file.write(f"active_tcp_stack={stack}\nactive_tap_gso={active_tap_gso}\n")
 ratio_text = "undefined_zero_rate_flow" if max_min_ratio is None else f"{max_min_ratio:.3f}"
@@ -739,10 +880,15 @@ ratio_text = "undefined_zero_rate_flow" if max_min_ratio is None else f"{max_min
     ("cpu_profile", result["cpu_measurement"]["profile"]), ("cpu_status", result["cpu_measurement"]["status"]),
 ]) + "\n", encoding="utf-8")
 PY
+  if [[ "$CPU_PROFILE" == client-single-core ]] && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$cell_dir/qualification.json")" != pass ]]; then
+    echo "FAIL strict qualification round=$round stack=$stack tap_gso=$tap_gso P=$p direction=$direction" >&2
+    return 1
+  fi
   echo "PASS round=$round stack=$stack tap_gso=$tap_gso P=$p direction=$direction"
 )
 
 result_files=()
+matrix_run_failed=false
 for ((round = 1; round <= ROUNDS; ++round)); do
   for p in "${P_LIST[@]}"; do
     for direction in "${DIRECTION_LIST[@]}"; do
@@ -750,18 +896,35 @@ for ((round = 1; round <= ROUNDS; ++round)); do
         mode_slot=$(( (mode_index + round - 1) % ${#MODE_LIST[@]} ))
         mode="${MODE_LIST[$mode_slot]}"
         IFS=/ read -r stack tap_gso <<<"$mode"
-        run_cell "$round" "$stack" "$tap_gso" "$p" "$direction"
-        result_files+=("$ARTIFACT_DIR/round-${round}/${stack}-gso-${tap_gso}-p${p}-${direction}/result.json")
+        result_file="$ARTIFACT_DIR/round-${round}/${stack}-gso-${tap_gso}-p${p}-${direction}/result.json"
+        if [[ "$CPU_PROFILE" == client-single-core ]]; then
+          set +e
+          run_cell "$round" "$stack" "$tap_gso" "$p" "$direction"
+          cell_status=$?
+          set -e
+          if [[ "$cell_status" -ne 0 ]]; then
+            matrix_run_failed=true
+          fi
+        else
+          run_cell "$round" "$stack" "$tap_gso" "$p" "$direction"
+        fi
+        [[ ! -f "$result_file" ]] || result_files+=("$result_file")
       done
     done
   done
 done
 
-python3 - "$ARTIFACT_DIR" "${result_files[@]}" <<'PY'
+python3 - "$ROOT" "$ARTIFACT_DIR" "$matrix_run_failed" "$PAIRED_PERFORMANCE_GATE" "$PAIRED_PERFORMANCE_THRESHOLD" "${result_files[@]}" <<'PY'
 import json, pathlib, statistics, sys
-out = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[1])
+out = pathlib.Path(sys.argv[2])
+run_failed = sys.argv[3] == "true"
+gate_mode = sys.argv[4]
+gate_threshold = float(sys.argv[5])
+sys.path.insert(0, str(root / "tools"))
+from datapath_matrix_metadata import evaluate_performance_gate
 records = []
-for result_file in sys.argv[2:]:
+for result_file in sys.argv[6:]:
     record = json.loads(pathlib.Path(result_file).read_text(encoding="utf-8"))
     qual_file = pathlib.Path(result_file).parent / "qualification.json"
     if qual_file.is_file():
@@ -774,15 +937,47 @@ metadata = {
     "active_tap_gso_modes": sorted({record["active_tap_gso"] for record in records}),
     "cpu_profiles": sorted({record.get("cpu_measurement", {}).get("profile", "none") for record in records}),
 }
-(out / "matrix.json").write_text(json.dumps({"metadata": metadata, "cells": records}, indent=2) + "\n", encoding="utf-8")
+qualification_status = "fail" if run_failed or any(
+    record.get("status") != "pass"
+    or (
+        record.get("cpu_measurement", {}).get("profile") == "client-single-core"
+        and record.get("qualification", {}).get("status") != "pass"
+    )
+    for record in records
+) else "pass"
+performance_gate = evaluate_performance_gate(records, gate_mode, gate_threshold)
+overall_status = "fail" if qualification_status == "fail" or performance_gate["status"] == "fail" else "pass"
+fingerprint = json.loads((out / "version-fingerprint.json").read_text(encoding="utf-8"))
+(out / "matrix.json").write_text(json.dumps({
+    "status": overall_status, "qualification_status": qualification_status,
+    "performance_gate": performance_gate, "version_fingerprint": fingerprint,
+    "metadata": metadata, "cells": records,
+}, indent=2) + "\n", encoding="utf-8")
 with (out / "matrix-metadata.txt").open("a", encoding="utf-8") as metadata_file:
     for key, values in metadata.items():
         metadata_file.write(f"{key}={','.join(values)}\n")
+    metadata_file.write(f"qualification_status={qualification_status}\n")
+    metadata_file.write(f"paired_performance_gate_status={performance_gate['status']}\n")
+    metadata_file.write(f"paired_performance_gate_failed_pairs={len(performance_gate['failed_pairs'])}\n")
 def median(values): return statistics.median(values) if values else None
 def mad(values):
     pivot = median(values)
     return median([abs(value-pivot) for value in values]) if pivot is not None else None
-lines = ["status=pass", f"cells={len(records)}"]
+lines = [
+    f"status={overall_status}", f"qualification_status={qualification_status}",
+    f"paired_performance_gate_mode={performance_gate['mode']}",
+    f"paired_performance_gate_threshold={performance_gate['threshold']:.4f}",
+    f"paired_performance_gate_status={performance_gate['status']}",
+    f"paired_performance_gate_failed_pairs={len(performance_gate['failed_pairs'])}",
+    f"cells={len(records)}",
+]
+for pair in performance_gate["pairs"]:
+    ratio = "unavailable" if pair["ratio"] is None else f"{pair['ratio']:.4f}"
+    lines.append(
+        "performance_gate_pair round=%s P=%s direction=%s requested_tap_gso=%s active_tap_gso=%s status=%s ratio=%s reason=%s"
+        % (pair["round"], pair["parallel_flows"], pair["direction"], pair["requested_tap_gso"],
+           pair["active_tap_gso"], pair["status"], ratio, pair.get("reason", "none"))
+    )
 for key, values in metadata.items():
     lines.append(f"{key}={','.join(values)}")
 groups = {}
@@ -867,4 +1062,5 @@ for key in sorted(cpu_ratios):
     lines.append("cpu_paired_summary P=%s direction=%s requested_tap_gso=%s active_tap_gso=%s pair=%s metric=%s efficiency_gain_median=%.4f efficiency_gain_min=%.4f efficiency_gain_max=%.4f efficiency_gain_mad=%.4f" % (*key, median(values), min(values), max(values), mad(values)))
 (out / "matrix-summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 print("\n".join(lines))
+raise SystemExit(0 if overall_status == "pass" else 1)
 PY

@@ -6,14 +6,15 @@
 // the second leg is a real loopback TCP echo server. Covers:
 //   - endpoint byte order (10.0.0.2 must not become 2.0.0.10)
 //   - full handshake + bidirectional byte-exact data
-//   - bidirectional half-close (data+FIN tail delivered before EOF, the
-//     reverse direction still sends)
+//   - bidirectional socket half-close and clean direct-bridge FIN teardown
+//   - duplicate close notifications do not repeat second-leg closure
 //   - RST before the first leg is ready cancels the pending flow without
 //     injecting the deferred SYN
 //   - connect/close churn leaves no flows behind
 //   - runtime stats counters reflect the traffic
 
 #include <ppp/app/client/xtcp/XtcpRuntime.h>
+#include <ppp/app/protocol/DirectReadWaiterState.h>
 
 #include <xtcp/buf/bufref.h>
 #include <harness/raw_pkt.h>
@@ -30,13 +31,17 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <string>
+#include <cstdint>
 
 #if !defined(_WIN32)
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -55,8 +60,13 @@ int failures = 0;
         }                                                                    \
     } while (0)
 
+using ppp::app::client::xtcp::XtcpDirectCompletion;
+using ppp::app::client::xtcp::XtcpDirectReadReservation;
+using ppp::app::client::xtcp::XtcpDirectResult;
 using ppp::app::client::xtcp::XtcpFirstLegHooks;
 using ppp::app::client::xtcp::XtcpRuntime;
+using ppp::app::client::xtcp::XtcpSecondLegHooks;
+using ppp::app::protocol::DirectReadWaiterState;
 using ppp::app::runtime::RuntimeXtcpStats;
 
 constexpr std::uint8_t kFin = 0x01;
@@ -77,6 +87,7 @@ struct TcpView final {
     std::uint16_t dport = 0;
     std::uint32_t seq = 0;
     std::uint32_t ack = 0;
+    std::uint16_t window = 0;
     std::uint8_t flags = 0;
     std::vector<Byte> payload;
 };
@@ -109,6 +120,7 @@ bool ParseTcp(const std::vector<Byte>& packet, TcpView& view) noexcept {
     view.dport = ReadBe16(tcp + 2);
     view.seq = ReadBe32(tcp + 4);
     view.ack = ReadBe32(tcp + 8);
+    view.window = ReadBe16(tcp + 14);
     view.flags = tcp[13];
     view.payload.assign(tcp + tcp_header, packet.data() + packet.size());
     return true;
@@ -216,6 +228,131 @@ private:
     std::atomic<std::uint64_t> eof_count_{0};
 };
 
+
+class DirectSecondLeg final : public XtcpSecondLegHooks {
+public:
+    XtcpDirectResult SendToPeer(
+        const std::uint8_t* data, std::uint32_t length,
+        ppp::app::client::xtcp::XtcpUploadBudget::Reservation&& credit) noexcept override {
+        const std::uint64_t attempt = attempts_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (!accepting_.load(std::memory_order_relaxed) || attempt <= reject_attempts_) {
+            std::function<void()> writable;
+            {
+                std::lock_guard<std::mutex> lock(sync_);
+                writable = writable_before_reject_;
+            }
+            if (writable) {
+                writable();
+            }
+            return XtcpDirectResult::Backpressured;
+        }
+        if (!data || !length || !credit || credit.Bytes() != length) {
+            return XtcpDirectResult::Closed;
+        }
+        std::lock_guard<std::mutex> lock(sync_);
+        received_.insert(received_.end(), data, data + length);
+        if (hold_uploads_) {
+            held_uploads_.push_back(std::make_shared<ppp::app::client::xtcp::XtcpUploadChunk>(
+                data, length, std::move(credit)));
+        }
+        return XtcpDirectResult::Accepted;
+    }
+
+    void HoldUploads() {
+        std::lock_guard<std::mutex> lock(sync_);
+        hold_uploads_ = true;
+    }
+
+    void ReleaseUploads() {
+        std::vector<std::shared_ptr<ppp::app::client::xtcp::XtcpUploadChunk>> released;
+        {
+            std::lock_guard<std::mutex> lock(sync_);
+            released.swap(held_uploads_);
+        }
+    }
+
+    std::uint64_t Attempts() const noexcept { return attempts_.load(std::memory_order_relaxed); }
+
+    void OnDownloadComplete(const XtcpDirectReadReservation& reservation,
+        XtcpDirectCompletion completion) noexcept override {
+        try {
+            std::lock_guard<std::mutex> lock(sync_);
+            download_completions_.push_back({reservation, completion});
+        }
+        catch (...) {
+        }
+    }
+
+    void ClosePeerSend() noexcept override {
+        std::lock_guard<std::mutex> lock(sync_);
+        received_at_close_ = received_.size();
+        close_calls_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void SetAccepting() noexcept {
+        accepting_.store(true, std::memory_order_relaxed);
+    }
+
+    void RejectAttempts(std::uint64_t attempts) noexcept {
+        reject_attempts_ = attempts;
+        accepting_.store(true, std::memory_order_relaxed);
+    }
+
+    void WritableBeforeReject(std::function<void()> writable) {
+        std::lock_guard<std::mutex> lock(sync_);
+        writable_before_reject_ = std::move(writable);
+    }
+
+    std::vector<Byte> Received() const {
+        std::lock_guard<std::mutex> lock(sync_);
+        return received_;
+    }
+
+    std::uint64_t CloseCalls() const noexcept {
+        return close_calls_.load(std::memory_order_relaxed);
+    }
+
+    std::size_t DownloadCompletionCount(const XtcpDirectReadReservation& reservation,
+        XtcpDirectCompletion completion) const {
+        std::lock_guard<std::mutex> lock(sync_);
+        std::size_t count = 0;
+        for (const DownloadCompletion& recorded : download_completions_) {
+            if (recorded.reservation.IsSame(reservation) && recorded.completion == completion) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    std::size_t DownloadCompletionCount() const {
+        std::lock_guard<std::mutex> lock(sync_);
+        return download_completions_.size();
+    }
+
+    std::size_t ReceivedAtClose() const noexcept {
+        std::lock_guard<std::mutex> lock(sync_);
+        return received_at_close_;
+    }
+
+private:
+    struct DownloadCompletion final {
+        XtcpDirectReadReservation reservation;
+        XtcpDirectCompletion completion = XtcpDirectCompletion::Terminal;
+    };
+
+    std::atomic<bool> accepting_{false};
+    std::atomic<std::uint64_t> attempts_{0};
+    std::uint64_t reject_attempts_ = 0;
+    std::atomic<std::uint64_t> close_calls_{0};
+    mutable std::mutex sync_;
+    std::function<void()> writable_before_reject_;
+    std::vector<Byte> received_;
+    bool hold_uploads_ = false;
+    std::vector<std::shared_ptr<ppp::app::client::xtcp::XtcpUploadChunk>> held_uploads_;
+    std::vector<DownloadCompletion> download_completions_;
+    std::size_t received_at_close_ = 0;
+};
+
 struct AcceptedFlow final {
     boost::asio::ip::tcp::endpoint first_leg_local;   // tunnel client endpoint
     boost::asio::ip::tcp::endpoint first_leg_remote;  // tunnel service endpoint
@@ -255,7 +392,8 @@ public:
         const auto listener_endpoint = echo_->Endpoint();
         runtime_ = std::make_shared<XtcpRuntime>(
             context_,
-            [this](std::shared_ptr<Byte>&& data, int length) noexcept {
+            [this](std::shared_ptr<Byte>&& data, int length,
+                std::optional<ppp::tap::TxGsoMetadata>) noexcept {
                 std::lock_guard<std::mutex> lock(output_mutex_);
                 const Byte* bytes = data ? data.get() : nullptr;
                 if (bytes != nullptr && length > 0) {
@@ -264,7 +402,7 @@ public:
                 return true;
             },
             [listener_endpoint]() noexcept { return listener_endpoint; },
-            [this](const boost::asio::ip::tcp::endpoint& local,
+            [this, listener_endpoint](const boost::asio::ip::tcp::endpoint& local,
                    const boost::asio::ip::tcp::endpoint& remote,
                    std::uint16_t source_port, std::uint64_t runtime_generation,
                    std::uint64_t flow_generation,
@@ -272,7 +410,7 @@ public:
                 if (fd >= 0) {
                     // XTCP-VNET-BRIDGE-BYPASS-001: socketpair 路径 - 用阻塞双线程
                     // 中继 fd <-> echo server, 模拟 netstack 泵的 socket 语义。
-                    std::thread([this, fd]() noexcept {
+                    std::thread([listener_endpoint, fd]() noexcept {
                         const int srv = ::socket(AF_INET, SOCK_STREAM, 0);
                         if (srv < 0) {
                             ::close(fd);
@@ -280,13 +418,24 @@ public:
                         }
                         sockaddr_in addr{};
                         addr.sin_family = AF_INET;
-                        addr.sin_port = htons(static_cast<uint16_t>(echo_->Endpoint().port()));
+                        addr.sin_port = htons(static_cast<uint16_t>(listener_endpoint.port()));
                         addr.sin_addr.s_addr = htonl(0x7F000001);
                         if (::connect(srv, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
                             ::close(srv);
                             ::close(fd);
                             return;
                         }
+                        struct RelaySockets final {
+                            int first = -1;
+                            int second = -1;
+                            ~RelaySockets() {
+                                if (first >= 0) ::close(first);
+                                if (second >= 0) ::close(second);
+                            }
+                        };
+                        auto sockets = std::make_shared<RelaySockets>();
+                        sockets->first = fd;
+                        sockets->second = srv;
                         auto pump = [](int a, int b) noexcept {
                             char buf[65536];
                             ssize_t n;
@@ -294,14 +443,21 @@ public:
                                 std::size_t off = 0;
                                 while (off < static_cast<std::size_t>(n)) {
                                     ssize_t w = ::send(b, buf + off, static_cast<std::size_t>(n) - off, MSG_NOSIGNAL);
-                                    if (w <= 0) return;
+                                    if (w <= 0) {
+                                        ::shutdown(a, SHUT_RDWR);
+                                        ::shutdown(b, SHUT_RDWR);
+                                        return;
+                                    }
                                     off += static_cast<std::size_t>(w);
                                 }
                             }
                             ::shutdown(b, SHUT_WR);
                         };
-                        std::thread up([pump, fd, srv]() noexcept { pump(fd, srv); ::close(srv); });
-                        std::thread down([pump, fd, srv]() noexcept { pump(srv, fd); ::close(fd); });
+                        // Neither pump closes a descriptor while its sibling
+                        // may still use it. The detached relay owns no Bridge
+                        // pointer, so teardown/restart cannot invalidate it.
+                        std::thread up([pump, sockets]() noexcept { pump(sockets->first, sockets->second); });
+                        std::thread down([pump, sockets]() noexcept { pump(sockets->second, sockets->first); });
                         up.detach();
                         down.detach();
                     }).detach();
@@ -375,9 +531,29 @@ public:
     void ReadyLastFlow() {
         AcceptedFlow flow = LastAccepted();
         if (const std::shared_ptr<XtcpFirstLegHooks> hooks = flow.hooks.lock()) {
-            std::fprintf(stderr, "[bp-dbg] test ReadyLastFlow hooks_locked=%d gen=%llu\n",
-                (int)(flow.hooks.lock() != nullptr), (unsigned long long)flow.flow_generation);
             hooks->OnFirstLegReady(flow.runtime_generation, flow.flow_generation);
+        }
+    }
+
+    void ReadyLastFlowDirect(const std::shared_ptr<XtcpSecondLegHooks>& second_leg) {
+        AcceptedFlow flow = LastAccepted();
+        if (const std::shared_ptr<XtcpFirstLegHooks> hooks = flow.hooks.lock()) {
+            hooks->OnFirstLegDirectReady(
+                flow.runtime_generation, flow.flow_generation, second_leg);
+        }
+    }
+
+    void WritableLastFlow() {
+        AcceptedFlow flow = LastAccepted();
+        if (const std::shared_ptr<XtcpFirstLegHooks> hooks = flow.hooks.lock()) {
+            hooks->OnSecondLegWritable(flow.runtime_generation, flow.flow_generation);
+        }
+    }
+
+    void WritableLastFlowStale() {
+        AcceptedFlow flow = LastAccepted();
+        if (const std::shared_ptr<XtcpFirstLegHooks> hooks = flow.hooks.lock()) {
+            hooks->OnSecondLegWritable(flow.runtime_generation + 1, flow.flow_generation);
         }
     }
 
@@ -388,8 +564,22 @@ public:
         }
     }
 
+    void CloseLastFlowSecondLeg() {
+        AcceptedFlow flow = LastAccepted();
+        if (const std::shared_ptr<XtcpFirstLegHooks> hooks = flow.hooks.lock()) {
+            hooks->OnSecondLegClosed(flow.runtime_generation, flow.flow_generation);
+        }
+    }
+
     RuntimeXtcpStats Stats() const {
         return runtime_->SnapshotStats();
+    }
+
+    bool RestartRuntime() {
+        runtime_->Stop();
+        if (!WaitFor([&]() { return runtime_->Start(); })) return false;
+        runtime_->MarkReady();
+        return true;
     }
 
     std::shared_ptr<EchoServer> echo_;
@@ -484,6 +674,359 @@ void TestHandshakeAndBidirectionalData() {
     // The data path is fully event-driven, so no timer may have fired yet;
     // the idle watchdog must still keep the deadline-driven poll loop alive.
     CHECK(WaitFor([&]() { return bridge.Stats().timer_polls != 0; }, 1000));
+}
+
+void TestDirectReadWaiterState() {
+    const auto waiter = reinterpret_cast<ppp::coroutines::YieldContext*>(std::uintptr_t{1});
+    const XtcpDirectReadReservation a{11, 22, 1, 128};
+    const XtcpDirectReadReservation b{11, 22, 2, 128};
+    const XtcpDirectReadReservation c{11, 22, 3, 128};
+
+    {
+        DirectReadWaiterState state;
+        CHECK(state.Complete(a, XtcpDirectCompletion::Accepted) == nullptr);
+        CHECK(state.Register(a, waiter) == DirectReadWaiterState::Outcome::Accepted);
+        CHECK(state.Consume(a) == DirectReadWaiterState::Outcome::Accepted);
+    }
+    {
+        DirectReadWaiterState state;
+        CHECK(state.Register(b, waiter) == DirectReadWaiterState::Outcome::Pending);
+        CHECK(state.Complete(a, XtcpDirectCompletion::Accepted) == nullptr);
+        CHECK(state.Consume(b) == DirectReadWaiterState::Outcome::Pending);
+        CHECK(state.Complete(b, XtcpDirectCompletion::Accepted) == waiter);
+        CHECK(state.Consume(b) == DirectReadWaiterState::Outcome::Accepted);
+    }
+    {
+        DirectReadWaiterState state;
+        CHECK(state.Complete(a, XtcpDirectCompletion::Terminal) == nullptr);
+        CHECK(state.Complete(c, XtcpDirectCompletion::Accepted) == nullptr);
+        CHECK(state.Register(b, waiter) == DirectReadWaiterState::Outcome::Rejected);
+        CHECK(state.Register(c, waiter) == DirectReadWaiterState::Outcome::Accepted);
+        CHECK(state.Consume(c) == DirectReadWaiterState::Outcome::Accepted);
+    }
+    {
+        DirectReadWaiterState state;
+        XtcpDirectReadReservation mismatch = b;
+        mismatch.length += 1;
+        CHECK(state.Register(b, waiter) == DirectReadWaiterState::Outcome::Pending);
+        CHECK(state.Complete(mismatch, XtcpDirectCompletion::Accepted) == nullptr);
+        CHECK(state.Complete(b, XtcpDirectCompletion::Accepted) == waiter);
+        CHECK(state.Complete(b, XtcpDirectCompletion::Accepted) == nullptr);
+        CHECK(state.Consume(b) == DirectReadWaiterState::Outcome::Accepted);
+    }
+    {
+        DirectReadWaiterState state;
+        CHECK(state.Register(b, waiter) == DirectReadWaiterState::Outcome::Pending);
+        CHECK(state.Invalidate() == waiter);
+        CHECK(state.Consume(b) == DirectReadWaiterState::Outcome::Terminal);
+        CHECK(state.Complete(b, XtcpDirectCompletion::Accepted) == nullptr);
+    }
+}
+
+void TestDirectDownloadReservationIdentity() {
+    Bridge bridge;
+    CHECK(bridge.StartRuntime(0));
+    const std::shared_ptr<DirectSecondLeg> second_leg =
+        std::make_shared<DirectSecondLeg>();
+    const std::uint32_t client_isn = 8750;
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort, client_isn, 0, kSyn));
+    CHECK(WaitFor([&]() { return bridge.AcceptedCount() != 0; }));
+    bridge.ReadyLastFlowDirect(second_leg);
+    TcpView syn_ack;
+    CHECK(bridge.WaitOutput([](const TcpView& view) {
+        return (view.flags & (kSyn | kAck)) == (kSyn | kAck);
+    }, syn_ack));
+
+    const AcceptedFlow flow = bridge.LastAccepted();
+    const std::shared_ptr<XtcpFirstLegHooks> hooks = flow.hooks.lock();
+    CHECK(hooks != nullptr);
+    const std::shared_ptr<Byte> payload(
+        new Byte[8 * 1024], std::default_delete<Byte[]>());
+    XtcpDirectReadReservation reservation_a;
+    reservation_a.runtime_generation = flow.runtime_generation;
+    reservation_a.flow_generation = flow.flow_generation;
+    reservation_a.length = 8 * 1024;
+    XtcpDirectReadReservation reservation_b = reservation_a;
+
+    CHECK(hooks && hooks->OnSecondLegPayload(reservation_a, payload) ==
+        XtcpDirectResult::Accepted);
+    CHECK(reservation_a.token != 0);
+    CHECK(hooks && hooks->OnSecondLegPayload(reservation_b, payload) ==
+        XtcpDirectResult::Backpressured);
+    CHECK(reservation_b.token != 0);
+    CHECK(reservation_b.token != reservation_a.token);
+
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck));
+    CHECK(WaitFor([&]() {
+        return second_leg->DownloadCompletionCount(
+            reservation_a, XtcpDirectCompletion::Accepted) == 1;
+    }));
+
+    CHECK(hooks && hooks->OnSecondLegPayload(reservation_b, payload) ==
+        XtcpDirectResult::Accepted);
+    CHECK(WaitFor([&]() {
+        return second_leg->DownloadCompletionCount(
+            reservation_b, XtcpDirectCompletion::Accepted) == 1 &&
+            bridge.Stats().direct_download_writable_callbacks == 2;
+    }));
+
+    const RuntimeXtcpStats stats = bridge.Stats();
+    CHECK(stats.direct_download_queue_bytes == 0);
+    CHECK(stats.direct_download_chunks == 2);
+    CHECK(stats.direct_download_rejected == 1);
+    CHECK(stats.direct_download_accepted_bytes == 16 * 1024);
+    CHECK(second_leg->DownloadCompletionCount(
+        reservation_a, XtcpDirectCompletion::Accepted) == 1);
+    CHECK(second_leg->DownloadCompletionCount(
+        reservation_b, XtcpDirectCompletion::Accepted) == 1);
+    CHECK(second_leg->DownloadCompletionCount() == 2);
+}
+
+void TestDirectBackpressureResume() {
+    Bridge bridge;
+    CHECK(bridge.StartRuntime(0));
+    const std::shared_ptr<DirectSecondLeg> second_leg =
+        std::make_shared<DirectSecondLeg>();
+    second_leg->RejectAttempts(1);  // controllable cap/low-watermark equivalent
+    const std::uint32_t client_isn = 9000;
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort, client_isn, 0, kSyn));
+    CHECK(WaitFor([&]() { return bridge.AcceptedCount() != 0; }));
+    bridge.ReadyLastFlowDirect(second_leg);
+    TcpView syn_ack;
+    CHECK(bridge.WaitOutput([](const TcpView& view) {
+        return (view.flags & (kSyn | kAck)) == (kSyn | kAck);
+    }, syn_ack));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck));
+
+    // Capacity arrives before the core has latched rcv_blocked_. The first
+    // detailed attempt therefore observes not_blocked; the level signal must
+    // survive until the subsequent rejection is latched.
+    bridge.WritableLastFlow();
+    CHECK(WaitFor([&]() {
+        return bridge.Stats().resume_result_not_blocked != 0 &&
+            bridge.Stats().resume_pending == 0;
+    }));
+    bridge.WritableLastFlow();
+    CHECK(WaitFor([&]() { return bridge.Stats().resume_coalesced != 0; }));
+
+    const std::array<Byte, 16> payload = {
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    second_leg->WritableBeforeReject([&bridge]() { bridge.WritableLastFlow(); });
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck,
+        payload.data(), static_cast<std::uint32_t>(payload.size())));
+    CHECK(WaitFor([&]() { return bridge.Stats().direct_upload_rejected == 1; }));
+    TcpView reopened;
+    CHECK(bridge.WaitOutput([](const TcpView& view) {
+        return (view.flags & kAck) != 0 && view.window != 0;
+    }, reopened));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck,
+        payload.data(), static_cast<std::uint32_t>(payload.size())));
+    CHECK(WaitFor([&]() { return second_leg->Received().size() == payload.size(); }));
+    CHECK(second_leg->Received() == std::vector<Byte>(payload.begin(), payload.end()));
+    CHECK(WaitFor([&]() {
+        const RuntimeXtcpStats stats = bridge.Stats();
+        return stats.resume_effective == 1 && stats.resume_pending == 0;
+    }));
+    const RuntimeXtcpStats stats = bridge.Stats();
+    CHECK(stats.resume_requested >= 3);
+    CHECK(stats.resume_result_not_blocked >= 1);
+    CHECK(stats.resume_coalesced >= 1);
+    CHECK(stats.resume_retry >= 1);
+    CHECK(stats.direct_upload_rejected == 1);
+    CHECK(stats.direct_upload_accepted_chunks == 1);
+    CHECK(stats.direct_upload_accepted_bytes == payload.size());
+    CHECK(stats.direct_upload_writable_callbacks == 3);
+}
+
+void TestDirectBackpressureFullOooWindow() {
+    Bridge bridge;
+    CHECK(bridge.StartRuntime(0));
+    const std::shared_ptr<DirectSecondLeg> second_leg =
+        std::make_shared<DirectSecondLeg>();
+    second_leg->RejectAttempts(1);
+    const std::uint32_t client_isn = 9050;
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort, client_isn, 0, kSyn));
+    CHECK(WaitFor([&]() { return bridge.AcceptedCount() != 0; }));
+    bridge.ReadyLastFlowDirect(second_leg);
+    TcpView syn_ack;
+    CHECK(bridge.WaitOutput([](const TcpView& view) {
+        return (view.flags & (kSyn | kAck)) == (kSyn | kAck);
+    }, syn_ack));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck));
+
+    const std::array<Byte, 16> rejected = {
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck,
+        rejected.data(), static_cast<std::uint32_t>(rejected.size())));
+    CHECK(WaitFor([&]() { return bridge.Stats().direct_upload_rejected == 1; }));
+
+    // Fill the default 65535-byte XTCP receive window behind the rejected
+    // in-order chunk. The subsequent writable notification must release only
+    // the application latch, not remain pending forever on OOO occupancy.
+    static const std::vector<Byte> ooo_a(32000, Byte{0xA1});
+    static const std::vector<Byte> ooo_b(32000, Byte{0xB2});
+    static const std::vector<Byte> ooo_c(1535, Byte{0xC3});
+    std::uint32_t ooo_seq = client_isn + 1 + static_cast<std::uint32_t>(rejected.size());
+    for (const std::vector<Byte>* payload : {&ooo_a, &ooo_b, &ooo_c}) {
+        bridge.Submit(xtcp::harness::BuildIp4Tcp(
+            kClientIp, kServiceIp, kClientPort, kServicePort,
+            ooo_seq, syn_ack.seq + 1, kAck,
+            payload->data(), static_cast<std::uint32_t>(payload->size())));
+        ooo_seq += static_cast<std::uint32_t>(payload->size());
+    }
+
+    bridge.WritableLastFlow();
+    CHECK(WaitFor([&]() {
+        const RuntimeXtcpStats stats = bridge.Stats();
+        return stats.resume_result_window_full != 0 && stats.resume_pending == 0;
+    }));
+
+    // The retransmission fills the gap, drains OOO data, and proves that the
+    // completed resume transition did not consume a future receive edge.
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck,
+        rejected.data(), static_cast<std::uint32_t>(rejected.size())));
+    constexpr std::size_t kExpectedBytes = 16 + 32000 + 32000 + 1535;
+    CHECK(WaitFor([&]() { return second_leg->Received().size() == kExpectedBytes; }));
+    CHECK(WaitFor([&]() {
+        const RuntimeXtcpStats stats = bridge.Stats();
+        return stats.resume_pending == 0 && stats.resume_effective == 0;
+    }));
+}
+
+void TestDirectResumeStaleAndCloseCancellation() {
+    Bridge bridge;
+    CHECK(bridge.StartRuntime(0));
+    const std::shared_ptr<DirectSecondLeg> second_leg =
+        std::make_shared<DirectSecondLeg>();
+    const std::uint32_t client_isn = 9125;
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort, client_isn, 0, kSyn));
+    CHECK(WaitFor([&]() { return bridge.AcceptedCount() != 0; }));
+    bridge.ReadyLastFlowDirect(second_leg);
+    TcpView syn_ack;
+    CHECK(bridge.WaitOutput([](const TcpView& view) {
+        return (view.flags & (kSyn | kAck)) == (kSyn | kAck);
+    }, syn_ack));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck));
+
+    bridge.WritableLastFlowStale();
+    CHECK(WaitFor([&]() { return bridge.Stats().resume_terminal != 0; }));
+    bridge.CloseLastFlowSecondLeg();
+    bridge.CloseLastFlowFirstLeg();
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kRst));
+    CHECK(WaitFor([&]() { return bridge.Stats().flows_active == 0; }));
+    CHECK(bridge.Stats().resume_pending == 0);
+}
+
+void TestDirectSecondLegStrongLifetime() {
+    Bridge bridge;
+    CHECK(bridge.StartRuntime(0));
+    std::shared_ptr<DirectSecondLeg> second_leg =
+        std::make_shared<DirectSecondLeg>();
+    second_leg->SetAccepting();
+    const std::weak_ptr<DirectSecondLeg> lifetime = second_leg;
+    const std::uint32_t client_isn = 9250;
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort, client_isn, 0, kSyn));
+    CHECK(WaitFor([&]() { return bridge.AcceptedCount() != 0; }));
+    bridge.ReadyLastFlowDirect(second_leg);
+    TcpView syn_ack;
+    CHECK(bridge.WaitOutput([](const TcpView& view) {
+        return (view.flags & (kSyn | kAck)) == (kSyn | kAck);
+    }, syn_ack));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck));
+
+    second_leg.reset();
+    CHECK(!lifetime.expired());
+    const std::array<Byte, 8> payload = {7, 6, 5, 4, 3, 2, 1, 0};
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck | kFin,
+        payload.data(), static_cast<std::uint32_t>(payload.size())));
+    CHECK(WaitFor([&]() {
+        const std::shared_ptr<DirectSecondLeg> retained = lifetime.lock();
+        return retained && retained->Received().size() == payload.size();
+    }));
+    CHECK(WaitFor([&]() {
+        const std::shared_ptr<DirectSecondLeg> retained = lifetime.lock();
+        return retained && retained->CloseCalls() == 1;
+    }));
+}
+
+void TestDirectFinCloseIsIdempotent() {
+    Bridge bridge;
+    CHECK(bridge.StartRuntime(0));
+    const std::shared_ptr<DirectSecondLeg> second_leg =
+        std::make_shared<DirectSecondLeg>();
+    second_leg->SetAccepting();
+    const std::uint32_t client_isn = 9500;
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort, client_isn, 0, kSyn));
+    CHECK(WaitFor([&]() { return bridge.AcceptedCount() != 0; }));
+    bridge.ReadyLastFlowDirect(second_leg);
+    TcpView syn_ack;
+    CHECK(bridge.WaitOutput([](const TcpView& view) {
+        return (view.flags & (kSyn | kAck)) == (kSyn | kAck);
+    }, syn_ack));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck));
+
+    const std::array<Byte, 8> tail = {0, 1, 2, 3, 4, 5, 6, 7};
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1, kAck | kFin,
+        tail.data(), static_cast<std::uint32_t>(tail.size())));
+    CHECK(WaitFor([&]() { return second_leg->Received().size() == tail.size(); }));
+    CHECK(WaitFor([&]() { return second_leg->CloseCalls() == 1; }));
+    CHECK(second_leg->ReceivedAtClose() == tail.size());
+
+    bridge.CloseLastFlowSecondLeg();
+    bridge.CloseLastFlowSecondLeg();
+    bridge.CloseLastFlowFirstLeg();
+    bridge.CloseLastFlowFirstLeg();
+    TcpView fin;
+    CHECK(bridge.WaitOutput([](const TcpView& view) {
+        return view.dport == kClientPort && (view.flags & kFin) != 0;
+    }, fin));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1 + static_cast<std::uint32_t>(tail.size()) + 1,
+        fin.seq + 1, kAck));
+
+    CHECK(WaitFor([&]() { return bridge.Stats().flows_active == 0; }));
+    const RuntimeXtcpStats stats = bridge.Stats();
+    CHECK(second_leg->CloseCalls() == 1);
+    CHECK(stats.second_leg_close_requested == 1);
+    CHECK(stats.second_leg_close_duplicate_suppressed >= 1);
+    CHECK(stats.degraded_half_close == 0);
+    CHECK(stats.direct_upload_rejected == 0);
+    CHECK(stats.direct_download_queue_bytes == 0);
+    CHECK(stats.queued_bytes == 0);
+    CHECK(stats.resume_pending == 0);
 }
 
 void TestHalfCloseBothDirections() {
@@ -632,17 +1175,194 @@ void TestQueuedBytesAccounting() {
     }
 }
 
+// The external accept callback owns a non-negative bridge descriptor even
+// when it rejects the flow. Replacing the closed descriptor with dup2 makes a
+// second raw close deterministically observable without relying on FD reuse.
+void TestRejectedExternalAcceptOwnsBridgeFd() {
+    const int sentinel_source = ::open("/dev/null", O_RDONLY);
+    CHECK(sentinel_source >= 0);
+    if (sentinel_source < 0) {
+        return;
+    }
+
+    const std::shared_ptr<boost::asio::io_context> context =
+        std::make_shared<boost::asio::io_context>();
+    std::unique_ptr<boost::asio::io_context::work> work_guard =
+        std::make_unique<boost::asio::io_context::work>(*context);
+    std::thread io_thread([context]() noexcept {
+        context->run();
+    });
+    std::atomic<int> received_fd{-1};
+    std::atomic<int> replacement_fd{-1};
+    std::atomic<bool> callback_done{false};
+    const std::shared_ptr<XtcpRuntime> runtime = std::make_shared<XtcpRuntime>(
+        context,
+        [](std::shared_ptr<Byte>&&, int,
+            std::optional<ppp::tap::TxGsoMetadata>) noexcept { return true; },
+        []() noexcept { return boost::asio::ip::tcp::endpoint(); },
+        [sentinel_source, &received_fd, &replacement_fd, &callback_done](
+            const boost::asio::ip::tcp::endpoint&,
+            const boost::asio::ip::tcp::endpoint&, std::uint16_t,
+            std::uint64_t, std::uint64_t,
+            const std::weak_ptr<XtcpFirstLegHooks>&, int fd) noexcept {
+            received_fd.store(fd, std::memory_order_relaxed);
+            int replacement = -1;
+            if (fd >= 0 && ::close(fd) == 0) {
+                replacement = ::dup2(sentinel_source, fd);
+            }
+            replacement_fd.store(replacement, std::memory_order_relaxed);
+            callback_done.store(true, std::memory_order_release);
+            return false;
+        },
+        [](std::uint16_t, std::uint64_t) noexcept {});
+
+    const bool started = runtime->Start();
+    CHECK(started);
+    if (started) {
+        runtime->MarkReady();
+        const std::vector<Byte> syn = xtcp::harness::BuildIp4Tcp(
+            kClientIp, kServiceIp, kClientPort, kServicePort, 11000, 0, kSyn);
+        CHECK(runtime->SubmitIPv4Tcp(syn.data(), static_cast<int>(syn.size())));
+        const bool callback_called = WaitFor([&callback_done]() {
+            return callback_done.load(std::memory_order_acquire);
+        });
+        CHECK(callback_called);
+        if (callback_called) {
+            CHECK(WaitFor([&runtime]() {
+                return runtime->SnapshotStats().flows_closed == 1;
+            }));
+            const int received = received_fd.load(std::memory_order_relaxed);
+            const int replacement = replacement_fd.load(std::memory_order_relaxed);
+            CHECK(received >= 0);
+            CHECK(replacement == received);
+            const bool replacement_is_open = replacement >= 0 &&
+                ::fcntl(replacement, F_GETFD) != -1;
+            CHECK(replacement_is_open);
+            if (replacement_is_open) {
+                ::close(replacement);
+            }
+        }
+    }
+
+    runtime->Stop();
+    work_guard.reset();
+    context->stop();
+    if (io_thread.joinable()) {
+        io_thread.join();
+    }
+    ::close(sentinel_source);
+}
+
 } // namespace
+
+void TestGlobalUploadBudgetWakesOtherFlowAndSurvivesRestart() {
+    struct RestoreEnvironment final {
+        bool present = ::getenv("OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES") != nullptr;
+        std::string value = present ? ::getenv("OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES") : "";
+        ~RestoreEnvironment() {
+            if (present) ::setenv("OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES", value.c_str(), 1);
+            else ::unsetenv("OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES");
+        }
+    } restore;
+    ::setenv("OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES", "32", 1);
+    Bridge bridge;
+    CHECK(bridge.StartRuntime(0));
+    auto first = std::make_shared<DirectSecondLeg>();
+    auto second = std::make_shared<DirectSecondLeg>();
+    auto third = std::make_shared<DirectSecondLeg>();
+    for (const auto& leg : {first, second, third}) {
+        leg->SetAccepting();
+        leg->HoldUploads();
+    }
+    auto handshake = [&](std::uint16_t port, const std::shared_ptr<DirectSecondLeg>& leg, TcpView& syn_ack) {
+        const auto before = bridge.AcceptedCount();
+        const std::uint32_t seq = 1000 + port;
+        bridge.Submit(xtcp::harness::BuildIp4Tcp(kClientIp, kServiceIp, port, kServicePort, seq, 0, kSyn));
+        if (!WaitFor([&]() { return bridge.AcceptedCount() > before; })) return false;
+        bridge.ReadyLastFlowDirect(leg);
+        if (!bridge.WaitOutput([&](const TcpView& view) {
+                return view.dport == port && (view.flags & (kSyn | kAck)) == (kSyn | kAck);
+            }, syn_ack)) return false;
+        bridge.Submit(xtcp::harness::BuildIp4Tcp(kClientIp, kServiceIp, port, kServicePort,
+            seq + 1, syn_ack.seq + 1, kAck));
+        return true;
+    };
+    const std::vector<Byte> data(32, 0x5a);
+    auto send = [&](std::uint16_t port, const TcpView& syn_ack, std::size_t length) {
+        bridge.Submit(xtcp::harness::BuildIp4Tcp(kClientIp, kServiceIp, port, kServicePort,
+            1001 + port, syn_ack.seq + 1, kAck, data.data(), static_cast<UInt32>(length)));
+    };
+    TcpView syn_a, syn_b, syn_c;
+    CHECK(handshake(41000, first, syn_a));
+    CHECK(handshake(41001, second, syn_b));
+    send(41000, syn_a, 32);
+    CHECK(WaitFor([&]() { return bridge.Stats().upload_budget_bytes == 32; }));
+    CHECK(bridge.Stats().upload_budget_items == 1);
+    send(41001, syn_b, 16);
+    CHECK(WaitFor([&]() { return bridge.Stats().upload_budget_rejected == 1; }));
+    CHECK(second->Attempts() == 0); // rejected before copy or second-leg dispatch
+    first->ReleaseUploads();
+    CHECK(WaitFor([&]() { return bridge.Stats().resume_effective == 1; }));
+    CHECK(bridge.Stats().direct_upload_writable_callbacks == 0); // another flow's release woke it
+    send(41001, syn_b, 16);
+    CHECK(WaitFor([&]() { return second->Received().size() == 16; }));
+    CHECK(bridge.Stats().upload_budget_bytes == 16);
+
+    CHECK(bridge.RestartRuntime());
+    CHECK(bridge.Stats().upload_budget_bytes == 16); // old async owner still holds credit
+    CHECK(handshake(41002, third, syn_c));
+    send(41002, syn_c, 32);
+    CHECK(WaitFor([&]() { return bridge.Stats().upload_budget_rejected == 1; }));
+    CHECK(third->Attempts() == 0);
+    second->ReleaseUploads();
+    CHECK(WaitFor([&]() { return bridge.Stats().resume_effective == 1; }));
+    send(41002, syn_c, 32);
+    CHECK(WaitFor([&]() { return third->Received().size() == 32; }));
+    third->ReleaseUploads();
+    CHECK(WaitFor([&]() { return bridge.Stats().upload_budget_bytes == 0; }));
+    CHECK(bridge.Stats().upload_budget_items == 0);
+
+    // A connector/fallback flow must share the very same cap, and a direct
+    // flow's release must reopen its receive window as well.
+    std::uint32_t connector_next = 0, server_next = 0;
+    CHECK(Handshake(bridge, 41003, connector_next, server_next));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(kClientIp, kServiceIp, 41002, kServicePort,
+        1001 + 41002 + 32, syn_c.seq + 1, kAck, data.data(), 32));
+    CHECK(WaitFor([&]() { return bridge.Stats().upload_budget_bytes == 32; }));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(kClientIp, kServiceIp, 41003, kServicePort,
+        connector_next, server_next, kAck, data.data(), 16));
+    CHECK(WaitFor([&]() { return bridge.Stats().upload_budget_rejected == 2; }));
+    CHECK(bridge.echo_->EchoedBytes() == 0);
+    third->ReleaseUploads();
+    TcpView reopened;
+    CHECK(bridge.WaitOutput([](const TcpView& view) {
+        return view.dport == 41003 && (view.flags & kAck) != 0 && view.window != 0;
+    }, reopened));
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(kClientIp, kServiceIp, 41003, kServicePort,
+        connector_next, server_next, kAck, data.data(), 16));
+    CHECK(WaitFor([&]() { return bridge.echo_->EchoedBytes() == 16; }));
+    CHECK(WaitFor([&]() { return bridge.Stats().upload_budget_bytes == 0; }));
+    CHECK(bridge.Stats().upload_budget_items == 0);
+}
 
 int main() {
     ::setenv("OPENPPP2_XTCP_UNIX_BRIDGE", "1", 1);
     xtcp::buf::InitPools();
     TestEndpointByteOrder();
     TestHandshakeAndBidirectionalData();
+    TestDirectReadWaiterState();
+    TestDirectDownloadReservationIdentity();
+    TestDirectBackpressureResume();
+    TestGlobalUploadBudgetWakesOtherFlowAndSurvivesRestart();
+    TestDirectBackpressureFullOooWindow();
+    TestDirectResumeStaleAndCloseCancellation();
+    TestDirectSecondLegStrongLifetime();
+    TestDirectFinCloseIsIdempotent();
     TestHalfCloseBothDirections();
     TestRstBeforeReadyCancelsFlow();
     TestConnectCloseChurn();
     TestQueuedBytesAccounting();
+    TestRejectedExternalAcceptOwnsBridgeFd();
     xtcp::buf::ShutdownPools();
 
     if (failures != 0) {

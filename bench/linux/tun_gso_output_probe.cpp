@@ -107,19 +107,30 @@ struct Superpacket {
 
 uint8_t payload_byte(size_t offset) { return static_cast<uint8_t>((offset * 37U + 11U) & 0xffU); }
 
-Superpacket make_superpacket(size_t mss_count) {
+enum class ChecksumMode {
+    Partial,
+    Complete,
+};
+
+const char* checksum_mode_name(ChecksumMode mode) {
+    return mode == ChecksumMode::Complete ? "complete" : "partial";
+}
+
+Superpacket make_superpacket(size_t mss_count, ChecksumMode checksum_mode = ChecksumMode::Partial) {
     if (mss_count == 0) throw std::runtime_error("MSS count must be positive");
     const size_t payload_bytes = mss_count * kMss;
     Superpacket result;
     result.payload_bytes = payload_bytes;
     result.bytes.assign(kVirtioHeaderSize + kIpv4HeaderSize + kTcpHeaderSize + payload_bytes, 0);
     auto* virtio = reinterpret_cast<virtio_net_hdr*>(result.bytes.data());
-    virtio->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
+    virtio->flags = checksum_mode == ChecksumMode::Partial ? VIRTIO_NET_HDR_F_NEEDS_CSUM : 0;
     virtio->gso_type = VIRTIO_NET_HDR_GSO_TCPV4;
     virtio->hdr_len = htole16(kIpv4HeaderSize + kTcpHeaderSize);
     virtio->gso_size = htole16(kMss);
-    virtio->csum_start = htole16(kIpv4HeaderSize);
-    virtio->csum_offset = htole16(16);
+    if (checksum_mode == ChecksumMode::Partial) {
+        virtio->csum_start = htole16(kIpv4HeaderSize);
+        virtio->csum_offset = htole16(16);
+    }
 
     uint8_t* ip = result.bytes.data() + kVirtioHeaderSize;
     ip[0] = 0x45;
@@ -142,13 +153,17 @@ Superpacket make_superpacket(size_t mss_count) {
     put16(tcp + 14, 65535);
     for (size_t i = 0; i < payload_bytes; ++i) tcp[kTcpHeaderSize + i] = payload_byte(i);
 
-    // TUN_F_CSUM requires the one's-complement partial checksum, not a final TCP checksum.
-    const uint8_t pseudo[] = {0, IPPROTO_TCP, static_cast<uint8_t>((kTcpHeaderSize + payload_bytes) >> 8U), static_cast<uint8_t>(kTcpHeaderSize + payload_bytes)};
-    uint32_t partial = checksum_sum(ip + 12, 8);
-    partial = checksum_sum(pseudo, sizeof(pseudo), partial);
-    // The transport checksum field holds the uncomplemented pseudo-header seed;
-    // the kernel adds TCP header/payload while performing checksum/GSO work.
-    put16(tcp + 16, static_cast<uint16_t>(~fold_checksum(partial)));
+    if (checksum_mode == ChecksumMode::Partial) {
+        // TUN_F_CSUM requires the one's-complement partial checksum, not a final TCP checksum.
+        const uint8_t pseudo[] = {0, IPPROTO_TCP, static_cast<uint8_t>((kTcpHeaderSize + payload_bytes) >> 8U), static_cast<uint8_t>(kTcpHeaderSize + payload_bytes)};
+        uint32_t partial = checksum_sum(ip + 12, 8);
+        partial = checksum_sum(pseudo, sizeof(pseudo), partial);
+        // The transport checksum field holds the uncomplemented pseudo-header seed;
+        // the kernel adds TCP header/payload while performing checksum/GSO work.
+        put16(tcp + 16, static_cast<uint16_t>(~fold_checksum(partial)));
+    } else {
+        put16(tcp + 16, tcp_checksum(ip, tcp, kTcpHeaderSize + payload_bytes));
+    }
     return result;
 }
 
@@ -163,17 +178,24 @@ void verify_segment(const uint8_t* packet, size_t size, size_t payload_offset, s
     for (size_t i = 0; i < expected_payload; ++i) if (tcp[kTcpHeaderSize + i] != payload_byte(payload_offset + i)) throw std::runtime_error("unexpected TCP payload");
 }
 
-void verify_contract(size_t mss_count) {
-    const Superpacket superpacket = make_superpacket(mss_count);
+void verify_contract(size_t mss_count, ChecksumMode checksum_mode) {
+    const Superpacket superpacket = make_superpacket(mss_count, checksum_mode);
     if (superpacket.bytes.size() != kVirtioHeaderSize + kIpv4HeaderSize + kTcpHeaderSize + mss_count * kMss) throw std::runtime_error("superpacket length contract failed");
     const auto* virtio = reinterpret_cast<const virtio_net_hdr*>(superpacket.bytes.data());
-    if (virtio->flags != VIRTIO_NET_HDR_F_NEEDS_CSUM || virtio->gso_type != VIRTIO_NET_HDR_GSO_TCPV4 || le16toh(virtio->hdr_len) != 40 || le16toh(virtio->gso_size) != kMss || le16toh(virtio->csum_start) != 20 || le16toh(virtio->csum_offset) != 16) throw std::runtime_error("virtio GSO metadata contract failed");
+    const uint8_t expected_flags = checksum_mode == ChecksumMode::Partial ? VIRTIO_NET_HDR_F_NEEDS_CSUM : 0;
+    const uint16_t expected_csum_start = checksum_mode == ChecksumMode::Partial ? kIpv4HeaderSize : 0;
+    const uint16_t expected_csum_offset = checksum_mode == ChecksumMode::Partial ? 16 : 0;
+    if (virtio->flags != expected_flags || virtio->gso_type != VIRTIO_NET_HDR_GSO_TCPV4 || le16toh(virtio->hdr_len) != 40 || le16toh(virtio->gso_size) != kMss || le16toh(virtio->csum_start) != expected_csum_start || le16toh(virtio->csum_offset) != expected_csum_offset) throw std::runtime_error("virtio GSO metadata contract failed");
     const uint8_t* ip = superpacket.bytes.data() + kVirtioHeaderSize;
     const uint8_t* tcp = ip + kIpv4HeaderSize;
-    const uint8_t pseudo[] = {0, IPPROTO_TCP, static_cast<uint8_t>((kTcpHeaderSize + superpacket.payload_bytes) >> 8U), static_cast<uint8_t>(kTcpHeaderSize + superpacket.payload_bytes)};
-    const uint16_t expected_partial = static_cast<uint16_t>(~fold_checksum(checksum_sum(pseudo, sizeof(pseudo), checksum_sum(ip + 12, 8))));
-    if (get16(tcp + 16) != expected_partial) throw std::runtime_error("TCP partial checksum contract failed");
-    if (get16(tcp + 16) == tcp_checksum(ip, tcp, kTcpHeaderSize + superpacket.payload_bytes)) throw std::runtime_error("TCP checksum was finalized instead of partial");
+    if (checksum_mode == ChecksumMode::Partial) {
+        const uint8_t pseudo[] = {0, IPPROTO_TCP, static_cast<uint8_t>((kTcpHeaderSize + superpacket.payload_bytes) >> 8U), static_cast<uint8_t>(kTcpHeaderSize + superpacket.payload_bytes)};
+        const uint16_t expected_partial = static_cast<uint16_t>(~fold_checksum(checksum_sum(pseudo, sizeof(pseudo), checksum_sum(ip + 12, 8))));
+        if (get16(tcp + 16) != expected_partial) throw std::runtime_error("TCP partial checksum contract failed");
+        if (tcp_checksum(ip, tcp, kTcpHeaderSize + superpacket.payload_bytes) == 0) throw std::runtime_error("TCP checksum was finalized instead of partial");
+    } else if (tcp_checksum(ip, tcp, kTcpHeaderSize + superpacket.payload_bytes) != 0) {
+        throw std::runtime_error("TCP complete checksum contract failed");
+    }
     for (size_t offset = 0; offset < superpacket.payload_bytes; offset += kMss) {
         const size_t length = std::min<size_t>(kMss, superpacket.payload_bytes - offset);
         std::vector<uint8_t> packet(kIpv4HeaderSize + kTcpHeaderSize + length);
@@ -473,7 +495,7 @@ struct CaseResult {
 };
 
 CaseResult run_case(int ingress_fd, int sink_fd, size_t mss_count) {
-    const Superpacket superpacket = make_superpacket(mss_count);
+    const Superpacket superpacket = make_superpacket(mss_count, ChecksumMode::Complete);
     if (write(ingress_fd, superpacket.bytes.data(), superpacket.bytes.size()) != static_cast<ssize_t>(superpacket.bytes.size())) throw SystemError("write GSO superpacket", errno);
     CaseResult result; result.mss_count = mss_count;
     size_t payload_offset = 0;
@@ -632,7 +654,7 @@ int run_execute() {
         for (size_t index = 0; index < cases.size(); ++index) {
             if (index != 0) std::cout << ",";
             const CaseResult& result = cases[index];
-            std::cout << "{\"mss_count\":" << result.mss_count << ",\"expected_segments\":" << result.mss_count << ",\"expected_lengths\":" << lengths_json(expected_lengths(result.mss_count)) << ",\"observed_lengths\":" << lengths_json(result.observed_lengths) << ",\"noise_packets\":" << result.noise_lengths.size() << "}";
+            std::cout << "{\"checksum_mode\":\"" << checksum_mode_name(ChecksumMode::Complete) << "\",\"mss_count\":" << result.mss_count << ",\"expected_segments\":" << result.mss_count << ",\"expected_lengths\":" << lengths_json(expected_lengths(result.mss_count)) << ",\"observed_lengths\":" << lengths_json(result.observed_lengths) << ",\"noise_packets\":" << result.noise_lengths.size() << "}";
         }
         std::cout << "],\"production_builder_cases\":[";
         for (size_t index = 0; index < production_cases.size(); ++index) {
@@ -659,7 +681,7 @@ int main(int argc, char** argv) {
     try {
         if (argc != 2) { usage(); return 2; }
         const std::string_view mode(argv[1]);
-        if (mode == "--self-test") { for (const size_t count : {2U, 4U, 8U, 16U}) verify_contract(count); verify_production_builder_logical(); verify_inbound_vnet_codec_contract(); std::cout << "{\"mode\":\"self-test\",\"status\":\"pass\",\"mss\":512,\"segment_contracts\":[2,4,8,16],\"production_builder_cases\":[\"cap4\",\"short_tail\",\"psh_insert\",\"ack_only_insert\"],\"inbound_vnet_codec\":true}\n"; return 0; }
+        if (mode == "--self-test") { for (const size_t count : {2U, 4U, 8U, 16U}) { verify_contract(count, ChecksumMode::Partial); verify_contract(count, ChecksumMode::Complete); } verify_production_builder_logical(); verify_inbound_vnet_codec_contract(); std::cout << "{\"mode\":\"self-test\",\"status\":\"pass\",\"mss\":512,\"checksum_modes\":[\"partial\",\"complete\"],\"segment_contracts\":[2,4,8,16],\"production_builder_cases\":[\"cap4\",\"short_tail\",\"psh_insert\",\"ack_only_insert\"],\"inbound_vnet_codec\":true}\n"; return 0; }
         if (mode == "--execute") return run_execute();
         usage(); return 2;
     } catch (const std::exception& error) { std::cout << "{\"status\":\"failure\",\"error\":\"" << error.what() << "\"}\n"; return 1; }

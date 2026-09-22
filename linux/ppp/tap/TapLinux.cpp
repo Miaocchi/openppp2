@@ -750,6 +750,11 @@ namespace ppp {
             return enable != NULLPTR && *enable == '1';
         }
 
+        static bool TapNdiTsoRequested() noexcept {
+            const char* enable = std::getenv("OPENPPP2_XTCP_NDI_TSO_TX");
+            return enable != NULLPTR && enable[0] == '1' && enable[1] == '\0';
+        }
+
         TapLinux::TapLinux(const std::shared_ptr<boost::asio::io_context>& context, const ppp::string& dev, void* tun, uint32_t address, uint32_t gw, uint32_t mask, bool hosted_network)
             : ITap(context, dev, tun, address, gw, mask, hosted_network)
             , promisc_(false)
@@ -767,6 +772,12 @@ namespace ppp {
             std::lock_guard<std::mutex> lock(gso_mutex_);
             stats.vnet_header = vnet_header_;
             stats.gso_merge_active = gso_merge_active_;
+            stats.tx_gso_supported = disposed_.load(std::memory_order_acquire) == FALSE &&
+                tun_write_failed_.load(std::memory_order_acquire) == FALSE &&
+                vnet_header_ && tx_gso_supported_ && !gso_ssmt_disabled_;
+            stats.direct_gso_packets = direct_gso_packets_.load(std::memory_order_relaxed);
+            stats.direct_gso_bytes = direct_gso_bytes_.load(std::memory_order_relaxed);
+            stats.direct_gso_rejected = direct_gso_rejected_.load(std::memory_order_relaxed);
             return true;
         }
 
@@ -800,7 +811,8 @@ namespace ppp {
             // https://www.kernel.org/doc/Documentation/networking/tuntap.txt
             strncpy(ifr.ifr_name, ifrName, IFNAMSIZ);
 
-            bool request_gso = !tun_gso_force_bare_ && TapGsoMergeRequested();
+            bool request_gso = !tun_gso_force_bare_ &&
+                (TapGsoMergeRequested() || TapNdiTsoRequested());
             if (request_gso) {
                 unsigned int features = 0;
                 request_gso = ioctl(tun, TUNGETFEATURES, &features) == 0 && (features & IFF_VNET_HDR) != 0;
@@ -2164,7 +2176,9 @@ namespace ppp {
                 if (virtio.flags == 0 && le16toh(virtio.hdr_len) == 0 && le16toh(virtio.gso_size) == 0 &&
                     le16toh(virtio.csum_start) == 0 && le16toh(virtio.csum_offset) == 0) {
                     const size_t packet_size = frame_size - vnet_header_size_;
-                    memmove(frame, frame + vnet_header_size_, packet_size);
+                    // Input is borrowed until this callback returns; the read
+                    // loop keeps the original allocation for its next read.
+                    e.Packet = frame + vnet_header_size_;
                     e.PacketLength = static_cast<int>(packet_size);
                     ITap::OnInput(e);
                     return;
@@ -2174,7 +2188,7 @@ namespace ppp {
                     return;
                 }
                 const size_t packet_size = frame_size - vnet_header_size_;
-                memmove(frame, frame + vnet_header_size_, packet_size);
+                e.Packet = frame + vnet_header_size_;
                 e.PacketLength = static_cast<int>(packet_size);
                 ITap::OnInput(e);
                 return;
@@ -2183,6 +2197,18 @@ namespace ppp {
             vnet::TcpV4GsoFrame gso;
             if (!vnet::ParseTcpV4Gso(frame, frame_size, vnet_header_size_, ITap::Mtu, gso)) {
                 fail_vnet_input("unsupported or malformed inbound VNET GSO frame; closing TUN");
+                return;
+            }
+
+            if (!vnet::CompleteTcpV4GsoChecksums(gso)) {
+                fail_vnet_input("failed to complete inbound TCPv4 GSO checksums; closing TUN");
+                return;
+            }
+            PacketInputEventArgs gso_event{
+                gso.ip, static_cast<int>(gso.packet_size), true
+            };
+            PacketInputEventHandler handler = GetPacketInput();
+            if (handler && handler(this, gso_event)) {
                 return;
             }
 
@@ -2228,6 +2254,74 @@ namespace ppp {
 
         bool TapLinux::Output(const std::shared_ptr<Byte>& packet, int packet_size) noexcept {
             return Output(packet.get(), packet_size);
+        }
+
+        bool TapLinux::SupportsTxGso() const noexcept {
+            std::lock_guard<std::mutex> lock(gso_mutex_);
+            return disposed_.load(std::memory_order_acquire) == FALSE &&
+                tun_write_failed_.load(std::memory_order_acquire) == FALSE &&
+                vnet_header_ && tx_gso_supported_ && !gso_ssmt_disabled_;
+        }
+
+        bool TapLinux::OutputGso(const std::shared_ptr<Byte>& packet, int packet_size,
+            TxGsoMetadata metadata) noexcept {
+            virtio_net_hdr header{};
+            if (!packet || packet_size < 1 ||
+                !vnet::BuildTcpV4GsoHeader(packet.get(), static_cast<size_t>(packet_size), metadata, header)) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                return false;
+            }
+            if (disposed_.load(std::memory_order_acquire) != FALSE ||
+                tun_write_failed_.load(std::memory_order_acquire) != FALSE) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                return false;
+            }
+
+            const int tun = static_cast<int>(reinterpret_cast<std::intptr_t>(GetHandle()));
+            std::lock_guard<std::mutex> lock(gso_mutex_);
+            if (!vnet_header_ || !tx_gso_supported_ || gso_ssmt_disabled_ || tun < 0) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                return false;
+            }
+
+            // Preserve ordering with ordinary packets retained by the edge
+            // coalescer. A flush failure is terminal and the super-packet is
+            // never replayed through the ordinary oversized path.
+            gso_write_fd_ = tun;
+            if (!gso_coalescer_.Flush(TunGsoCoalescer::FlushReason::Explicit)) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                FailTunWrite(TunWriteFailureSource::DirectGsoWrite);
+                return false;
+            }
+            CancelGsoHoldTimerLocked();
+
+            struct iovec iov[2];
+            iov[0].iov_base = &header;
+            iov[0].iov_len = sizeof(header);
+            iov[1].iov_base = packet.get();
+            iov[1].iov_len = static_cast<size_t>(packet_size);
+            const size_t expected = sizeof(header) + static_cast<size_t>(packet_size);
+            ppp::diagnostics::datapath_perf::Scope write_scope;
+            const bool direct_write_accounting = ppp::diagnostics::datapath_perf::BeginTunDirectWrite();
+            const ssize_t written = ::writev(tun, iov, 2);
+            ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
+            ppp::diagnostics::datapath_perf::RecordTunDirectWrite(
+                static_cast<int>(expected), static_cast<int>(written), write_scope.Elapsed());
+            if (written != static_cast<ssize_t>(expected)) {
+                direct_gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.ndi_gso.rejected", 1);
+                FailTunWrite(TunWriteFailureSource::DirectGsoWrite);
+                return false;
+            }
+            direct_gso_packets_.fetch_add(1, std::memory_order_relaxed);
+            direct_gso_bytes_.fetch_add(static_cast<uint64_t>(packet_size), std::memory_order_relaxed);
+            ppp::telemetry::Count("tap.ndi_gso.packets", 1);
+            ppp::telemetry::Count("tap.ndi_gso.bytes", packet_size);
+            return true;
         }
 
         bool TapLinux::Output(const void* packet, int packet_size) noexcept {
@@ -2578,6 +2672,7 @@ namespace ppp {
                     return NULLPTR;
                 }
             }
+            tap->tx_gso_supported_ = tap->vnet_header_;
             tap->gso_merge_active_ = tap->vnet_header_ && TapGsoMergeRequested();
             tap->promisc_ = promisc;
             tap->dns_addresses_ = dns_addresses;

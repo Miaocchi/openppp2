@@ -80,12 +80,10 @@ namespace ppp {
                 }
                 const boost::asio::ip::tcp::endpoint natEP(
                     boost::asio::ip::address_v4::loopback(), source_port);
-                if (!CompleteExternalAcceptWithFd(source_port, runtime_generation, fd, natEP)) {
-                    connection->Dispose();
-                    ::close(fd);
-                    return false;
-                }
-                return true;
+                // CompleteExternalAcceptWithFd consumes fd and closes it before
+                // adoption or disposes its Asio owner after adoption.
+                return CompleteExternalAcceptWithFd(
+                    source_port, runtime_generation, fd, natEP);
             }
 
             /**

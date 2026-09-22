@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <optional>
+#include <ppp/tap/TxGsoMetadata.h>
 #include <memory>
 #include <mutex>
 
@@ -20,9 +22,10 @@ public:
     // owning shared_ptr<Byte> (a stack BufRef wrapped by a deleter) so the
     // TAP write queue can hold the buffer zero-copy instead of copying.
     // Byte == unsigned char == std::uint8_t.
-    using OutputHandler = std::function<bool(std::shared_ptr<std::uint8_t>&&, int)>;
+    using OutputHandler = std::function<bool(std::shared_ptr<std::uint8_t>&&, int,
+        std::optional<ppp::tap::TxGsoMetadata>)>;
 
-    explicit XtcpNdiBackend(OutputHandler output) noexcept;
+    explicit XtcpNdiBackend(OutputHandler output, bool tx_gso_supported = false) noexcept;
 
     bool Tx(::xtcp::ndi::Packet&& packet) noexcept override;
     UInt32 TxBatch(::xtcp::ndi::Packet* packets, UInt32 count) noexcept override;
@@ -39,6 +42,9 @@ public:
         std::uint64_t attempts = 0;
         std::uint64_t accepted = 0;
         std::uint64_t rejected = 0;
+        std::uint64_t gso_packets = 0;
+        std::uint64_t gso_bytes = 0;
+        std::uint64_t gso_rejected = 0;
         std::uint64_t batch_calls = 0;
         std::uint64_t batch_packets = 0;
         std::uint32_t batch_max = 0;
@@ -53,6 +59,7 @@ private:
     OutputHandler output_;
     ::xtcp::ndi::RxHandler rx_handler_;
     bool stopped_ = false;
+    bool tx_gso_enabled_ = false;
     // A2-0 output-path diagnostics. Written on the stack owner thread only;
     // read via SnapshotTxStats().
     std::atomic<std::uint64_t> tx_calls_{0};
@@ -60,6 +67,9 @@ private:
     std::atomic<std::uint64_t> attempts_{0};
     std::atomic<std::uint64_t> accepted_{0};
     std::atomic<std::uint64_t> rejected_{0};
+    std::atomic<std::uint64_t> gso_packets_{0};
+    std::atomic<std::uint64_t> gso_bytes_{0};
+    std::atomic<std::uint64_t> gso_rejected_{0};
     std::atomic<std::uint64_t> batch_calls_{0};
     std::atomic<std::uint64_t> batch_packets_{0};
     std::atomic<std::uint32_t> batch_max_{0};

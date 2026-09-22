@@ -2,6 +2,7 @@
 
 #if defined(PPP_ENABLE_XTCP)
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -19,8 +20,11 @@ void HistAdd(std::atomic<std::uint64_t>* hist, std::uint64_t us) noexcept {
 }
 } // namespace
 
-XtcpNdiBackend::XtcpNdiBackend(OutputHandler output) noexcept
-    : output_(std::move(output)) {}
+XtcpNdiBackend::XtcpNdiBackend(OutputHandler output, bool tx_gso_supported) noexcept
+    : output_(std::move(output)) {
+    const char* gate = std::getenv("OPENPPP2_XTCP_NDI_TSO_TX");
+    tx_gso_enabled_ = tx_gso_supported && gate != nullptr && gate[0] == '1' && gate[1] == '\0';
+}
 
 bool XtcpNdiBackend::Tx(::xtcp::ndi::Packet&& packet) noexcept {
     attempts_.fetch_add(1, std::memory_order_relaxed);
@@ -38,12 +42,34 @@ bool XtcpNdiBackend::Tx(::xtcp::ndi::Packet&& packet) noexcept {
     const std::uint64_t start_us = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     bool emitted = false;
+    std::optional<ppp::tap::TxGsoMetadata> gso;
+    bool gso_marked = false;
+    if (!packet.owned.IsEmpty()) {
+        const ::xtcp::buf::SegMeta meta = packet.owned.Meta();
+        gso_marked = meta.gso_size != 0 || meta.mss != 0 || meta.segs != 0;
+        if (gso_marked) {
+            if (!tx_gso_enabled_ || meta.gso_size == 0 || meta.mss == 0 ||
+                meta.gso_size > meta.mss || packet.len > ::xtcp::buf::kMaxPoolPayload) {
+                gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                rejected_.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            gso = ppp::tap::TxGsoMetadata::ParseTcpV4(
+                packet.data, packet.len, meta.gso_size, meta.segs);
+            if (!gso) {
+                gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+                rejected_.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+        }
+    }
     if (packet.data != nullptr && packet.len != 0) {
         if (!packet.owned.IsEmpty()) {
             // XTCP-STRAND-DISPATCH-001 (data-plane tier): hand the stack's
             // BufRef to the consumer through an owning shared_ptr; the buffer
-            // returns to the pool when the TAP write completes. No alloc and
-            // no copy on this path. Ownership is RESTORED to packet.owned
+            // returns to the pool when the TAP write completes. One shared
+            // holder allocation, no payload copy or second control block.
+            // Ownership is RESTORED to packet.owned
             // when the consumer rejects: a rejected Tx must leave the packet
             // exactly as it arrived (contract of TestProductionNdiOwnership).
             struct BufRefHolder final {
@@ -52,9 +78,8 @@ bool XtcpNdiBackend::Tx(::xtcp::ndi::Packet&& packet) noexcept {
             const std::shared_ptr<BufRefHolder> holder =
                 std::make_shared<BufRefHolder>();
             holder->ref = std::move(packet.owned);
-            std::shared_ptr<Byte> buffer(holder->ref.Data(),
-                [holder](Byte*) mutable noexcept {});
-            emitted = output(std::move(buffer), static_cast<int>(packet.len));
+            std::shared_ptr<Byte> buffer(holder, holder->ref.Data());
+            emitted = output(std::move(buffer), static_cast<int>(packet.len), gso);
             if (!emitted) {
                 packet.owned = std::move(holder->ref);
             }
@@ -65,7 +90,7 @@ bool XtcpNdiBackend::Tx(::xtcp::ndi::Packet&& packet) noexcept {
             const std::shared_ptr<std::vector<Byte>> holder =
                 std::make_shared<std::vector<Byte>>(packet.data, packet.data + packet.len);
             std::shared_ptr<Byte> buffer(holder, holder->data());
-            emitted = output(std::move(buffer), static_cast<int>(packet.len));
+            emitted = output(std::move(buffer), static_cast<int>(packet.len), gso);
         }
     }
     const std::uint64_t end_us = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -80,10 +105,17 @@ bool XtcpNdiBackend::Tx(::xtcp::ndi::Packet&& packet) noexcept {
     }
     last_tx_start_us_ = start_us;
     if (!emitted) {
+        if (gso_marked) {
+            gso_rejected_.fetch_add(1, std::memory_order_relaxed);
+        }
         rejected_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     accepted_.fetch_add(1, std::memory_order_relaxed);
+    if (gso_marked) {
+        gso_packets_.fetch_add(1, std::memory_order_relaxed);
+        gso_bytes_.fetch_add(packet.len, std::memory_order_relaxed);
+    }
     return true;
 }
 
@@ -114,7 +146,7 @@ void XtcpNdiBackend::SetRxHandler(::xtcp::ndi::RxHandler handler) noexcept {
 }
 
 ::xtcp::ndi::BackendCaps XtcpNdiBackend::Caps() const noexcept {
-    return ::xtcp::ndi::kCapNone;
+    return tx_gso_enabled_ ? ::xtcp::ndi::kCapTsoTx : ::xtcp::ndi::kCapNone;
 }
 
 bool XtcpNdiBackend::Inject(::xtcp::buf::BufRef&& packet) noexcept {
@@ -142,6 +174,9 @@ XtcpNdiBackend::TxStats XtcpNdiBackend::SnapshotTxStats() const noexcept {
     stats.attempts = attempts_.load(std::memory_order_relaxed);
     stats.accepted = accepted_.load(std::memory_order_relaxed);
     stats.rejected = rejected_.load(std::memory_order_relaxed);
+    stats.gso_packets = gso_packets_.load(std::memory_order_relaxed);
+    stats.gso_bytes = gso_bytes_.load(std::memory_order_relaxed);
+    stats.gso_rejected = gso_rejected_.load(std::memory_order_relaxed);
     stats.batch_calls = batch_calls_.load(std::memory_order_relaxed);
     stats.batch_packets = batch_packets_.load(std::memory_order_relaxed);
     stats.batch_max = batch_max_.load(std::memory_order_relaxed);

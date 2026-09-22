@@ -143,6 +143,41 @@ namespace ppp {
             return remoteEP_;
         }
 
+        bool ITcpipTransmission::SupportsSendHalfClose() const noexcept {
+            return role_ == TcpTransmissionRole::Child;
+        }
+
+        bool ITcpipTransmission::ShutdownSend() noexcept {
+            if (!SupportsSendHalfClose() || disposed_.load() != FALSE) {
+                return false;
+            }
+            bool expected = false;
+            if (!send_shutdown_.compare_exchange_strong(expected, true)) {
+                return true;
+            }
+            std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::atomic_load(&socket_);
+            if (!socket || !socket->is_open()) {
+                send_shutdown_.store(false);
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOpenFailed);
+                return false;
+            }
+            boost::system::error_code ec;
+            socket->shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+            if (!ec) {
+                ppp::telemetry::Count("tcpip.shutdown_send.child", 1);
+                return true;
+            }
+            send_shutdown_.store(false);
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketWriteFailed);
+            ppp::telemetry::Log(Level::kInfo, "tcpip", "shutdown send failed role=%s ec=%d msg=%s",
+                TcpTransmissionRoleName(role_), ec.value(), ec.message().c_str());
+            return false;
+        }
+
+        bool ITcpipTransmission::IsReceiveClosed() const noexcept {
+            return receive_closed_.load();
+        }
+
         /**
          * @brief Reads bytes through the QoS-managed path.
          * @param y Coroutine yield context.
@@ -241,6 +276,12 @@ namespace ppp {
             y.Suspend();
             bool ok = !read_ec && bytes_transferred == (std::size_t)length;
             if (!ok) {
+                if (read_ec == boost::asio::error::eof &&
+                    role_ == TcpTransmissionRole::Child) {
+                    receive_closed_.store(true);
+                    ppp::telemetry::Count("tcpip.receive_eof.child", 1);
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketReadFailed, NULLPTR);
+                }
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketReadFailed);
                 ppp::telemetry::Log(Level::kInfo,
                     "tcpip",
@@ -279,7 +320,7 @@ namespace ppp {
                 return false;
             }
 
-            if (disposed_.load() != FALSE) {
+            if (disposed_.load() != FALSE || send_shutdown_.load()) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionClosing);
                 return false;
             }

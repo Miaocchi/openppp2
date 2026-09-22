@@ -110,9 +110,9 @@ def softirq_delta(before: str, after: str, selected_cpus: list[int]) -> dict[str
     return result
 
 
-def parse_perf_csv(text: str) -> dict[str, int]:
+def parse_perf_csv(text: str) -> dict[str, int | float]:
     """Parse `perf stat -x,` counters without relying on PMU-only events."""
-    values: dict[str, int] = {}
+    values: dict[str, int | float] = {}
     for line in text.splitlines():
         columns = [column.strip() for column in line.split(",")]
         event = next((column for column in columns if column in PERF_EVENTS), None)
@@ -129,6 +129,11 @@ def parse_perf_csv(text: str) -> dict[str, int]:
             raise ValueError(f"negative perf value for {event}")
         if event == "task-clock":
             values["task_clock_ns"] = values.get("task_clock_ns", 0) + round(value * 1_000_000)
+            if columns[-1] == "CPUs utilized":
+                try:
+                    values["cpus_utilized"] = float(columns[-2])
+                except (IndexError, ValueError):
+                    raise ValueError("invalid CPUs utilized value") from None
         else:
             name = event.replace("-", "_")
             values[name] = values.get(name, 0) + round(value)
@@ -166,6 +171,7 @@ def unavailable_measurement(profile: str, affinity_cpus: list[int]) -> dict[str,
         "payload_bytes": None,
         "raw_files": {},
         "process_perf": None,
+        "iperf_perf": None,
         "system_perf": None,
         "proc_stat": None,
         "softirqs": None,
@@ -189,6 +195,7 @@ def build_measurement(*, profile: str, affinity_cpus: list[int], affinity_verifi
         "payload_bytes": payload_bytes,
         "raw_files": raw_files,
         "process_perf": None,
+        "iperf_perf": None,
         "system_perf": None,
         "proc_stat": None,
         "softirqs": None,
@@ -221,6 +228,11 @@ def build_measurement(*, profile: str, affinity_cpus: list[int], affinity_verifi
             for key in ("task_clock_ns", "context_switches", "cpu_migrations"):
                 process[f"{key}_per_payload_byte"] = _per_byte(process[key], payload_bytes)
             result["process_perf"] = process
+        if profile == "client-single-core":
+            iperf = parse_perf_csv(_read(raw_dir / raw_files.get("iperf_perf", "")))
+            for key in ("task_clock_ns", "context_switches", "cpu_migrations"):
+                iperf[f"{key}_per_payload_byte"] = _per_byte(iperf[key], payload_bytes)
+            result["iperf_perf"] = iperf
         if system_perf_enabled:
             system = parse_perf_csv(_read(raw_dir / raw_files.get("system_perf", "")))
             for key in ("task_clock_ns", "context_switches", "cpu_migrations"):

@@ -90,6 +90,8 @@ namespace ppp
         public: 
             virtual bool                                                            Output(const std::shared_ptr<Byte>& packet, int packet_size) noexcept override;
             virtual bool                                                            Output(const void* packet, int packet_size) noexcept override;
+            virtual bool                                                            SupportsTxGso() const noexcept override;
+            virtual bool                                                            OutputGso(const std::shared_ptr<Byte>& packet, int packet_size, TxGsoMetadata metadata) noexcept override;
 
         protected:
             virtual void                                                            OnInput(PacketInputEventArgs& e) noexcept override;
@@ -153,7 +155,7 @@ namespace ppp
             bool                                                                    Ssmt(const std::shared_ptr<boost::asio::io_context>& context, int fd, const std::shared_ptr<Byte>& buffer, const std::shared_ptr<boost::asio::posix::stream_descriptor>& sd) noexcept;
             ssize_t                                                                 WriteTunFrame(int fd, const uint8_t* frame, size_t frame_size) noexcept;
             ssize_t                                                                 WriteGsoFrameLocked(const uint8_t* frame, size_t frame_size) noexcept;
-            enum class TunWriteFailureSource : uint8_t { BareWrite, GsoDisableFlush, GsoHoldTimerFlush, GsoOrdinaryWrite, GsoCoalescerPush };
+            enum class TunWriteFailureSource : uint8_t { BareWrite, GsoDisableFlush, GsoHoldTimerFlush, GsoOrdinaryWrite, GsoCoalescerPush, DirectGsoWrite };
             void                                                                    FailTunWrite(TunWriteFailureSource source) noexcept;
             void                                                                    DisableGsoMergeLocked(int write_fd, TunGsoCoalescer::FlushReason reason = TunGsoCoalescer::FlushReason::Terminate) noexcept;
             void                                                                    ArmGsoHoldTimerLocked() noexcept;
@@ -172,6 +174,10 @@ namespace ppp
             mutable std::mutex                                                      gso_mutex_;
             int                                                                     gso_write_fd_       = -1;
             bool                                                                    vnet_header_        = false;
+            bool                                                                    tx_gso_supported_    = false;
+            std::atomic<uint64_t>                                                   direct_gso_packets_{0};
+            std::atomic<uint64_t>                                                   direct_gso_bytes_{0};
+            std::atomic<uint64_t>                                                   direct_gso_rejected_{0};
             size_t                                                                  vnet_header_size_   = 0;
             size_t                                                                  read_capacity_      = ITap::Mtu;
             std::shared_ptr<Byte>                                                   vnet_read_buffer_;

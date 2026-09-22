@@ -5,8 +5,10 @@
 individual invariants that are relevant to the requested stack. The process
 core count is computed directly from perf task-clock divided by the formal
 wall-clock duration (never from Mbps / ns-per-byte); the ns-per-byte
-derivation is only exposed for sanity checking. For the strict single-core
-profile this enforces process cores <= 1.02 and zero migrations.
+derivation is only exposed for sanity checking. For the strict same-core
+profile this enforces PPP process cores <= 1.02, selected-CPU capacity <= 1.02
+cores, and zero PPP/iperf migrations. PPP alone need not consume 0.9 cores
+because it shares the selected CPU with iperf.
 """
 
 from __future__ import annotations
@@ -16,10 +18,9 @@ from pathlib import Path
 from typing import Any
 
 PROCESS_CORES_MAX = 1.02
-# A strict single-core cell must actually saturate its one client CPU. A
-# process_cores far below 1.0 (e.g. 0.3-0.7) means the ppp process was
-# starved by host interference or a scheduling artifact on the pinned CPU,
-# so the throughput number is not a single-core result and must FAIL.
+# Non-same-core profiles retain the historical PPP saturation lower bound.
+# client-single-core instead treats a low PPP-only value as a warning because
+# PPP and iperf intentionally compete on the same selected CPU.
 PROCESS_CORES_MIN = 0.9
 
 # A failed push is not a stack-level invariant for native/lwIP; it only
@@ -112,16 +113,25 @@ def qualify_cell(record: dict[str, Any], state_dir: Path) -> dict[str, Any]:
     process_cores = None
     if isinstance(task_clock_ns, int) and wall_ns:
         process_cores = task_clock_ns / wall_ns
-    checks["process_cores_ok"] = (
-        process_cores is not None
-        and PROCESS_CORES_MIN <= process_cores <= PROCESS_CORES_MAX
+    same_core = measurement.get("profile") == "client-single-core"
+    checks["process_cores_ok"] = process_cores is not None and process_cores <= PROCESS_CORES_MAX and (
+        same_core or process_cores >= PROCESS_CORES_MIN
     )
     details["process_cores"] = process_cores
     details["process_task_clock_ns"] = task_clock_ns
+    warnings: list[str] = []
+    if same_core and process_cores is not None and process_cores < PROCESS_CORES_MIN:
+        warnings.append("ppp_process_cores_below_0.9_same_core_contention")
 
     migrations = process_perf.get("cpu_migrations")
-    checks["zero_migrations"] = migrations == 0
-    details["cpu_migrations"] = migrations
+    checks["ppp_zero_migrations"] = migrations == 0
+    details["ppp_cpu_migrations"] = migrations
+
+    iperf_perf = measurement.get("iperf_perf") or {}
+    iperf_migrations = iperf_perf.get("cpu_migrations")
+    if same_core:
+        checks["iperf_zero_migrations"] = iperf_migrations == 0
+    details["iperf_cpu_migrations"] = iperf_migrations
 
     requested_stack = record.get("requested_tcp_stack")
     active_stack = record.get("active_tcp_stack")
@@ -161,9 +171,11 @@ def qualify_cell(record: dict[str, Any], state_dir: Path) -> dict[str, Any]:
     # Oversized L3 is a Tap-level invariant; a non-empty packet_shape implies
     # the strict-MTU guard rejected an oversized L3 packet.
     packet_shape = terminal.get("packet_shape") if isinstance(terminal, dict) else None
-    details["oversized_l3_rejected"] = bool(
+    oversized_l3_rejected = bool(
         isinstance(packet_shape, dict) and packet_shape.get("excess_bytes", 0) > 0
     )
+    details["oversized_l3_rejected"] = oversized_l3_rejected
+    checks["no_oversized_l3_rejected"] = not oversized_l3_rejected
 
     # Migration warning is a diagnostic only, never a qualifier failure.
     softirqs = measurement.get("softirqs") or {}
@@ -173,6 +185,64 @@ def qualify_cell(record: dict[str, Any], state_dir: Path) -> dict[str, Any]:
     migration_warning = measurement.get("migration_warning") or {}
     details["migration_warning_present"] = bool(migration_warning.get("present"))
     details["other_cpu_net_softirq_delta"] = other_softirq
+
+    if same_core:
+        proc_selected = (measurement.get("proc_stat") or {}).get("selected") or {}
+        selected_nonidle_ns = proc_selected.get("nonidle_ns")
+        selected_cpu_cores = selected_nonidle_ns / wall_ns if isinstance(selected_nonidle_ns, int) and wall_ns else None
+        system_perf = measurement.get("system_perf") or {}
+        system_capacity_cores = system_perf.get("cpus_utilized")
+        if not isinstance(system_capacity_cores, (int, float)):
+            system_capacity_cores = None
+        checks["selected_cpu_capacity_ok"] = (
+            selected_cpu_cores is not None
+            and selected_cpu_cores <= PROCESS_CORES_MAX
+            and (system_capacity_cores is None or system_capacity_cores <= PROCESS_CORES_MAX)
+        )
+        details["selected_cpu_nonidle_cores"] = selected_cpu_cores
+        details["system_perf_capacity_cores"] = system_capacity_cores
+
+        affinity_evidence = []
+        for boundary in ("launch", "start", "end"):
+            path = state_dir / f"cpu-{boundary}-affinity.json"
+            try:
+                evidence = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                evidence = {"status": "fail", "processes": [], "threads": []}
+            affinity_evidence.append(evidence)
+            processes = {entry.get("role"): entry for entry in evidence.get("processes", [])}
+            ppp_ok = processes.get("ppp", {}).get("status") == "alive"
+            if boundary == "end":
+                iperf_ok = processes.get("iperf", {}).get("status") in ("alive", "terminated_after_interval")
+                check_name = "end_affinity_or_terminated"
+            else:
+                iperf_ok = processes.get("iperf", {}).get("status") == "alive"
+                check_name = f"{boundary}_all_tids_single_cpu"
+            checks[check_name] = evidence.get("status") == "pass" and ppp_ok and iperf_ok
+        details["thread_affinity"] = affinity_evidence
+
+        isolation_path = state_dir / "cpu-isolation-restore.json"
+        try:
+            isolation = json.loads(isolation_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            isolation = {}
+        settings = isolation.get("settings", [])
+        queue_settings = [entry for entry in settings if entry.get("kind") in ("rps", "xps")]
+        devices = isolation.get("devices", {})
+        queue_supported = bool(devices) and all(device.get("queue_support") == "supported" for device in devices.values())
+        queue_target = bool(queue_settings) and all(entry.get("readback", {}).get("target_match") is True for entry in queue_settings)
+        irq_ok = bool(devices) and all(device.get("irq_qualification", {}).get("status") == "pass" for device in devices.values())
+        restore_ok = isolation.get("phases", {}).get("restore", {}).get("status") == "pass"
+        checks["rps_xps_supported"] = queue_supported
+        checks["rps_xps_target_mask"] = queue_target
+        checks["irq_affinity"] = irq_ok
+        checks["isolation_restored"] = restore_ok
+        details["isolation"] = {
+            "target_cpu": isolation.get("target_cpu"),
+            "target_mask": isolation.get("target_mask"),
+            "devices": devices,
+            "phase_status": {name: value.get("status") for name, value in isolation.get("phases", {}).items()},
+        }
 
     # Sanity-only cross-check: derive cores from ns/B for comparison.
     ns_per_byte = process_perf.get("task_clock_ns_per_payload_byte")
@@ -188,6 +258,7 @@ def qualify_cell(record: dict[str, Any], state_dir: Path) -> dict[str, Any]:
         "profile": measurement.get("profile"),
         "process_cores": process_cores,
         "failed_checks": sorted(failed),
+        "warnings": warnings,
         "checks": checks,
         "details": details,
     }

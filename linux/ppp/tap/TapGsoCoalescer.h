@@ -26,6 +26,7 @@ namespace tap {
 class TunGsoCoalescer final {
 public:
     static constexpr size_t kSegmentCap = 4;
+    static constexpr size_t kMaxSegmentCap = 48;
     static constexpr size_t kMaxPacketBytes = 1500;
     // XTCP-SHARED-PATH-001 follow-up: the merge cap is runtime-tunable
     // (OPENPPP2_TAP_GSO_SEGMENTS, default 4 = historical behavior, up to 48 =
@@ -35,7 +36,7 @@ public:
         const char* env = ::getenv("OPENPPP2_TAP_GSO_SEGMENTS");
         if (env != nullptr && env[0] != '\0') {
             const long long value = ::atoll(env);
-            if (value >= 1 && value <= 48) {
+            if (value >= 1 && value <= static_cast<long long>(kMaxSegmentCap)) {
                 return static_cast<size_t>(value);
             }
         }
@@ -412,8 +413,8 @@ private:
     std::array<uint8_t, 12> tcp_fixed_{};
     std::array<uint8_t, 40> ip_options_{};
     std::array<uint8_t, 40> tcp_options_{};
-    std::array<std::array<uint8_t, kMaxPacketBytes>, kSegmentCap> original_{};
-    std::array<size_t, kSegmentCap> original_sizes_{};
+    std::array<std::array<uint8_t, kMaxPacketBytes>, kMaxSegmentCap> original_{};
+    std::array<size_t, kMaxSegmentCap> original_sizes_{};
     std::array<uint8_t, kVirtioHeaderBytes + kMaxPacketBytes> ordinary_{};
     std::vector<uint8_t> superpacket_;
 };

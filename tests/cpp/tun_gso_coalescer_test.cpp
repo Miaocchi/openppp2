@@ -4,6 +4,7 @@
 #include <linux/ppp/tap/TapGsoCoalescer.h>
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -77,6 +78,20 @@ BOOST_AUTO_TEST_CASE(cap_four_builds_one_tcpv4_gso_frame) {
     const uint8_t pseudo[] = {0, 6, static_cast<uint8_t>(tcp_bytes >> 8U), static_cast<uint8_t>(tcp_bytes)};
     const uint16_t expected_partial = static_cast<uint16_t>(~fold_checksum(checksum_sum(pseudo, sizeof(pseudo), checksum_sum(ip + 12, 8))));
     BOOST_TEST(be16(tcp + 16) == expected_partial);
+}
+
+BOOST_AUTO_TEST_CASE(runtime_segment_cap_can_reach_maximum_without_overflow) {
+    ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "48", 1);
+    Sink sink;
+    TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); });
+    for (size_t i = 0; i != TunGsoCoalescer::kMaxSegmentCap; ++i) {
+        const auto value = packet({.seq = static_cast<uint32_t>(1000 + i * 100)});
+        BOOST_REQUIRE(c.Push(value.data(), value.size(), 1000 + i));
+    }
+    ::unsetenv("OPENPPP2_TAP_GSO_SEGMENTS");
+
+    BOOST_REQUIRE_EQUAL(sink.writes.size(), 1U);
+    BOOST_TEST(sink.writes.front()[1] == VIRTIO_NET_HDR_GSO_TCPV4);
 }
 
 BOOST_AUTO_TEST_CASE(disabled_merge_writes_one_ordinary_vnet_frame_immediately) {

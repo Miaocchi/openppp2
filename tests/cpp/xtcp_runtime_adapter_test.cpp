@@ -7,6 +7,7 @@
 #include <boost/asio/io_context.hpp>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -87,13 +88,23 @@ void TestIPv4PolicyHelpers() {
 
 void TestProductionNdiOwnership() {
     bool accept = false;
+    std::shared_ptr<Byte> retained;
     ppp::app::client::xtcp::XtcpNdiBackend backend(
-        [&accept](std::shared_ptr<Byte>&&, int) noexcept { return accept; });
+        [&accept, &retained](std::shared_ptr<Byte>&& buffer, int,
+            std::optional<ppp::tap::TxGsoMetadata>) noexcept {
+            if (accept) {
+                retained = std::move(buffer);
+            }
+            return accept;
+        });
 
     xtcp::buf::BufRef owned = xtcp::buf::BufRef::Acquire(64);
     CHECK(!owned.IsEmpty());
     owned.Data()[0] = 0x5a;
     owned.SetLen(1);
+    // Keep a stack-side clone to verify async output retains the same pool
+    // block, and that the final consumer release returns its reference.
+    xtcp::buf::BufRef stack_ref = owned.Clone();
     xtcp::ndi::Packet packet;
     packet.data = owned.Data();
     packet.len = owned.Len();
@@ -103,6 +114,8 @@ void TestProductionNdiOwnership() {
     CHECK(!backend.Tx(std::move(packet)));
     CHECK(!packet.owned.IsEmpty());
     CHECK(packet.owned.Data()[0] == 0x5a);
+    CHECK(!retained);
+    CHECK(stack_ref.UseCount() == 2);
     auto stats = backend.SnapshotTxStats();
     CHECK(stats.attempts == 1);
     CHECK(stats.accepted == 0);
@@ -113,6 +126,8 @@ void TestProductionNdiOwnership() {
     accept = true;
     CHECK(backend.Tx(std::move(packet)));
     CHECK(packet.owned.IsEmpty());
+    CHECK(retained.get() == stack_ref.Data());
+    CHECK(stack_ref.UseCount() == 2);
     stats = backend.SnapshotTxStats();
     CHECK(stats.attempts == 2);
     CHECK(stats.accepted == 1);
@@ -121,6 +136,9 @@ void TestProductionNdiOwnership() {
     CHECK(stats.tx_bytes == 2);
 
     backend.Stop();
+    CHECK(retained && retained.get()[0] == 0x5a);
+    retained.reset();
+    CHECK(stack_ref.UseCount() == 1);
     xtcp::buf::BufRef stopped_owned = xtcp::buf::BufRef::Acquire(64);
     CHECK(!stopped_owned.IsEmpty());
     stopped_owned.Data()[0] = 0xa5;
@@ -159,6 +177,94 @@ void TestProductionNdiOwnership() {
     const auto repeated_output_snapshot = diagnostics.Snapshot();
     CHECK(repeated_output_snapshot.output_rejected == 2);
     CHECK(repeated_output_snapshot.first_actual_output_rejected_monotonic_ns == first_rejected_ns);
+}
+
+void TestProductionNdiTsoMetadata() {
+    const char* previous = std::getenv("OPENPPP2_XTCP_NDI_TSO_TX");
+    const bool had_previous = previous != nullptr;
+    const std::string previous_value = previous ? previous : "";
+    unsetenv("OPENPPP2_XTCP_NDI_TSO_TX");
+
+    using Backend = ppp::app::client::xtcp::XtcpNdiBackend;
+    Backend gate_off([](std::shared_ptr<Byte>&&, int,
+        std::optional<ppp::tap::TxGsoMetadata>) noexcept { return true; }, true);
+    CHECK(gate_off.Caps() == xtcp::ndi::kCapNone);
+
+    setenv("OPENPPP2_XTCP_NDI_TSO_TX", "1", 1);
+    Backend unsupported([](std::shared_ptr<Byte>&&, int,
+        std::optional<ppp::tap::TxGsoMetadata>) noexcept { return true; }, false);
+    CHECK(unsupported.Caps() == xtcp::ndi::kCapNone);
+
+    bool accept = false;
+    int calls = 0;
+    std::optional<ppp::tap::TxGsoMetadata> observed;
+    Backend backend([&](std::shared_ptr<Byte>&&, int,
+        std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+        ++calls;
+        observed = gso;
+        return accept;
+    }, true);
+    CHECK(backend.Caps() == xtcp::ndi::kCapTsoTx);
+
+    auto make_packet = [](std::uint16_t segments) {
+        constexpr UInt32 kPacketSize = 2440;
+        xtcp::buf::BufRef owned = xtcp::buf::BufRef::Acquire(kPacketSize);
+        CHECK(!owned.IsEmpty());
+        std::memset(owned.Data(), 0, kPacketSize);
+        owned.Data()[0] = 0x45;
+        owned.Data()[2] = static_cast<Byte>(kPacketSize >> 8);
+        owned.Data()[3] = static_cast<Byte>(kPacketSize);
+        owned.Data()[6] = 0x40;
+        owned.Data()[8] = 64;
+        owned.Data()[9] = 6;
+        owned.Data()[20 + 12] = 0x50;
+        owned.Data()[20 + 13] = 0x18;
+        owned.SetLen(kPacketSize);
+        owned.Meta().gso_size = 1400;
+        owned.Meta().mss = 1460;
+        owned.Meta().segs = segments;
+        xtcp::ndi::Packet packet;
+        packet.data = owned.Data();
+        packet.len = owned.Len();
+        packet.eth_type = 0x0800;
+        packet.owned = std::move(owned);
+        return packet;
+    };
+
+    xtcp::ndi::Packet packet = make_packet(2);
+    CHECK(!backend.Tx(std::move(packet)));
+    CHECK(!packet.owned.IsEmpty());
+    CHECK(packet.owned.Meta().segs == 2);
+    CHECK(calls == 1);
+    CHECK(observed && observed->GsoSize() == 1400);
+    CHECK(observed && observed->HeaderLength() == 40);
+    CHECK(observed && observed->Segments() == 2);
+    auto stats = backend.SnapshotTxStats();
+    CHECK(stats.gso_packets == 0);
+    CHECK(stats.gso_rejected == 1);
+
+    accept = true;
+    CHECK(backend.Tx(std::move(packet)));
+    CHECK(packet.owned.IsEmpty());
+    stats = backend.SnapshotTxStats();
+    CHECK(stats.gso_packets == 1);
+    CHECK(stats.gso_bytes == 2440);
+    CHECK(stats.gso_rejected == 1);
+
+    xtcp::ndi::Packet malformed = make_packet(3);
+    CHECK(!backend.Tx(std::move(malformed)));
+    CHECK(!malformed.owned.IsEmpty());
+    CHECK(calls == 2);
+    stats = backend.SnapshotTxStats();
+    CHECK(stats.gso_packets == 1);
+    CHECK(stats.gso_rejected == 2);
+
+    if (had_previous) {
+        setenv("OPENPPP2_XTCP_NDI_TSO_TX", previous_value.c_str(), 1);
+    }
+    else {
+        unsetenv("OPENPPP2_XTCP_NDI_TSO_TX");
+    }
 }
 
 struct RejectedPacket final {
@@ -209,7 +315,8 @@ std::shared_ptr<ppp::app::client::xtcp::XtcpRuntime> MakeRejectingRuntime(
     using ppp::app::client::xtcp::XtcpRuntime;
     return std::make_shared<XtcpRuntime>(
         context,
-        [calls, diagnostics, saw_oversize_attempt_before_handler](std::shared_ptr<Byte>&&, int) noexcept {
+        [calls, diagnostics, saw_oversize_attempt_before_handler](std::shared_ptr<Byte>&&, int,
+            std::optional<ppp::tap::TxGsoMetadata>) noexcept {
             ++*calls;
             if (saw_oversize_attempt_before_handler != nullptr) {
                 *saw_oversize_attempt_before_handler =
@@ -352,7 +459,8 @@ void TestRuntimeRepeatedStartStop() {
     auto context = std::make_shared<boost::asio::io_context>();
     auto runtime = std::make_shared<ppp::app::client::xtcp::XtcpRuntime>(
         context,
-        [](std::shared_ptr<Byte>&&, int) noexcept { return true; },
+        [](std::shared_ptr<Byte>&&, int,
+            std::optional<ppp::tap::TxGsoMetadata>) noexcept { return true; },
         []() noexcept { return boost::asio::ip::tcp::endpoint(); },
         [](const boost::asio::ip::tcp::endpoint&,
            const boost::asio::ip::tcp::endpoint&,
@@ -363,7 +471,9 @@ void TestRuntimeRepeatedStartStop() {
         [](std::uint16_t, std::uint64_t) noexcept {});
 
     CHECK(runtime->Start());
+    const auto first_snapshot = runtime->SnapshotStats();
     const std::uint64_t first = runtime->Generation();
+    CHECK(first_snapshot.runtime_instance_id != 0);
     runtime->MarkReady();
     CHECK(runtime->IsReady());
     runtime->Stop();
@@ -372,7 +482,10 @@ void TestRuntimeRepeatedStartStop() {
 
     context->restart();
     CHECK(runtime->Start());
+    const auto second_snapshot = runtime->SnapshotStats();
     CHECK(runtime->Generation() != first);
+    CHECK(second_snapshot.runtime_instance_id != 0);
+    CHECK(second_snapshot.runtime_instance_id != first_snapshot.runtime_instance_id);
     runtime->MarkReady();
     CHECK(runtime->IsReady());
     runtime->Stop();
@@ -387,6 +500,7 @@ int main() {
     TestExternalLoopbackGate();
     TestIPv4PolicyHelpers();
     TestProductionNdiOwnership();
+    TestProductionNdiTsoMetadata();
     TestRuntimeOutputRejectionPacketShapes();
     xtcp::buf::ShutdownPools();
     TestRuntimeRejectsNullContext();

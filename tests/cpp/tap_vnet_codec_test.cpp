@@ -2,6 +2,7 @@
 #include <boost/test/included/unit_test.hpp>
 
 #include <linux/ppp/tap/TapVnetCodec.h>
+#include <ppp/tap/ITap.h>
 
 #include <cstring>
 #include <vector>
@@ -59,6 +60,31 @@ BOOST_AUTO_TEST_CASE(standard_vnet_header_derives_ipv4_read_capacity) {
     BOOST_REQUIRE(ReadCapacity(sizeof(virtio_net_hdr), capacity));
     BOOST_TEST(capacity == sizeof(virtio_net_hdr) + kMaximumIpv4PacketSize);
     BOOST_TEST(!ReadCapacity(sizeof(virtio_net_hdr) - 1, capacity));
+}
+
+BOOST_AUTO_TEST_CASE(complete_checksum_tcpv4_gso_header_is_encoded_for_tun) {
+    std::vector<uint8_t> packet = MakeIpv4Tcp(2400);
+    const auto metadata = ppp::tap::TxGsoMetadata::ParseTcpV4(
+        packet.data(), packet.size(), 1400, 2);
+    BOOST_REQUIRE(metadata);
+    BOOST_TEST(metadata->HeaderLength() == 40U);
+    BOOST_TEST(static_cast<unsigned>(metadata->ChecksumState()) ==
+        static_cast<unsigned>(ppp::tap::TxChecksumState::Complete));
+
+    virtio_net_hdr header{};
+    BOOST_REQUIRE(BuildTcpV4GsoHeader(packet.data(), packet.size(), *metadata, header));
+    BOOST_TEST(header.flags == 0U);
+    BOOST_TEST(header.gso_type == VIRTIO_NET_HDR_GSO_TCPV4);
+    BOOST_TEST(le16toh(header.hdr_len) == 40U);
+    BOOST_TEST(le16toh(header.gso_size) == 1400U);
+    BOOST_TEST(le16toh(header.csum_start) == 0U);
+    BOOST_TEST(le16toh(header.csum_offset) == 0U);
+
+    packet[6] = 0x20;
+    BOOST_TEST(!BuildTcpV4GsoHeader(packet.data(), packet.size(), *metadata, header));
+    packet[6] = 0x40;
+    packet[3] -= 1;
+    BOOST_TEST(!BuildTcpV4GsoHeader(packet.data(), packet.size(), *metadata, header));
 }
 
 BOOST_AUTO_TEST_CASE(checksum_only_tcpv4_is_finalized_before_delivery) {
@@ -126,4 +152,24 @@ BOOST_AUTO_TEST_CASE(tcpv4_gso_requires_canonical_metadata_and_builds_segments) 
     header.gso_size = htole16(1461);
     std::memcpy(frame.data(), &header, sizeof(header));
     BOOST_TEST(!ParseTcpV4Gso(frame.data(), frame.size(), kStandardVirtioHeaderSize, 1500, gso));
+}
+
+BOOST_AUTO_TEST_CASE(tcpv4_gso_whole_frame_delivery_requires_consumer_capability) {
+    ppp::tap::ITap::PacketInputEventArgs ordinary{};
+    ordinary.TcpV4Gso = false;
+    BOOST_TEST(ppp::tap::ITap::ShouldDeliverWholeTcpV4Gso(ordinary, false));
+
+    ppp::tap::ITap::PacketInputEventArgs gso{};
+    gso.TcpV4Gso = true;
+    BOOST_TEST(!ppp::tap::ITap::ShouldDeliverWholeTcpV4Gso(gso, false));
+    BOOST_TEST(ppp::tap::ITap::ShouldDeliverWholeTcpV4Gso(gso, true));
+}
+
+BOOST_AUTO_TEST_CASE(tcpv4_gso_can_be_completed_for_direct_stack_injection) {
+    std::vector<uint8_t> frame = MakeVnetFrame(MakeIpv4Tcp(180), true);
+    TcpV4GsoFrame gso;
+    BOOST_REQUIRE(ParseTcpV4Gso(frame.data(), frame.size(), kStandardVirtioHeaderSize, 1500, gso));
+    BOOST_REQUIRE(CompleteTcpV4GsoChecksums(gso));
+    BOOST_TEST(FoldChecksum(ChecksumSum(gso.ip, gso.ihl)) == 0U);
+    BOOST_TEST(TcpChecksum(gso) == 0U);
 }

@@ -85,6 +85,9 @@ function(openppp2_add_cpp_test target)
     set_tests_properties(${target} PROPERTIES TIMEOUT 120)
 endfunction()
 
+openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
+target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
+
 if(ENABLE_XTCP_TESTS)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         message(FATAL_ERROR "ENABLE_XTCP_TESTS is supported only for Linux desktop builds")
@@ -114,6 +117,14 @@ if(ENABLE_XTCP_TESTS)
         target_link_libraries(${_xtcp_test} PRIVATE xtcp_static)
     endforeach()
 
+    openppp2_add_cpp_test(xtcp_ooo_frontier_test SOURCES "${XTCP_SOURCE_DIR}/tests/test_ooo_frontier.cpp")
+    target_link_libraries(xtcp_ooo_frontier_test PRIVATE xtcp_static)
+
+    foreach(_xtcp_resume_test xtcp_ooo_backpressure_probe xtcp_ooo_resume_contract_test)
+        openppp2_add_cpp_test(${_xtcp_resume_test} SOURCES ${_xtcp_resume_test}.cpp)
+        target_link_libraries(${_xtcp_resume_test} PRIVATE xtcp_static)
+    endforeach()
+
     openppp2_add_cpp_test(xtcp_runtime_adapter_test SOURCES
         xtcp_runtime_adapter_test.cpp
         "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpNdiBackend.cpp"
@@ -124,6 +135,13 @@ if(ENABLE_XTCP_TESTS)
         PPP_XTCP_HAS_TIMER_DEADLINE=1
         PPP_XTCP_RUNTIME_TESTING=1)
     target_link_libraries(xtcp_runtime_adapter_test PRIVATE
+        xtcp_static Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+
+    openppp2_add_cpp_test(xtcp_ndi_memory_probe SOURCES
+        xtcp_ndi_memory_probe.cpp
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpNdiBackend.cpp")
+    target_compile_definitions(xtcp_ndi_memory_probe PRIVATE PPP_ENABLE_XTCP=1)
+    target_link_libraries(xtcp_ndi_memory_probe PRIVATE
         xtcp_static Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 
     openppp2_add_cpp_test(xtcp_runtime_bridge_test SOURCES
@@ -152,6 +170,13 @@ openppp2_add_cpp_test(runtime_stats_json_test SOURCES
     "${OPENPPP2_ROOT}/common/json/src/json_reader.cpp"
     "${OPENPPP2_ROOT}/common/json/src/json_value.cpp"
     "${OPENPPP2_ROOT}/common/json/src/json_writer.cpp")
+openppp2_add_cpp_test(datapath_acceptance_boundary_test SOURCES
+    datapath_acceptance_boundary_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/runtime/DatapathAcceptanceBoundary.cpp"
+    "${OPENPPP2_ROOT}/common/json/src/json_reader.cpp"
+    "${OPENPPP2_ROOT}/common/json/src/json_value.cpp"
+    "${OPENPPP2_ROOT}/common/json/src/json_writer.cpp")
+target_link_libraries(datapath_acceptance_boundary_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 openppp2_add_cpp_test(runtime_stop_coordinator_test SOURCES
     runtime_stop_coordinator_test.cpp)
 openppp2_add_cpp_test(runtime_stop_pipeline_test SOURCES
@@ -743,6 +768,7 @@ openppp2_add_cpp_test(tun_gso_ledger_test SOURCES
     tun_gso_ledger_test.cpp)
 openppp2_add_cpp_test(tap_vnet_codec_test SOURCES
     tap_vnet_codec_test.cpp)
+target_link_libraries(tap_vnet_codec_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 openppp2_add_cpp_test(random_test SOURCES
     random_test.cpp
     support/random_test_stubs.cpp

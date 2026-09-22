@@ -451,6 +451,10 @@ namespace ppp
             auto TAP_PACKET_INPUT_EVENT = 
                 [self, this](ppp::tap::ITap*, ppp::tap::ITap::PacketInputEventArgs& e) noexcept
                 {
+                    if (!ITap::ShouldDeliverWholeTcpV4Gso(e, CanConsumeTcpV4Gso()))
+                    {
+                        return false;
+                    }
                     int packet_length = e.PacketLength;
                     struct ip_hdr* iphdr = ip_hdr::Parse(e.Packet, packet_length);
                     if (NULLPTR == iphdr) // INVALID IS (Destination & Mask) != Destination;
@@ -931,6 +935,12 @@ namespace ppp
         }
 #endif
 
+        /** @brief Rejects whole TCPv4 GSO frames unless a derived endpoint explicitly supports them. */
+        bool VEthernet::CanConsumeTcpV4Gso() noexcept
+        {
+            return false;
+        }
+
         /**
          * @brief Creates default IP fragment helper.
          */
@@ -1065,6 +1075,28 @@ namespace ppp
             }
 
             return tap->Output(packet, packet_length);
+        }
+
+        bool VEthernet::SupportsTxGso() noexcept
+        {
+            if (disposed_.load(std::memory_order_acquire))
+            {
+                return false;
+            }
+            std::shared_ptr<ITap> tap = GetTap();
+            return tap && tap->SupportsTxGso();
+        }
+
+        bool VEthernet::OutputGso(const std::shared_ptr<Byte>& packet, int packet_length,
+            ppp::tap::TxGsoMetadata metadata) noexcept
+        {
+            if (NULLPTR == packet || packet_length < 1 ||
+                disposed_.load(std::memory_order_acquire))
+            {
+                return false;
+            }
+            std::shared_ptr<ITap> tap = GetTap();
+            return tap && tap->OutputGso(packet, packet_length, metadata);
         }
 
         /**

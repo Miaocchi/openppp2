@@ -10,7 +10,7 @@
 
 **当前工作树**包含端到端 TCPv4 GSO ingress、opt-in 单-owner 用户态 direct bridge、显式 receive resume、16KiB download chunk、DL 零窗口 persist/pacing 治理、Route3 strict isolation/qualification，以及 default-off NDI TSO laboratory capability。binary：`build/xtcp-runtime-root/bin/ppp`。这些改动尚未提交，不能把历史 commit 链当作当前 revision。
 
-**direct bridge（`OPENPPP2_XTCP_MEMORY_BRIDGE=1` / runner `--xtcp-memory-bridge`）**替换原 socket pump，而不是与其并行：XTCP receive → 32MiB/4096-item 有界 upload queue → 唯一 transmission writer；唯一 transmission reader → 16KiB alias chunk → XTCP `Send`。runtime 强持有 second leg；队列降到 low watermark 后显式 `ResumeReceive()`/window update。`ITransmission` 无真正 half-close，因此当前采用排空后 20ms degraded close，并以 telemetry 明示，不能描述为协议级半关。
+**direct bridge（`OPENPPP2_XTCP_MEMORY_BRIDGE=1` / runner `--xtcp-memory-bridge`）**替换原 socket pump，而不是与其并行：XTCP receive → 32MiB/4096-item 有界 upload queue → 唯一 transmission writer；唯一 transmission reader → 16KiB alias chunk → XTCP `Send`。runtime 强持有 second leg；队列降到 low watermark 后显式 `ResumeReceive()`/window update。`ITransmission` 默认不保证半关；raw child `ITcpipTransmission` 则通过真实 TCP `shutdown(SHUT_WR)` 在 upload queue 排空后发送 FIN、保留接收方向。该 direct 路径 capability-gated，WebSocket/TLS 等不支持的 carrier 安全回退 socket pump；`degraded_half_close` 仅为兼容遥测，正确路径保持 0。
 
 **当前严格单核 paired 证据**（GSO-on，direct bridge，CPU8）已有三轮 artifact `artifacts/direct-final-*` 的 36/36 qualification pass。旧六模式主矩阵 `artifacts/route3-six-mode-strict-r3-20260904` 仅生成 106/106 cell；修复 revision 的原子矩阵 `artifacts/route3-six-mode-strict-persist-fix-r3b-20260904` 已完成 **108/108 cell qualification 全 pass**。原故障维度 `XTCP/GSO-on/P4/DL` 三轮为 614.4–619.1 Mbps，未再出现 watchdog。
 
@@ -18,11 +18,15 @@ qualification 只证明配置、隔离、runtime proof、统计完整性与 clea
 
 P1 direct GRO 扫描中 12KiB 三轮稳定（975/1010/1039 Mbps）；13–15KiB 出现严重退化，16KiB 虽有高峰但 paired 曾零速，因此 direct P1 默认取 12KiB。DL 将约 64KiB transmission read 切成 16KiB 后，gate-off P1 DL 三轮约 596 Mbps；opt-in NDI TSO 中位 527.46 Mbps，反而更低，必须保持 default-off。
 
+**UL gather 实验**：direct upload writer 可由 `OPENPPP2_XTCP_DIRECT_UPLOAD_GATHER_BYTES`（runner `--xtcp-direct-upload-gather-bytes`）合并已入队连续 payload；不等待凑批，受 carrier plaintext cap 限制。5 秒单轮 strict paired screen 中，60KiB 为唯一 P1/P4/P16 全过候选（1.2057–1.2576×）；但三轮 artifact `artifacts/ul-gather-61440-r3-20260904` 的 P1 round 2 为 1.1873×、P16 round 3 为 1.0939×，即使 18/18 qualification pass 仍未通过稳定 1.2× 性能门禁。
+
+**DL four-credit 实验已否决并回退**：尝试将每 flow direct download reservation 从单个 16KiB 增至 64KiB，目的是连续读取 transmission payload。`artifacts/dl-credit-sndbuf-131072-r1-20260904` 显示 P1/P4 ratio 仅 0.1413/0.6850，且每 flow queue 卡在 64KiB、server `rwnd_limited` 约 99.9%；512KiB artifact 的 P16 发生 watchdog。该路径会造成持续 receiver-window backpressure，不能以增大 sndbuf 或重试掩盖。实现已恢复为单个 16KiB flight：每次 XTCP `Send` accepted 后才由 writable notification 继续读取下一块。
+
 **DL watchdog 根因与修复**：P4 现场四流均为 `snd_wnd=0`、`inflight=0/1`、`pending≈sndbuf`，direct queue 另有 62248 bytes；persist 探针约每两秒发出并获 ACK，但 `NextTimerDeadline()` 仍优先返回无进展可能的高频 `pacing_deadline_`，使同核 PPP timer loop 空转并饿死负责读取 socket、重开窗口的 iperf。补丁 `0010-zero-window-pacing-deadline.patch` 在零窗口且 persist 已武装时忽略 pacing deadline，只等待 persist/RTO 等真实恢复期限；不改变正常开窗 pacing、sndbuf、retransmission ownership 或 NDI TSO。原故障维度 `XTCP/GSO-on/P4/DL/sndbuf=128KiB` 修后专场 `artifacts/route2-persist-fix-p4dl-gso-on-r3-20260904` 连续 3/3 pass，配对 qualification 6/6 pass，无 watchdog；XTCP 611.8–620.2 Mbps。
 
 **验证状态（本工作树）**：lab C++ `135/135`、targeted persist/persist-stack/pacing `3/3`、runtime adapter/bridge `2/2`、项目 XTCP/GSO `8/8`、上游 fault suite `20/20`；修复后 direct bridge 短版 netns E2E（churn×16、netem/MTU、3s soak、rollback）通过，artifact 为 `artifacts/xtcp-direct-persist-e2e-20260904`。Route3 runner 已实现 PPP+iperf 同核 affinity、zero migration、RPS/XPS/相关 IRQ readback 与 compare-and-restore；other-CPU softirq 仅 warning。修复 revision 的六模式 strict 原子矩阵为 108/108 qualification pass。
 
-**旋钮一览**：`OPENPPP2_XTCP_SHARDS` / `--xtcp-cc` / `--xtcp-sndbuf` / `--xtcp-unix-bridge` / `--xtcp-memory-bridge` / `--xtcp-ndi-tso-tx` / `--tap-gso-segments` / `--xtcp-gso-rx` / `OPENPPP2_XTCP_GRO_BYTES` / `OPENPPP2_XTCP_INGRESS_ITEMS/BYTES` / `--xtcp-send-retry-us` / `OPENPPP2_XTCP_CONNECTOR_BATCH_BYTES`。runner 会先清除继承的 memory-bridge/NDI-TSO env，只按显式 flag 启用，并把两项写入 dry-run、matrix 和 cell metadata。
+**旋钮一览**：`OPENPPP2_XTCP_SHARDS` / `--xtcp-cc` / `--xtcp-sndbuf` / `--xtcp-unix-bridge` / `--xtcp-memory-bridge` / `--xtcp-ndi-tso-tx` / `--xtcp-direct-upload-gather-bytes` / `--tap-gso-segments` / `--xtcp-gso-rx` / `OPENPPP2_XTCP_GRO_BYTES` / `OPENPPP2_XTCP_INGRESS_ITEMS/BYTES` / `--xtcp-send-retry-us` / `OPENPPP2_XTCP_CONNECTOR_BATCH_BYTES`。runner 会先清除继承的 direct-bridge/NDI-TSO env，只按显式 flag 启用，并把它们写入 dry-run、matrix 和 cell metadata。
 
 **剩余阻塞**：
 1. P1/P4 UL/DL 与 native 的稳定 1.2× 目标未达，且 P1 UL 仍有间歇性严重退化；
@@ -31,6 +35,25 @@ P1 direct GRO 扫描中 12KiB 三轮稳定（975/1010/1039 Mbps）；13–15KiB 
 4. P64 DL 既有 server-side wedge。
 
 **结论**：三条路线均有可运行实现和正确性证据，Route3 qualification 装置在修复 revision 上完成原子 108/108 pass，且 P4 DL 零窗口 watchdog 已消除；但性能门禁及协议级 half-close 等事项仍未完成，不能宣称路线 1–3 完成或 production ready。
+
+### 0.1 `gpt6fix` 上传预算与乱序窗口修复（2026-09-08，未提交）
+
+本轮先处理有界所有权与回压后的正确性，不宣称完成 RX 零拷贝或稳定 1.20× 性能目标。
+
+- `XtcpUploadBudget` 为同一 runtime 的 direct/connector 上传提供共享预算，默认 32MiB、65536 个原始接收 chunk；字节上限沿用 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES`，在 runtime 首次启动时确定。原来的 direct 单流 32MiB/4096-item 上限仍保留。
+- 在全局和单流 admission 成功后才复制回调借用的数据，拒绝路径不再先分配/复制 payload。接受路径仍有一次 payload copy，并非零拷贝。
+- move-only reservation 随队列及在途异步写存活，gather 只合并已有额度，写完成才归还；关闭清除未提交队列，重启仍统计旧代在途持有者。预算统计的是逻辑上传 payload，不包括 gather 临时副本、编码缓冲和内核 socket 内存。
+- 额度释放通过合并的 shard 通知唤醒全局预算阻塞流，不依赖另一个连接的 writable 回调；单流 backpressure 标志仍用于通知，不改成硬性高低水位 admission 锁存。
+- 新遥测：`upload_budget_bytes/items/max_bytes/max_items/rejected`。原有 queue 遥测不替代预算账本。
+- `0013-ooo-frontier-reclaim.patch` 回收被 RCV.NXT 覆盖的 OOO 数据、保留重叠段的新鲜后缀和恰好位于 frontier 的 FIN，避免已交付字节继续占用接收窗口。按序号环绕的两个有序区间访问旧节点，避免每次 drain 扫全表；这是 frontier 修复，不是完整 OOO 区间规范化或零拷贝重写。
+
+验证记录：C++ 139/139、固定上游 fault suite 20/20、32 个新增 OOO 场景、共享预算并发/异常/重启唤醒测试通过；真实 direct netns E2E（churn 16、soak 3 秒、loss/reorder/MTU、byte-exact、half-close 和 rollback）通过，证据在 `artifacts/g6-upload-ooo-e2e-0908/`。补丁栈从固定归档全量重放，并与实际源码逐文件一致。
+
+扩展 OOO 组的 `test_ts_ooo_drain` 仍失败；两个既有旧构建也复现同样三个断言失败，未改测试或豁免，不宣称完整 upstream suite 全绿。`artifacts/g6-upload-smoke-0908/` 保留了只有预算、没有 OOO 修复时的低速/零速失败；`artifacts/g6-upload-ooo-smoke-0908/` 功能通过但与编译重叠，不能作为正式性能提升证据。legacy runner 的 `--netem-delay-ms` 不具备 strict v3 的真实 qdisc 门禁，不能据此宣称 75ms 损伤验收。
+
+无并行编译/负载测试的三轮历史 runner 对比已完成：`artifacts/g6-upload-ooo-quiet-r3-0908/`，12/12 qualification pass、所有流非零；P1 UL 中位 742.47Mbps、paired ratio 中位 1.0720，P4 UL 中位 744.31Mbps、paired ratio 中位 1.0880。每个 cell 为 duration 5s / omit 1s，CPU8、GSO-on、direct bridge。六个 paired ratio 均小于 1.20；runner 性能门禁为 off，故 qualification pass **不等于**性能目标通过。P4 selected-CPU 效率还有一轮 0.8327× 回归，不能宣称系统 CPU 效率稳定提升。预算采样不超过 33554432B；短测无零速并非长期稳定性证明。这是当前 XTCP 对 native 对比，不是完整旧 XTCP/新 XTCP 三轮配对因果实验。
+
+NDI TSO 仍 default-off；pacing quantum 退款候选未混入本轮；没有启动 576-cell campaign。GitNexus 因数据库/库版本不兼容无法给出图谱影响结论，本轮按高风险数据面改动人工检查调用链及生命周期。
 
 ## 1. 状态与范围
 
@@ -145,7 +168,7 @@ external connection 覆盖 `AckAccept`：
 - opt-in direct path 在 `VEthernetNetworkTcpipConnection::AckAccept` 成功建立后不启动原 `connection->Run`。上传由 XTCP callback 复制进 32MiB/4096-item 队列，最多 64KiB coalesce，唯一 transmission writer 排空；admission reject 同样在 low watermark 后显式 `ResumeReceive()`；
 - direct 下载只有一个 transmission reader，约 64KiB read payload 用 `shared_ptr` alias 切为 16KiB chunk，再逐块交给 `XtcpStack::Send`；总 pending budget 32MiB，writable notification 驱动继续发送；
 - runtime 对 direct second leg 持强引用直到 `CloseFlow`，ready callback 排队与 payload 先到的竞态不再丢数据；generation 与 one-shot close gate 抑制 stale/重复关闭；
-- 默认 path 可用 socket `shutdown(SHUT_WR)` 表达 half-close；direct path 的 `ITransmission` 无半关 API，只能在 upload queue 排空后等待 20ms 再 `Dispose()`，稳定统计明确记 `degraded_half_close`，不能冒充真正 half-close；
+- 默认 path 可用 socket `shutdown(SHUT_WR)` 表达 half-close；direct path 仅在 carrier 报告 capability 时启用：raw child `ITcpipTransmission` 在 upload queue 排空后执行真实 `shutdown(SHUT_WR)`，发送方向 FIN 后保留接收方向；不支持半关的 `ITransmission`（包括 WebSocket/TLS）回退默认 socket pump，`degraded_half_close` 只为兼容字段且正确路径为 0；
 - RST、I/O error、closed、hook closed 和 runtime stop 汇入 one-shot flow teardown；second leg ready 前收到 RST 直接取消 pending flow；
 - 当前 adapter 显式拒绝 IPv4 分片，避免在重组前误读非首片为 TCP header。
 
@@ -202,7 +225,7 @@ Start/Stop 与 flow close 均为幂等操作，stale generation handler 只返�
 | `direct_download_rejected` | direct download budget 或 Send 准入 reject 次数 |
 | `resume_requested` / `resume_effective` | low-watermark 恢复请求 / 实际 window update 次数 |
 | `second_leg_close_requested` / `_duplicate_suppressed` | second-leg close 请求 / one-shot gate 抑制次数 |
-| `degraded_half_close` | 因 `ITransmission` 无 half-close 而采用延迟整关的次数 |
+| `degraded_half_close` | 兼容保留字段；capability-gated direct raw-TCP half-close 正确路径恒为 0，旧 revision 的延迟整关 artifact 可能非零 |
 
 default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调用与字节、reject bytes、全局 queue、高水位及 direct close/download queue 诊断；稳定 stats 保留上述资源与状态机关键累计量。
 
@@ -244,6 +267,7 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0008-tso-buffered-single-flight.patch`：TSO backpressure 后保持整帧重试，并只在 retransmission queue 为空、非 recovery 时发送一个 buffered super-segment；所有 active/TFO/MD5 connect、listener accept 与 SYN-cookie 路径在 `BindDataPath` 统一继承 capability，MD5 强制软件分段。
 - `0009-test-pmtu-timestamp-expectation.patch`：修正 timestamp 协商后的 PMTU 测试期望（1460 → 1448），与 `0004` 的 TSopt-aware payload cap 一致；`prepare_xtcp.sh` 连续运行保持幂等。
 - `0010-zero-window-pacing-deadline.patch`：peer send window 为零且 persist 已武装时，`NextTimerDeadline()` 不再返回无法推进发送的 pacing deadline；host 等待 persist/RTO 等真实恢复期限，避免严格同核场景下 timer 空转饿死接收端。`test_persist` 用固定高 pacing rate 锁定 deadline 合同。
+- `0012-tso-gate-observability.patch`：只读聚合 direct/buffered TSO candidate、首个 gate blocker（disabled/pending/outstanding/recovery/window/cwnd/pacing/pool）及 emitted 计数；同时固化此前解包树中尚未归档的 ACK rate-change telemetry。仅在既有 `OPENPPP2_XTCP_ACK_RELEASE_JSON=1` 诊断通道输出，不改变 TSO gate、发送、重传或 pacing 行为。
 
 修改上游行为的唯一入口是该目录下的补丁；直接改解包树会在下次 prepare 时丢失。
 
@@ -628,6 +652,10 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 | P1 | `XTCP-NDI-MEMORY-001` | C 榜 attribution：不走 TUN、不改 XTCP core 与 tunnel wire，NDI Output 直接进 memory-backed sink、输入由 memory source 喂入，保持相同 packet bytes/MTU/TCP options、单 owner / single-core。回答"去掉 TUN/Tap 后 OpenPPP2 XTCP adapter 自己能跑多少"；对 UL/DL 分开测（RX→NDI direct sink 与 memory source→XTCP TX 分岔），把 NDI/backend ceiling 与 KCC pacing/cwnd ceiling 分开 |
 | P2 | `LWIP-NETIF-MEMORY-001` | C 榜 lwIP 阶梯：in-memory netif → bare TUN → OpenPPP2 VNet → full PPP，与 XTCP 的保留率对比，回答 integration 更适合哪个执行模型 |
 
+**`XTCP-NDI-MEMORY-001` C1 初测（2026-09-05，非 product throughput）：**新增 `xtcp_ndi_memory_probe`，以两个 `XtcpStack` 和两个 OpenPPP2 `XtcpNdiBackend` 组成 loopback；NDI Output 的 owning `shared_ptr<Byte>` 进入 memory FIFO，pump 在边界复制到 `BufRef` 后 `Inject` 对侧。它实际覆盖 adapter 的 Output ownership、Input inject、XTCP 数据/ACK 处理及 KCC ACK clock，但不经过 TUN/TAP、carrier、bridge queue 或 runtime strand，也不声称端到端零拷贝。16KiB chunk：1MiB `605.68 Mbps`（`0` reject）；64MiB `621.63 Mbps`，`bytes_sent=bytes_recv=67,108,864`、`69,645` packets，A `46,430/46,430/0` 与 B `23,215/23,215/0`（attempts/accepted/rejected）。payload byte-exact 且测试成功。
+
+该 C1 上限仍处于现有 product DL 约 `0.4–0.7 Gbps` 的同一量级，不能支持“NDI Output rejection 是主要瓶颈”的说法，也不能单凭此项把责任归给 bridge/carrier/TAP。下一步仍是 `XTCP-KCC-PACING-001` 的 cwnd、snd_wnd、snd_buf、in-flight、ACK cadence 和 pacer deadline 遥测；禁止以移除 single-flight/recovery gate 或盲目膨胀 cwnd 换取吞吐。Route 1–3 与严格稳定 `1.2×` 目标均**尚未完成**。
+
 **XTCP-SINGLECORE-BASELINE-20260902（单核优化封板锚点，多核结果一律相对此基线报告）：**
 
 - 锚点 commit：本 commit（`XTCP-SINGLECORE-BASELINE-20260902`）；内容冻结于 ba67601（docs）+ 本记录
@@ -784,9 +812,11 @@ P4/P16 已满足“每轮 >1.2×”的 client 进程单核吞吐门槛；P1 未�
 
 TSO-on 三轮中位 527.46 Mbps 低于同代 gate-off direct P1 DL 的约 596 Mbps，因此该能力只保留作 default-off laboratory 路径，不构成 Route2 性能完成。
 
+**门控归因复验（2026-09-05，sndbuf=128KiB，strict CPU8，单轮 P1/P4 DL）**：`artifacts/p1p4-tso-gate-off-128k-20260905` 的 P1/P4 XTCP/native 为 `0.5764×/0.8347×`，所有 TSO candidates 均由 `disabled` 拒绝；`artifacts/p1p4-tso-gate-on-128k-20260905` 为 `0.6292×/0.9102×`，两组 cell qualification 均 pass。on 的 P1/P4 分别构造 `11,296/13,499` 个 NDI GSO frame、rejected 均为 0，但 buffered candidates 主要被 `outstanding`（`317,137/513,891`）拒绝，direct candidates 主要被 `pending`（`19,465/31,743`）与 `outstanding`（`18,114/21,870`）拒绝。这证明该窗口不是 TAP/backend reject，而是保守 single-flight 与 ACK-clock 的吞吐限制；不能以移除 `retrans_queue_.empty()` 或 recovery gate 换取速度。诊断字段 `tso_gate.direct/flush` 仅随 `OPENPPP2_XTCP_ACK_RELEASE_JSON=1` 输出。TSO 仍 default-off，Route2 性能门禁仍失败。
+
 ### 11.9 单-owner direct bridge 与当前 qualification（2026-09-04，工作树）
 
-`OPENPPP2_XTCP_MEMORY_BRIDGE=1` 启用真正替换 socket pump 的 direct 状态机：`AckAccept` 成功启动后不调用原 `connection->Run`；上传由唯一 transmission writer 排空有界队列，下载由唯一 transmission reader 读入并切成 16KiB alias chunk。runtime 强持有 second leg；ready/payload 排队竞态、重复 close、普通/direct receive resume 都有 generation/one-shot/low-watermark 保护。`ppp::telemetry` 记录 upload queue bytes/items/highwater、writer starts/exits/writes 与 close grace；稳定 stats 记录 direct reject/download queue/resume/close/degraded-half-close。
+`OPENPPP2_XTCP_MEMORY_BRIDGE=1` 启用真正替换 socket pump 的 direct 状态机：`AckAccept` 成功启动后不调用原 `connection->Run`；上传由唯一 transmission writer 排空有界队列，下载由唯一 transmission reader 读入并切成 16KiB alias chunk。runtime 强持有 second leg；ready/payload 排队竞态、重复 close、普通/direct receive resume 都有 generation/one-shot/low-watermark 保护。仅支持半关的 raw child TCP carrier 可进入 direct path：upload queue 排空后实际 `shutdown(SHUT_WR)`，接收方向保留；WebSocket/TLS 等回退 socket pump。`ppp::telemetry` 记录 upload queue bytes/items/highwater、writer starts/exits/writes 与 send-shutdown；稳定 stats 记录 direct reject/download queue/resume/close，`degraded_half_close` 是兼容字段。
 
 P1 direct GRO 扫描排除了较大默认：12KiB 三轮 975/1010/1039 Mbps；13KiB 仅约 4.5 Mbps，14KiB 为零，15KiB 约 40 Mbps；16KiB xtcp-only 有 1093–1281 Mbps 高峰，但 paired 曾零速。故 direct 默认是 12KiB，不以峰值换稳定性。
 
@@ -795,11 +825,11 @@ P1 direct GRO 扫描排除了较大默认：12KiB 三轮 975/1010/1039 Mbps；13
 - `xtcp_runtime_adapter_test` + `xtcp_runtime_bridge_test` 通过，覆盖 direct zero-window resume、强 second-leg 生命周期、FIN 数据排空和幂等关闭；
 - lab C++ 135/135 通过；`spinlock_test` 在未限制大量在线 CPU 时可因纯自旋超时，固定到 CPU0-7 后约 7.3s 完成，不是本工作树死锁；
 - 上游 fault suite 20/20，bench best 6340.37 Mbps；
-- direct E2E artifact `artifacts/direct-e2e-20260904` 通过完整短电池；最终 stats 中 connector read/write 为零，`direct_download_chunks` 与 `degraded_half_close` 非零，证明实际走 direct path；
+- 旧 direct E2E artifact `artifacts/direct-e2e-20260904` 的 `degraded_half_close` 非零，仅证明旧 revision 走过 direct path，不能证明协议级半关；本 revision 的 `transport_auth_lifecycle_test` 覆盖 raw child TCP `shutdown(SHUT_WR)` 后对端 EOF、反向继续读及幂等调用，正确 stats 路径保持 `degraded_half_close=0`；
 - 新 runner 显式 flag strict smoke `artifacts/route3-strict-direct-flag-smoke-20260904`：P1 DL 408.2 Mbps，qualification pass，metadata 明示 `xtcp_memory_bridge=true`、`xtcp_ndi_tso_tx=false`，direct telemetry 非零；
 - 最终 GSO-on strict paired 分拆为 `artifacts/direct-final-ul-p1p4p16-r3-20260904`、`artifacts/direct-final-dl-p1p4-r3-20260904`、`artifacts/direct-final-dl-p16-r3-20260904`：36/36 native/XTCP cell qualification pass，无 watchdog 或零速；PPP 与 iperf 全线程固定 CPU8、migrations=0，RPS/XPS readback 目标 mask，veth/TUN IRQ 均按 not-applicable 通过，cleanup restore pass。XTCP cell connector bytes 为零且 direct telemetry 非零。
 - 旧六模式 strict 主矩阵 `artifacts/route3-six-mode-strict-r3-20260904` 仅生成 106/106 cell；两个 repair artifact 分别补证 lwIP GSO-on P4 DL 和修复后的 XTCP GSO-on P4 DL。随后在同一修复 revision 上完成原子矩阵 `artifacts/route3-six-mode-strict-persist-fix-r3b-20260904`：108/108 cell、108/108 qualification pass。P4 DL XTCP GSO-on 三轮为 614.42–619.07 Mbps，无 watchdog。
 - 修复后 GSO-on native/XTCP 全 paired `artifacts/route2-persist-fix-paired-p1-p4-p16-r3-20260904` 为 36/36 qualification pass，无 watchdog。XTCP/native ratio 中位（min–max）：P1 UL 0.9112（0.9107–1.0420）、P4 UL 0.9375（0.9252–0.9376）、P16 UL 1.0019（0.9833–1.0046）；P1 DL 0.5568（0.5148–0.5625）、P4 DL 0.8423（0.8409–0.8440）、P16 DL 1.1298（1.0390–1.1552）。
 - 原子 108-cell 的 qualification 不代表性能稳定：`XTCP/GSO-on/P1/UL` 三轮为 655.76、30.20、734.58 Mbps；低值轮有 52 次 retransmit、`direct_upload_rejected=1`、`resume_requested=1`、`resume_effective=0`，仍需继续定位 upload receive/direct queue 的间歇性退化。
 
-零窗口修复消除了已复现的 P4 DL watchdog，Route3 strict qualification 装置也已在修复 revision 上原子 108/108 pass；但性能门禁仍失败：P1/P4 双向未达稳定 1.2×，P16 DL 也未达每轮 1.2×，且 NDI TSO 仍为负收益。协议级 half-close 与 P64 DL wedge 亦未解决；Route1–3 均不得标记完成。
+零窗口修复消除了已复现的 P4 DL watchdog，Route3 strict qualification 装置也已在修复 revision 上原子 108/108 pass；但性能门禁仍失败：P1/P4 双向未达稳定 1.2×，P16 DL 也未达每轮 1.2×，且 NDI TSO 仍为负收益。raw child TCP 的 capability-gated 协议级 half-close 已实现并通过单测/E2E；vmux 平台尾包排空限制及 P64 DL wedge 仍未解决。Route1–3 均不得标记完成。

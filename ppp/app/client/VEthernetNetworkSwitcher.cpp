@@ -558,6 +558,15 @@ namespace ppp {
                 return true;
             }
 
+            /** @brief Allows complete TCPv4 GSO delivery only while the XTCP runtime is ready. */
+            bool VEthernetNetworkSwitcher::CanConsumeTcpV4Gso() noexcept {
+                if (tcp_stack_mode_ != ppp::app::TcpStackMode::Xtcp) {
+                    return false;
+                }
+                const std::shared_ptr<xtcp::XtcpRuntime> runtime = xtcp_runtime_;
+                return runtime && runtime->IsReady();
+            }
+
             /** @brief Handles native IPv4 packet input and forwards eligible NAT traffic. */
             bool VEthernetNetworkSwitcher::OnPacketInput(ppp::net::native::ip_hdr* packet, int packet_length, int header_length, int proto, bool vnet) noexcept {
                 if (packet_dispatch_->OnPacketInput(

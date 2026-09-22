@@ -13,7 +13,8 @@
 namespace ppp {
 
     int64_t GetCurrentThreadId() noexcept {
-        return static_cast<int64_t>(::syscall(SYS_gettid));
+        static thread_local const int64_t tid = static_cast<int64_t>(::syscall(SYS_gettid));
+        return tid;
     }
 
     uint64_t GetTickCount() noexcept {

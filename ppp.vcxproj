@@ -386,6 +386,7 @@
     <ClCompile Include="ppp\app\ApplicationHelp.cpp" />
     <ClCompile Include="ppp\app\ApplicationInitialize.cpp" />
     <ClCompile Include="ppp\app\ApplicationMainLoop.cpp" />
+    <ClCompile Include="ppp\app\runtime\DatapathAcceptanceBoundary.cpp" />
     <ClCompile Include="ppp\app\ApplicationNetwork.cpp" />
     <ClCompile Include="ppp\app\ConsoleUI.cpp" />
     <ClCompile Include="ppp\app\P2PCandidateAdapter.cpp" />
@@ -872,6 +873,7 @@
     <ClInclude Include="ppp\app\protocol\VirtualEthernetInformation.h" />
     <ClInclude Include="ppp\app\protocol\VirtualEthernetInformationFwd.h" />
     <ClInclude Include="ppp\app\ConsoleUI.h" />
+    <ClInclude Include="ppp\app\runtime\DatapathAcceptanceBoundary.h" />
     <ClInclude Include="ppp\app\PppApplication.h" />
     <ClInclude Include="ppp\app\PppApplicationInternal.h" />
     <ClInclude Include="ppp\auxiliary\StringAuxiliary.h" />
@@ -950,6 +952,7 @@
     <ClInclude Include="ppp\ssl\root_certificates.hpp" />
     <ClInclude Include="ppp\ssl\SSL.h" />
     <ClInclude Include="ppp\tap\ITap.h" />
+    <ClInclude Include="ppp\tap\TxGsoMetadata.h" />
     <ClCompile Include="windows\ppp\tap\TapWindows.cpp" />
     <ClInclude Include="ppp\threading\Timer.h" />
     <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h" />

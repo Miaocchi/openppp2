@@ -76,7 +76,7 @@ namespace ppp {
                     uint64_t flow_generation,
                     const std::weak_ptr<xtcp::XtcpFirstLegHooks>& hooks) noexcept;
 
-                /** @brief XTCP-VNET-BRIDGE-BYPASS-001: registers and directly adopts the XTCP-side socketpair fd (fd >= 0), falling back to the listener pairing path when fd < 0. */
+                /** @brief XTCP-VNET-BRIDGE-BYPASS-001: takes ownership of the XTCP-side socketpair fd (fd >= 0), registers it for direct adoption, and falls back to listener pairing when fd < 0. */
                 bool BeginExternalAcceptWithFd(
                     const boost::asio::ip::tcp::endpoint& localEP,
                     const boost::asio::ip::tcp::endpoint& remoteEP,

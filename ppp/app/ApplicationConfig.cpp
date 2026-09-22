@@ -42,6 +42,7 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
             stats_json_path_.clear();
         }
     }
+    acceptance_boundary_.ConfigureFromEnvironment();
 
     if (ppp::IsInputHelpCommand(argc, argv)) {
         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AppHelpRequested);

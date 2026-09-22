@@ -2,6 +2,7 @@
 
 #include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
 #include <ppp/app/runtime/RuntimeXtcpStats.h>
+#include <ppp/tap/TxGsoMetadata.h>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -10,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 namespace ppp::app::client::xtcp {
 
@@ -74,8 +76,11 @@ class XtcpRuntime final : public std::enable_shared_from_this<XtcpRuntime> {
 public:
     // XTCP-STRAND-DISPATCH-001 (data-plane tier): owning-buffer output so the
     // stack's BufRef reaches the TAP write queue zero-copy.
-    using OutputHandler = std::function<bool(std::shared_ptr<std::uint8_t>&&, int)>;
+    using OutputHandler = std::function<bool(std::shared_ptr<std::uint8_t>&&, int,
+        std::optional<ppp::tap::TxGsoMetadata>)>;
     using ListenerEndpointHandler = std::function<boost::asio::ip::tcp::endpoint()>;
+    // Invoking this handler transfers a non-negative fd to the handler,
+    // regardless of whether the handler returns true or false.
     using ExternalAcceptHandler = std::function<bool(
         const boost::asio::ip::tcp::endpoint&,
         const boost::asio::ip::tcp::endpoint&,
@@ -92,7 +97,8 @@ public:
         ListenerEndpointHandler listener_endpoint,
         ExternalAcceptHandler external_accept,
         ExternalCancelHandler external_cancel,
-        std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics = nullptr) noexcept;
+        std::shared_ptr<XtcpOutputRejectionDiagnostics> output_rejection_diagnostics = nullptr,
+        bool tx_gso_supported = false) noexcept;
     ~XtcpRuntime() noexcept;
 
     bool Start() noexcept;
@@ -104,7 +110,8 @@ public:
     std::uint64_t Generation() const noexcept;
     ppp::app::runtime::RuntimeXtcpStats SnapshotStats() const noexcept;
 #if defined(PPP_XTCP_RUNTIME_TESTING)
-    bool EmitOutputForTesting(const std::shared_ptr<std::uint8_t>& data, int length) noexcept;
+    bool EmitOutputForTesting(const std::shared_ptr<std::uint8_t>& data, int length,
+        std::optional<ppp::tap::TxGsoMetadata> gso = std::nullopt) noexcept;
 #endif
 
 private:
