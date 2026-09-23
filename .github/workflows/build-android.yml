@@ -138,6 +138,17 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Capture emulator runner preflight
+        run: |
+          mkdir -p device-evidence
+          {
+            echo "workspace=${GITHUB_WORKSPACE}"
+            echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
+            java -version
+            adb version
+            ls -l /dev/kvm || true
+          } > device-evidence/runner-preflight.txt 2>&1
+
       - name: Run API 34 instrumentation
         uses: reactivecircus/android-emulator-runner@v2
         with:
