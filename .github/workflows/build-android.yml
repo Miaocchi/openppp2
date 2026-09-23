@@ -147,13 +147,13 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: cd android/android && gradle :app:connectedDebugAndroidTest --no-daemon --console=plain
-
-      - name: Capture emulator evidence
-        if: always()
-        run: |
-          mkdir -p device-evidence
-          timeout 15s adb logcat -d > device-evidence/logcat.txt || true
+          script: |
+            cd android/android
+            status=0
+            gradle :app:connectedDebugAndroidTest --no-daemon --console=plain --stacktrace || status=$?
+            mkdir -p ../../device-evidence
+            adb logcat -d > ../../device-evidence/logcat.txt || true
+            exit "${status}"
 
       - name: Upload emulator evidence
         if: always()
@@ -162,8 +162,8 @@ jobs:
           name: android-p2p-protect-device-evidence
           path: |
             device-evidence/
-            android/build/app/outputs/androidTest-results/
-            android/build/reports/androidTests/
+            android/android/app/build/outputs/androidTest-results/connected/
+            android/android/app/build/reports/androidTests/connected/
           if-no-files-found: warn
 
   build-apk:

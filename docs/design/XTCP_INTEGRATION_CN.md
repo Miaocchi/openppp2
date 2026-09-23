@@ -2,6 +2,7 @@
 
 > Status: Active / Laboratory
 > Type: Design
+> Last verified: 2026-09-08 (latest dated experimental update; later evidence remains timestamped inline)
 > Last verified revision: `e79db8fd10a1ee39be2dc3a9361727fcad79d04c`
 
 ## 0. 现状总览（2026-09-04，`XTCP-SINGLECORE-BASELINE-20260902` 之后）
