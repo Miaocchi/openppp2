@@ -163,17 +163,11 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           working-directory: android/android
-          script: |
-            evidence_dir="${{ github.workspace }}/device-evidence"
-            mkdir -p "${evidence_dir}"
-            status=0
-            if gradle :app:connectedDebugAndroidTest --no-daemon --console=plain --stacktrace > "${evidence_dir}/gradle.txt" 2>&1; then
-              status=0
-            else
-              status=$?
-            fi
-            cat "${evidence_dir}/gradle.txt"
-            adb logcat -d > "${evidence_dir}/logcat.txt" 2>&1 || true
+          script: >-
+            mkdir -p "${{ github.workspace }}/device-evidence";
+            gradle :app:connectedDebugAndroidTest --no-daemon --console=plain --stacktrace > "${{ github.workspace }}/device-evidence/gradle.txt" 2>&1; status=$?;
+            cat "${{ github.workspace }}/device-evidence/gradle.txt";
+            adb logcat -d > "${{ github.workspace }}/device-evidence/logcat.txt" 2>&1 || true;
             exit "${status}"
 
       - name: Upload emulator evidence
