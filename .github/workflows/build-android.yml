@@ -144,8 +144,12 @@ jobs:
           {
             echo "workspace=${GITHUB_WORKSPACE}"
             echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
-            java -version
-            adb version
+            java -version || true
+            if command -v adb >/dev/null 2>&1; then
+              adb version || true
+            else
+              echo "adb is not on PATH before emulator startup"
+            fi
             ls -l /dev/kvm || true
           } > device-evidence/runner-preflight.txt 2>&1
 
