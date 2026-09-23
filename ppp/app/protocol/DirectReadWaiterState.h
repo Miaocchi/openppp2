@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
+#include <ppp/app/runtime/XtcpFirstLegHooks.h>
 
 #include <algorithm>
 #include <cstdint>

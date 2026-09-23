@@ -13,7 +13,7 @@ namespace ppp::configurations { class AppConfiguration; }
 namespace ppp::diagnostics::datapath_perf { class Scope; }
 #include <ppp/net/Firewall.h>
 #include <ppp/transmissions/ITransmission.h>
-#include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
+#include <ppp/app/runtime/XtcpFirstLegHooks.h>
 #include <ppp/app/protocol/DirectReadWaiterState.h>
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
