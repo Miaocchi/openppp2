@@ -164,7 +164,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           working-directory: android/android
           script: |
-            evidence_dir="${GITHUB_WORKSPACE}/device-evidence"
+            evidence_dir="${{ github.workspace }}/device-evidence"
             mkdir -p "${evidence_dir}"
             status=0
             if gradle :app:connectedDebugAndroidTest --no-daemon --console=plain --stacktrace > "${evidence_dir}/gradle.txt" 2>&1; then
