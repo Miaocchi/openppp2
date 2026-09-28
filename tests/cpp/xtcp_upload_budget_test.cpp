@@ -260,6 +260,50 @@ void TestHandlerReplacement() {
     Check(budget->Snapshot().bytes == 0);
 }
 
+void TestTokenWaiterSkipsHeadThatDoesNotFit() {
+    using ppp::app::client::xtcp::XtcpUploadBudget;
+
+    auto budget = std::make_shared<XtcpUploadBudget>(10, 4);
+    auto large_in_flight = budget->TryReserve(9);
+    auto small_in_flight = budget->TryReserve(1);
+    Check(static_cast<bool>(large_in_flight));
+    Check(static_cast<bool>(small_in_flight));
+
+    Check(!budget->TryReserveFor(1, 2));
+    Check(!budget->AwaitCapacity(1, 2));
+    Check(!budget->TryReserveFor(2, 1));
+    Check(!budget->AwaitCapacity(2, 1));
+    Check(budget->WaiterTokens() == (std::vector<XtcpUploadBudget::WaitToken>{1, 2}));
+
+    // One byte is released. The oldest two-byte request still cannot fit,
+    // but the next one-byte waiter can consume the partial credit.
+    small_in_flight.Reset();
+    auto wake_order = budget->WaiterTokens();
+    XtcpUploadBudget::WaitToken selected = 0;
+    for (const auto token : wake_order) {
+        const std::uint64_t needed = token == 1 ? 2 : 1;
+        if (budget->AwaitCapacity(token, needed)) {
+            selected = token;
+            break;
+        }
+    }
+    Check(selected == 2);
+    auto small_grant = budget->TryReserveFor(2, 1);
+    Check(static_cast<bool>(small_grant));
+    Check(small_grant.Bytes() == 1);
+
+    large_in_flight.Reset();
+    small_grant.Reset();
+    Check(budget->AwaitCapacity(1, 2));
+    auto large_grant = budget->TryReserveFor(1, 2);
+    Check(static_cast<bool>(large_grant));
+    Check(large_grant.Bytes() == 2);
+    large_grant.Reset();
+    Check(budget->Snapshot().bytes == 0);
+    Check(budget->Snapshot().items == 0);
+    Check(budget->WaiterTokens().empty());
+}
+
 void TestChunkLifetime() {
     using ppp::app::client::xtcp::XtcpUploadChunk;
 
@@ -412,6 +456,7 @@ int main() {
     TestAwaitAndWakeup();
     TestWakeCallbackCanUseBudget();
     TestHandlerReplacement();
+    TestTokenWaiterSkipsHeadThatDoesNotFit();
     TestChunkLifetime();
     TestChunkConstructorException();
     TestSharedFlowQueues();

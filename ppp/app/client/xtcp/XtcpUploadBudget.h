@@ -132,7 +132,10 @@ public:
     }
 
     // Register or re-check a fair waiter. Only the queue head can observe
-    // capacity as available; other waiters remain registered in arrival order.
+    // capacity as available. If the head's request cannot fit in the currently
+    // free bytes, rotate it once so a smaller waiter can use that capacity.
+    // This avoids head-of-line blocking when in-flight reservations release
+    // bytes in chunks smaller than the oldest request.
     bool AwaitCapacity(WaitToken token, std::uint64_t bytes) noexcept {
         std::lock_guard<std::mutex> lock(sync_);
         if (token == 0 || bytes == 0 || bytes > max_bytes_) return false;
@@ -155,6 +158,9 @@ public:
         }
         if (found == waiters_.end()) {
             waiters_.push_back(token);
+        }
+        else if (found == waiters_.begin() && waiters_.size() > 1) {
+            std::rotate(waiters_.begin(), waiters_.begin() + 1, waiters_.end());
         }
         waiting_ = true;
         return false;

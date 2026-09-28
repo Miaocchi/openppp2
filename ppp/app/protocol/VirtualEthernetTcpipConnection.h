@@ -342,7 +342,6 @@ namespace ppp {
                 static constexpr size_t                                         kDirectQueueLowPackets = kDirectQueueMaxPackets / 2;
                 static constexpr size_t                                         kDirectQueueMaxBytes = 32 * 1024 * 1024;
                 static constexpr size_t                                         kDirectQueueLowBytes = kDirectQueueMaxBytes / 2;
-                static constexpr size_t                                         kDirectDownloadChunkBytes = 16 * 1024;
                 static constexpr int                                            kDirectCloseDrainPollMilliseconds = 5;
                 enum class DirectSendCloseState : uint8_t {
                     Open,

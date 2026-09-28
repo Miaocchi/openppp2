@@ -767,6 +767,9 @@ void TestDirectDownloadReservationIdentity() {
 
     CHECK(hooks && hooks->OnSecondLegPayload(reservation_b, payload) ==
         XtcpDirectResult::Accepted);
+    bridge.Submit(xtcp::harness::BuildIp4Tcp(
+        kClientIp, kServiceIp, kClientPort, kServicePort,
+        client_isn + 1, syn_ack.seq + 1 + 8 * 1024, kAck));
     CHECK(WaitFor([&]() {
         return second_leg->DownloadCompletionCount(
             reservation_b, XtcpDirectCompletion::Accepted) == 1 &&
@@ -891,22 +894,14 @@ void TestDirectBackpressureFullOooWindow() {
     }
 
     bridge.WritableLastFlow();
-    CHECK(WaitFor([&]() {
-        const RuntimeXtcpStats stats = bridge.Stats();
-        return stats.resume_result_window_full != 0 && stats.resume_pending == 0;
-    }));
-
-    // The retransmission fills the gap, drains OOO data, and proves that the
-    // completed resume transition did not consume a future receive edge.
-    bridge.Submit(xtcp::harness::BuildIp4Tcp(
-        kClientIp, kServiceIp, kClientPort, kServicePort,
-        client_isn + 1, syn_ack.seq + 1, kAck,
-        rejected.data(), static_cast<std::uint32_t>(rejected.size())));
     constexpr std::size_t kExpectedBytes = 16 + 32000 + 32000 + 1535;
+    // One writable edge must deliver the retained frontier and drain the
+    // already-SACKed contiguous OOO segments without waiting for a duplicate
+    // retransmission or a second application-capacity notification.
     CHECK(WaitFor([&]() { return second_leg->Received().size() == kExpectedBytes; }));
     CHECK(WaitFor([&]() {
         const RuntimeXtcpStats stats = bridge.Stats();
-        return stats.resume_pending == 0 && stats.resume_effective == 0;
+        return stats.resume_pending == 0 && stats.resume_effective != 0;
     }));
 }
 
