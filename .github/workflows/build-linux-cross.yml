@@ -39,13 +39,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake zip unzip \
             gcc-${{ matrix.apt_pkg }} g++-${{ matrix.apt_pkg }}
-          if [ "${{ matrix.debian_arch }}" != "mipsel" ]; then
-            sudo dpkg --add-architecture "${{ matrix.debian_arch }}"
-            sudo apt-get update -y
-            sudo apt-get install -y --no-install-recommends \
-              zlib1g-dev:${{ matrix.debian_arch }} \
-              libzstd-dev:${{ matrix.debian_arch }}
-          fi
 
       - name: Build libunwind for target
         run: |
@@ -57,13 +50,12 @@ jobs:
           make -j$(nproc)
           make install
 
-      - name: Build compression libraries for mipsel
-        if: matrix.debian_arch == 'mipsel'
+      - name: Build compression libraries for target
         run: |
-          PREFIX="${{ runner.temp }}/mipsel-compression"
+          PREFIX="${{ runner.temp }}/cross-compression/${{ matrix.debian_arch }}"
           CC="${{ matrix.cc }}"
-          AR="mipsel-linux-gnu-ar"
-          RANLIB="mipsel-linux-gnu-ranlib"
+          AR="${{ matrix.apt_pkg }}-ar"
+          RANLIB="${{ matrix.apt_pkg }}-ranlib"
           mkdir -p "$PREFIX"
 
           cd /tmp
@@ -81,7 +73,7 @@ jobs:
           install -d "$PREFIX/lib" "$PREFIX/include"
           install -m 644 zstd-1.5.5/lib/libzstd.a "$PREFIX/lib/"
           install -m 644 zstd-1.5.5/lib/zstd.h zstd-1.5.5/lib/zstd_errors.h "$PREFIX/include/"
-          echo "MIPSEL_COMPRESSION_PREFIX=$PREFIX" >> "$GITHUB_ENV"
+          echo "CROSS_COMPRESSION_PREFIX=$PREFIX" >> "$GITHUB_ENV"
 
       - name: Build openppp2
         run: |
@@ -89,14 +81,8 @@ jobs:
           TARGET_PROCESSOR="${{ matrix.platform }}"
           TARGET_PROCESSOR="${TARGET_PROCESSOR#linux/}"
           if [ "$TARGET_PROCESSOR" = "ppc64el" ]; then TARGET_PROCESSOR=ppc64le; fi
-          LINK_FLAGS="-L${{ runner.temp }}/libunwind/lib"
-          if [ "${{ matrix.debian_arch }}" = "mipsel" ]; then
-            LINK_FLAGS="$LINK_FLAGS -L${MIPSEL_COMPRESSION_PREFIX}/lib"
-          fi
-          CPP_FLAGS="-DOPENSSL_API_COMPAT=0x10100000L"
-          if [ "${{ matrix.debian_arch }}" = "mipsel" ]; then
-            CPP_FLAGS="$CPP_FLAGS -I${MIPSEL_COMPRESSION_PREFIX}/include"
-          fi
+          LINK_FLAGS="-L${{ runner.temp }}/libunwind/lib -L${CROSS_COMPRESSION_PREFIX}/lib"
+          CPP_FLAGS="-DOPENSSL_API_COMPAT=0x10100000L -I${CROSS_COMPRESSION_PREFIX}/include"
           mkdir -p build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
