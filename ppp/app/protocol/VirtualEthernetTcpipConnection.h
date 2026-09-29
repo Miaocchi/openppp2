@@ -11,6 +11,7 @@
 
 namespace ppp::configurations { class AppConfiguration; }
 namespace ppp::diagnostics::datapath_perf { class Scope; }
+namespace ppp::app::runtime { class XtcpDirectQueueTelemetry; }
 #include <ppp/net/Firewall.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/app/protocol/XtcpDirectIo.h>
