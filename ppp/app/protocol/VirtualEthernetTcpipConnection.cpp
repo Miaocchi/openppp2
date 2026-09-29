@@ -32,7 +32,14 @@ namespace ppp {
                     static const size_t bytes = []() noexcept {
                         const char* value = ::getenv(
                             "OPENPPP2_XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES");
-                        return value != nullptr && std::strcmp(value, "32768") == 0
+                        if (value != nullptr && value[0] != '\0') {
+                            return std::strcmp(value, "32768") == 0
+                                ? static_cast<size_t>(32 * 1024)
+                                : static_cast<size_t>(16 * 1024);
+                        }
+                        const char* profile = ::getenv(
+                            "OPENPPP2_XTCP_DL_GSO_PERF_PROFILE");
+                        return profile != nullptr && profile[0] == '1' && profile[1] == '\0'
                             ? static_cast<size_t>(32 * 1024)
                             : static_cast<size_t>(16 * 1024);
                     }();
