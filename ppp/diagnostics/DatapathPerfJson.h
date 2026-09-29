@@ -53,6 +53,7 @@ namespace ppp {
                             result.enabled = !result.path.empty();
                             const char* boundaries = std::getenv("OPENPPP2_DATAPATH_PERF_MEASUREMENT_BOUNDARIES");
                             result.measurement_boundaries = result.enabled && boundaries && *boundaries == '1';
+#if !defined(_WIN32)
                             if (result.measurement_boundaries) {
                                 struct sigaction action {};
                                 action.sa_handler = MeasurementBoundarySignalHandler;
@@ -62,6 +63,12 @@ namespace ppp {
                                     result.measurement_boundaries = false;
                                 }
                             }
+#else
+                            // The boundary-trigger interface is POSIX-signal
+                            // based; keep the telemetry file usable on Windows
+                            // without referencing unavailable sigaction APIs.
+                            result.measurement_boundaries = false;
+#endif
                         }
                         catch (...) {}
                     }
