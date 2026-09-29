@@ -30,7 +30,7 @@ public:
 
     class Reservation final {
     public:
-        Reservation() noexcept = default;
+        Reservation() noexcept : bytes_(0), items_(0) {}
         Reservation(const Reservation&) = delete;
         Reservation& operator=(const Reservation&) = delete;
         Reservation(Reservation&& other) noexcept { Swap(other); }

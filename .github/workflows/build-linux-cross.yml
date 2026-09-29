@@ -53,9 +53,14 @@ jobs:
       - name: Build openppp2
         run: |
           TP="${{ runner.temp }}/3rd/${{ matrix.third_dir }}"
+          TARGET_PROCESSOR="${{ matrix.platform }}"
+          TARGET_PROCESSOR="${TARGET_PROCESSOR#linux/}"
+          if [ "$TARGET_PROCESSOR" = "ppc64el" ]; then TARGET_PROCESSOR=ppc64le; fi
           mkdir -p build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR="$TARGET_PROCESSOR" \
             -DCMAKE_C_COMPILER=${{ matrix.cc }} \
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DCMAKE_EXE_LINKER_FLAGS="-L${{ runner.temp }}/libunwind/lib" \
