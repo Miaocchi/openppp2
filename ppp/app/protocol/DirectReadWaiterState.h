@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
+#include <ppp/app/protocol/XtcpDirectIo.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -20,7 +20,7 @@ public:
         Rejected,
     };
 
-    Outcome Register(const client::xtcp::XtcpDirectReadReservation& reservation,
+    Outcome Register(const XtcpDirectReadReservation& reservation,
         ppp::coroutines::YieldContext* waiter) noexcept {
         if (invalidated_ || !reservation.IsValid() || waiter == nullptr || expected_ ||
             reservation.token <= retired_token_) {
@@ -49,12 +49,12 @@ public:
     }
 
     ppp::coroutines::YieldContext* Complete(
-        const client::xtcp::XtcpDirectReadReservation& reservation,
-        client::xtcp::XtcpDirectCompletion completion) noexcept {
+        const XtcpDirectReadReservation& reservation,
+        XtcpDirectCompletion completion) noexcept {
         if (invalidated_ || !reservation.IsValid() || reservation.token <= retired_token_) {
             return nullptr;
         }
-        const Outcome outcome = completion == client::xtcp::XtcpDirectCompletion::Accepted
+        const Outcome outcome = completion == XtcpDirectCompletion::Accepted
             ? Outcome::Accepted : Outcome::Terminal;
         if (expected_) {
             if (!expected_->IsSame(reservation) || outcome_ != Outcome::Pending) {
@@ -70,7 +70,7 @@ public:
         return nullptr;
     }
 
-    Outcome Consume(const client::xtcp::XtcpDirectReadReservation& reservation) noexcept {
+    Outcome Consume(const XtcpDirectReadReservation& reservation) noexcept {
         if (!expected_ || !expected_->IsSame(reservation)) {
             return Outcome::Rejected;
         }
@@ -106,8 +106,8 @@ public:
 private:
     bool invalidated_ = false;
     std::uint64_t retired_token_ = 0;
-    std::optional<client::xtcp::XtcpDirectReadReservation> expected_;
-    std::optional<client::xtcp::XtcpDirectReadReservation> pending_;
+    std::optional<XtcpDirectReadReservation> expected_;
+    std::optional<XtcpDirectReadReservation> pending_;
     ppp::coroutines::YieldContext* waiter_ = nullptr;
     Outcome outcome_ = Outcome::Pending;
     Outcome pending_outcome_ = Outcome::Pending;

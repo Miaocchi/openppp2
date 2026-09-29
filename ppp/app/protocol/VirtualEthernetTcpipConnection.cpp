@@ -676,7 +676,7 @@ namespace ppp {
                     download_waiter = direct_download_waiter_.Invalidate();
                 }
                 if (close_handler) {
-                    close_handler(client::xtcp::XtcpDirectCloseReason::Terminal);
+                    close_handler(XtcpDirectCloseReason::Terminal);
                 }
                 if (download_waiter) {
                     download_waiter->R();
@@ -1109,13 +1109,13 @@ namespace ppp {
             VirtualEthernetTcpipConnection::DirectIoResult
             VirtualEthernetTcpipConnection::SendDirectToPeer(
                 const Byte* data, std::uint32_t length,
-                client::xtcp::XtcpUploadBudget::Reservation&& credit) noexcept {
+                XtcpUploadBudget::Reservation&& credit) noexcept {
                 if (!data || length == 0 || !credit || credit.Bytes() != length ||
                     credit.Items() != 1 || disposed_ || !connected_) {
                     return DirectIoResult::Closed;
                 }
                 bool start_writer = false;
-                std::shared_ptr<client::xtcp::XtcpUploadChunk> payload;
+                std::shared_ptr<XtcpUploadChunk> payload;
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
                     if (disposed_ || !connected_ || !transmission_ ||
@@ -1136,7 +1136,7 @@ namespace ppp {
                     try {
                         // Both global credit and the per-flow queue cap are
                         // secured before copying borrowed receive bytes.
-                        payload = std::make_shared<client::xtcp::XtcpUploadChunk>(data, length, std::move(credit));
+                        payload = std::make_shared<XtcpUploadChunk>(data, length, std::move(credit));
                         direct_upload_queue_.emplace_back(payload);
                     }
                     catch (...) {
@@ -1171,8 +1171,8 @@ namespace ppp {
             }
 
             void VirtualEthernetTcpipConnection::CompleteDirectDownload(
-                const client::xtcp::XtcpDirectReadReservation& reservation,
-                client::xtcp::XtcpDirectCompletion completion) noexcept {
+                const XtcpDirectReadReservation& reservation,
+                XtcpDirectCompletion completion) noexcept {
                 YieldContext* waiter = nullptr;
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
@@ -1230,7 +1230,7 @@ namespace ppp {
                 const int gather_wait_ms = DirectUploadGatherWaitMilliseconds();
                 bool gather_waited = false;
                 for (;;) {
-                    std::shared_ptr<client::xtcp::XtcpUploadChunk> payload;
+                    std::shared_ptr<XtcpUploadChunk> payload;
                     std::size_t payload_items = 0;
                     bool shutdown_send = false;
                     bool wait_for_gather = false;
@@ -1263,7 +1263,7 @@ namespace ppp {
                                     std::size_t gathered_bytes = payload->bytes.size();
                                     std::size_t gathered_items = 1;
                                     for (; gathered_items < direct_upload_queue_.size(); ++gathered_items) {
-                                        const std::shared_ptr<client::xtcp::XtcpUploadChunk>& candidate =
+                                        const std::shared_ptr<XtcpUploadChunk>& candidate =
                                             direct_upload_queue_[gathered_items];
                                         if (!candidate || candidate->bytes.empty() ||
                                             !payload->credit.SameBudget(candidate->credit) ||
@@ -1274,7 +1274,7 @@ namespace ppp {
                                     }
                                     if (gathered_items > 1) {
                                         try {
-                                            auto combined = std::make_shared<client::xtcp::XtcpUploadChunk>();
+                                            auto combined = std::make_shared<XtcpUploadChunk>();
                                             combined->bytes.reserve(gathered_bytes);
                                             for (std::size_t i = 0; i < gathered_items; ++i) {
                                                 const std::vector<Byte>& item =
@@ -1436,7 +1436,7 @@ namespace ppp {
                                 close_handler = direct_close_handler_;
                             }
                             if (close_handler) {
-                                close_handler(client::xtcp::XtcpDirectCloseReason::PeerEof);
+                                close_handler(XtcpDirectCloseReason::PeerEof);
                             }
                             return true;
                         }
@@ -1447,7 +1447,7 @@ namespace ppp {
                         const int chunk_length = std::min<int>(
                             static_cast<int>(DirectDownloadChunkBytes()), packet_length - offset);
                         const std::shared_ptr<Byte> chunk(packet, packet.get() + offset);
-                        client::xtcp::XtcpDirectReadReservation reservation;
+                        XtcpDirectReadReservation reservation;
                         reservation.length = static_cast<std::uint32_t>(chunk_length);
                         for (;;) {
                             DirectReadHandler handler;
@@ -1540,7 +1540,7 @@ namespace ppp {
                     download_waiter = direct_download_waiter_.Invalidate();
                 }
                 if (close_handler) {
-                    close_handler(client::xtcp::XtcpDirectCloseReason::Terminal);
+                    close_handler(XtcpDirectCloseReason::Terminal);
                 }
                 if (download_waiter) {
                     download_waiter->R();

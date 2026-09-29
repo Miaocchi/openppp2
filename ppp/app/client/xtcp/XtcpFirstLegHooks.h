@@ -9,39 +9,6 @@ namespace ppp::app::runtime { class XtcpDirectQueueTelemetry; }
 
 namespace ppp::app::client::xtcp {
 
-enum class XtcpDirectResult : std::uint8_t {
-    Accepted,
-    Backpressured,
-    Closed,
-};
-
-struct XtcpDirectReadReservation final {
-    std::uint64_t runtime_generation = 0;
-    std::uint64_t flow_generation = 0;
-    std::uint64_t token = 0;
-    std::uint32_t length = 0;
-
-    bool IsValid() const noexcept {
-        return runtime_generation != 0 && flow_generation != 0 && token != 0 && length != 0;
-    }
-
-    bool IsSame(const XtcpDirectReadReservation& other) const noexcept {
-        return runtime_generation == other.runtime_generation &&
-            flow_generation == other.flow_generation && token == other.token &&
-            length == other.length;
-    }
-};
-
-enum class XtcpDirectCompletion : std::uint8_t {
-    Accepted,
-    Terminal,
-};
-
-enum class XtcpDirectCloseReason : std::uint8_t {
-    PeerEof,
-    Terminal,
-};
-
 class XtcpSecondLegHooks {
 public:
     virtual ~XtcpSecondLegHooks() noexcept = default;
