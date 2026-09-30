@@ -38,8 +38,7 @@ namespace ppp {
             namespace {
                 bool XtcpMemoryBridgeEnabled() noexcept {
                     const char* env = ::getenv("OPENPPP2_XTCP_MEMORY_BRIDGE");
-                    if (env == nullptr || env[0] == '\0') return true;
-                    return env[0] == '1' && env[1] == '\0';
+                    return env != nullptr && env[0] == '1' && env[1] == '\0';
                 }
             }
 

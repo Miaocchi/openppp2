@@ -120,7 +120,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.35.7'
           cache: true
 
       - name: Set up Gradle 8.14
@@ -138,6 +138,21 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Capture emulator runner preflight
+        run: |
+          mkdir -p device-evidence
+          {
+            echo "workspace=${GITHUB_WORKSPACE}"
+            echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
+            java -version || true
+            if command -v adb >/dev/null 2>&1; then
+              adb version || true
+            else
+              echo "adb is not on PATH before emulator startup"
+            fi
+            ls -l /dev/kvm || true
+          } > device-evidence/runner-preflight.txt 2>&1
+
       - name: Run API 34 instrumentation
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -147,13 +162,13 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: cd android/android && gradle :app:connectedDebugAndroidTest --no-daemon --console=plain
-
-      - name: Capture emulator evidence
-        if: always()
-        run: |
-          mkdir -p device-evidence
-          timeout 15s adb logcat -d > device-evidence/logcat.txt || true
+          working-directory: android/android
+          script: >-
+            mkdir -p "${{ github.workspace }}/device-evidence";
+            gradle :app:connectedDebugAndroidTest --no-daemon --console=plain --stacktrace > "${{ github.workspace }}/device-evidence/gradle.txt" 2>&1; status=$?;
+            cat "${{ github.workspace }}/device-evidence/gradle.txt";
+            adb logcat -d > "${{ github.workspace }}/device-evidence/logcat.txt" 2>&1 || true;
+            exit "${status}"
 
       - name: Upload emulator evidence
         if: always()
@@ -162,8 +177,8 @@ jobs:
           name: android-p2p-protect-device-evidence
           path: |
             device-evidence/
-            android/build/app/outputs/androidTest-results/
-            android/build/reports/androidTests/
+            android/android/app/build/outputs/androidTest-results/connected/
+            android/android/app/build/reports/androidTests/connected/
           if-no-files-found: warn
 
   build-apk:
@@ -200,7 +215,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.35.7'
           cache: true
 
       - name: Flutter doctor & pub get
