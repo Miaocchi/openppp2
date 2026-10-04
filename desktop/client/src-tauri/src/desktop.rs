@@ -175,6 +175,7 @@ fn client_bootstrap(state: State<'_, DesktopState>) -> Result<BootstrapPayload, 
             "disconnectOnExit": preferences.settings.disconnect_on_exit,
             "language": preferences.settings.language,
             "appearance": preferences.settings.appearance,
+            "connectionMode": preferences.settings.connection_mode,
             "pppPath": preferences.ppp_path,
         }),
     })
@@ -294,11 +295,16 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
         &serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?,
     )?;
     let stats_path = runtime_dir.join("stats.ndjson");
+    let mode = if preferences.settings.connection_mode == "proxy" {
+        "proxy"
+    } else {
+        "client"
+    };
     let executable = resolve_ppp_path(&preferences.ppp_path)?;
     let mut spec = CommandSpec::new(
         executable,
         [
-            "--mode=client".to_string(),
+            format!("--mode={mode}"),
             format!("--config={}", config_path.display()),
             format!("--stats-json={}", stats_path.display()),
         ],
@@ -734,6 +740,10 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
+    if !cfg!(windows) {
+        eprintln!("OpenPPP2 Client 只支持 Windows，并需要外部 ppp.exe。");
+        return;
+    }
     let app = tauri::Builder::default()
         .setup(|app| {
             app.manage(DesktopState::new(&app.handle())?);

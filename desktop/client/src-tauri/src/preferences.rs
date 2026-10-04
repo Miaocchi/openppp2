@@ -14,6 +14,7 @@ pub struct ClientSettings {
     pub disconnect_on_exit: bool,
     pub language: String,
     pub appearance: String,
+    pub connection_mode: String,
 }
 
 impl Default for ClientSettings {
@@ -24,6 +25,7 @@ impl Default for ClientSettings {
             disconnect_on_exit: true,
             language: "简体中文".into(),
             appearance: "深色".into(),
+            connection_mode: "client".into(),
         }
     }
 }
@@ -84,6 +86,13 @@ pub fn update_setting(
         "disconnectOnExit" => preferences.settings.disconnect_on_exit = bool_value(key, value)?,
         "language" => preferences.settings.language = string_value(key, value)?,
         "appearance" => preferences.settings.appearance = string_value(key, value)?,
+        "connectionMode" => {
+            let mode = string_value(key, value)?;
+            if mode != "client" && mode != "proxy" {
+                return Err(PreferencesError::InvalidSetting(key.into()));
+            }
+            preferences.settings.connection_mode = mode;
+        }
         _ => return Err(PreferencesError::UnknownSetting(key.into())),
     }
     Ok(())

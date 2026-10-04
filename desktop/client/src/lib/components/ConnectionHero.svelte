@@ -23,7 +23,7 @@
 
 <section class="panel hero {status.tone}">
   <div class="details">
-    <div class="status"><i></i><strong>{status.label}</strong>{#if connection.status === 'error'}<span>· 退出码 {connection.exitCode}</span>{/if}</div>
+    <div class="status"><i></i><strong>{status.label}</strong><span>· {connection.mode === 'proxy' ? '本地代理' : '虚拟网卡'}</span>{#if connection.status === 'error'}<span>· 退出码 {connection.exitCode}</span>{/if}</div>
     <div class="node"><b>{node?.name || '未选择节点'}</b>{#if node}<span class="mono">{node.address}</span>{/if}</div>
     {#if connection.status === 'connected'}
       <div class="meta">{#if Number.isFinite(node?.latencyMs)}延迟 <span class="number">{node.latencyMs} ms</span>（直连参考）<span>·</span>{/if}已连接 <span class="number">{formatDuration(connection.connectedAt, now)}</span></div>

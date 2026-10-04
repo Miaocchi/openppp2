@@ -100,7 +100,7 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
     navigate(route) { state.route = route; emit() },
     async connect(nodeId = state.connection.currentNodeId || state.subscription.nodes[0]?.id) {
       if (!nodeId) return
-      state.connection = { ...state.connection, status: 'connecting', currentNodeId: nodeId, exitCode: null, statsAvailable: false, lastError: '' }
+      state.connection = { ...state.connection, status: 'connecting', currentNodeId: nodeId, exitCode: null, statsAvailable: false, lastError: '', mode: state.settings.connectionMode || 'client' }
       emit()
       try {
         const process = await bridge.core.invoke('client_connect', { nodeId })

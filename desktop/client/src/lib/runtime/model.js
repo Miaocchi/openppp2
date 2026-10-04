@@ -86,7 +86,7 @@ export function createEmptyClientState() {
     route: 'connection',
     connection: {
       status: 'disconnected', currentNodeId: null, connectedAt: null,
-      exitCode: null, statsAvailable: false, pid: null, lastError: '',
+      exitCode: null, statsAvailable: false, pid: null, lastError: '', mode: 'client',
     },
     stats: {
       rxRateMbps: 0, txRateMbps: 0, rxBytes: 0, txBytes: 0,
@@ -102,7 +102,7 @@ export function createEmptyClientState() {
     launchOptions: {},
     settings: {
       autostart: false, closeToTray: true, disconnectOnExit: true,
-      language: '简体中文', appearance: '深色', pppPath: '',
+      language: '简体中文', appearance: '深色', connectionMode: 'client', pppPath: '',
     },
   }
 }

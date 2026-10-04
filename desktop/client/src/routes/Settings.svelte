@@ -12,7 +12,8 @@
   <section class="panel">
     <div class="panel-head"><h1 class="panel-title">设置</h1></div>
     <div class="setting-list">
-      <label class="setting-row path-row"><span><b>ppp 可执行文件</b><small>留空时使用与 Client 同目录的 ppp</small></span><input class="text-input mono" value={state.settings.pppPath} on:change={(event) => runtime.updateSetting('pppPath', event.currentTarget.value.trim())} placeholder="ppp.exe" /></label>
+      <label class="setting-row path-row"><span><b>ppp.exe</b><small>Windows 外部程序；留空时使用 Client 同目录下的 ppp.exe</small></span><input class="text-input mono" value={state.settings.pppPath} on:change={(event) => runtime.updateSetting('pppPath', event.currentTarget.value.trim())} placeholder="ppp.exe" /></label>
+      <div class="setting-row"><span><b>连接方式</b><small>虚拟网卡会改系统路由；本地代理只监听 HTTP/SOCKS</small></span><select class="select-input" value={state.settings.connectionMode} on:change={(event) => runtime.updateSetting('connectionMode', event.currentTarget.value)}><option value="client">虚拟网卡</option><option value="proxy">本地代理</option></select></div>
       {#each toggleRows as row}
         <label class="setting-row"><span><b>{row.label}</b><small>{row.description}</small></span><input type="checkbox" checked={state.settings[row.key]} on:change={(event) => runtime.updateSetting(row.key, event.currentTarget.checked)} /><i></i></label>
       {/each}
