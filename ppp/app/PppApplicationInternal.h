@@ -115,6 +115,7 @@ struct NetworkInterface final {
 #endif
 
     bool StaticMode = false;
+    bool ManualIPv4 = false;
     TcpStackMode TcpStack = TcpStackMode::Native;
     // Legacy compatibility mirror; TcpStack remains the authoritative value.
     bool Lwip = false;

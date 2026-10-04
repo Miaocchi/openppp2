@@ -384,8 +384,7 @@ namespace ppp {
                     ppp::app::protocol::ClientIPv4Request ipv4_req;
                     ipv4_req.enabled = true;
 
-                    bool is_static = switcher && switcher->StaticMode(NULLPTR);
-                    if (is_static && switcher) {
+                    if (switcher && switcher->ManualIPv4()) {
                         std::shared_ptr<ppp::tap::ITap> tap = switcher->GetTap();
                         if (NULLPTR != tap && tap->IPAddress != IPEndPoint::AnyAddress && tap->IPAddress != IPEndPoint::NoneAddress) {
                             ipv4_req.mode = "manual";

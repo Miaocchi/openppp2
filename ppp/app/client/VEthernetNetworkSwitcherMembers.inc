@@ -1,3 +1,4 @@
+                bool                                                               manual_ipv4_ = false;
                 std::shared_ptr<VEthernetExchanger>                                 exchanger_;
                 std::shared_ptr<ppp::configurations::AppConfiguration>              configuration_;
                 const ppp::app::TcpStackMode                                        tcp_stack_mode_ = ppp::app::TcpStackMode::Native;

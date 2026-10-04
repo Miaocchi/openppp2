@@ -16,6 +16,8 @@
                 bool WasTeardownSuccessful() const noexcept { return last_teardown_success_.load(std::memory_order_acquire); }
                 void Dispose(ppp::function<void(bool)> completion) noexcept;
                 void RequestedIPv6(const ppp::string& value) noexcept;
+                void ManualIPv4(bool value) noexcept { manual_ipv4_ = value; }
+                bool ManualIPv4() const noexcept { return manual_ipv4_; }
                 ppp::string RequestedIPv6() noexcept;
 #if !defined(_ANDROID) && !defined(_IPHONE)
                 boost::asio::ip::address LastAssignedIPv6() noexcept;
