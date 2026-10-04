@@ -36,6 +36,8 @@ struct RuntimeRecord {
     phase: String,
     role: String,
     #[serde(default)]
+    traffic: Option<TrafficRecord>,
+    #[serde(default)]
     requested_mux_mode: String,
     #[serde(default)]
     effective_mux_mode: String,
@@ -45,6 +47,12 @@ struct RuntimeRecord {
     effective_path: String,
     #[serde(default)]
     last_error: RuntimeError,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct TrafficRecord {
+    rx_bytes: u64,
+    tx_bytes: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -76,6 +84,7 @@ pub struct StatsView {
     pub requested_mux_mode: String,
     pub effective_mux_mode: String,
     pub active_links: u16,
+    pub mux_active_links: u16,
     pub effective_path: String,
     pub last_error: RuntimeError,
 }
@@ -92,12 +101,17 @@ impl StatsSampler {
     }
 
     pub fn consume_line(&mut self, line: &str) -> Result<StatsView, StatsError> {
-        let record: StatsRecord = serde_json::from_str(line)?;
+        let mut record: StatsRecord = serde_json::from_str(line)?;
         if record.record_type != "ppp-stats" {
             return Err(StatsError::WrongType);
         }
         if record.version != 1 {
             return Err(StatsError::WrongVersion);
+        }
+        // Session traffic includes proxy traffic; legacy top-level counters may only cover TUN.
+        if let Some(traffic) = &record.runtime.traffic {
+            record.rx_bytes = traffic.rx_bytes;
+            record.tx_bytes = traffic.tx_bytes;
         }
         let (rx_rate_mbps, tx_rate_mbps) = self
             .previous
@@ -128,7 +142,8 @@ impl StatsSampler {
             role: record.runtime.role.clone(),
             requested_mux_mode: record.runtime.requested_mux_mode.clone(),
             effective_mux_mode: record.runtime.effective_mux_mode.clone(),
-            active_links: record.runtime.mux_active_links,
+            active_links: if record.runtime.phase == "connected" { record.runtime.mux_active_links.max(1) } else { 0 },
+            mux_active_links: record.runtime.mux_active_links,
             effective_path: record.runtime.effective_path.clone(),
             last_error: record.runtime.last_error.clone(),
         };

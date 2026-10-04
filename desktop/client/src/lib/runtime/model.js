@@ -2,7 +2,7 @@ export const connectionStates = Object.freeze({
   connected: { label: '已连接', action: '断开', tone: 'success' },
   connecting: { label: '连接中', action: '取消', tone: 'warning' },
   disconnected: { label: '未连接', action: '连接', tone: 'muted' },
-  error: { label: '已断开', action: '重新连接', tone: 'danger' },
+  error: { label: '连接失败', action: '重新连接', tone: 'danger' },
   starting: { label: '启动中', action: '取消', tone: 'warning' },
   reconnecting: { label: '重连中', action: '取消', tone: 'warning' },
   stopping: { label: '停止中', action: '等待', tone: 'muted' },

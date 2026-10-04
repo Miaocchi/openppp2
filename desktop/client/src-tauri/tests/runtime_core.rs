@@ -18,6 +18,7 @@ fn telemetry_preserves_text_and_emits_only_evidence_based_signals() {
     let neutral = classify_line("tcp connecting 127.0.0.1:20000");
     assert_eq!(neutral.signal, None);
     assert_eq!(neutral.severity, Severity::Info);
+    assert_eq!(classify_line("proxy-only connected").signal, None);
 }
 
 fn stats_line(monotonic_ms: u64, rx: u64, tx: u64) -> String {
@@ -53,6 +54,29 @@ fn stats_sampler_rejects_wrong_contract_and_computes_real_rates() {
     let reset = sampler.consume_line(&stats_line(3000, 10, 10)).unwrap();
     assert_eq!(reset.rx_rate_mbps, 0.0);
     assert_eq!(reset.tx_rate_mbps, 0.0);
+}
+
+#[test]
+fn proxy_stats_use_session_traffic_and_distinguish_primary_from_mux_links() {
+    let mut sampler = StatsSampler::default();
+    let make_record = |time, rx, tx, phase| {
+        let mut value: serde_json::Value = serde_json::from_str(&stats_line(time, 7, 7)).unwrap();
+        value["runtime"]["traffic"] = serde_json::json!({"rx_bytes":rx,"tx_bytes":tx});
+        value["runtime"]["phase"] = serde_json::json!(phase);
+        value["runtime"]["mux_active_links"] = serde_json::json!(0);
+        value.to_string()
+    };
+    let first = sampler.consume_line(&make_record(1000, 1_000_000, 500_000, "connected")).unwrap();
+    assert_eq!(first.rx_bytes, 1_000_000);
+    assert_eq!(first.active_links, 1);
+    assert_eq!(first.mux_active_links, 0);
+    let next = sampler.consume_line(&make_record(2000, 2_000_000, 750_000, "connected")).unwrap();
+    assert_eq!(next.rx_rate_mbps, 8.0);
+    assert_eq!(next.tx_rate_mbps, 2.0);
+    let reset = sampler.consume_line(&make_record(3000, 0, 0, "reconnecting")).unwrap();
+    assert_eq!(reset.rx_rate_mbps, 0.0);
+    assert_eq!(reset.rx_bytes, 0);
+    assert_eq!(reset.active_links, 0);
 }
 
 #[test]

@@ -31,6 +31,7 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
     if (event.connection) {
       state.connection = { ...state.connection, ...event.connection, statsAvailable: !!event.connection.stats }
       if (event.connection.stats) state.stats = { ...state.stats, ...event.connection.stats }
+      else state.connection.statsStale = false
     }
     if (event.type === 'telemetry') {
       appendEvent(event.payload)
@@ -48,14 +49,15 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
       state.connection.statsAvailable = true
       state.stats.sampledAt = event.payload.sampledAt || Date.now()
       state.connection.statsStale = false
-      state.history = [...state.history, { time: state.stats.sampledAt, rx: state.stats.rxRateMbps, tx: state.stats.txRateMbps }].filter((point) => point.time > Date.now() - 60_000).slice(-60)
+      const point = { time: state.stats.sampledAt, rx: state.stats.rxRateMbps, tx: state.stats.txRateMbps }
+      state.history = [...state.history.filter((previous) => Math.floor(previous.time / 1000) !== Math.floor(point.time / 1000)), point].filter((point) => point.time > Date.now() - 60_000).slice(-60)
     } else if (event.type === 'exited') {
       state.connection.status = event.connection?.status || (state.connection.status === 'stopping' || event.payload.success ? 'disconnected' : 'error')
       state.connection.exitCode = event.payload.code
       state.connection.connectedAt = null
       state.connection.statsAvailable = false
       state.connection.pid = null
-      if (!event.payload.success && !state.connection.lastError) {
+      if (state.connection.status === 'error' && !event.payload.success && !state.connection.lastError) {
         state.connection.lastError = `ppp 进程异常退出，退出码 ${event.payload.code ?? '未知'}`
       }
     }
@@ -98,6 +100,7 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
       state.connection = { ...state.connection, ...bootstrap.connection, currentNodeId: bootstrap.currentNodeId, mode: state.settings.connectionMode, statsAvailable: !!bootstrap.connection.stats }
       if (bootstrap.connection.stats) state.stats = { ...state.stats, ...bootstrap.connection.stats }
     }
+    state.stats = { ...state.stats, ...(bootstrap.network || {}) }
     freshnessTimer = setInterval(() => {
       const stale = state.connection.statsAvailable && Date.now() - (state.stats.sampledAt || 0) > 5000
       if (stale !== state.connection.statsStale) { state.connection.statsStale = stale; emit() }
@@ -105,6 +108,7 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
     freshnessTimer.unref?.()
     emit()
     void probeLatency()
+    if (state.settings.pppPath) void runtime.inspectKernel().catch(() => {})
   }
 
   const runtime = {
@@ -133,8 +137,11 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
       try {
         const process = await bridge.core.invoke('client_connect', { nodeId })
         if (process) {
-          state.connection.pid = process.pid ?? null
-          state.connection.sessionId = Math.max(state.connection.sessionId, process.sessionId || 0)
+          const sessionId = process.sessionId || 0
+          if (sessionId < state.connection.sessionId) return
+          const exited = sessionId === state.connection.sessionId && ['disconnected', 'error'].includes(state.connection.status)
+          if (!exited) state.connection.pid = process.pid ?? null
+          state.connection.sessionId = Math.max(state.connection.sessionId, sessionId)
           state.stats = { ...state.stats, ...(process.network || {}) }
           emit()
         }
@@ -147,7 +154,11 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
     },
     async disconnect() {
       state.connection.status = 'stopping'; emit()
-      try { await bridge.core.invoke('client_disconnect') } catch (error) { state.connection.lastError = String(error); appendEvent({ message: String(error), severity: 'error' }); emit(); throw error }
+      try {
+        const connection = await bridge.core.invoke('client_disconnect')
+        if (connection) processEvent({type:'state',sessionId:connection.sessionId,connection})
+        else { state.connection = {...state.connection,status:'disconnected',phase:'idle',pid:null,connectedAt:null,statsAvailable:false}; emit() }
+      } catch (error) { state.connection.lastError = String(error); appendEvent({ message: String(error), severity: 'error' }); emit(); throw error }
     },
     async cancel() { await runtime.disconnect() },
     async switchNode(nodeId) {

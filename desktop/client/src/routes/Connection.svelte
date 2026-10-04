@@ -7,7 +7,8 @@
   export let runtime
   $: favorites=state.subscription.nodes.filter((node) => node.favorite).slice(0,4)
   $: maximum=Math.max(1,...(state.history || []).flatMap((point) => [point.rx,point.tx]))
-  $: line=(key) => (state.history || []).map((point,index) => `${index*600/59},${95-point[key]*85/maximum}`).join(' ')
+  $: historyStart=(state.history?.at(-1)?.time || Date.now())-60_000
+  $: line=(key) => (state.history || []).map((point) => `${Math.max(0,point.time-historyStart)*600/60_000},${95-point[key]*85/maximum}`).join(' ')
 </script>
 <div class="page"><ConnectionHero {state} {runtime}/>{#if state.connection.statsAvailable}<StatsPanel stats={state.stats} stale={state.connection.statsStale}/>{/if}
   <section class="band"><div class="section-heading"><h2>{$t('Traffic','流量')}</h2><span>{$t('Last 60 seconds','最近 60 秒')}</span></div><svg viewBox="0 0 600 100" preserveAspectRatio="none" role="img" aria-label={$t('Download and upload traffic','下载及上传流量')}><line x1="0" x2="600" y1="95" y2="95" stroke="var(--border)"/><polyline points={line('rx')} fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/><polyline points={line('tx')} fill="none" stroke="var(--green)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>{#if !state.history?.length}<span class="subtle">{$t('No traffic samples','暂无流量样本')}</span>{/if}</section>

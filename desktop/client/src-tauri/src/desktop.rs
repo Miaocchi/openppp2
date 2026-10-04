@@ -38,6 +38,7 @@ pub struct DesktopState {
     subscription: Mutex<Option<StoredSubscription>>,
     process: Mutex<ProcessManager>,
     last_node_id: Mutex<Option<String>>,
+    network: Mutex<Value>,
     tray_items: Mutex<Option<TrayItems>>,
     exit_requested: AtomicBool,
     proxy: Mutex<ProxySession>,
@@ -81,6 +82,7 @@ struct BootstrapPayload {
     launch_options: BTreeMap<String, Value>,
     settings: Value,
     connection: ConnectionSnapshot,
+    network: Value,
     current_node_id: Option<String>,
     network_overrides: Value,
     administrator: bool,
@@ -225,6 +227,7 @@ impl DesktopState {
             subscription: Mutex::new(subscription),
             process: Mutex::new(process),
             last_node_id: Mutex::new(None),
+            network: Mutex::new(json!({})),
             tray_items: Mutex::new(None),
             exit_requested: AtomicBool::new(false),
             proxy: Mutex::new(ProxySession::default()),
@@ -545,6 +548,7 @@ fn client_bootstrap(state: State<'_, DesktopState>) -> Result<BootstrapPayload, 
             "autoSystemProxy": preferences.settings.auto_system_proxy,
         }),
         connection: state.process.lock().map_err(|_| "Process lock")?.snapshot(),
+        network: state.network.lock().map_err(|_| "Network lock")?.clone(),
         current_node_id: state.last_node_id.lock().map_err(|_| "Node lock")?.clone(),
         network_overrides: if preferences.network_overrides.is_object() {
             preferences.network_overrides.clone()
@@ -769,6 +773,7 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
     };
     spec.stats_path = Some(stats_path);
     let pid = process.start(spec).map_err(|error| error.to_string())?;
+    *state.network.lock().map_err(|_| "Network lock")? = network.clone();
     *state
         .last_node_id
         .lock()
@@ -782,14 +787,14 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
 }
 
 #[tauri::command]
-fn client_disconnect(state: State<'_, DesktopState>) -> Result<(), String> {
-    state
+fn client_disconnect(state: State<'_, DesktopState>) -> Result<ConnectionSnapshot, String> {
+    let mut process = state
         .process
         .lock()
-        .map_err(|_| "进程状态锁已损坏".to_string())?
-        .stop()
-        .map_err(|error| error.to_string())?;
-    crate::windows::restore_proxy(&state.data_dir.join("proxy-recovery.json"), false)
+        .map_err(|_| "进程状态锁已损坏".to_string())?;
+    process.stop().map_err(|error| error.to_string())?;
+    crate::windows::restore_proxy(&state.data_dir.join("proxy-recovery.json"), false)?;
+    Ok(process.snapshot())
 }
 
 #[tauri::command]

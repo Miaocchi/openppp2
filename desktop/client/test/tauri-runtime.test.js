@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createTauriRuntime } from '../src/lib/runtime/tauri.js'
 
-function fakeBridge() {
+function fakeBridge(overrides = {}, responses = {}) {
   const calls = []
   const eventHandlers = new Map()
   const bootstrap = {
@@ -15,11 +15,13 @@ function fakeBridge() {
     launchOptions: { mux: 2, muxMode: 'compat' },
     settings: { autostart: false, closeToTray: true, disconnectOnExit: true, language: '简体中文', appearance: '深色', pppPath: '' },
   }
+  Object.assign(bootstrap, overrides)
   return {
     calls,
     bridge: {
       core: { invoke: async (command, args) => {
         calls.push([command, args])
+        if (Object.hasOwn(responses, command)) return responses[command](args)
         if (command === 'client_bootstrap') return bootstrap
         if (command === 'subscription_refresh') return bootstrap.subscription
         if (command === 'client_probe_latency') return { 'real-1': 17 }
@@ -159,5 +161,46 @@ test('structured state wins over text and stale session events are ignored', asy
   assert.equal(state.connection.status,'reconnecting')
   fake.emit({sessionId:2,type:'exited',payload:{success:false,code:1},connection:{sessionId:2,pid:null,status:'disconnected',stats:null}})
   assert.equal(state.connection.status,'disconnected')
+  assert.equal(state.connection.lastError, '')
+  await unsubscribe()
+})
+
+test('late connect response cannot revive an exited session and disconnect settles without a child', async () => {
+  let finishConnect
+  const fake = fakeBridge({}, { client_connect: () => new Promise((resolve) => { finishConnect = resolve }) })
+  const runtime = createTauriRuntime(fake.bridge)
+  let state
+  const unsubscribe = runtime.subscribe((next) => { state = next })
+  await runtime.ready
+  const connecting = runtime.connect('real-1')
+  fake.emit({ sessionId: 3, type: 'exited', payload: { code: 1, success: false }, connection: { sessionId: 3, pid: null, status: 'error', stats: null } })
+  finishConnect({ sessionId: 3, pid: 42 })
+  await connecting
+  assert.equal(state.connection.status, 'error')
+  assert.equal(state.connection.pid, null)
+  await runtime.disconnect()
+  assert.equal(state.connection.status, 'disconnected')
+  assert.equal(state.connection.pid, null)
+  await unsubscribe()
+})
+
+test('bootstrap restores proxy addresses and inspects configured kernel; history retains a minute', async () => {
+  const fake = fakeBridge({ settings: { pppPath: 'C:\\ppp.exe' }, network: { httpProxy: '127.0.0.1:18081', socksProxy: '127.0.0.1:18082' } }, {
+    client_kernel_info: () => ({ version: '2.1.5' }),
+  })
+  const runtime = createTauriRuntime(fake.bridge)
+  let state
+  const unsubscribe = runtime.subscribe((next) => { state = next })
+  await runtime.ready
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(state.stats.httpProxy, '127.0.0.1:18081')
+  assert.equal(state.stats.socksProxy, '127.0.0.1:18082')
+  assert.equal(state.kernel.version, '2.1.5')
+  const end = Math.floor(Date.now() / 1000) * 1000
+  for (let offset = 59_000; offset >= 0; offset -= 500) {
+    fake.emit({ type: 'stats', payload: { sampledAt: end - offset, rxRateMbps: 8, txRateMbps: 2 } })
+  }
+  assert.equal(state.history.length, 60)
+  assert.ok(state.history.at(-1).time - state.history[0].time >= 58_000)
   await unsubscribe()
 })
