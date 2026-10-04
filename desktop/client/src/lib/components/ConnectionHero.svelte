@@ -1,56 +1,36 @@
 <script>
+  import { onDestroy } from 'svelte'
+  import { Power, X } from 'lucide-svelte'
   import { connectionStates } from '../runtime/model.js'
   import { formatDuration } from '../format.js'
-
+  import { t } from '../i18n.js'
   export let state
   export let runtime
-  let now = Date.now()
-  const tick = setInterval(() => (now = Date.now()), 1000)
-
-  $: connection = state.connection
-  $: status = connectionStates[connection.status]
-  $: node = state.subscription.nodes.find((item) => item.id === connection.currentNodeId) || state.subscription.nodes[0]
-
-  function act() {
-    if (connection.status === 'connected') runtime.disconnect()
-    else if (connection.status === 'connecting') runtime.cancel()
-    else runtime.connect(node?.id)
-  }
-
-  import { onDestroy } from 'svelte'
+  let now=Date.now(), error=''
+  const tick=setInterval(() => now=Date.now(),1000)
   onDestroy(() => clearInterval(tick))
+  $: connection=state.connection
+  $: status=connectionStates[connection.status] || connectionStates.disconnected
+  $: busy=!!connection.pid || ['starting','connecting','connected','reconnecting','stopping'].includes(connection.status)
+  $: selected=connection.currentNodeId || state.subscription.nodes[0]?.id || ''
+  const labels={connected:'Connected',connecting:'Connecting',starting:'Starting',reconnecting:'Reconnecting',stopping:'Stopping',disconnected:'Disconnected',error:'Connection failed'}
+  const phases={preparing_host:['Preparing adapter','准备网卡'],handshaking:['Authenticating','认证中'],applying_policy:['Applying policy','应用网络策略'],connecting:['Connecting to server','连接服务器']}
+  async function act() { try { error=''; if(busy) await runtime.disconnect(); else await runtime.connect(selected) } catch(cause) { error=String(cause) } }
+  async function mode(value) { try { await runtime.updateSetting('connectionMode',value) } catch(cause) { error=String(cause) } }
 </script>
-
-<section class="panel hero {status.tone}">
-  <div class="details">
-    <div class="status"><i></i><strong>{status.label}</strong><span>· {connection.mode === 'proxy' ? '本地代理' : '虚拟网卡'}</span>{#if connection.status === 'error'}<span>· 退出码 {connection.exitCode}</span>{/if}</div>
-    <div class="node"><b>{node?.name || '未选择节点'}</b>{#if node}<span class="mono">{node.address}</span>{/if}</div>
-    {#if connection.status === 'connected'}
-      <div class="meta">{#if Number.isFinite(node?.latencyMs)}延迟 <span class="number">{node.latencyMs} ms</span>（直连参考）<span>·</span>{/if}已连接 <span class="number">{formatDuration(connection.connectedAt, now)}</span></div>
-    {:else if connection.status === 'connecting'}
-      <div class="meta">{node.name}<span>·</span>正在等待真实握手事件</div>
-    {:else if connection.status === 'error'}
-      <div class="meta error-copy">{connection.lastError || 'ppp 进程已异常退出'}</div>
-    {:else}
-      <div class="meta">{#if Number.isFinite(node?.latencyMs)}延迟 <span class="number">{node.latencyMs} ms</span>（直连参考）{:else}延迟未测试{/if}</div>
-    {/if}
+<section class="connection-area">
+  <div class="connection-head"><div><div class="eyebrow">OpenPPP2 Client</div><h1 class={status.tone}><i></i>{$t(labels[connection.status] || 'Disconnected',status.label)}</h1></div>
+    <button class="primary-button action" disabled={connection.status === 'stopping' || (!busy && !selected)} on:click={act}>{#if busy}<X size={17}/>{:else}<Power size={17}/>{/if}{$t(busy ? 'Disconnect' : connection.status === 'error' ? 'Retry' : 'Connect',status.action)}</button>
   </div>
-  <button class="primary-button" on:click={act}>{status.action}</button>
+  <div class="connection-controls"><label class="field"><span>{$t('Node','节点')}</span><select class="select-input" value={selected} disabled={busy} on:change={(event) => runtime.selectNode(event.currentTarget.value)}>{#if !state.subscription.nodes.length}<option value="">{$t('No nodes','暂无节点')}</option>{/if}{#each state.subscription.nodes as node}<option value={node.id}>{node.name}</option>{/each}</select></label>
+    <div class="field"><span>{$t('Connection mode','连接方式')}</span><div class="segmented">{#each [['client','Virtual adapter','虚拟网卡'],['proxy','Local proxy','本地代理']] as [value,en,zh]}<button disabled={busy} class:active={state.settings.connectionMode === value} aria-pressed={state.settings.connectionMode === value} on:click={() => mode(value)}>{$t(en,zh)}</button>{/each}</div></div>
+  </div>
+  <div class="connection-meta">{#if connection.status === 'connected'}<span>{$t('Online','在线')} {formatDuration(connection.connectedAt,now)}</span>{/if}{#if phases[connection.phase]}<span>{$t(...phases[connection.phase])}</span>{/if}{#if busy && !connection.statsAvailable}<span>{$t('Waiting for kernel statistics','等待内核统计')}</span>{/if}{#if connection.statsStale}<span class="warning">{$t('Statistics stale','统计已过期')}</span>{/if}</div>
+  {#if error || connection.lastError}<div role="alert" class="error-line">{error || connection.lastError}</div>{/if}
 </section>
-
 <style>
-  .hero { min-height: 114px; padding: 20px 22px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-  .details { min-width: 0; }
-  .status { display: flex; align-items: center; gap: 8px; }
-  .status i { width: 9px; height: 9px; border-radius: 50%; background: var(--gray); transition: background-color 150ms ease; }
-  .status strong { font-size: 18px; }
-  .status span { color: var(--text-2); }
-  .success .status i { background: var(--green); } .success .status strong { color: #f4fff7; }
-  .warning .status i { background: var(--yellow); } .warning .status strong { color: #efd08a; }
-  .danger .status i { background: var(--red); } .danger .status strong { color: #ff9894; }
-  .node { margin-top: 10px; display: flex; gap: 9px; align-items: baseline; min-width: 0; }
-  .node b { font-size: 13px; } .node span { color: #9fc9ef; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
-  .meta { margin-top: 5px; color: #91b4d5; font-size: 12px; display: flex; gap: 7px; flex-wrap: wrap; }
-  .error-copy { color: #ef8f8b; font-family: var(--mono); }
-  @media (max-width: 560px) { .hero { align-items: stretch; flex-direction: column; } .primary-button { width: 100%; } }
+  .connection-area { padding:12px 0 24px; border-bottom:1px solid var(--border); } .connection-head { display:flex; justify-content:space-between; align-items:center; gap:16px; } .eyebrow { font-size:12px; color:var(--text-3); margin-bottom:8px; }
+  h1 { margin:0; font-size:24px; display:flex; gap:12px; align-items:center; overflow-wrap:anywhere; } h1 i { width:10px; height:10px; border-radius:50%; background:var(--gray); flex:none; } h1.success i { background:var(--green); } h1.warning i { background:var(--yellow); } h1.danger i { background:var(--red); }
+  .action { display:flex; gap:8px; align-items:center; flex:none; } .connection-controls { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px,.7fr); gap:24px; margin-top:26px; } .connection-meta { display:flex; flex-wrap:wrap; gap:16px; font-size:12px; color:var(--text-2); margin-top:16px; }
+  @media(max-width:760px) { .connection-controls { grid-template-columns:1fr; gap:16px; } }
 </style>

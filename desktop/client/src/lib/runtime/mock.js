@@ -1,4 +1,4 @@
-import { createClientState } from './model.js'
+import { createClientState, createEmptyClientState } from './model.js'
 
 function clone(value) {
   return structuredClone(value)
@@ -6,6 +6,9 @@ function clone(value) {
 
 export function createMockRuntime() {
   let state = createClientState()
+  const empty=createEmptyClientState()
+  state={ ...empty,...state, connection:{...empty.connection,...state.connection}, settings:{...empty.settings,...state.settings}, subscription:{...empty.subscription,...state.subscription} }
+  state.networkOverrides={}; state.history=[]
   const listeners = new Set()
   let transitionTimer = null
 
@@ -37,6 +40,18 @@ export function createMockRuntime() {
   }
 
   return {
+    ready: Promise.resolve(),
+    selectNode(nodeId) { state.connection.currentNodeId=nodeId; emit() },
+    async updateNetwork(overrides) { state.networkOverrides=structuredClone(overrides); emit(); return overrides },
+    async saveSubscription(source) { const saved={...source,id:source.id || `s${Date.now()}`}; state.subscription.sources=[...state.subscription.sources.filter((s) => s.id !== saved.id),saved]; emit() },
+    async deleteSubscription(sourceId) { state.subscription.sources=state.subscription.sources.filter((s) => s.id !== sourceId); emit() },
+    async restoreProxy() { state.proxyRecoveryPending=false; emit() },
+    async inspectKernel() { throw new Error('Kernel inspection requires the Windows desktop app') },
+    async pickExecutable() { throw new Error('File selection requires the Windows desktop app') },
+    async elevate() { throw new Error('Elevation requires the Windows desktop app') },
+    async openData() { throw new Error('Opening app data requires the Windows desktop app') },
+    async preview() { return {config:state.networkOverrides,args:[]} },
+    async probeNodes() { emit() },
     subscribe(listener) {
       listeners.add(listener)
       listener(clone(state))

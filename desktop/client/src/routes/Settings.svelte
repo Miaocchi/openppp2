@@ -1,37 +1,23 @@
 <script>
+  import { FolderOpen, RefreshCw, ShieldCheck, Undo2, Download } from 'lucide-svelte'
+  import { t } from '../lib/i18n.js'
+  import { downloadText, redactText } from '../lib/security.js'
   export let state
   export let runtime
-  const toggleRows = [
-    { key: 'autostart', label: '开机启动', description: '登录系统后自动启动 Client 管理器' },
-    { key: 'closeToTray', label: '关闭到托盘', description: '关闭窗口时保持程序在后台运行' },
-    { key: 'disconnectOnExit', label: '退出时断开', description: '从托盘退出程序时结束当前 ppp 连接' },
-  ]
+  let error='', busy=false
+  async function run(action) { busy=true; error=''; try { await action() } catch(cause) { error=String(cause) } finally { busy=false } }
+  async function diagnostics() { const preview=await runtime.preview(); downloadText('openppp2-diagnostics.json',redactText(JSON.stringify({kernel:state.kernel,connection:state.connection,preview,events:state.events},null,2))) }
 </script>
-
-<div class="page">
-  <section class="panel">
-    <div class="panel-head"><h1 class="panel-title">设置</h1></div>
-    <div class="setting-list">
-      <label class="setting-row path-row"><span><b>ppp.exe</b><small>Windows 外部程序；留空时使用 Client 同目录下的 ppp.exe</small></span><input class="text-input mono" value={state.settings.pppPath} on:change={(event) => runtime.updateSetting('pppPath', event.currentTarget.value.trim())} placeholder="ppp.exe" /></label>
-      <div class="setting-row"><span><b>连接方式</b><small>虚拟网卡会改系统路由；本地代理只监听 HTTP/SOCKS</small></span><select class="select-input" value={state.settings.connectionMode} on:change={(event) => runtime.updateSetting('connectionMode', event.currentTarget.value)}><option value="client">虚拟网卡</option><option value="proxy">本地代理</option></select></div>
-      {#each toggleRows as row}
-        <label class="setting-row"><span><b>{row.label}</b><small>{row.description}</small></span><input type="checkbox" checked={state.settings[row.key]} on:change={(event) => runtime.updateSetting(row.key, event.currentTarget.checked)} /><i></i></label>
-      {/each}
-      <div class="setting-row"><span><b>语言</b><small>Client 管理器界面语言</small></span><select class="select-input" value={state.settings.language} on:change={(event) => runtime.updateSetting('language', event.currentTarget.value)}><option>简体中文</option><option>English</option></select></div>
-      <div class="setting-row"><span><b>外观</b><small>当前设计仅提供深色主题</small></span><select class="select-input" value={state.settings.appearance} disabled><option>深色</option></select></div>
-    </div>
+<div class="page"><div class="page-heading"><h1>{$t('Settings','设置')}</h1></div>{#if error}<div class="error-line" role="alert">{error}</div>{/if}
+  <section class="band"><h2>{$t('Kernel','内核')}</h2><div class="setting-row"><label class="field grow"><span>ppp.exe</span><input class="text-input mono" value={state.settings.pppPath} on:change={(event) => run(() => runtime.updateSetting('pppPath',event.currentTarget.value.trim()))}/></label><button class="icon-button" disabled={busy} title={$t('Browse','浏览')} aria-label={$t('Browse','浏览')} on:click={() => run(() => runtime.pickExecutable())}><FolderOpen size={17}/></button><button class="icon-button" disabled={busy} title={$t('Inspect kernel','检查内核')} aria-label={$t('Inspect kernel','检查内核')} on:click={() => run(() => runtime.inspectKernel())}><RefreshCw size={17}/></button></div>
+    {#if state.kernel}<div class="kernel-details"><span>{state.kernel.version}</span><span>{$t('Statistics','统计')}: {state.kernel.statsSupported ? '✓' : '—'}</span><span>Proxy: {state.kernel.proxySupported ? '✓' : '—'}</span></div>{/if}
+    <div class="setting-row"><span>{$t('Privileges','运行权限')}: {state.administrator ? $t('Administrator','管理员') : $t('Standard user','普通用户')}</span><button class="secondary-button action" disabled={busy || !!state.connection.pid || state.administrator} on:click={() => { if(confirm($t('Restart as administrator?','以管理员身份重启？'))) run(() => runtime.elevate()) }}><ShieldCheck size={16}/>{$t('Restart as administrator','管理员重启')}</button></div>
   </section>
+  <section class="band"><h2>{$t('System','系统')}</h2>
+    {#each [['autostart','Start at sign-in','开机启动'],['closeToTray','Close to tray','关闭到托盘'],['autoSystemProxy','Set system proxy on connection','连接后设置系统代理']] as [key,en,zh]}<label class="setting-row"><span>{$t(en,zh)}</span><input type="checkbox" role="switch" checked={state.settings[key]} disabled={busy || (key === 'autoSystemProxy' && !!state.connection.pid)} on:change={(event) => run(() => runtime.updateSetting(key,event.currentTarget.checked))}/></label>{/each}
+    <div class="setting-row"><span>{$t('System proxy recovery','系统代理恢复')}{#if state.proxyRecoveryPending} · {$t('Pending','待处理')}{/if}</span><button class="secondary-button action" disabled={busy} on:click={() => { if(confirm($t('Restore the saved system proxy settings?','恢复保存的系统代理设置？'))) run(() => runtime.restoreProxy(true)) }}><Undo2 size={16}/>{$t('Restore','恢复')}</button></div>
+  </section>
+  <section class="band"><h2>{$t('Appearance','外观')}</h2><label class="setting-row"><span>{$t('Theme','主题')}</span><select class="select-input" aria-label={$t('Theme','主题')} value={state.settings.appearance} on:change={(event) => run(() => runtime.updateSetting('appearance',event.currentTarget.value))}><option value="system">{$t('System','跟随系统')}</option><option value="light">{$t('Light','浅色')}</option><option value="dark">{$t('Dark','深色')}</option></select></label><label class="setting-row"><span>{$t('Language','语言')}</span><select class="select-input" aria-label={$t('Language','语言')} value={state.settings.language} on:change={(event) => run(() => runtime.updateSetting('language',event.currentTarget.value))}><option>简体中文</option><option>English</option></select></label></section>
+  <section class="band"><h2>{$t('Diagnostics','诊断')}</h2><div class="toolbar"><button class="secondary-button action" on:click={() => run(() => runtime.openData())}><FolderOpen size={16}/>{$t('Open data directory','打开数据目录')}</button><button class="secondary-button action" on:click={() => run(diagnostics)}><Download size={16}/>{$t('Export diagnostics','导出诊断')}</button></div></section>
 </div>
-
-<style>
-  .setting-list { padding: 0 18px; }
-  .setting-row { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--border); position: relative; }
-  .setting-row:last-child { border-bottom: 0; }
-  .setting-row span { display: grid; gap: 4px; }.setting-row b { font-size: 12px; }.setting-row small { color: var(--text-3); }
-  .setting-row input[type="checkbox"] { position: absolute; opacity: 0; pointer-events: none; }
-  .setting-row i { width: 34px; height: 19px; border-radius: 10px; background: #2c323a; position: relative; cursor: pointer; transition: background-color 150ms; }
-  .setting-row i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 13px; height: 13px; border-radius: 50%; background: #a3abb4; transition: transform 150ms; }
-  .setting-row input:checked + i { background: #edf0f4; }.setting-row input:checked + i::after { background: #0b0d10; transform: translateX(15px); }
-  .setting-row select { width: 132px; }
-  .path-row input { width: min(420px, 52%); }
-</style>
+<style>.setting-row { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:60px; border-bottom:1px solid var(--border); } .setting-row:last-child { border:0; } .setting-row .select-input { width:160px; } .grow { flex:1; min-width:0; } .kernel-details { display:flex; flex-wrap:wrap; gap:20px; padding:16px 0; color:var(--text-3); } .setting-row:has(.grow) { padding:12px 0; align-items:end; } @media(max-width:760px) { .setting-row { flex-wrap:wrap; padding:12px 0; } }</style>

@@ -3,6 +3,9 @@ export const connectionStates = Object.freeze({
   connecting: { label: '连接中', action: '取消', tone: 'warning' },
   disconnected: { label: '未连接', action: '连接', tone: 'muted' },
   error: { label: '已断开', action: '重新连接', tone: 'danger' },
+  starting: { label: '启动中', action: '取消', tone: 'warning' },
+  reconnecting: { label: '重连中', action: '取消', tone: 'warning' },
+  stopping: { label: '停止中', action: '等待', tone: 'muted' },
 })
 
 export function latencyTone(latency) {
@@ -86,7 +89,7 @@ export function createEmptyClientState() {
     route: 'connection',
     connection: {
       status: 'disconnected', currentNodeId: null, connectedAt: null,
-      exitCode: null, statsAvailable: false, pid: null, lastError: '', mode: 'client',
+      exitCode: null, statsAvailable: false, pid: null, lastError: '', mode: 'client', sessionId: 0, phase: 'idle', statsStale: false,
     },
     stats: {
       rxRateMbps: 0, txRateMbps: 0, rxBytes: 0, txBytes: 0,
@@ -96,13 +99,14 @@ export function createEmptyClientState() {
     events: [],
     subscription: {
       url: '', name: '', updatedAt: null, lastSyncedAt: null,
-      cached: false, cacheAgeMinutes: 0, nodes: [],
+      cached: false, cacheAgeMinutes: 0, nodes: [], sources: [],
     },
     config: '{}',
     launchOptions: {},
+    networkOverrides: {}, history: [], kernel: null, administrator: false, proxyRecoveryPending: false,
     settings: {
       autostart: false, closeToTray: true, disconnectOnExit: true,
-      language: '简体中文', appearance: '深色', connectionMode: 'client', pppPath: '',
+      language: '简体中文', appearance: 'system', connectionMode: 'client', pppPath: '', autoSystemProxy: true,
     },
   }
 }

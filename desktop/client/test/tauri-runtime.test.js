@@ -145,3 +145,19 @@ test('tauri runtime persists manual profiles and launch options through backend 
   assert.equal(fake.calls.at(-1)[0], 'client_delete_manual_node')
   assert.equal(state.subscription.nodes.length, 0)
 })
+
+test('structured state wins over text and stale session events are ignored', async () => {
+  const fake=fakeBridge(), runtime=createTauriRuntime(fake.bridge)
+  let state
+  const unsubscribe=runtime.subscribe((next) => state=next)
+  await runtime.ready
+  fake.emit({sessionId:2,type:'state',payload:{},connection:{sessionId:2,pid:123,status:'reconnecting',phase:'reconnecting',stats:null}})
+  assert.equal(state.connection.status,'reconnecting')
+  fake.emit({sessionId:1,type:'exited',payload:{success:false,code:7},connection:{sessionId:1,pid:null,status:'error'}})
+  assert.equal(state.connection.status,'reconnecting')
+  fake.emit({sessionId:2,type:'telemetry',payload:{message:'session established',signal:'connected'},connection:{sessionId:2,status:'reconnecting',stats:null}})
+  assert.equal(state.connection.status,'reconnecting')
+  fake.emit({sessionId:2,type:'exited',payload:{success:false,code:1},connection:{sessionId:2,pid:null,status:'disconnected',stats:null}})
+  assert.equal(state.connection.status,'disconnected')
+  await unsubscribe()
+})
