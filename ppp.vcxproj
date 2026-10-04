@@ -1073,6 +1073,12 @@
     <CopyFileToFolders Include="cmcc.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="CopyDriverRuntime" AfterTargets="Build">
+    <ItemGroup>
+      <DriverRuntime Include="$(ProjectDir)Driver\**\*.dll;$(ProjectDir)Driver\**\*.exe;$(ProjectDir)Driver\**\*.inf;$(ProjectDir)Driver\**\*.cat;$(ProjectDir)Driver\**\*.sys" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DriverRuntime)" DestinationFiles="@(DriverRuntime->'$(OutDir)Driver\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
   <ProjectExtensions>
