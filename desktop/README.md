@@ -25,7 +25,7 @@ Keep Vite running on `http://127.0.0.1:1420`, then run `npm run desktop` in anot
 - Logs: severity/session filters, search, pause, copy and redacted export.
 - Settings: executable selection and version inspection, Chinese/English, light/dark/system theme, autostart, tray behavior, proxy recovery and diagnostics.
 
-Choose `ppp.exe` in Settings. Without a configured path, the client looks beside its own executable, not on `PATH`. Some Windows kernel builds require administrator rights even in proxy mode. Settings offers an explicit administrator restart with the normal Windows UAC prompt; virtual-adapter mode requires it.
+Choose `ppp.exe` in Settings. Without a configured path, the client looks beside its own executable, not on `PATH`. Current Windows builds permit proxy mode without elevation. Older binaries with a `requireAdministrator` manifest must be rebuilt. Settings offers an explicit administrator restart with the normal Windows UAC prompt; virtual-adapter mode requires it.
 
 ## Process and host state
 

@@ -1,8 +1,10 @@
 # Desktop GUI verification
 
-Last checked: 2026-10-04. Windows development client, external kernel.
+Last checked: 2026-10-05. Windows development client, external kernel.
 
-Recorded result: 12 frontend tests and 34 Rust tests passed; frontend and native debug builds passed. Browser smoke passed at all three widths. Native command smoke passed, with actual kernel spawn blocked by Windows elevation error 740; file version was `2.1.2.0` and capability probes remained unknown.
+Recorded result: 13 frontend tests and 34 Rust tests passed. The Windows x64 Release kernel and native GUI rebuilt successfully. Hidden native smoke passed with kernel `2.1.5.0`: actual ordinary-user spawn, HTTP/SOCKS listeners, structured statistics, duplicate-connect rejection, active-node deletion rejection, disconnect releasing both ports, session generation and the administrator guard. No QA processes or listeners remained, and the host system-proxy fingerprint was unchanged. Browser smoke previously passed at all three widths.
+
+The kernel manifest now uses `asInvoker`; server and virtual-adapter privilege checks remain in the runtime. Explicit `/utf-8` fixes MSVC source decoding. Tray menu handles are copied before native UI calls to avoid a worker/main-thread lock deadlock during disconnect.
 
 ## Automated checks
 
@@ -28,14 +30,13 @@ The script checks light/dark layouts at 1120, 720 and 375 pixels, loaded logo, n
 
 ## Isolated native commands
 
-Debug builds support `OPENPPP2_CLIENT_DATA_DIR` for test isolation. It is ignored by release builds. Launch a fresh debug client with this variable pointing to a disposable directory and `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223`, then run:
+Debug builds support `OPENPPP2_CLIENT_DATA_DIR` for test isolation. It is ignored by release builds. The wrapper starts and hides the QA window, configures a disposable directory and local WebView2 debugging, checks the original system-proxy fingerprint and closes the QA client afterward:
 
 ```powershell
-$env:PLAYWRIGHT_MODULE='build/gui-tools/node_modules/playwright/index.mjs'
-node desktop/client/test/native-smoke.mjs
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File desktop/client/test/native-smoke.ps1
 ```
 
-This test uses the repository's `x64/Release/ppp.exe`, fake local credentials and disabled automatic system proxy. It exercises bootstrap, kernel inspection, preferences, network persistence, manual-node storage, redacted preview, disconnect and deletion. If the kernel manifest rejects ordinary process creation with error 740, the report marks spawn blocked and verifies no PID remains. Otherwise it also checks real spawn and session generation. Never run this script against normal application data: it deletes manual nodes in the test directory.
+The wrapper requires Playwright at `build/gui-tools/node_modules/playwright` and a built debug GUI. It uses the repository's `x64/Release/ppp.exe`, fake local credentials, an unreachable loopback server and disabled automatic system proxy. It checks bootstrap, kernel inspection, persistence, redacted preview, actual spawn, both listeners, structured statistics, disconnect and generation changes. Error 740 and timed-out commands fail the test. Never run the underlying JavaScript directly against normal application data: it deletes manual nodes in the test directory. Logs go to ignored `build/gui-checks/native-smoke*.log`.
 
 ## Required live acceptance
 

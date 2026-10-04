@@ -51,6 +51,7 @@ struct ProxySession {
     applied: bool,
 }
 
+#[derive(Clone)]
 struct TrayItems {
     status: MenuItem<Wry>,
     primary: MenuItem<Wry>,
@@ -1116,10 +1117,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn update_tray(state: &DesktopState, running: bool, node_name: Option<&str>) {
-    let Ok(items) = state.tray_items.lock() else {
-        return;
-    };
-    let Some(items) = items.as_ref() else {
+    // Native menu calls can wait on the main thread; never retain the mutex here.
+    let Some(items) = state.tray_items.lock().ok().and_then(|items| items.clone()) else {
         return;
     };
     let status = if running {
@@ -1138,10 +1137,9 @@ fn update_tray(state: &DesktopState, running: bool, node_name: Option<&str>) {
 
 fn update_tray_phase(state: &DesktopState, phase: &str) {
     update_tray(state, !["disconnected", "error"].contains(&phase), None);
-    if let Ok(items) = state.tray_items.lock() {
-        if let Some(items) = items.as_ref() {
-            let _ = items.status.set_text(format!("OpenPPP2: {phase}"));
-        }
+    let items = state.tray_items.lock().ok().and_then(|items| items.clone());
+    if let Some(items) = items {
+        let _ = items.status.set_text(format!("OpenPPP2: {phase}"));
     }
 }
 
