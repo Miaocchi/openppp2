@@ -21,12 +21,12 @@
 | 安装与构建 | [构建与首次运行](getting-started/USER_MANUAL_CN.md#快速开始) |
 | 编写最小配置 | [最小客户端与服务端配置](getting-started/USER_MANUAL_CN.md#快速开始) |
 | 启动服务端或客户端 | [启动命令](getting-started/USER_MANUAL_CN.md#快速开始) |
-| 验证隧道 | [运维检查清单](operations/OPERATIONS_CN.md#运维检查清单) |
+| 验证隧道 | [运维检查清单](operations/OPERATIONS_CN.md#安全的运维顺序) |
 | 配置路由与 DNS | [路由与 DNS 指南](guides/ROUTING_AND_DNS_CN.md) |
 | 使用纯代理模式 | [纯代理模式](guides/PROXY_MODE_CN.md) |
 | 管理订阅和后台 | [管理后端](guides/MANAGEMENT_BACKEND_CN.md) |
 | 部署为系统服务 | [部署说明](operations/DEPLOYMENT_CN.md) |
-| 排查故障 | [运维与故障排查](operations/OPERATIONS_CN.md#按阶段排障) |
+| 排查故障 | [运维与故障排查](operations/OPERATIONS_CN.md#按-phase-排障) |
 | 查找项目全部接口和已知缺口 | [项目接口全景图](reference/PROJECT_INTERFACE_MAP_CN.md) |
 
 ## 按职责浏览

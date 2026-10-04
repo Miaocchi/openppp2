@@ -15,6 +15,7 @@
 | 运行合适的测试集合 | [测试](TESTING_CN.md) |
 | 审阅带日期的 Boost 审计 | [Boost 兼容性审计](BOOST_187_COMPATIBILITY.md) |
 | 遵循仓库约定 | [代码风格](../governance/CODE_STYLE.md) · [文档规范](../governance/DOCUMENTATION_STYLE.md) |
+| 构建、预览与发布双语文档站 | [文档站](DOCS_SITE_CN.md) |
 
 ## 原生 `ppp` 构建边界
 
