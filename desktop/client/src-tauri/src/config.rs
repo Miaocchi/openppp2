@@ -49,6 +49,14 @@ pub fn build_node_config_with_base(
     if !root.is_object() {
         return Err(ConfigError::InvalidFullConfig);
     }
+    let defaults: Value = serde_json::from_str(DEFAULT_CONFIG)?;
+    for field in ["key", "client", "websocket"] {
+        if root.get(field).is_none() {
+            root[field] = defaults[field].clone();
+        } else if !root[field].is_object() {
+            return Err(ConfigError::InvalidFullConfig);
+        }
+    }
     merge_object(
         root.get_mut("key").and_then(Value::as_object_mut).unwrap(),
         key,
@@ -84,4 +92,18 @@ fn merge_object(target: &mut Map<String, Value>, source: &Map<String, Value>) {
     for (key, value) in source {
         target.insert(key.clone(), value.clone());
     }
+}
+
+pub fn apply_network_overrides(config: &mut Value, overrides: &Value) -> Result<(), ConfigError> {
+    if !overrides.is_object() || !config.is_object() {
+        return Err(ConfigError::InvalidFullConfig);
+    }
+    fn merge(target: &mut Value, source: &Value) {
+        if let Some(fields) = source.as_object() {
+            if !target.is_object() { *target = Value::Object(Map::new()); }
+            for (key, value) in fields { merge(&mut target[key], value); }
+        } else { *target = source.clone(); }
+    }
+    merge(config, overrides);
+    Ok(())
 }

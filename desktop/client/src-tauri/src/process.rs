@@ -1,3 +1,4 @@
+use crate::connection::ConnectionSnapshot;
 use crate::stats::{StatsSampler, StatsView};
 use crate::telemetry::{classify_line, TelemetryEvent};
 use serde::Serialize;
@@ -44,6 +45,16 @@ pub enum ProcessEvent {
     Telemetry(TelemetryEvent),
     Stats(StatsView),
     Exited(ExitInfo),
+    State(ConnectionSnapshot),
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessMessage {
+    pub session_id: u64,
+    #[serde(flatten)]
+    pub event: ProcessEvent,
+    pub connection: ConnectionSnapshot,
 }
 
 #[derive(Debug, Error)]
@@ -54,26 +65,36 @@ pub enum ProcessError {
     Spawn(#[from] std::io::Error),
 }
 
-type Emitter = Arc<dyn Fn(ProcessEvent) + Send + Sync + 'static>;
+type Emitter = Arc<dyn Fn(ProcessMessage) + Send + Sync + 'static>;
+type EventSink = Arc<dyn Fn(ProcessEvent) + Send + Sync + 'static>;
 
 pub struct ProcessManager {
     child: Arc<Mutex<Option<Child>>>,
     emit: Emitter,
+    snapshot: Arc<Mutex<ConnectionSnapshot>>,
 }
 
 impl ProcessManager {
     pub fn new<F>(emit: F) -> Self
     where
-        F: Fn(ProcessEvent) + Send + Sync + 'static,
+        F: Fn(ProcessMessage) + Send + Sync + 'static,
     {
         Self {
             child: Arc::new(Mutex::new(None)),
             emit: Arc::new(emit),
+            snapshot: Arc::new(Mutex::new(ConnectionSnapshot::default())),
         }
     }
 
     pub fn is_running(&self) -> bool {
         self.child.lock().expect("process lock poisoned").is_some()
+    }
+
+    pub fn snapshot(&self) -> ConnectionSnapshot {
+        self.snapshot
+            .lock()
+            .expect("snapshot lock poisoned")
+            .clone()
     }
 
     pub fn start(&mut self, spec: CommandSpec) -> Result<u32, ProcessError> {
@@ -94,8 +115,37 @@ impl ProcessManager {
         }
         let mut child = command.spawn()?;
         let pid = child.id();
+        let session_id = {
+            let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+            let session_id = snapshot.session_id + 1;
+            *snapshot = ConnectionSnapshot {
+                session_id,
+                pid: Some(pid),
+                status: "starting".into(),
+                phase: "starting".into(),
+                ..ConnectionSnapshot::default()
+            };
+            session_id
+        };
+        let snapshot = Arc::clone(&self.snapshot);
+        let emitter = Arc::clone(&self.emit);
+        let send: EventSink = Arc::new(move |event| {
+            let mut current = snapshot.lock().expect("snapshot lock poisoned");
+            if current.session_id != session_id {
+                return;
+            }
+            current.apply(&event);
+            let connection = current.clone();
+            drop(current);
+            emitter(ProcessMessage {
+                session_id,
+                event,
+                connection,
+            });
+        });
+        send(ProcessEvent::State(self.snapshot()));
         if let Some(stderr) = child.stderr.take() {
-            let emit = Arc::clone(&self.emit);
+            let emit = Arc::clone(&send);
             thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                     emit(ProcessEvent::Telemetry(classify_line(&line)));
@@ -104,11 +154,7 @@ impl ProcessManager {
         }
         *slot = Some(child);
         drop(slot);
-        monitor_child(
-            Arc::clone(&self.child),
-            Arc::clone(&self.emit),
-            spec.stats_path,
-        );
+        monitor_child(Arc::clone(&self.child), send, spec.stats_path, pid);
         Ok(pid)
     }
 
@@ -117,6 +163,17 @@ impl ProcessManager {
             Some(child) => child.id(),
             None => return Ok(()),
         };
+        let state = {
+            let mut state = self.snapshot.lock().expect("snapshot lock poisoned");
+            state.requested_stop = true;
+            state.status = "stopping".into();
+            state.clone()
+        };
+        (self.emit)(ProcessMessage {
+            session_id: state.session_id,
+            event: ProcessEvent::State(state.clone()),
+            connection: state,
+        });
         request_graceful_stop(pid);
         let deadline = Instant::now() + Duration::from_millis(750);
         while Instant::now() < deadline {
@@ -125,24 +182,64 @@ impl ProcessManager {
             }
             thread::sleep(Duration::from_millis(25));
         }
-        if let Some(child) = self.child.lock().expect("process lock poisoned").as_mut() {
-            child.kill()?;
+        let exit = {
+            let mut slot = self.child.lock().expect("process lock poisoned");
+            if let Some(child) = slot.as_mut() {
+                child.kill()?;
+                child.wait()?;
+                slot.take();
+                true
+            } else {
+                false
+            }
+        };
+        if exit {
+            let event = ProcessEvent::Exited(ExitInfo {
+                code: None,
+                success: true,
+            });
+            let connection = {
+                let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+                snapshot.apply(&event);
+                snapshot.clone()
+            };
+            (self.emit)(ProcessMessage {
+                session_id: connection.session_id,
+                event,
+                connection,
+            });
         }
         Ok(())
     }
 }
 
-fn monitor_child(child: Arc<Mutex<Option<Child>>>, emit: Emitter, stats_path: Option<PathBuf>) {
+fn monitor_child(
+    child: Arc<Mutex<Option<Child>>>,
+    emit: EventSink,
+    stats_path: Option<PathBuf>,
+    pid: u32,
+) {
     thread::spawn(move || {
         let mut offset = 0;
         let mut pending = String::new();
         let mut sampler = StatsSampler::default();
         loop {
+            if !child
+                .lock()
+                .expect("process lock poisoned")
+                .as_ref()
+                .is_some_and(|child| child.id() == pid)
+            {
+                break;
+            }
             if let Some(path) = &stats_path {
                 read_stats(path, &mut offset, &mut pending, &mut sampler, &emit);
             }
             let exit = {
                 let mut slot = child.lock().expect("process lock poisoned");
+                if !slot.as_ref().is_some_and(|child| child.id() == pid) {
+                    break;
+                }
                 match slot
                     .as_mut()
                     .and_then(|process| process.try_wait().ok())
@@ -155,7 +252,12 @@ fn monitor_child(child: Arc<Mutex<Option<Child>>>, emit: Emitter, stats_path: Op
                             success: status.success(),
                         })
                     }
-                    None => None,
+                    None => {
+                        if slot.is_none() {
+                            break;
+                        }
+                        None
+                    }
                 }
             };
             if let Some(exit) = exit {
@@ -175,7 +277,7 @@ fn read_stats(
     offset: &mut u64,
     pending: &mut String,
     sampler: &mut StatsSampler,
-    emit: &Emitter,
+    emit: &EventSink,
 ) {
     let Ok(mut file) = std::fs::File::open(path) else {
         return;

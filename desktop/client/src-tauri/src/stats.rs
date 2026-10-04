@@ -62,6 +62,7 @@ pub struct RuntimeError {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatsView {
+    pub sampled_at: u64,
     pub rx_rate_mbps: f64,
     pub tx_rate_mbps: f64,
     pub rx_bytes: u64,
@@ -114,6 +115,7 @@ impl StatsSampler {
             })
             .unwrap_or((0.0, 0.0));
         let view = StatsView {
+            sampled_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
             rx_rate_mbps,
             tx_rate_mbps,
             rx_bytes: record.rx_bytes,

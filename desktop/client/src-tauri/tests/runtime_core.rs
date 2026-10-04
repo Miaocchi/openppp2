@@ -74,7 +74,7 @@ fn process_manager_enforces_single_child_and_reports_stderr_and_exit_code() {
         match rx.recv_timeout(Duration::from_millis(500)) {
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(error) => panic!("process event channel failed: {error}"),
-            Ok(event) => match event {
+            Ok(event) => match event.event {
                 ProcessEvent::Telemetry(event) => {
                     saw_stderr |= event.message.contains("fixture stderr")
                 }
@@ -83,6 +83,7 @@ fn process_manager_enforces_single_child_and_reports_stderr_and_exit_code() {
                     break;
                 }
                 ProcessEvent::Stats(_) => {}
+                ProcessEvent::State(_) => {}
             },
         }
     }
@@ -101,6 +102,27 @@ fn fixture_command() -> CommandSpec {
             "[Console]::Error.WriteLine('fixture stderr'); Start-Sleep -Milliseconds 300; exit 7",
         ],
     )
+}
+
+#[test]
+fn stop_then_restart_keeps_the_new_session_authoritative() {
+    let (tx, rx) = mpsc::channel();
+    let mut manager = ProcessManager::new(move |event| { let _ = tx.send(event); });
+    manager.start(fixture_command()).unwrap();
+    let first = manager.snapshot().session_id;
+    manager.stop().unwrap();
+    assert!(!manager.is_running());
+    assert_eq!(manager.snapshot().status, "disconnected");
+    manager.start(fixture_command()).unwrap();
+    let second = manager.snapshot().session_id;
+    assert!(second > first);
+    for _ in 0..30 {
+        let event = rx.recv_timeout(Duration::from_millis(500)).unwrap();
+        if event.session_id == second && matches!(event.event, ProcessEvent::Exited(_)) { break; }
+    }
+    assert_eq!(manager.snapshot().session_id, second);
+    assert_eq!(manager.snapshot().pid, None);
+    assert_eq!(manager.snapshot().status, "error");
 }
 
 #[cfg(not(windows))]

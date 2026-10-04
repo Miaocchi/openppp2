@@ -72,6 +72,7 @@ pub fn append_launch_args(
         ("vnet", "--tun-vnet"),
         ("blockQuic", "--block-quic"),
         ("staticMode", "--tun-static"),
+        ("muxTurbo", "--mux-mode-turbo"),
     ] {
         if let Some(value) = optional_bool(options, field)? {
             args.push(format!("{flag}={}", if value { "yes" } else { "no" }));
