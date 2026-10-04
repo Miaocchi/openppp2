@@ -10,6 +10,10 @@
 # Precompiled Headers
 *.gch
 *.pch
+*.aps
+*.vcxproj.user
+/sln/sysproxy32/sysproxy32.user
+*.dmp
 
 # Compiled Dynamic libraries
 # *.so
@@ -147,9 +151,9 @@ docs/superpowers/
 # Python tooling caches
 __pycache__/
 work/
-work/
 .gitnexus/
 
 # Local crash-analysis report and agent workflow state (not for version control)
 docs/CRASH_ANALYSIS_CN.md
+docs/PROJECT_CLEANUP_CN.md
 .opencode/
