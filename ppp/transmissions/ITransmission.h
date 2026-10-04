@@ -175,6 +175,12 @@ namespace ppp {
             virtual boost::asio::ip::tcp::endpoint                                                  GetRemoteEndPoint() noexcept = 0;
             /** @brief Identifies the carrier represented by this transmission. */
             virtual AuthenticatedCarrierKind                                                        GetAuthenticatedCarrierKind() const noexcept { return AuthenticatedCarrierKind::None; }
+            /** @brief Reports whether this carrier can safely half-close its send direction. */
+            virtual bool                                                                            SupportsSendHalfClose() const noexcept { return false; }
+            /** @brief Half-closes the carrier send direction without closing receive. */
+            virtual bool                                                                            ShutdownSend() noexcept { return false; }
+            /** @brief Reports a clean peer close of the carrier receive direction. */
+            virtual bool                                                                            IsReceiveClosed() const noexcept { return false; }
             /** @brief Identifies the installed authenticated carrier mechanism. */
             virtual AuthenticatedCarrierMethod                                                      GetAuthenticatedCarrierMethod() const noexcept;
             /** @brief Reports current lifecycle-valid authenticated carrier availability. */

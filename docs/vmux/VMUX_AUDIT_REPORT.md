@@ -1,5 +1,9 @@
 # OpenPPP2 VMUX 完整审计报告
 
+> Status: Final (historical audit; report dated 2026-08-02)
+> Type: Audit Report
+> Last verified: 2026-09-30 (report metadata and recorded audit baseline)
+
 > **Status: Final**
 > **Audit Result: Passed**
 > **Release Decision: Approved for staged rollout**

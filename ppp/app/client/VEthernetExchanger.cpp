@@ -31,6 +31,7 @@
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
+#include <ppp/diagnostics/DatapathPerfJson.h>
 #include <ppp/p2p/P2PCapabilityGate.h>
 #include <ppp/p2p/P2PControlDatagram.h>
 #include <ppp/p2p/P2PRelayOfferCoordinator.h>
@@ -2764,7 +2765,11 @@ namespace ppp {
                     }
                 }
 
-                return switcher_->Output(packet, packet_length);
+                const bool output = switcher_->Output(packet, packet_length);
+                if (output) {
+                    ppp::diagnostics::datapath_perf::RecordNatToTun(packet_length);
+                }
+                return output;
             }
 
             /** @brief Handles mux negotiation callback and starts vmux linking. */

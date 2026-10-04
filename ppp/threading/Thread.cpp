@@ -206,8 +206,9 @@ namespace ppp
 
                     /* The thread handle is reclaimed by an external Join()
                      * or by ~Thread() -> Detach(); the worker must not detach
-                     * itself here, otherwise an external Join() would find a
-                     * spent handle and return false instead of reclaiming. */
+                     * itself here, otherwise a Join() holding `_lifecycle`
+                     * while waiting for this worker would deadlock against
+                     * this trailing Detach() locking the same mutex. */
                     constantof(State) = ThreadState::Stopped;
                     {
                         SynchronizedObjectScope scope(Internal->Lock);

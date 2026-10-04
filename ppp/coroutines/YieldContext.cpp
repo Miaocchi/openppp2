@@ -300,8 +300,8 @@ namespace ppp
                 if (h)
                 {
                     try
-                    {
-                        h(*y);
+                {
+                    h(*y);
                     }
                     catch (const std::exception&)
                     {

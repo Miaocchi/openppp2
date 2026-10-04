@@ -10,16 +10,18 @@
 #include <ppp/coroutines/YieldContext.h>
 
 namespace ppp::configurations { class AppConfiguration; }
+namespace ppp::diagnostics::datapath_perf { class Scope; }
+namespace ppp::app::runtime { class XtcpDirectQueueTelemetry; }
 #include <ppp/net/Firewall.h>
 #include <ppp/transmissions/ITransmission.h>
+#include <ppp/app/protocol/XtcpDirectIo.h>
+#include <ppp/app/protocol/DirectReadWaiterState.h>
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 
-#if defined(_IPHONE) || defined(IPHONE)
 #include <atomic>
 #include <deque>
-#endif
 
 #if defined(_WIN32)
 #include <windows/ppp/net/QoSS.h>
@@ -47,6 +49,16 @@ namespace ppp {
                 typedef ppp::app::protocol::VirtualEthernetLogger               VirtualEthernetLogger;
                 typedef std::shared_ptr<VirtualEthernetLogger>                  VirtualEthernetLoggerPtr;
                 typedef ppp::function<bool(uint32_t, uint32_t, uint32_t)>       AcceptMuxAsynchronousCallback;
+                enum class DirectIoResult : uint8_t {
+                    Accepted,
+                    Backpressured,
+                    Closed,
+                };
+                typedef ppp::function<DirectIoResult(
+                    XtcpDirectReadReservation&,
+                    const std::shared_ptr<Byte>&)>                              DirectReadHandler;
+                typedef ppp::function<void(XtcpDirectCloseReason)> DirectCloseHandler;
+                typedef ppp::function<void()>                                  DirectWritableHandler;
 
 #if defined(_LINUX)
             public:
@@ -185,6 +197,15 @@ namespace ppp {
                  * @note Requires connected and non-disposed state.
                  */
                 virtual bool                                                    SendBufferToPeer(YieldContext& y, const void* packet, int packet_length) noexcept;
+                bool                                                            StartDirectBridge(const DirectReadHandler& on_data, const DirectCloseHandler& on_close, const DirectWritableHandler& on_writable) noexcept;
+                DirectIoResult                                                  SendDirectToPeer(const Byte* data, std::uint32_t length,
+                    XtcpUploadBudget::Reservation&& credit) noexcept;
+                void                                                            CompleteDirectDownload(
+                    const XtcpDirectReadReservation& reservation,
+                    XtcpDirectCompletion completion) noexcept;
+                void                                                            SetDirectQueueTelemetry(
+                    const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry) noexcept;
+                void                                                            CloseDirectSend() noexcept;
 
 #if defined(_IPHONE) || defined(IPHONE)
                 /**
@@ -222,6 +243,9 @@ namespace ppp {
                  * @note Loop ends on read/write failure or disposal.
                  */
                 bool                                                            ForwardTransmissionToSocket(YieldContext& y) noexcept;
+                bool                                                            RunDirectUpload(YieldContext& y) noexcept;
+                bool                                                            RunDirectDownload(YieldContext& y) noexcept;
+                bool                                                            StartDirectUploadWriter() noexcept;
                 /**
                  * @brief Arms asynchronous read from socket.
                  * @param buffer Receive buffer.
@@ -235,10 +259,11 @@ namespace ppp {
                  * @param buffer Receive buffer.
                  * @param buffer_size Buffer capacity.
                  * @param bytes_transferred Number of bytes to forward.
+                 * @param transmission_write_accepted_scope Read-to-write-completion timer.
                  * @return True when asynchronous write is accepted.
                  * @note Completion callback decides continuation/disposal.
                  */
-                bool                                                            ForwardSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size, int bytes_transferred) noexcept;
+                bool                                                            ForwardSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size, int bytes_transferred, ppp::diagnostics::datapath_perf::Scope transmission_write_accepted_scope) noexcept;
                 /**
                  * @brief Handles completion of socket-to-transmission forward.
                  * @param ok True when write completed successfully.
@@ -314,6 +339,30 @@ namespace ppp {
                 Int128                                                          id_        = 0; ///< Logical connection identifier assigned at construction time.
                 std::shared_ptr<boost::asio::ip::tcp::socket>                   socket_;        ///< Local TCP socket bridged to the virtual Ethernet transmission.
                 ITransmissionPtr                                                transmission_; ///< Virtual Ethernet transmission channel used for protocol framing.
+                static constexpr size_t                                         kDirectQueueMaxPackets = 4096;
+                static constexpr size_t                                         kDirectQueueLowPackets = kDirectQueueMaxPackets / 2;
+                static constexpr size_t                                         kDirectQueueMaxBytes = 32 * 1024 * 1024;
+                static constexpr size_t                                         kDirectQueueLowBytes = kDirectQueueMaxBytes / 2;
+                static constexpr int                                            kDirectCloseDrainPollMilliseconds = 5;
+                enum class DirectSendCloseState : uint8_t {
+                    Open,
+                    Draining,
+                    SendShutdown,
+                    Disposed,
+                };
+                std::mutex                                                      direct_sync_;
+                std::deque<std::shared_ptr<XtcpUploadChunk>>                      direct_upload_queue_;
+                size_t                                                          direct_upload_bytes_ = 0;
+                size_t                                                          direct_upload_packets_ = 0;
+                bool                                                            direct_bridge_started_ = false;
+                bool                                                            direct_upload_writer_started_ = false;
+                DirectSendCloseState                                            direct_send_close_state_ = DirectSendCloseState::Open;
+                bool                                                            direct_upload_backpressured_ = false;
+                DirectReadHandler                                               direct_read_handler_;
+                DirectCloseHandler                                              direct_close_handler_;
+                DirectWritableHandler                                           direct_writable_handler_;
+                DirectReadWaiterState                                           direct_download_waiter_;
+                std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>    direct_queue_telemetry_;
 #if defined(_IPHONE) || defined(IPHONE)
                 bool                                                            EnsureNativeUploadWriter() noexcept;
                 bool                                                            RunNativeUploadWriter(YieldContext& y) noexcept;

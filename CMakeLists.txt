@@ -181,8 +181,15 @@ ELSE()
     CHECK_CXX_COMPILER_FLAG("-std=c++1z" COMPILER_SUPPORTS_CXX1Z)
 ENDIF()
 
-# If the current compiler environment is detected to support AES.
-OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" OFF)
+# AES-NI is safe to compile into x86_64 binaries: the EVP wrapper checks CPUID
+# before attaching the accelerated backend and transparently falls back to
+# OpenSSL when unavailable. Other architectures default off; x86_64 remains
+# explicitly opt-out with -DENABLE_SIMD=OFF for generic builds.
+SET(ENABLE_SIMD_DEFAULT OFF)
+IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|X86_64|amd64|AMD64)$")
+    SET(ENABLE_SIMD_DEFAULT ON)
+ENDIF()
+OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" ${ENABLE_SIMD_DEFAULT})
 
 # Enable SSEA SIMD acceleration (SSSE3/SSE4.1/SSE4.2/AVX/AVX2) for the
 # ssea-simd codec/transform suite.  Requires ENABLE_SIMD=ON as a prerequisite.
@@ -202,8 +209,31 @@ OPTION(ENABLE_TESTS "Build unit tests (GTest)" OFF)
 OPTION(ENABLE_VMUX_CHURN_TEST "Build the root-linked VMUX carrier churn test" OFF)
 OPTION(ENABLE_VMUX_RECEIVE_SEMANTICS_TEST "Build the root-linked VMUX receive-semantics test" OFF)
 OPTION(ENABLE_COVERAGE "Enable LLVM source coverage instrumentation" OFF)
+OPTION(ENABLE_XTCP "Build with the pinned XTCP userspace TCP/IP stack (Linux desktop only)" OFF)
+SET(XTCP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third-party/xtcp" CACHE PATH "Path to the pinned XTCP source tree")
 IF(ENABLE_COVERAGE AND NOT MSVC)
     INCLUDE(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Coverage.cmake)
+ENDIF()
+
+IF(ENABLE_XTCP)
+    IF(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+        MESSAGE(FATAL_ERROR "ENABLE_XTCP is supported only for Linux desktop builds.")
+    ENDIF()
+    IF(NOT EXISTS "${XTCP_SOURCE_DIR}/CMakeLists.txt")
+        MESSAGE(FATAL_ERROR "XTCP source tree not found at ${XTCP_SOURCE_DIR}; run tools/prepare_xtcp.sh first.")
+    ENDIF()
+
+    SET(XTCP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_PLUGINS OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_LWIP OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_CC_PLUGINS ON CACHE BOOL "" FORCE)
+    SET(XTCP_CHECKSUM_VALIDATE ON CACHE BOOL "" FORCE)
+    ADD_SUBDIRECTORY("${XTCP_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/third-party/xtcp" EXCLUDE_FROM_ALL)
+    IF(NOT TARGET xtcp_static)
+        MESSAGE(FATAL_ERROR "XTCP source tree did not define the required xtcp_static target.")
+    ENDIF()
 ENDIF()
 
 SET(PLATFORM_ARCH_X86 FALSE)
@@ -453,6 +483,13 @@ IF(PLATFORM_SYSTEM_WINDOWS)
 ENDIF()
 
 ADD_LIBRARY(openppp2_lib STATIC ${PPP_LIBRARY_SOURCES})
+IF(ENABLE_XTCP)
+    TARGET_LINK_LIBRARIES(openppp2_lib xtcp_static)
+    TARGET_COMPILE_DEFINITIONS(openppp2_lib PRIVATE
+        PPP_ENABLE_XTCP=1
+        PPP_XTCP_RUNTIME_WIRED=1
+        PPP_XTCP_HAS_TIMER_DEADLINE=1)
+ENDIF()
 
 SET(PPP_EXECUTABLE_SOURCES ${PPP_MAIN_SOURCE})
 IF(PLATFORM_SYSTEM_WINDOWS)
@@ -462,14 +499,14 @@ ENDIF()
 ADD_EXECUTABLE(${NAME} ${PPP_EXECUTABLE_SOURCES})
 
 # Set the compilation output files path.
-IF(PLATFORM_SYSTEM_WINDOWS)
-    IF(NOT PPP_OUTPUT_DIR)
+IF(NOT PPP_OUTPUT_DIR)
+    IF(PLATFORM_SYSTEM_WINDOWS)
         SET(PPP_OUTPUT_DIR ${PROJECT_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE})
+    ELSE()
+        SET(PPP_OUTPUT_DIR ${PROJECT_SOURCE_DIR}/bin)
     ENDIF()
-    SET(EXECUTABLE_OUTPUT_PATH ${PPP_OUTPUT_DIR})
-ELSE()
-    SET(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 ENDIF()
+SET(EXECUTABLE_OUTPUT_PATH ${PPP_OUTPUT_DIR})
 
 # Set up library connections to dependent libraries.
 IF(PLATFORM_SYSTEM_WINDOWS)
@@ -548,6 +585,7 @@ ELSEIF(PLATFORM_COMPILER_CLANG)
     IF(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN)
         LIST(APPEND PPP_CLANG_LINK_LIBS libjemalloc.a)
     ENDIF()
+    LIST(APPEND PPP_CLANG_LINK_LIBS z zstd)
     IF(ENABLE_IO_URING)
         LIST(APPEND PPP_CLANG_LINK_LIBS uring)
     ENDIF()
@@ -602,7 +640,7 @@ ELSEIF(NOT MSVC)
     IF(ENABLE_SYSNAT)
         LIST(APPEND PPP_LINUX_LINK_LIBS bpf)
     ENDIF()
-    TARGET_LINK_LIBRARIES(openppp2_lib ${PPP_LINUX_LINK_LIBS})
+    TARGET_LINK_LIBRARIES(openppp2_lib ${PPP_LINUX_LINK_LIBS} z zstd)
     TARGET_LINK_LIBRARIES(${NAME} openppp2_lib)
 ENDIF()
 

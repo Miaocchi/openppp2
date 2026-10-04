@@ -9,6 +9,7 @@
 #include <ppp/net/native/ip.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/threading/BufferswapAllocator.h>
+#include <ppp/tap/TxGsoMetadata.h>
 
 namespace ppp
 {
@@ -41,11 +42,21 @@ namespace ppp
             {
                 void*                                                       Packet       = NULLPTR;
                 int                                                         PacketLength = 0;
+                bool                                                        TcpV4Gso     = false;
             };
             /**
              * @brief Callback signature invoked when a packet is read from device.
              */
             typedef ppp::function<bool(ITap*, PacketInputEventArgs&)>       PacketInputEventHandler;
+            /**
+             * @brief Returns whether a packet can be delivered as one complete TCPv4 GSO frame.
+             * @note Callers without explicit GSO-consumer capability must return false so the
+             *       platform TAP backend performs its per-MSS fallback.
+             */
+            static constexpr bool                                           ShouldDeliverWholeTcpV4Gso(const PacketInputEventArgs& event, bool consumer_capable) noexcept
+            {
+                return !event.TcpV4Gso || consumer_capable;
+            }
 
         public:
             /**
@@ -111,6 +122,13 @@ namespace ppp
              * @return true if MTU update succeeds.
              */
             virtual bool                                                    SetInterfaceMtu(int mtu) noexcept = 0;
+            /** @brief Whether this concrete device can accept validated TCPv4 GSO output. */
+            virtual bool                                                    SupportsTxGso() const noexcept { return false; }
+            /**
+             * @brief Sends one validated L3 super-packet with explicit segmentation metadata.
+             * @note The default is fail-closed; it must never route an oversized packet through Output().
+             */
+            virtual bool                                                    OutputGso(const std::shared_ptr<Byte>&, int, TxGsoMetadata) noexcept { return false; }
 
         public:
             /**
@@ -240,13 +258,11 @@ namespace ppp
             std::deque<std::pair<std::shared_ptr<Byte>, int>>               _write_queue;
             /** @brief True while an async_write is outstanding on _stream. */
             bool                                                            _write_in_progress = false;
-            /** @brief Reusable buffer for single-copy packet reads.
-             *
-             * Sized to ITap::Mtu + 4 to accommodate the 4-byte address-family
-             * header that Darwin utun prepends to every packet.  On Linux (IFF_NO_PI)
-             * the extra 4 bytes are simply unused.
+            /** @brief Reusable buffer for ordinary MTU-sized packet reads.
+             * Linux VNET/GSO reads are owned by TapLinux with its negotiated
+             * per-instance virtio-header capacity.
              */
-            Byte                                                            _packet[ITap::Mtu + 4];
+            Byte                                                            _packet[ITap::Mtu];
         };
     }
 }
