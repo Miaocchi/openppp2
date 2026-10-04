@@ -1,13 +1,15 @@
 # 桌面客户端
 > Status: Experimental
 > Type: Guide
-> Last verified: 2026-07-22
+> Last verified: 2026-10-04
 >
 > **用途：**用本仓库的 Tauri/Svelte client 管理器评估本地 `ppp` 可执行程序。
 > **适用对象：**桌面开发者和评估人员。
 > **上一层索引：**[快速开始](README_CN.md) · **English：**[Desktop Client](DESKTOP_CLIENT.md)
 
 ## 状态和边界
+
+Windows GUI 已补全多订阅、节点管理、代理/虚拟网卡模式、网络配置、日志与诊断、中英文和明暗主题。当前使用方式见 [桌面说明](../../desktop/README.md)，自动验证及待完成的真实网络验收见 [GUI 验证记录](../testing/DESKTOP_GUI.md)。
 
 Desktop Client 位于 `desktop/client/`，是一个**实验性**的 Tauri 2 + Svelte 界面。已提交的 Tauri 配置关闭了 bundling，因此本文只说明从源码运行的评估路径，不把它描述为受支持的安装程序或发布包。
 

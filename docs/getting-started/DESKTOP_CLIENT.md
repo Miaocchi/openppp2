@@ -1,7 +1,7 @@
 # Desktop Client
 > Status: Experimental
 > Type: Guide
-> Last verified: 2026-07-22
+> Last verified: 2026-10-04
 >
 > **Purpose:** Run and evaluate the repository's Tauri/Svelte client manager against a local `ppp` executable.
 > **Audience:** Desktop developers and evaluators.
@@ -9,12 +9,14 @@
 
 ## Status and boundary
 
+The daily-client implementation now targets Windows, with independent subscriptions, proxy/virtual-adapter modes, reversible current-user system proxy, explicit administrator restart, Chinese/English and light/dark/system themes. See [desktop overview](../../desktop/README.md) for current workflows and [GUI verification](../testing/DESKTOP_GUI.md) for tested behavior and remaining live acceptance.
+
 The Desktop Client lives in `desktop/client/` and is an **experimental** Tauri 2 + Svelte surface. Its checked-in Tauri configuration has bundling disabled, so this guide describes source-run evaluation rather than a supported installer or release package.
 
 The client creates a runtime configuration from stored preferences and a selected node, then starts `ppp` with:
 
 ```text
---mode=client --config=<runtime appsettings.json> --stats-json=<runtime stats.ndjson>
+--mode=<proxy or client> --config=<runtime appsettings.json> --stats-json=<per-session stats file>
 ```
 
 The generated files are placed in the application data runtime directory; do not edit them as a durable source of configuration.
