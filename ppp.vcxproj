@@ -558,6 +558,14 @@
     <ClCompile Include="ppp\p2p\P2PDatagramTransport.cpp" />
     <ClCompile Include="ppp\p2p\P2PKeyDerivation.cpp" />
     <ClCompile Include="ppp\p2p\P2PRelayOffer.cpp" />
+    <ClCompile Include="ppp\p2p\P2PRelayOfferV2.cpp" />
+    <ClCompile Include="ppp\p2p\P2PV2ControlCodec.cpp" />
+    <ClCompile Include="ppp\p2p\P2PV2DataCodec.cpp" />
+    <ClCompile Include="ppp\p2p\P2PV2Channel.cpp" />
+    <ClCompile Include="ppp\p2p\P2PProbeCoordinator.cpp" />
+    <ClCompile Include="ppp\p2p\P2PIngressLimiter.cpp" />
+    <ClCompile Include="ppp\app\client\VEthernetP2PV2.cpp" />
+    <ClCompile Include="ppp\app\server\VirtualEthernetP2PV2.cpp" />
     <ClCompile Include="ppp\p2p\P2PClientOfferSession.cpp" />
     <ClCompile Include="ppp\p2p\P2PControlDatagram.cpp" />
     <ClCompile Include="ppp\p2p\P2PDataDatagram.cpp" />
@@ -910,6 +918,12 @@
     <ClInclude Include="ppp\p2p\P2PControlPacket.h" />
     <ClInclude Include="ppp\p2p\P2PControlStateMachine.h" />
     <ClInclude Include="ppp\p2p\P2PKeyDerivation.h" />
+    <ClInclude Include="ppp\p2p\P2PRelayOfferV2.h" />
+    <ClInclude Include="ppp\p2p\P2PV2Codec.h" />
+    <ClInclude Include="ppp\p2p\P2PV2Channel.h" />
+    <ClInclude Include="ppp\p2p\P2PV2ServerCoordination.h" />
+    <ClInclude Include="ppp\p2p\P2PProbeCoordinator.h" />
+    <ClInclude Include="ppp\p2p\P2PIngressLimiter.h" />
     <ClInclude Include="ppp\p2p\P2POfferToken.h" />
     <ClInclude Include="ppp\p2p\P2PPacketHeader.h" />
     <ClInclude Include="ppp\p2p\P2PReplayWindow.h" />

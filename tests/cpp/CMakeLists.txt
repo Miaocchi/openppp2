@@ -587,6 +587,64 @@ openppp2_add_cpp_test(p2p_stun_client_test SOURCES
     p2p_stun_client_test.cpp
     "${OPENPPP2_ROOT}/ppp/p2p/P2PStunClient.cpp")
 target_link_libraries(p2p_stun_client_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+openppp2_add_cpp_test(p2p_stun_gatherer_test SOURCES
+    p2p_stun_gatherer_test.cpp "${OPENPPP2_ROOT}/ppp/p2p/P2PStunClient.cpp")
+target_link_libraries(p2p_stun_gatherer_test PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+openppp2_add_cpp_test(p2p_native_socket_stun_test SOURCES
+    p2p_native_socket_stun_test.cpp "${OPENPPP2_ROOT}/ppp/p2p/P2PStunClient.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PDatagramTransport.cpp")
+target_link_libraries(p2p_native_socket_stun_test PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+openppp2_add_cpp_test(p2p_probe_coordinator_test SOURCES
+    p2p_probe_coordinator_test.cpp "${OPENPPP2_ROOT}/ppp/p2p/P2PProbeCoordinator.cpp")
+openppp2_add_cpp_test(p2p_ingress_limiter_test SOURCES
+    p2p_ingress_limiter_test.cpp "${OPENPPP2_ROOT}/ppp/p2p/P2PIngressLimiter.cpp")
+target_link_libraries(p2p_ingress_limiter_test PRIVATE Threads::Threads)
+set(OPENPPP2_P2P_V2_SOURCES
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PRelayOfferV2.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PV2ControlCodec.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PV2DataCodec.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PV2Channel.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PRelayOffer.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PKeyDerivation.cpp")
+foreach(_test p2p_v2_offer_test p2p_v2_channel_test)
+    openppp2_add_cpp_test(${_test} SOURCES ${_test}.cpp ${OPENPPP2_P2P_V2_SOURCES})
+    target_link_libraries(${_test} PRIVATE OpenSSL::Crypto Threads::Threads)
+endforeach()
+openppp2_add_cpp_test(p2p_v2_noise_test SOURCES p2p_v2_noise_test.cpp
+    "${OPENPPP2_ROOT}/ppp/cryptography/noise/NoisePsk.cpp")
+target_link_libraries(p2p_v2_noise_test PRIVATE OpenSSL::Crypto Threads::Threads)
+openppp2_add_cpp_test(p2p_v2_server_coordination_test SOURCES p2p_v2_server_coordination_test.cpp)
+openppp2_add_cpp_test(p2p_v2_integration_test SOURCES p2p_v2_integration_test.cpp
+    ${OPENPPP2_P2P_V2_SOURCES}
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PProbeCoordinator.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PIngressLimiter.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PDirectDataPath.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PClientOfferSession.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PControlDatagram.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PDataDatagram.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PDirectActivationCoordinator.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PRelayOfferConsumer.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PRelayOfferCoordinator.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2POfferToken.cpp"
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PCrypto.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/native/checksum.cpp"
+    support/socket_default_ttl_stub.cpp
+    "${OPENPPP2_ROOT}/ppp/diagnostics/Error.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
+target_link_libraries(p2p_v2_integration_test PRIVATE OpenSSL::Crypto Threads::Threads)
+# Compile the actual application wiring without starting PPP or requiring the
+# native runtime dependency/link graph in this standalone project.
+add_library(p2p_v2_app_wiring_compile OBJECT
+    "${OPENPPP2_ROOT}/ppp/app/client/VEthernetP2PV2.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/VEthernetExchanger.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/server/VirtualEthernetP2PV2.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/server/VirtualEthernetSwitcher.cpp"
+    "${OPENPPP2_ROOT}/ppp/transmissions/NoisePskAuthenticatedCarrierBinding.cpp")
+target_compile_features(p2p_v2_app_wiring_compile PRIVATE cxx_std_17)
+target_include_directories(p2p_v2_app_wiring_compile PRIVATE ${OPENPPP2_TEST_INCLUDES})
+target_compile_definitions(p2p_v2_app_wiring_compile PRIVATE FUNCTION)
+target_compile_options(p2p_v2_app_wiring_compile PRIVATE -Wno-deprecated-declarations -Wno-format)
 openppp2_add_cpp_test(p2p_coalesce_frames_test SOURCES
     p2p_coalesce_frames_test.cpp)
 target_link_libraries(p2p_coalesce_frames_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <map>
+
 /**
  * @file VirtualEthernetSwitcher.h
  * @brief Declares the server-side virtual ethernet switcher and its control helpers.
@@ -44,6 +46,7 @@ namespace ppp::configurations { class AppConfiguration; }
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 #include <ppp/app/server/IPv4LeasePool.h>
 #include <ppp/p2p/P2PNatClassifier.h>
+#include <ppp/p2p/P2PV2ServerCoordination.h>
 #include <ppp/tap/ITap.h>
 
 namespace ppp {
@@ -145,6 +148,8 @@ namespace ppp {
                     ppp::string                                          Mode;                     ///< Client-requested P2P mode.
                     boost::asio::ip::udp::endpoint                       ObservedEndpoint;         ///< Authenticated static-echo UDP source endpoint.
                     ppp::vector<ppp::app::protocol::P2PEndpointCandidate> Candidates;              ///< Client-advertised UDP/STUN candidates.
+                    ppp::vector<std::uint8_t>                           SupportedVersions;
+                    std::uint64_t                                      CandidateRevision = 0;
                     UInt64                                               LastSeen = 0;             ///< Last control update tick.
                     UInt64                                               LastOfferAt = 0;          ///< Last peer-offer send tick for coarse throttling.
                     UInt64                                               LastOfferGeneration = 0;  ///< Unique owner of the current asynchronous offer reservation.
@@ -152,6 +157,13 @@ namespace ppp {
                     ppp::p2p::P2PNatType                                 NatType = ppp::p2p::P2PNatType::Unknown; ///< Inferred NAT type from relay traffic.
                 };
                 typedef ppp::unordered_map<Int128, P2PPeerRecord>        P2PPeerTable;
+
+                struct P2PV2PairRecord : ppp::p2p::P2PV2ServerCoordination {
+                    Int128 InitiatorSession = 0, ResponderSession = 0;
+                    uint32_t InitiatorIP = 0, ResponderIP = 0;
+                    std::weak_ptr<ppp::transmissions::ITransmission> InitiatorTransmission, ResponderTransmission;
+                    ppp::app::protocol::P2PControlMessage InitiatorOffer, ResponderOffer;
+                };
 
                 struct PeerPrefixGatewayRecord {
                     Int128                                               SessionId = 0;            ///< Session that owns the gateway prefixes.
@@ -800,6 +812,9 @@ namespace ppp {
                 NatInformationPtr                                       AddNatInformation(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, uint32_t ip, uint32_t mask) noexcept;
                 /** @brief Updates server-side P2P peer state from an INFO extension. */
                 bool                                                    UpdateP2PPeer(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, const ITransmissionPtr& transmission, const VirtualEthernetInformationExtensions& request, VirtualEthernetInformationExtensions& response) noexcept;
+                bool                                                    OfferP2PPeerHintsV2(const P2PPeerRecord&, const P2PPeerRecord&, const ITransmissionPtr&, const ITransmissionPtr&, UInt64 now, bool renew = false, const std::array<std::uint8_t, 32>& predecessor = {}) noexcept;
+                bool                                                    UpdateP2PV2Control(const std::shared_ptr<VirtualEthernetExchanger>&, const ITransmissionPtr&, const ppp::app::protocol::P2PControlMessage&, ppp::app::protocol::P2PControlMessage&) noexcept;
+                bool                                                    SendP2PV2Offer(const P2PPeerRecord&, const ITransmissionPtr&, const ppp::app::protocol::P2PControlMessage&, const std::string&, std::uint64_t) noexcept;
                 /** @brief Records an authenticated static-echo UDP endpoint after NAT ownership validation. */
                 bool                                                    ObserveP2PUdpEndpoint(const std::shared_ptr<VirtualEthernetExchanger>& exchanger, uint32_t virtual_ip, const boost::asio::ip::udp::endpoint& source) noexcept;
                 /** @brief Removes P2P peer state for a disconnected session. */
@@ -849,6 +864,8 @@ namespace ppp {
                 IPv6RequestTable                                        ipv6_requests_;                 ///< Per-session IPv6 request state.
                 IPv6LeaseTable                                          ipv6_leases_;                   ///< Active IPv6 lease records.
                 P2PPeerTable                                            p2p_peers_;                     ///< P2P control-plane peer records (key = session_id).
+                std::map<std::string, P2PV2PairRecord>                  p2p_v2_pairs_;
+                std::uint64_t                                         p2p_v2_generation_ = 0;
                 ppp::unordered_map<uint32_t, Int128>                    p2p_virtual_ips_;               ///< Reverse index: virtual_ip → session_id for dedup and NAT-ownership validation.
                 UInt64                                                  p2p_offer_generation_ = 0;      ///< Monotonic offer reservation identity guarded by syncobj_.
                 PeerPrefixGatewayTable                                  peer_prefix_gateways_;          ///< Prefix gateway records keyed by session_id.

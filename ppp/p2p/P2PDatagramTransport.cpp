@@ -5,11 +5,6 @@
 #include <atomic>
 #include <mutex>
 
-#if defined(_LINUX) && !defined(_ANDROID) && defined(UDP_GRO)
-#include <netinet/udp.h>
-#include <sys/socket.h>
-#endif
-
 namespace ppp {
     namespace p2p {
         namespace {
@@ -24,7 +19,8 @@ namespace ppp {
                     : io_context_(io_context), protector_(protector) {}
 
                 bool IsReady() const noexcept override {
-                    return protector_ && protector_->IsReady();
+                    return !closed_.load(std::memory_order_acquire) &&
+                        protector_ && protector_->IsReady();
                 }
 
                 bool Start(const P2PDatagramReceiveCallback& callback) noexcept override {
@@ -35,6 +31,9 @@ namespace ppp {
 
                     {
                         std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+                        if (closed_.load(std::memory_order_acquire)) {
+                            return false;
+                        }
                         callback_ = callback;
                         socket_ = std::make_unique<boost::asio::ip::udp::socket>(io_context_);
                         boost::system::error_code ec;
@@ -57,11 +56,8 @@ namespace ppp {
                             return false;
                         }
 
-#if defined(_LINUX) && !defined(_ANDROID) && defined(UDP_GRO)
-                        int one = 1;
-                        ::setsockopt(static_cast<int>(socket_->native_handle()),
-                            IPPROTO_UDP, UDP_GRO, &one, sizeof(one));
-#endif
+                        // async_receive_from supplies no UDP_GRO segment metadata.
+                        // Keep native datagram boundaries for STUN/control/data.
                     }
 
                     StartReceive();
@@ -79,7 +75,11 @@ namespace ppp {
                         const boost::asio::ip::udp::endpoint& endpoint) noexcept override {
                     std::lock_guard<std::mutex> lock(lifecycle_mutex_);
                     if (closed_.load(std::memory_order_acquire) || !socket_ ||
-                        !socket_->is_open() || !packet || packet_size < 1) {
+                        !socket_->is_open() || !packet || packet_size < 1 ||
+                        packet_size > P2P_MAX_PACKET_SIZE ||
+                        !endpoint.address().is_v4() ||
+                        endpoint.address().is_unspecified() ||
+                        endpoint.address().is_multicast() || endpoint.port() == 0) {
                         return false;
                     }
                     boost::system::error_code ec;
@@ -135,11 +135,24 @@ namespace ppp {
                                 callback = self->callback_;
                             }
                             if (ec) {
+                                // A remote oversized datagram must not destroy an
+                                // otherwise healthy shared receive chain.
+                                if (ec == boost::asio::error::message_size) {
+                                    self->StartReceive();
+                                    return;
+                                }
                                 if (callback &&
                                     ec != boost::asio::error::operation_aborted) {
                                     callback(P2PDatagramReceiveStatus::Error,
                                         {}, nullptr, 0);
                                 }
+                                return;
+                            }
+                            // Linux can report truncated UDP receives as success.
+                            // The extra byte distinguishes a complete maximum-size
+                            // packet from a remotely oversized datagram.
+                            if (bytes > P2P_MAX_PACKET_SIZE) {
+                                self->StartReceive();
                                 return;
                             }
                             if (callback) {
@@ -162,7 +175,7 @@ namespace ppp {
                 P2PDatagramReceiveCallback callback_;
                 boost::asio::ip::udp::endpoint local_endpoint_;
                 boost::asio::ip::udp::endpoint receive_sender_;
-                std::array<uint8_t, P2P_MAX_PACKET_SIZE> receive_buffer_{};
+                std::array<uint8_t, P2P_MAX_PACKET_SIZE + 1> receive_buffer_{};
                 std::atomic<bool> started_{false};
                 std::atomic<bool> closed_{false};
             };

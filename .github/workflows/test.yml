@@ -15,6 +15,18 @@ permissions:
   contents: read
 
 jobs:
+  p2p-v2-isolation:
+    name: P2P v2 isolated ASan and UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libboost-all-dev libssl-dev
+      - name: Run isolated P2P v2 sanitizers
+        run: CXX=clang++ sh scripts/run-p2p-v2-isolation.sh asan
+
   lifecycle-sanitizers:
     name: Lifecycle ASan and UBSan
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
@@ -62,6 +74,7 @@ jobs:
           python3 -m unittest tests.tooling.test_vmux_transport_boundary -v
           python3 -m unittest tests.tooling.test_vmux_receive_semantics_ci -v
           python3 -m unittest tests.tooling.test_proxy_only_static_wiring -v
+          python3 -m unittest tests.tooling.test_p2p_capability_wiring -v
           PYTHONDONTWRITEBYTECODE=1 python3 tests/tooling/test_datapath_acceptance.py
           python3 tools/check_repository_layout.py
 
