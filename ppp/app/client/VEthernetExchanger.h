@@ -489,6 +489,7 @@ namespace ppp {
                  * @return true if handled; false to close the session.
                  */
                 virtual bool                                                            OnNat(const ITransmissionPtr& transmission, Byte* packet, int packet_length, YieldContext& y) noexcept override;
+                virtual bool                                                            OnNat(const ITransmissionPtr& transmission, Byte* packet, int packet_length) noexcept;
 
                 /**
                  * @brief Handles the base information envelope received from the remote server.
@@ -1020,6 +1021,26 @@ namespace ppp {
                 virtual bool                                                            OnFrpPush(const ITransmissionPtr& transmission, int connection_id, bool in, int remote_port, const std::shared_ptr<Byte>& owner, const void* packet, int packet_length) noexcept override;
 
             private:
+                struct P2PV2PeerContext {
+                    struct DeferredPacket {
+                        ppp::p2p::P2PV2Outbound packet;
+                        uint64_t expires_ms = 0;
+                    };
+                    uint32_t virtual_ip = 0;
+                    ppp::p2p::P2PV2Channel channel;
+                    ppp::p2p::P2PProbeCoordinator probes;
+                    boost::asio::ip::udp::endpoint local_candidate, peer_candidate;
+                    uint64_t last_key_report_ms = 0, last_renew_ms = 0;
+                    ppp::p2p::P2POfferHash reported_key_hash{};
+                    std::vector<ppp::p2p::P2PCandidateEndpoint> candidates;
+                    ppp::p2p::P2PIngressLimiter ingress_limiter, egress_limiter;
+                    std::deque<DeferredPacket> deferred_packets;
+                };
+                static constexpr std::size_t P2PV2MaxPeers = 16;
+                void ResetP2PV2Peers(uint64_t, bool clear = false) noexcept;
+                std::shared_ptr<P2PV2PeerContext> FindP2PV2Peer(const ppp::p2p::P2POfferHash&) noexcept;
+                void PublishP2PV2State() noexcept;
+                void TickP2PStunRefresh(const ITransmissionPtr&, uint64_t) noexcept;
 #if defined(OPENPPP2_P2P_RECOVERY_TESTING)
                 friend struct P2PExchangerRecoveryTestAccess;
                 struct RecoveryTestHooks {
@@ -1039,8 +1060,8 @@ namespace ppp {
                 void                                                                    HandleP2PV2RelayOffer(const ITransmissionPtr&, const ppp::app::protocol::P2PControlMessage&) noexcept;
                 void                                                                    HandleP2PV2Datagram(const ITransmissionPtr&, uint64_t, uint64_t, const boost::asio::ip::udp::endpoint&, const std::vector<std::uint8_t>&) noexcept;
                 void                                                                    TickP2PV2(const ITransmissionPtr&, uint64_t, uint64_t) noexcept;
-                void                                                                    SendP2PV2Control(const ITransmissionPtr&, const char*, const ppp::p2p::P2POfferHash&, const ppp::p2p::P2POfferHash& = {}) noexcept;
-                bool                                                                    SendP2PV2Packets(const ITransmissionPtr&, const std::vector<ppp::p2p::P2PV2Outbound>&, uint64_t) noexcept;
+                void                                                                    SendP2PV2Control(const ITransmissionPtr&, uint32_t, const char*, const ppp::p2p::P2POfferHash&, const ppp::p2p::P2POfferHash& = {}) noexcept;
+                bool                                                                    SendP2PV2Packets(const ITransmissionPtr&, const std::vector<ppp::p2p::P2PV2Outbound>&, uint64_t, uint64_t expected_registration = 0) noexcept;
                 void                                                                    RecoverP2PTransport(const ITransmissionPtr&, uint64_t, uint64_t) noexcept;
                 void                                                                    HandleP2PDatagram(const ITransmissionPtr& transmission, uint64_t generation, uint64_t transport_registration, ppp::p2p::P2PDatagramReceiveStatus status, const boost::asio::ip::udp::endpoint& sender, const std::uint8_t* packet, int packet_size) noexcept;
                 void                                                                    ResetP2PCandidateTransport(uint64_t expected_generation = 0, uint64_t expected_registration = 0) noexcept;
@@ -1093,19 +1114,17 @@ namespace ppp {
                 std::atomic<ppp::p2p::P2PState>                                         p2p_state_{ppp::p2p::P2PState::Disabled};
                 /** @brief Authenticated offer and derived-key owner for the active relay generation. */
                 ppp::p2p::P2PClientOfferSession                                         p2p_offer_session_;
-                ppp::p2p::P2PV2Channel                                                 p2p_v2_channel_;
-                ppp::p2p::P2PProbeCoordinator                                          p2p_v2_probes_;
+                std::map<uint32_t, std::shared_ptr<P2PV2PeerContext>>                    p2p_v2_peers_;
                 ppp::p2p::P2PIngressLimiter                                            p2p_ingress_limiter_, p2p_egress_limiter_;
                 std::shared_ptr<ppp::p2p::P2PStunGatherer>                              p2p_stun_gatherer_;
                 std::map<uint64_t, ppp::vector<ppp::app::protocol::P2PEndpointCandidate>> p2p_candidate_history_;
                 uint64_t                                                                p2p_candidate_revision_ = 0;
-                uint64_t                                                                p2p_last_key_report_ms_ = 0, p2p_last_renew_ms_ = 0;
+                uint64_t                                                                p2p_next_stun_refresh_ms_ = 0;
                 uint64_t                                                                p2p_retry_at_ms_ = 0;
                 unsigned                                                                p2p_retry_step_ = 0;
                 bool                                                                    p2p_recovery_running_ = false;
                 uint64_t                                                                p2p_recovery_attempt_ = 0;
                 bool                                                                    p2p_v2_selected_ = false;
-                ppp::p2p::P2POfferHash                                                 p2p_reported_key_hash_{};
                 /** @brief Guards the exact candidate set sent in the current registration. */
                 mutable std::mutex                                                      p2p_offer_mutex_;
                 ppp::vector<ppp::app::protocol::P2PEndpointCandidate>                   p2p_registered_candidates_;

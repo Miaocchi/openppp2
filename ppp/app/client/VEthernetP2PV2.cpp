@@ -4,6 +4,7 @@
 #include <ppp/app/P2PCandidateAdapter.h>
 #include <ppp/p2p/P2PV2Codec.h>
 #include <ppp/p2p/P2PCapabilityGate.h>
+#include <ppp/diagnostics/TelemetryFwd.h>
 #include <ppp/p2p/P2PSocketProtector.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/Socket.h>
@@ -55,6 +56,43 @@ std::string Hex(const P2POfferHash& hash) {
 }
 }
 
+void VEthernetExchanger::ResetP2PV2Peers(uint64_t generation, bool clear) noexcept {
+    for (auto& item : p2p_v2_peers_) {
+        auto& peer = *item.second;
+        peer.channel.Reset(generation); peer.probes.Cancel(generation);
+        peer.local_candidate = {}; peer.peer_candidate = {};
+        peer.reported_key_hash = {}; peer.last_key_report_ms = peer.last_renew_ms = 0;
+        peer.deferred_packets.clear();
+        peer.ingress_limiter.Clear(); peer.egress_limiter.Clear();
+    }
+    if (clear) p2p_v2_peers_.clear();
+}
+
+std::shared_ptr<VEthernetExchanger::P2PV2PeerContext> VEthernetExchanger::FindP2PV2Peer(const P2POfferHash& hash) noexcept {
+    if (hash == P2POfferHash{}) return {};
+    std::shared_ptr<P2PV2PeerContext> result;
+    for (auto& item : p2p_v2_peers_) {
+        const auto snapshot = item.second->channel.Snapshot();
+        if ((snapshot.has_current && snapshot.current_offer_hash == hash) ||
+            (snapshot.has_pending && snapshot.pending_offer_hash == hash) ||
+            (snapshot.has_previous && snapshot.previous_offer_hash == hash)) {
+            if (result) return {};
+            result = item.second;
+        }
+    }
+    return result;
+}
+
+void VEthernetExchanger::PublishP2PV2State() noexcept {
+    P2PState state = P2PState::Relay;
+    for (const auto& item : p2p_v2_peers_) {
+        const auto peer_state = item.second->channel.Snapshot().state;
+        if (peer_state == P2PState::Direct) { state = peer_state; break; }
+        if (peer_state == P2PState::Probing) state = peer_state;
+    }
+    p2p_state_.store(state);
+}
+
 void VEthernetExchanger::HandleP2PV2RelayOffer(const ITransmissionPtr& tx,
     const ppp::app::protocol::P2PControlMessage& message) noexcept {
     if (!tx || !tx->GetContext() || !tx->GetStrand()) return;
@@ -74,15 +112,20 @@ void VEthernetExchanger::HandleP2PV2RelayOffer(const ITransmissionPtr& tx,
                 p2p_registered_transmission_.lock() != tx || !p2p_candidate_transport_ ||
                 !p2p_candidate_transport_->IsReady() || message.virtual_ip != p2p_registered_virtual_ip_) return;
             if (message.action == "status") {
-                if (message.enabled && message.reason == "key-active-current" &&
-                    message.current_offer_hash == Hex(p2p_v2_channel_.Snapshot().current_offer_hash).c_str())
-                    p2p_reported_key_hash_ = p2p_v2_channel_.Snapshot().current_offer_hash;
+                auto peer = p2p_v2_peers_.find(message.peer_virtual_ip);
+                if (peer != p2p_v2_peers_.end()) {
+                    const auto current = peer->second->channel.Snapshot();
+                    if (current.has_current && message.enabled && message.reason == "key-active-current" &&
+                        message.current_offer_hash == Hex(current.current_offer_hash).c_str())
+                        peer->second->reported_key_hash = current.current_offer_hash;
+                }
                 return;
             }
             if (!P2PRecoveryAllowed() || !message.enabled || message.action != "offer-v2" ||
                 !message.peer_virtual_ip || message.peer_virtual_ip == message.virtual_ip ||
                 std::find(message.supported_versions.begin(), message.supported_versions.end(), 2) == message.supported_versions.end()) return;
-            if (p2p_peer_virtual_ip_ && p2p_peer_virtual_ip_ != message.peer_virtual_ip) return;
+            auto found = p2p_v2_peers_.find(message.peer_virtual_ip);
+            if (found == p2p_v2_peers_.end() && p2p_v2_peers_.size() >= P2PV2MaxPeers) return;
             auto frozen = p2p_candidate_history_.find(message.candidate_revision);
             if (frozen == p2p_candidate_history_.end()) return;
             P2PV2RecipientContext recipient;
@@ -94,54 +137,127 @@ void VEthernetExchanger::HandleP2PV2RelayOffer(const ITransmissionPtr& tx,
             std::memcpy(recipient.local_peer_id.data() + 12, &message.virtual_ip, 4);
             recipient.local_candidate_revision = message.candidate_revision;
             recipient.peer_candidate_revision = message.peer_candidate_revision;
-            const auto before = p2p_v2_channel_.Snapshot();
+            P2PRelayOfferV2 offered;
+            P2PWrappedPairSeed wrapped;
+            const std::string encoded(message.authenticated_offer_v2.data(), message.authenticated_offer_v2.size());
+            if (!ParseP2PRelayOfferRecipientV2Hex(encoded, offered, wrapped)) return;
+            P2PId expected_peer{};
+            std::memcpy(expected_peer.data() + 12, &message.peer_virtual_ip, 4);
+            if (offered.initiator_session_id == recipient.local_session_id) {
+                if (offered.responder_peer_id != expected_peer) return;
+            } else if (offered.responder_session_id == recipient.local_session_id) {
+                if (offered.initiator_peer_id != expected_peer) return;
+            } else return;
+            auto peer = found == p2p_v2_peers_.end() ? std::make_shared<P2PV2PeerContext>() : found->second;
+            const auto before = peer->channel.Snapshot();
             const auto exporter = [tx](const char* label, const uint8_t* context, std::size_t n, uint8_t* out, std::size_t size) {
                 return tx->ExportAuthenticatedSessionKey(label, context, n, out, size);
             };
-            if (!p2p_v2_channel_.AcceptOffer(std::string(message.authenticated_offer_v2.data(), message.authenticated_offer_v2.size()),
+            if (!peer->channel.AcceptOffer(encoded,
                 recipient, exporter, now, generation)) return;
-            const auto after = p2p_v2_channel_.Snapshot();
-            p2p_v2_selected_ = true; p2p_peer_virtual_ip_ = message.peer_virtual_ip;
+            if (found == p2p_v2_peers_.end()) {
+                peer->virtual_ip = message.peer_virtual_ip;
+                p2p_v2_peers_.emplace(message.peer_virtual_ip, peer);
+            }
+            const auto after = peer->channel.Snapshot();
+            peer->candidates = recipient.peer_candidates;
+            p2p_v2_selected_ = true;
             auto config = GetConfiguration();
-            if (config) p2p_v2_channel_.ConfigureLiveness(config->p2p.heartbeat_interval_ms,
+            if (config) peer->channel.ConfigureLiveness(config->p2p.heartbeat_interval_ms,
                 config->p2p.heartbeat_miss_max, config->p2p.suspect_timeout_ms, config->p2p.migration_grace_ms);
             if (after.has_pending && (!before.has_pending || before.pending_offer_hash != after.pending_offer_hash)) {
-                p2p_v2_probes_.Begin(after.local_role == P2PPeerRole::Initiator ? P2PProbeRole::Controlling : P2PProbeRole::Controlled,
+                peer->probes.Begin(after.local_role == P2PPeerRole::Initiator ? P2PProbeRole::Controlling : P2PProbeRole::Controlled,
                     recipient.local_candidates, recipient.peer_candidates, now, generation);
             }
-            p2p_state_.store(after.state);
+            PublishP2PV2State();
         }
         TickP2PV2(tx, now, generation);
     });
 }
 
 bool VEthernetExchanger::SendP2PV2Packets(const ITransmissionPtr& tx,
-    const std::vector<P2PV2Outbound>& packets, uint64_t generation) noexcept {
-    std::shared_ptr<IP2PDatagramTransport> transport;
+    const std::vector<P2PV2Outbound>& packets, uint64_t generation, uint64_t expected_registration) noexcept {
     uint64_t registration = 0;
+    bool failed = false;
     {
         std::lock_guard<std::mutex> lock(p2p_offer_mutex_);
-        if (disposed_.load() || generation != p2p_offer_generation_.load() || p2p_registered_transmission_.lock() != tx) return false;
-        transport = p2p_candidate_transport_; registration = p2p_transport_registration_id_;
-    }
-    if (!transport) return false;
-    P2PId session{}; Int128ToBytes(GetId(), session.data());
-    for (const auto& packet : packets) {
-        P2PV2DataPacketHeader header;
-        if (!ParseP2PV2DataPacketHeader(packet.datagram, header) &&
-            !p2p_egress_limiter_.AllowSession(session, Executors::GetTickCount())) continue;
-        if (!transport->SendTo(packet.datagram.data(), static_cast<int>(packet.datagram.size()), Endpoint(packet.destination))) {
-            RecoverP2PTransport(tx, generation, registration); return false;
+        if (disposed_.load() || generation != p2p_offer_generation_.load() || p2p_registered_transmission_.lock() != tx ||
+            (expected_registration && expected_registration != p2p_transport_registration_id_)) return false;
+        auto transport = p2p_candidate_transport_; registration = p2p_transport_registration_id_;
+        if (!transport) return false;
+        const auto now = P2PRecoveryNow();
+        P2PId session{}; Int128ToBytes(GetId(), session.data());
+        const auto abandon_output = [generation](P2PV2PeerContext& peer) {
+            const auto state = peer.channel.Snapshot();
+            if (!state.has_current || state.commit_started) {
+                peer.channel.Reset(generation); peer.reported_key_hash = {}; peer.last_renew_ms = 0;
+            }
+            peer.probes.Cancel(generation); peer.deferred_packets.clear();
+            ppp::telemetry::Count("p2p.control.queue.fallback", 1);
+        };
+        for (const auto& packet : packets) {
+            P2PV2DataPacketHeader data;
+            const bool is_data = ParseP2PV2DataPacketHeader(packet.datagram, data);
+            P2PV2ControlPacket control;
+            if (!is_data && !ParseP2PV2Control(packet.datagram, control)) continue;
+            auto peer = FindP2PV2Peer(is_data ? data.offer_hash : control.offer_hash);
+            if (!peer) continue;
+            if (is_data) {
+                if (!transport->SendTo(packet.datagram.data(), static_cast<int>(packet.datagram.size()), Endpoint(packet.destination))) {
+                    failed = true; break;
+                }
+                continue;
+            }
+            const auto duplicate = std::find_if(peer->deferred_packets.begin(), peer->deferred_packets.end(),
+                [&packet](const auto& queued) {
+                    return queued.packet.destination == packet.destination && queued.packet.datagram == packet.datagram;
+                });
+            if (duplicate != peer->deferred_packets.end()) continue;
+            if (peer->deferred_packets.size() == 32) {
+                abandon_output(*peer);
+                continue;
+            }
+            const auto state = peer->channel.Snapshot();
+            uint64_t expires = now + 2000;
+            if (state.has_pending && state.pending_offer_hash == control.offer_hash) {
+                expires = std::min(expires, state.setup_deadline_ms);
+                if (control.type == P2PV2ControlType::Probe && state.setup_deadline_ms >= 10000)
+                    expires = std::min(expires, state.setup_deadline_ms - 6000);
+            }
+            if (state.has_current && state.current_offer_hash == control.offer_hash)
+                expires = std::min(expires, state.key_deadline_ms);
+            if (state.has_previous && state.previous_offer_hash == control.offer_hash)
+                expires = std::min(expires, state.previous_deadline_ms);
+            peer->deferred_packets.push_back({packet, expires});
         }
+        for (auto& item : p2p_v2_peers_) {
+            if (failed) break;
+            auto& peer = *item.second;
+            while (!peer.deferred_packets.empty()) {
+                auto& queued = peer.deferred_packets.front();
+                P2PV2ControlPacket control;
+                if (!ParseP2PV2Control(queued.packet.datagram, control) || FindP2PV2Peer(control.offer_hash) != item.second) {
+                    peer.deferred_packets.pop_front(); continue;
+                }
+                if (now >= queued.expires_ms) {
+                    // Preserve a healthy predecessor if an uncommitted refresh stalls.
+                    abandon_output(peer);
+                    break;
+                }
+                if (!peer.egress_limiter.AllowSession(session, now)) break;
+                if (!transport->SendTo(queued.packet.datagram.data(), static_cast<int>(queued.packet.datagram.size()),
+                    Endpoint(queued.packet.destination))) { failed = true; break; }
+                peer.deferred_packets.pop_front();
+            }
+        }
+        PublishP2PV2State();
     }
+    if (failed) { RecoverP2PTransport(tx, generation, registration); return false; }
     return true;
 }
 
-void VEthernetExchanger::SendP2PV2Control(const ITransmissionPtr& tx, const char* action,
+void VEthernetExchanger::SendP2PV2Control(const ITransmissionPtr& tx, uint32_t peer_ip, const char* action,
     const P2POfferHash& current, const P2POfferHash& cancel) noexcept {
-#if defined(OPENPPP2_P2P_RECOVERY_TESTING)
-    if (recovery_test_hooks_.control) { recovery_test_hooks_.control(action); return; }
-#endif
     if (!tx || !tx->GetContext() || !tx->GetStrand()) return;
     InformationEnvelope envelope;
     envelope.Base.Clear();
@@ -149,13 +265,19 @@ void VEthernetExchanger::SendP2PV2Control(const ITransmissionPtr& tx, const char
     uint64_t generation = 0, registration = 0;
     {
         std::lock_guard<std::mutex> lock(p2p_offer_mutex_);
-        if (disposed_.load() || p2p_registered_transmission_.lock() != tx || !p2p_v2_selected_) return;
+        if (disposed_.load() || p2p_registered_transmission_.lock() != tx || !p2p_v2_selected_ ||
+            !p2p_v2_peers_.count(peer_ip)) return;
+        const auto state = p2p_v2_peers_.at(peer_ip)->channel.Snapshot();
+        if (state.current_offer_hash != current || (std::strcmp(action, "key-active") == 0 && !state.has_current)) return;
         generation = p2p_offer_generation_.load(); registration = p2p_transport_registration_id_;
         message.enabled = true; message.mode = "direct-preferred"; message.action = action;
-        message.virtual_ip = p2p_registered_virtual_ip_; message.peer_virtual_ip = p2p_peer_virtual_ip_;
+        message.virtual_ip = p2p_registered_virtual_ip_; message.peer_virtual_ip = peer_ip;
         message.supported_versions = {1, 2}; message.current_offer_hash = Hex(current).c_str();
         if (cancel != P2POfferHash{}) message.cancel_offer_hash = Hex(cancel).c_str();
     }
+#if defined(OPENPPP2_P2P_RECOVERY_TESTING)
+    if (recovery_test_hooks_.control) { recovery_test_hooks_.control(action); return; }
+#endif
     envelope.ExtendedJson = envelope.Extensions.ToJson();
     auto self = shared_from_this();
     ppp::coroutines::YieldContext::Spawn(tx->BufferAllocator.get(), *tx->GetContext(), tx->GetStrand().get(),
@@ -164,6 +286,9 @@ void VEthernetExchanger::SendP2PV2Control(const ITransmissionPtr& tx, const char
                 std::lock_guard<std::mutex> lock(p2p_offer_mutex_);
                 if (disposed_.load() || generation != p2p_offer_generation_.load() ||
                     registration != p2p_transport_registration_id_ || p2p_registered_transmission_.lock() != tx) return;
+                const auto peer = p2p_v2_peers_.find(envelope.Extensions.P2P.peer_virtual_ip);
+                if (peer == p2p_v2_peers_.end() ||
+                    envelope.Extensions.P2P.current_offer_hash != Hex(peer->second->channel.Snapshot().current_offer_hash).c_str()) return;
             }
             DoInformation(tx, envelope, y);
         });
@@ -183,74 +308,92 @@ void VEthernetExchanger::HandleP2PV2Datagram(const ITransmissionPtr& tx, uint64_
         const auto source = Candidate(sender);
         const auto now = P2PRecoveryNow();
         P2PV2DataPacketHeader header;
-        if (ParseP2PV2DataPacketHeader(datagram, header)) {
-            accepted = p2p_v2_channel_.OpenData(datagram, source, now, generation, plaintext);
-            if (!accepted) p2p_v2_channel_.HandleNewEndpointData(datagram, source, now, generation, result);
+        const bool data = ParseP2PV2DataPacketHeader(datagram, header);
+        P2PV2ControlPacket control;
+        if (!data && !ParseP2PV2Control(datagram, control)) return;
+        auto peer = FindP2PV2Peer(data ? header.offer_hash : control.offer_hash);
+        if (!peer) return;
+        if (data) {
+            accepted = peer->channel.OpenData(datagram, source, now, generation, plaintext);
+            if (!accepted) peer->channel.HandleNewEndpointData(datagram, source, now, generation, result);
         } else {
-            if (!p2p_v2_channel_.HandleControl(datagram, source, now, generation, result)) return;
+            if (!peer->channel.HandleControl(datagram, source, now, generation, result)) return;
             P2PProbeCandidatePair pair{result.local_candidate, result.peer_candidate};
             if (result.event == P2PV2ControlEvent::ProbeAck) {
-                const auto index = p2p_v2_probes_.FindPair(pair);
-                if (index) p2p_v2_probes_.OnAuthenticatedAck(*index, now, generation);
+                const auto index = peer->probes.FindPair(pair);
+                if (index) peer->probes.OnAuthenticatedAck(*index, now, generation);
             } else if (result.event == P2PV2ControlEvent::ReverseProbeNeeded) {
-                p2p_v2_probes_.NominateResponderPair(pair, now, generation);
+                peer->probes.NominateResponderPair(pair, now, generation);
             }
         }
-        auto snapshot = p2p_v2_channel_.Snapshot();
+        auto snapshot = peer->channel.Snapshot();
         if (snapshot.has_current) {
-            p2p_local_candidate_ = Endpoint(snapshot.local_candidate);
-            p2p_peer_candidate_ = Endpoint(snapshot.peer_candidate);
+            peer->local_candidate = Endpoint(snapshot.local_candidate);
+            peer->peer_candidate = Endpoint(snapshot.peer_candidate);
         }
-        p2p_state_.store(snapshot.state);
-        local_ip = p2p_registered_virtual_ip_; peer_ip = p2p_peer_virtual_ip_;
+        PublishP2PV2State();
+        local_ip = p2p_registered_virtual_ip_; peer_ip = peer->virtual_ip;
     }
-    SendP2PV2Packets(tx, result.outbound, generation);
+    SendP2PV2Packets(tx, result.outbound, generation, registration);
     if (accepted && !plaintext.empty() && P2PDirectDataPath::AllowsInboundPacket(plaintext.data(),
         static_cast<int>(plaintext.size()), local_ip, peer_ip))
-        OnNat(tx, plaintext.data(), static_cast<int>(plaintext.size()), ppp::nullof<ppp::coroutines::YieldContext>());
+        OnNat(tx, plaintext.data(), static_cast<int>(plaintext.size()));
     TickP2PV2(tx, P2PRecoveryNow(), generation);
 }
 
 void VEthernetExchanger::TickP2PV2(const ITransmissionPtr& tx, uint64_t now, uint64_t generation) noexcept {
     if (!tx) return;
-    P2PV2TickResult tick;
-    P2POfferHash report{};
-    bool report_key = false, retry = false;
+    struct Work {
+        uint32_t peer_ip;
+        P2PV2TickResult tick;
+        P2POfferHash report{};
+        bool report_key = false;
+    };
+    std::vector<Work> work;
+    bool retry = false;
     uint64_t registration = 0;
     {
         std::lock_guard<std::mutex> lock(p2p_offer_mutex_);
         if (disposed_.load() || generation != p2p_offer_generation_.load() || !p2p_v2_selected_ ||
             p2p_registered_transmission_.lock() != tx) return;
         registration = p2p_transport_registration_id_;
-        const auto before = p2p_v2_channel_.Snapshot();
-        tick = p2p_v2_channel_.Tick(now, generation);
+        for (auto& item : p2p_v2_peers_) {
+        auto& peer = *item.second;
+        Work action; action.peer_ip = item.first;
+        auto& tick = action.tick;
+        const auto before = peer.channel.Snapshot();
+        tick = peer.channel.Tick(now, generation);
         if (tick.fallback && before.has_pending && tick.cancelled_offer_hash == P2POfferHash{})
             tick.cancelled_offer_hash = before.pending_offer_hash;
-        auto batch = p2p_v2_probes_.Poll(now, generation);
+        auto batch = peer.probes.Poll(now, generation);
         for (std::size_t i = 0; i < batch.size; ++i) {
             P2PV2Outbound outbound; outbound.destination = batch.tasks[i].pair.peer;
-            if (p2p_v2_channel_.CreateProbe(batch.tasks[i].pair.local, batch.tasks[i].pair.peer, now, generation, outbound.datagram))
+            if (peer.channel.CreateProbe(batch.tasks[i].pair.local, batch.tasks[i].pair.peer, now, generation, outbound.datagram))
                 tick.outbound.push_back(std::move(outbound));
         }
-        auto snapshot = p2p_v2_channel_.Snapshot();
-        p2p_state_.store(snapshot.state);
+        auto snapshot = peer.channel.Snapshot();
         if (snapshot.has_current) {
-            p2p_local_candidate_ = Endpoint(snapshot.local_candidate); p2p_peer_candidate_ = Endpoint(snapshot.peer_candidate);
-            if (snapshot.current_offer_hash != p2p_reported_key_hash_ &&
-                (!p2p_last_key_report_ms_ || now - p2p_last_key_report_ms_ >= 1000)) {
-                report_key = true; report = snapshot.current_offer_hash; p2p_last_key_report_ms_ = now;
+            peer.local_candidate = Endpoint(snapshot.local_candidate); peer.peer_candidate = Endpoint(snapshot.peer_candidate);
+            if (snapshot.current_offer_hash != peer.reported_key_hash &&
+                (!peer.last_key_report_ms || now - peer.last_key_report_ms >= 1000)) {
+                action.report_key = true; action.report = snapshot.current_offer_hash; peer.last_key_report_ms = now;
             }
-        } else if (!snapshot.has_pending && (!p2p_last_renew_ms_ || now - p2p_last_renew_ms_ >= 10000)) {
-            tick.renew = true; p2p_last_renew_ms_ = now;
+        } else if (!snapshot.has_pending && (!peer.last_renew_ms || now - peer.last_renew_ms >= 10000)) {
+            tick.renew = true; peer.last_renew_ms = now;
         }
+        if (!snapshot.has_pending) peer.probes.Cancel(generation);
+        work.push_back(std::move(action));
+        }
+        PublishP2PV2State();
         retry = (!p2p_candidate_transport_ || !p2p_candidate_transport_->IsReady()) && now >= p2p_retry_at_ms_;
-        if (!snapshot.has_pending) p2p_v2_probes_.Cancel(generation);
     }
     if (retry) { RecoverP2PTransport(tx, generation, registration); return; }
-    SendP2PV2Packets(tx, tick.outbound, generation);
-    if (report_key) SendP2PV2Control(tx, "key-active", report);
-    if (tick.renew || tick.cancelled_offer_hash != P2POfferHash{})
-        SendP2PV2Control(tx, "renew", tick.current_offer_hash, tick.cancelled_offer_hash);
+    for (const auto& action : work) {
+        if (!SendP2PV2Packets(tx, action.tick.outbound, generation, registration)) return;
+        if (action.report_key) SendP2PV2Control(tx, action.peer_ip, "key-active", action.report);
+        if (action.tick.renew || action.tick.cancelled_offer_hash != P2POfferHash{})
+            SendP2PV2Control(tx, action.peer_ip, "renew", action.tick.current_offer_hash, action.tick.cancelled_offer_hash);
+    }
 }
 
 uint64_t VEthernetExchanger::P2PRecoveryNow() noexcept {
@@ -297,14 +440,12 @@ void VEthernetExchanger::RecoverP2PTransport(const ITransmissionPtr& tx, uint64_
             p2p_transport_registration_id_ = 0;
             if (p2p_stun_gatherer_) p2p_stun_gatherer_->Cancel();
             p2p_stun_gatherer_.reset();
-            p2p_v2_channel_.Reset(generation);
-            p2p_v2_probes_.Cancel(generation);
+            ResetP2PV2Peers(generation);
+            p2p_next_stun_refresh_ms_ = 0;
             p2p_offer_session_.ResetGeneration(generation);
             p2p_direct_data_path_.Reset(generation);
             p2p_candidate_history_.clear(); p2p_registered_candidates_.clear();
             p2p_local_candidate_ = {}; p2p_peer_candidate_ = {};
-            p2p_reported_key_hash_ = {};
-            p2p_last_key_report_ms_ = p2p_last_renew_ms_ = 0;
             p2p_last_heartbeat_tx_ms_ = p2p_suspect_since_ms_ = p2p_migrate_started_ms_ = 0;
             p2p_heartbeat_misses_ = 0;
             static constexpr uint64_t delays[] = {1000, 2000, 4000, 8000, 10000};
@@ -353,6 +494,7 @@ void VEthernetExchanger::RecoverP2PTransport(const ITransmissionPtr& tx, uint64_
                     }
                 }
                 bool ready = false;
+                std::vector<uint32_t> renew_peers;
                 {
                     std::lock_guard<std::mutex> lock(p2p_offer_mutex_);
                     if (disposed_.load() || generation != p2p_offer_generation_.load() || GetTransmission() != tx ||
@@ -369,9 +511,12 @@ void VEthernetExchanger::RecoverP2PTransport(const ITransmissionPtr& tx, uint64_
                         p2p_retry_at_ms_ = P2PRecoveryNow() + delays[std::min(p2p_retry_step_, 4u)];
                         p2p_retry_step_ = std::min(p2p_retry_step_ + 1, 5u);
                     }
-                    p2p_last_renew_ms_ = 0;
+                    for (auto& item : p2p_v2_peers_) {
+                        item.second->last_renew_ms = 0;
+                        renew_peers.push_back(item.first);
+                    }
                 }
-                if (ready) SendP2PV2Control(tx, "renew", {});
+                if (ready) for (auto peer : renew_peers) SendP2PV2Control(tx, peer, "renew", {});
             });
         if (!spawned) {
             std::lock_guard<std::mutex> lock(p2p_offer_mutex_);

@@ -355,6 +355,7 @@ namespace ppp {
                 int                                                         punch_timeout;  ///< UDP punch timeout in seconds.
                 int                                                         keep_alived;    ///< P2P keep-alive interval in seconds.
                 ppp::vector<ppp::string>                                    stun_servers;   ///< STUN servers used for future UDP candidate discovery.
+                ppp::string                                                 stun_request_profile; ///< Standard or explicit tailnode STUN compatibility.
                 int                                                         max_probes;             ///< Max probe rounds before relay fallback (default 2).
                 int                                                         probe_timeout_ms;       ///< Per-round probe timeout in ms (default 2000).
                 int                                                         heartbeat_interval_ms;  ///< Heartbeat send interval in ms (default 1000).

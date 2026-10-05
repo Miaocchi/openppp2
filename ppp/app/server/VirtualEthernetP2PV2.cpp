@@ -261,6 +261,8 @@ bool VirtualEthernetSwitcher::UpdateP2PV2Control(const std::shared_ptr<VirtualEt
         auto dst = p2p_peers_.find(vip->second);
         if (dst == p2p_peers_.end() || !SupportsV2(src->second) || !SupportsV2(dst->second)) return false;
         source = src->second; destination = dst->second;
+        response.virtual_ip = source.VirtualIP;
+        response.peer_virtual_ip = destination.VirtualIP;
         const auto key = PairKey(source.SessionId, destination.SessionId);
         auto found = p2p_v2_pairs_.find(key);
         if (found == p2p_v2_pairs_.end()) return false;

@@ -35,6 +35,10 @@ namespace ppp {
          */
         class P2PStunClient final {
         public:
+            enum class RequestProfile { Standard, Tailnode };
+            static constexpr int StandardRequestSize = 20;
+            static constexpr int TailnodeRequestSize = 40;
+
             struct StunResult {
                 boost::asio::ip::udp::endpoint mapped_endpoint;
                 bool success = false;
@@ -71,7 +75,8 @@ namespace ppp {
                                       const uint8_t txn_id[12],
                                       boost::asio::ip::udp::endpoint& mapped_ep) noexcept;
 
-            static int BuildRequest(uint8_t* buf, int bufsz, uint8_t txn_id[12]) noexcept;
+            static int BuildRequest(uint8_t* buf, int bufsz, uint8_t txn_id[12],
+                RequestProfile profile = RequestProfile::Standard) noexcept;
 
             // Cheap receive demultiplexing; no allocation or field access beyond
             // the fixed header. Recognition alone does not authenticate a reply.
@@ -119,7 +124,8 @@ namespace ppp {
                 const std::vector<boost::asio::ip::udp::endpoint>& servers,
                 uint64_t generation,
                 uint64_t transport_registration,
-                const Completion& completion) noexcept;
+                const Completion& completion,
+                P2PStunClient::RequestProfile profile = P2PStunClient::RequestProfile::Standard) noexcept;
 
             // Returns true for a recognized STUN datagram, including invalid,
             // stale, or unrelated responses, so it cannot reach the P2P parser.
@@ -151,7 +157,9 @@ namespace ppp {
             std::array<boost::asio::ip::udp::endpoint, MaxServers> servers_{};
             std::size_t server_count_ = 0;
             std::size_t server_index_ = 0;
-            std::array<uint8_t, 20> request_{};
+            std::array<uint8_t, P2PStunClient::TailnodeRequestSize> request_{};
+            int request_length_ = 0;
+            P2PStunClient::RequestProfile request_profile_ = P2PStunClient::RequestProfile::Standard;
             std::array<uint8_t, 12> transaction_id_{};
             std::chrono::steady_clock::time_point server_started_at_{};
             uint64_t generation_ = 0;

@@ -420,6 +420,7 @@ namespace ppp {
             config.p2p.punch_timeout = 5;
             config.p2p.keep_alived = 15;
             config.p2p.stun_servers.clear();
+            config.p2p.stun_request_profile = "standard";
             config.p2p.max_probes = 2;
             config.p2p.probe_timeout_ms = 2000;
             config.p2p.heartbeat_interval_ms = 1000;
@@ -1214,6 +1215,10 @@ namespace ppp {
             }
             config.p2p.punch_timeout = std::max<int>(1, config.p2p.punch_timeout);
             config.p2p.keep_alived = std::max<int>(1, config.p2p.keep_alived);
+            config.p2p.stun_request_profile = ToLower(LTrim(RTrim(config.p2p.stun_request_profile)));
+            if (config.p2p.stun_request_profile != "tailnode") {
+                config.p2p.stun_request_profile = "standard";
+            }
             config.p2p.max_probes = std::clamp<int>(config.p2p.max_probes, 1, 10);
             config.p2p.probe_timeout_ms = std::clamp<int>(config.p2p.probe_timeout_ms, 500, 10000);
             config.p2p.heartbeat_interval_ms = std::clamp<int>(config.p2p.heartbeat_interval_ms, 500, 5000);
@@ -2037,6 +2042,7 @@ namespace ppp {
                     AssignIfPresent(config.p2p.mode, p2p_json["mode"]);
                     AssignIfPresent(config.p2p.punch_timeout, p2p_json["punch-timeout"]);
                     AssignIfPresent(config.p2p.keep_alived, p2p_json["keep-alived"]);
+                    AssignIfPresent(config.p2p.stun_request_profile, p2p_json["stun"]["request-profile"]);
 
                     const Json::Value& stun_json = p2p_json["stun"]["servers"];
                     if (stun_json.isArray()) {
@@ -2563,6 +2569,7 @@ namespace ppp {
             p2p["mode"] = config.p2p.mode;
             p2p["punch-timeout"] = config.p2p.punch_timeout;
             p2p["keep-alived"] = config.p2p.keep_alived;
+            p2p["stun"]["request-profile"] = config.p2p.stun_request_profile;
             p2p["max-probes"] = config.p2p.max_probes;
             p2p["probe-timeout-ms"] = config.p2p.probe_timeout_ms;
             p2p["heartbeat-interval-ms"] = config.p2p.heartbeat_interval_ms;

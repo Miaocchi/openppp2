@@ -48,6 +48,21 @@ canonical IPv4 endpoints: host and STUN from the same protected transport.
 The relay's observed endpoint is excluded. Latest registration changes do
 not rewrite active or pending snapshots.
 
+The client holds at most sixteen peer contexts keyed by virtual IPv4 address.
+Each peer has independent channel keys, probes, liveness and renew/report
+timers. All peers share one protected UDP transport, STUN gatherer, local
+candidate revision history and socket recovery. STUN maintenance retries
+gathering every fifteen seconds without rewriting frozen peer snapshots.
+Server status replies echo the peer virtual IPv4 address so key-active
+confirmation is applied to the corresponding context.
+
+`p2p.stun.request-profile` defaults to `standard`, a 20-byte Binding Request.
+Explicit `tailnode` selects a 40-byte request with SOFTWARE `tailnode` and a
+CRC32 FINGERPRINT for Tailscale STUN compatibility. Configuration trims and
+lowercases this value; unknown values normalize to `standard`. SOFTWARE and
+FINGERPRINT provide compatibility and packet integrity checking, not an
+authenticated identity or permission to enable direct traffic.
+
 Both peers prime all four candidate pairs simultaneously. Each authenticated
 Probe has one original transmission and one identical-byte retry after two
 seconds, within a four-second probe window. Only the stable initiator
@@ -73,7 +88,12 @@ commits the proposed receive-window change. Older out-of-window packets and
 duplicates remain rejected.
 
 Source and session control buckets are 4/s burst 8 and 8/s burst 16, with
-256 entries per table and sixty-second idle reclamation. STUN-shaped packets
+256 entries per table and sixty-second idle reclamation. A known offer hash
+and matching registered/selected peer endpoint select that peer's independent
+ingress buckets; this routing check does not replace packet authentication.
+Unknown sources and STUN share the client-level admission budget. Peer control
+egress has an independent 8/s burst 16 session bucket per context, bounded by
+the sixteen-peer context cap. STUN-shaped packets
 also pass admission before copying or posting. Selected-path data is exempt
 from control rate limits. New endpoints must pass noncommitting AEAD/replay
 validation before one bounded migration challenge; migration and Commit are

@@ -11,13 +11,17 @@
 #include <ppp/p2p/P2PStunClient.h>
 #include <ppp/Random.h>
 #include <openssl/rand.h>
+#include <boost/crc.hpp>
 #include <cstring>
 
 namespace ppp {
     namespace p2p {
 
-        int P2PStunClient::BuildRequest(uint8_t* buf, int bufsz, uint8_t txn_id[12]) noexcept {
-            if (bufsz < 20 || !buf || !txn_id) {
+        int P2PStunClient::BuildRequest(uint8_t* buf, int bufsz, uint8_t txn_id[12],
+                RequestProfile profile) noexcept {
+            if (profile != RequestProfile::Standard && profile != RequestProfile::Tailnode) return 0;
+            const int request_size = profile == RequestProfile::Tailnode ? TailnodeRequestSize : StandardRequestSize;
+            if (bufsz < request_size || !buf || !txn_id) {
                 return 0;
             }
 
@@ -29,7 +33,7 @@ namespace ppp {
             buf[0] = (STUN_METHOD_BINDING >> 8) & 0xFF;
             buf[1] = STUN_METHOD_BINDING & 0xFF;
             buf[2] = 0;
-            buf[3] = 0;
+            buf[3] = static_cast<uint8_t>(request_size - StandardRequestSize);
 
             buf[4] = (STUN_MAGIC_COOKIE >> 24) & 0xFF;
             buf[5] = (STUN_MAGIC_COOKIE >> 16) & 0xFF;
@@ -38,7 +42,20 @@ namespace ppp {
 
             std::memcpy(buf + 8, txn_id, 12);
 
-            return 20;
+            if (profile == RequestProfile::Tailnode) {
+                buf[20] = 0x80; buf[21] = 0x22;
+                buf[22] = 0; buf[23] = 8;
+                std::memcpy(buf + 24, "tailnode", 8);
+                // RFC 5389 fingerprint covers the header with the final message length.
+                boost::crc_32_type crc;
+                crc.process_bytes(buf, 32);
+                const uint32_t fingerprint = crc.checksum() ^ 0x5354554eu;
+                buf[32] = 0x80; buf[33] = 0x28;
+                buf[34] = 0; buf[35] = 4;
+                for (int i = 0; i < 4; ++i)
+                    buf[36 + i] = static_cast<uint8_t>(fingerprint >> (24 - 8 * i));
+            }
+            return request_size;
         }
 
         bool P2PStunClient::ParseResponse(const uint8_t* response, int response_len,
@@ -170,10 +187,13 @@ namespace ppp {
                 const std::vector<boost::asio::ip::udp::endpoint>& servers,
                 uint64_t generation,
                 uint64_t transport_registration,
-                const Completion& completion) noexcept {
+                const Completion& completion,
+                P2PStunClient::RequestProfile profile) noexcept {
             if (!owner_.running_in_this_thread() || !transport ||
                 !transport->IsReady() || transport->LocalEndpoint().port() == 0 ||
-                generation == 0 || transport_registration == 0 || !completion) {
+                generation == 0 || transport_registration == 0 || !completion ||
+                (profile != P2PStunClient::RequestProfile::Standard &&
+                 profile != P2PStunClient::RequestProfile::Tailnode)) {
                 return false;
             }
             std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -205,6 +225,7 @@ namespace ppp {
                 completion_ = completion;
                 generation_ = generation;
                 transport_registration_ = transport_registration;
+                request_profile_ = profile;
                 started_ = true;
                 running_.store(true, std::memory_order_release);
                 BeginServerLocked();
@@ -223,8 +244,9 @@ namespace ppp {
                 FinishLocked({});
                 return false;
             }
-            if (P2PStunClient::BuildRequest(request_.data(),
-                    static_cast<int>(request_.size()), transaction_id_.data()) != 20) {
+            request_length_ = P2PStunClient::BuildRequest(request_.data(),
+                static_cast<int>(request_.size()), transaction_id_.data(), request_profile_);
+            if (request_length_ == 0) {
                 FinishLocked({});
                 return false;
             }
@@ -233,10 +255,11 @@ namespace ppp {
             sends_ = 1;
             const auto transport = transport_;
             const auto request = request_;
+            const auto request_length = request_length_;
             const auto destination = servers_[server_index_];
             // The synchronous send may cause a test/provider transport to invoke
             // HandleDatagram re-entrantly. Retain local copies across that call.
-            transport->SendTo(request.data(), static_cast<int>(request.size()),
+            transport->SendTo(request.data(), request_length,
                 destination);
             if (!running_.load(std::memory_order_acquire) || serial != transaction_serial_) {
                 return true;
@@ -288,8 +311,9 @@ namespace ppp {
                 sends_ = 2;
                 const auto transport = transport_;
                 const auto request = request_;
+                const auto request_length = request_length_;
                 const auto destination = servers_[server_index_];
-                transport->SendTo(request.data(), static_cast<int>(request.size()),
+                transport->SendTo(request.data(), request_length,
                     destination);
                 if (!running_.load(std::memory_order_acquire) ||
                     transaction_serial != transaction_serial_) {
@@ -367,6 +391,8 @@ namespace ppp {
             transport_.reset();
             completion_ = nullptr;
             request_.fill(0);
+            request_length_ = 0;
+            request_profile_ = P2PStunClient::RequestProfile::Standard;
             transaction_id_.fill(0);
             servers_.fill({});
             server_count_ = 0;

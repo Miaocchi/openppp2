@@ -75,7 +75,8 @@ bool NoisePskAuthenticatedCarrierBinding::IsAvailable(
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    return IsValid() && IsOwnerExecutor(context, strand);
+    return IsValid() && context && strand && context == context_ &&
+        strand == strand_ && !context->stopped();
 }
 
 bool NoisePskAuthenticatedCarrierBinding::Export(

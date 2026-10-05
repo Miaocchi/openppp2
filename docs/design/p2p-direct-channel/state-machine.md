@@ -32,6 +32,18 @@ isolated v2 tests do not establish production availability of these transitions.
 may publish `direct`. P2P failure does not change a healthy base runtime phase
 from `Connected`.
 
+For v2 these states belong to each virtual IPv4 peer context, with at most
+sixteen contexts per client. The aggregate runtime state is `Direct` when
+any peer is Direct, otherwise `Probing` when any peer is Probing, otherwise
+`Relay`. Aggregate Direct does not authorize direct delivery to other peers:
+outbound traffic selects its destination VIP context and falls back to relay
+unless that peer is Direct. Keys, probes, liveness and renew/report timers are
+independent; protected UDP, STUN, candidate history and socket recovery are
+shared. A shared socket failure resets all peer direct state.
+Known peer control admission and egress budgets are also independent; unknown
+sources remain subject to shared admission. Exhausting one peer's control
+budget does not consume another peer's reserved budget.
+
 ## Target Transitions
 
 For v2, an ACK alone does not establish Direct. Both sides prime candidate

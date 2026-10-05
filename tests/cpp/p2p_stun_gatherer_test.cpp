@@ -104,7 +104,8 @@ struct Fixture {
     void RunFor(unsigned milliseconds) {
         io.restart(); io.run_for(std::chrono::milliseconds(milliseconds));
     }
-    bool Start(std::vector<Udp::endpoint> servers = {Endpoint(1)}) {
+    bool Start(std::vector<Udp::endpoint> servers = {Endpoint(1)},
+        P2PStunClient::RequestProfile profile = P2PStunClient::RequestProfile::Standard) {
         bool accepted = false;
         OnOwner([&] {
             accepted = gatherer->Start(transport, servers, 17, 41,
@@ -114,7 +115,7 @@ struct Fixture {
                     result = value;
                     completed_generation = generation;
                     completed_registration = registration;
-                });
+                }, profile);
         });
         return accepted;
     }
@@ -169,6 +170,7 @@ BOOST_AUTO_TEST_CASE(retry_reuses_exact_request_at_500ms_and_expires_at_1000ms) 
     BOOST_REQUIRE(fixture.Start());
     fixture.RunFor(550);
     BOOST_REQUIRE(fixture.transport->sent.size() == 2);
+    BOOST_TEST(fixture.transport->sent[0].bytes.size() == 20u);
     BOOST_CHECK(fixture.transport->sent[0].bytes == fixture.transport->sent[1].bytes);
     const auto retry_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         fixture.transport->sent[1].at - fixture.transport->sent[0].at).count();
@@ -179,6 +181,41 @@ BOOST_AUTO_TEST_CASE(retry_reuses_exact_request_at_500ms_and_expires_at_1000ms) 
     BOOST_CHECK(!fixture.result.success);
     BOOST_TEST(fixture.transport->sent.size() == 2u);
     BOOST_TEST(fixture.transport->close_calls == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(tailnode_retries_exact_40_bytes_and_keeps_profile_on_next_server) {
+    Fixture fixture;
+    BOOST_REQUIRE(fixture.Start({Endpoint(1), Endpoint(2)}, P2PStunClient::RequestProfile::Tailnode));
+    fixture.RunFor(1600);
+    BOOST_REQUIRE(fixture.transport->sent.size() == 4u);
+    for (const auto& sent : fixture.transport->sent) {
+        BOOST_REQUIRE(sent.bytes.size() == 40u);
+        BOOST_TEST(sent.bytes[3] == 20u);
+        BOOST_CHECK(std::memcmp(sent.bytes.data() + 24, "tailnode", 8) == 0);
+        BOOST_TEST(sent.bytes[32] == 0x80u);
+        BOOST_TEST(sent.bytes[33] == 0x28u);
+    }
+    BOOST_CHECK(fixture.transport->sent[0].bytes == fixture.transport->sent[1].bytes);
+    BOOST_CHECK(fixture.transport->sent[2].bytes == fixture.transport->sent[3].bytes);
+    BOOST_CHECK(fixture.transport->sent[0].bytes != fixture.transport->sent[2].bytes);
+    BOOST_CHECK(fixture.Receive(Endpoint(1), Response(fixture.transport->sent[0].bytes)));
+    BOOST_TEST(fixture.completions == 0u);
+    const auto valid = Response(fixture.transport->sent[2].bytes);
+    BOOST_CHECK(fixture.Receive(Endpoint(2), valid, 16, 41));
+    BOOST_CHECK(fixture.Receive(Endpoint(2), valid, 17, 40));
+    BOOST_TEST(fixture.completions == 0u);
+    BOOST_CHECK(fixture.Receive(Endpoint(2), valid));
+    BOOST_TEST(fixture.completions == 1u);
+    BOOST_CHECK(fixture.result.success);
+    BOOST_TEST(fixture.transport->start_calls == 0u);
+    BOOST_TEST(fixture.transport->close_calls == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(invalid_request_profile_is_rejected_without_sending) {
+    Fixture fixture;
+    BOOST_CHECK(!fixture.Start({Endpoint(1)}, static_cast<P2PStunClient::RequestProfile>(99)));
+    BOOST_TEST(fixture.transport->sent.size() == 0u);
+    BOOST_CHECK(!fixture.gatherer->IsRunning());
 }
 
 BOOST_AUTO_TEST_CASE(at_most_three_distinct_servers_and_two_sends_per_server) {

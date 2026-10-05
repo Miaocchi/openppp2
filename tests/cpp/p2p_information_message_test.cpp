@@ -104,3 +104,24 @@ BOOST_AUTO_TEST_CASE(v2_versions_are_bounded_and_unique) {
     json["supported-versions"] = versions;
     BOOST_TEST(!protocol::P2PControlMessage::FromJson(parsed, json));
 }
+
+BOOST_AUTO_TEST_CASE(v2_key_active_status_retains_pair_identity) {
+    protocol::P2PControlMessage message;
+    message.action = "status";
+    message.enabled = true;
+    message.reason = "key-active-current";
+    message.virtual_ip = 0x0100000a;
+    message.current_offer_hash.assign(64, 'a');
+    for (const std::uint32_t peer : {0x0200000au, 0x0300000au}) {
+        message.peer_virtual_ip = peer;
+        Json::Value json;
+        message.ToJson(json);
+        protocol::P2PControlMessage parsed;
+        BOOST_REQUIRE(protocol::P2PControlMessage::FromJson(parsed, json));
+        BOOST_TEST(parsed.action == "status");
+        BOOST_TEST(parsed.virtual_ip == message.virtual_ip);
+        BOOST_TEST(parsed.peer_virtual_ip == peer);
+        BOOST_TEST(parsed.reason == message.reason);
+        BOOST_TEST(parsed.current_offer_hash == message.current_offer_hash);
+    }
+}

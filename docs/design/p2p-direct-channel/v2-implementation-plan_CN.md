@@ -17,9 +17,13 @@
 
 - **共用受保护的 transport。** STUN、Probe、业务数据和换钥使用同一个 socket、唯一接收回调。移除临时 STUN socket 和 detached 查询线程。每个 STUN server 立即查询、500ms 后原事务重试一次、1000ms 截止；最多尝试三个 server，首个有效响应结束收集。严格验证来源、transaction ID 和报文长度，关闭时取消事务。
 
+- **STUN 请求兼容配置。** `p2p.stun.request-profile` 默认 `standard`，发送 20B Binding Request；显式设置 `tailnode` 时发送 40B 请求，包含 SOFTWARE `tailnode` 和 CRC32 FINGERPRINT，用于兼容 Tailscale STUN。配置值去除首尾空白并转小写，未知值规范化为 `standard`。这些属性不代表已认证身份，也不授权启用直连。
+
 - **显式协商 v2。** INFO 注册增加 `supported-versions`，server 状态返回支持版本；只有双方及 server 均支持 v2 才发送 `offer-v2`。旧端保持现有行为，已选择 v2 后失败不得静默降级。新增 `authenticated-offer-v2`、双方候选 revision、`local-candidates`、`current-offer-hash`，以及 `renew`、`key-active` 动作。
 
 - **冻结候选快照。** 每端最多两个 IPv4 候选：host 和同 transport 获得的 STUN 地址；合计四个候选、最多四个 endpoint pair。排除 relay socket 的 ObservedEndpoint。revision 使用非零 uint64 十进制字符串；相同 revision 必须对应相同集合，旧 revision 不覆盖新登记。哈希绑定角色、session、revision、数量及排序后的端点。候选更新只修改 latest，不改写 active 或 pending 快照。
+
+- **多 peer 独立上下文。** 客户端按虚拟 IPv4 地址保存最多 16 个 peer context，各自拥有 channel 密钥、probe、liveness 及 renew/key-active 报告计时。受保护 UDP socket、STUN、候选 revision 历史和 socket 恢复共用；STUN 维护每 15 秒重试收集，不改写已冻结的 peer 快照。status 回显 peer VIP，只确认对应 context。runtime 汇总只要任一 peer Direct 即为 Direct，但业务出站仍按目标 VIP 选择该 peer 的状态；其他 peer 继续 relay。共享 socket 故障清理全部 peer 的直连状态。
 
 - **独立认证域。** v2 offer 绑定双方身份、session、epoch、单调递增 key generation、前驱 offer hash、候选 revision 和全部期限。exporter/HKDF 使用独立 v2 标签；exporter context 固定为 145 字节。同步更新 Noise carrier 与底层 purpose、标签和长度校验，保持 v1 的 113 字节语义。数据包保留现有布局，以 version=2 严格分流。
 
@@ -30,6 +34,8 @@
 - **协调服务端刷新。** 每个 session pair 最多一个 pending offer，同时 renew 合并；保留现有 10 秒节流，重新注册不能重置冷却。双方提交后每秒重报幂等的 `key-active`，server 确认双方后更新 current。exporter 生成限时 10 秒；服务端 pending 协调记录自生成完成保留最多 60 秒，避免 exporter/relay 延迟提前拒绝报告，但不延长客户端 10 秒 setup 或 60 秒 key 期限。异步 exporter 和投递回调核查 generation、transmission、offer ID 与冻结快照。Commit 前刷新失败仅清理 pending；Commit 已发而结果不明时，在 setup 截止前有界回 relay。丢失本地 current 后只发零 predecessor renew，等待 server 保守期限（双方报告确认后最多 60 秒）再协商，不能直接接受仍有效旧钥的零前驱。
 
 - **补齐安全与生命周期。** 控制流在复制、投递和鉴权前限流：来源 IP 4/s、burst 8；relay session 8/s、burst 16。来源表最多 256 项，空闲 60 秒回收，满表时丢弃未知来源。正常已建立路径的数据不套用控制包速率限制。v2 Probe/ACK 固定 158B、Commit/ACK 190B、迁移控制包 126B；padding 纳入认证，ACK 不得大于已认证请求，无效包不回复。
+
+  已知 offer hash 且来源匹配该 peer 登记候选或已选端点时，使用该 peer 独立的 source 4/s、burst 8 与 session 8/s、burst 16 接收预算；此分流检查不代替报文认证。每 peer 控制出站另有独立 session 8/s、burst 16 预算，最多 16 个 context。未知来源与 STUN 继续使用客户端共享接收预算，不因其他 peer 的建链消耗独立预算。
 
 - **安全迁移与恢复。** 新来源数据先做不提交状态的 AEAD/replay 校验，不交付、不改 endpoint、不刷新 liveness；验证后才允许一个有限迁移挑战。MigrateACK 匹配该挑战的新 endpoint，不套用初始候选成员检查。迁移与换钥串行：Commit 前可取消 pending 刷新，迁移完成后重新 renew；Commit 后地址变化回 relay。取消通过匹配的 `cancel-offer-hash` 协调。心跳按独立发送时钟运行，旧 key 包不维持新 key 的 liveness。超时、socket 错误和停止统一清理 key、replay、端点及计时器，保护基础 relay session；恢复退避为 1、2、4、8、10 秒。
 
