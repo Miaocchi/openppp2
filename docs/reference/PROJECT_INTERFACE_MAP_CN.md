@@ -6,7 +6,7 @@
 > **用途：**盘点 OPENPPP2 全部可发现的调用面和序列化边界，区分受支持契约、实验接口、内部实现和已知缺口。
 > **适用对象：**用户、运维人员、客户端作者、集成人员和维护者。
 > **当前状态：**当前有效。本页是发现入口，不等同于 ABI 兼容承诺。
-> **最后核对依据：**本地工作区源码，2026-10-07。policy v2 是未发布的工作区实现。
+> **最后核对依据：**本地工作区源码，2026-10-07。policy v2 计划纳入 v2.1.7，v2.1.6 不含；尚未确认 v2.1.7 已成功发布。
 > **上一层索引：**[参考手册](README_CN.md) · **English：**[Project Interface Map](PROJECT_INTERFACE_MAP.md)
 
 ## 如何阅读本页
@@ -27,8 +27,8 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 
 | 领域 | 提供方 | 主要调用方 | 输入 / 输出 | 稳定性 | 详细文档 |
 |---|---|---|---|---|---|
-| `ppp` 进程和 CLI | C++ 可执行文件 | 用户、服务管理器、脚本 | 参数和文件 / 退出状态、日志、TUI | **稳定**，但有缺口；策略命令仅为未发布工作区接口 | [CLI 参考](CLI_REFERENCE_CN.md) |
-| `appsettings.json` | C++ 配置加载器 | 用户和平台客户端 | JSON / 归一化运行策略 | 事实上的**稳定**；`client.policy` v2 未发布 | [配置模型](CONFIGURATION_CN.md) |
+| `ppp` 进程和 CLI | C++ 可执行文件 | 用户、服务管理器、脚本 | 参数和文件 / 退出状态、日志、TUI | **稳定**，但有缺口；策略命令计划纳入 v2.1.7，尚未确认成功发布 | [CLI 参考](CLI_REFERENCE_CN.md) |
+| `appsettings.json` | C++ 配置加载器 | 用户和平台客户端 | JSON / 归一化运行策略 | 事实上的**稳定**；`client.policy` v2 计划纳入 v2.1.7，尚未确认成功发布 | [配置模型](CONFIGURATION_CN.md) |
 | 连接 URI | C++ 客户端 | 用户、配置档和订阅生成器 | `ppp://`、`ppp://ws/`、`ppp://wss/` | **稳定** | [配置模型](CONFIGURATION_CN.md) |
 | 隧道线上协议 | C++ 客户端/服务端 | OPENPPP2 对端 | 加密帧、握手、操作码、INFO JSON | 事实上的**稳定** | [包格式](PACKET_FORMATS_CN.md)、[链路层](LINKLAYER_PROTOCOL_CN.md) |
 | Runtime Snapshot JSON v1 | C++ 运行时 | TUI、Android、iOS | 版本化 JSON 快照 | **稳定** | [UI Runtime 契约](UI_RUNTIME_CONTRACT_CN.md) |
@@ -58,7 +58,7 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 |---|---|---|
 | 角色与配置 | `--mode`、`--config`、`--proxy-http-port`、`--proxy-socks-port` | **稳定** |
 | 运行策略 | `--rt`、`--dns`、`--tun-flash`、`--auto-restart`、`--link-restart`、`--block-quic`、`--firewall-rules`、`--lwip`、`--vbgp` | **稳定** |
-| 策略工具（仅工作区） | `ppp policy check`、`explain`、`init`、`export`、`status`、`update`、`migrate` | 本地已实现；v2 **未发布**，已有下载不代表支持 |
+| 策略工具（工作区实现） | `ppp policy check`、`explain`、`init`、`export`、`status`、`update`、`migrate` | 计划纳入 v2.1.7，v2.1.6 不含；尚未确认 v2.1.7 已成功发布 |
 | 网卡与地址 | `--nic`、`--ngw`、`--tun`、`--tun-ip`、`--tun-ipv6`、`--tun-gw`、`--tun-mask` | **稳定** |
 | 隧道行为 | `--tun-vnet`、`--tun-host`、`--tun-static`、`--tun-promisc`、`--tun-ssmt`、`--tun-route`、`--tun-protect`、`--tun-lease-time-in-seconds` | **稳定** |
 | MUX | `--tun-mux`、`--tun-mux-acceleration`、`--mux-mode`、`--mux-mode-turbo` | `compat`、`flow`、`balance` 事实**稳定**；`stripe` 为**实验** |
@@ -80,35 +80,36 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 | `tcp`、`udp`、`websocket`、`cdn` | 载体监听、连接策略、TLS/WS 和端口模式 | 传输层 | **稳定** | 同上 |
 | `mux` | 多路复用模式与限制 | 传输/运行时 | `compat`/`flow`/`balance` 事实**稳定**；`stripe` 和实时控制为**实验** |
 | `server` | 地址池、映射、后端、策略、IPv6、计费身份 | 服务端运行时 | **稳定** | 同上 |
-| `client` | 服务端 URI、重连、带宽、代理、legacy `client.routing` 和仅工作区实现的 `client.policy` v2；运行模式由顶层 `--mode` 和 `client.proxy-only` 决定 | 客户端运行时 | legacy 字段事实上的**稳定**；v2 **未发布** | 同上 |
+| `client` | 服务端 URI、重连、带宽、代理、legacy `client.routing` 和计划纳入 v2.1.7 的工作区 `client.policy` v2；运行模式由顶层 `--mode` 和 `client.proxy-only` 决定 | 客户端运行时 | legacy 字段事实上的**稳定**；v2 发布尚未确认 | 同上 |
 | `ip`、`virr`、`vbgp` | 地址、路由/规则和路由传播输入 | 网络切换器 | 事实上的**稳定** | 同上 |
 | `dns` | resolver、拦截、fallback、cache 和 policy | 客户端/服务端 DNS 运行时 | 事实上的**稳定** | 同上 |
 | `telemetry` | exporter、signal、sampling 和 resource attributes | 诊断/平台桥 | **实验** | 同上 |
 | `p2p` | 直连发现、信令、传输和 fallback | 客户端/服务端 P2P 运行时 | **实验** | 同上 |
 | `geo-rules` | 地理路由/规则来源与行为 | 路由/DNS policy | **实验** | 同上 |
 
-`client.routing` 仍是受支持的 legacy client IP/DNS policy 来源。本地未发布的工作区实现中，
-`client.policy` v2 是独立的版本化来源，与 legacy policy 字段冲突，不会合并。运行模式仍由顶层
+`client.routing` 仍是受支持的 legacy client IP/DNS policy 来源。本地工作区实现计划纳入
+v2.1.7（v2.1.6 不含，尚未确认成功发布）；其中 `client.policy` v2 是独立的版本化来源，与 legacy
+policy 字段冲突，不会合并。运行模式仍由顶层
 `--mode` 和 `client.proxy-only` 决定。`proxy-only` 抑制桌面宿主路由和系统 DNS 接管；移动端
 bridge 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS 或本地 HTTP proxy。字段和
 命令契约见[配置模型](CONFIGURATION_CN.md)与[CLI 参考](CLI_REFERENCE_CN.md)。
 
-### Policy v2 内部组件（工作区实现）
+### Policy v2 内部组件（工作区实现，计划纳入 v2.1.7）
 
-以下路径描述本地源码边界，不是发行版 SDK 接口。代码尚未出现在远端 `main`，因此此处以内联路径标识。
+以下路径描述本地源码边界，不是 SDK 接口；尚未确认这些内容已成功纳入 v2.1.7 发行版。
 
 | 边界 | 职责 | 分类 |
 |---|---|---|
-| `ppp/app/ApplicationPolicyCommand.cpp` | 分发七个 `ppp policy` 命令，输出文本/JSON 报告和退出状态。 | 内部 CLI 实现；未发布 |
-| `ppp/app/client/policy/PolicySourceLoader.cpp`、`PolicyCompiler.cpp`、`PolicyEvaluator.h` | 加载 v2 来源、校验/编译规则并计算路由/DNS 决策。 | 内部策略引擎；未发布 |
-| `ppp/app/client/policy/PolicyRuntime.cpp` | 发布不可变策略快照并协调运行时决策。 | 内部运行时边界；未发布 |
-| `ppp/app/client/dns/PolicyResolverService.cpp` | 通过配置的上游传输和缓存/合并服务执行策略选定的 DNS 解析。 | 内部 DNS 边界；未发布 |
-| `ppp/app/client/policy/DurablePolicyBundle.cpp`、`PolicyUpdateService.cpp` | 保存已验证的 current/previous bundle，并获取、校验后准备或发布更新。 | 内部持久化/更新边界；未发布 |
-| `ppp/app/client/policy/LegacyPolicyAdapter.cpp`、`LegacyPolicyMigration.cpp` | v2 缺席时适配 legacy 输入，并写出供人工复核的迁移草案。 | 内部兼容边界；未发布 |
+| `ppp/app/ApplicationPolicyCommand.cpp` | 分发七个 `ppp policy` 命令，输出文本/JSON 报告和退出状态。 | 内部 CLI 实现；计划纳入 v2.1.7 |
+| `ppp/app/client/policy/PolicySourceLoader.cpp`、`PolicyCompiler.cpp`、`PolicyEvaluator.h` | 加载 v2 来源、校验/编译规则并计算路由/DNS 决策。 | 内部策略引擎；计划纳入 v2.1.7 |
+| `ppp/app/client/policy/PolicyRuntime.cpp` | 发布不可变策略快照并协调运行时决策。 | 内部运行时边界；计划纳入 v2.1.7 |
+| `ppp/app/client/dns/PolicyResolverService.cpp` | 通过配置的上游传输和缓存/合并服务执行策略选定的 DNS 解析。 | 内部 DNS 边界；计划纳入 v2.1.7 |
+| `ppp/app/client/policy/DurablePolicyBundle.cpp`、`PolicyUpdateService.cpp` | 保存已验证的 current/previous bundle，并获取、校验后准备或发布更新。 | 内部持久化/更新边界；计划纳入 v2.1.7 |
+| `ppp/app/client/policy/LegacyPolicyAdapter.cpp`、`LegacyPolicyMigration.cpp` | v2 缺席时适配 legacy 输入，并写出供人工复核的迁移草案。 | 内部兼容边界；计划纳入 v2.1.7 |
 
 目前只有 Linux HTTP/UDP/DNS 上游、更新和 Fake-IP 行为具备
 [实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)所列证据。HTTPS 和部分 proxy TCP 路径
-仍未验证；Windows/macOS/Android/iOS 未构建或运行。本地实现尚未提交或发布。
+仍未验证；Windows/macOS/Android/iOS 未构建或运行。尚未确认 v2.1.7 已成功发布。
 
 完整字段和模板见 [配置模型](CONFIGURATION_CN.md)。平台配置档存储会包装这份 JSON，但不会取代其契约。
 

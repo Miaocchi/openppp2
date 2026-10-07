@@ -1,12 +1,12 @@
 # DNS 与分流策略 P2：执行路径接入
 
-> Status: Implemented; offline acceptance complete, Linux live acceptance partial
+> Status: Implemented; offline acceptance complete, Linux live acceptance partial; v2.1.7 pending
 > Type: Design
 > Last verified: 2026-10-07
 > Parent index: [设计文档](README.md)
 
-当前状态：P2–P5 实现仍在未发布的本地内核工作区；离线验收已完成，Linux 实机仍有
-HTTPS/proxy TCP 等未通过项，跨平台尚未验收。下文“留待 P3”“仍未交付”是 P2 当时记录。
+当前状态：P2–P5 离线验收已完成，Linux 实机仍有 HTTPS/proxy TCP 等未通过项，跨平台尚未验收。
+代码推送已获授权，v2.1.7 仍待推送和 CI 全绿；下文“留待 P3”“仍未交付”是 P2 当时记录。
 
 本文记录 [重构方案](DNS_ROUTING_POLICY_REFACTOR_CN.md) 的 P2 实施。
 P1 的加载器与离线语义见 [P1 记录](DNS_ROUTING_POLICY_P1_CN.md)。

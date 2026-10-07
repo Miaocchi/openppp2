@@ -6,7 +6,7 @@
 > **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
 > **Audience:** OPENPPP2 users, operators, and developers.
 > **Status:** Current.
-> **Last verified against:** Local workspace implementation, 2026-10-07. The policy v2 implementation is not committed or released; released binaries do not imply v2 support.
+> **Last verified against:** Local workspace implementation, 2026-10-07. Policy v2 is planned for v2.1.7 and is not in v2.1.6; successful publication of v2.1.7 is not confirmed.
 > **Parent index:** [Back to index](README.md) · **Chinese:** [配置模型](CONFIGURATION_CN.md)
 
 
@@ -277,7 +277,7 @@ Defines client-side identity, target server, and traffic policy:
 - `client.proxy-only` — Independent top-level proxy-only flag. When `true`, suppress host-side route/DNS takeover (desktop installs no host routes; mobile keeps only its framework interface route); native policy remains active. `--mode=proxy` selects the same runtime behavior.
 - `client.http-proxy.*` — Local HTTP proxy listener settings (bind address and port).
 - `client.socks-proxy.*` — Local SOCKS5 proxy listener settings (bind address, port, username, password). The listener supports TCP `CONNECT` and SOCKS5 `UDP ASSOCIATE`; UDP datagrams are relayed through the client datagram tunnel path.
-- `client.policy` — Versioned policy v2 source (local workspace implementation; not released). When present it is selected instead of the legacy policy inputs described below.
+- `client.policy` — Versioned policy v2 source (planned for v2.1.7; not in v2.1.6, and successful publication of v2.1.7 is not confirmed). When present it is selected instead of the legacy policy inputs described below.
 - `client.routing` — Legacy IP/DNS policy source, retained for compatibility. It is not the only or current versioned policy entry point. Its `ip.bypass`, `ip.routes`, `ip.peer-routes`, and `dns.rules` sources are consumed by the legacy adapter when v2 is absent.
 - `client.routing.ip.bypass` — Inline bypass text or `file://` source strings; loaded into native route policy in both modes.
 - `client.routing.ip.routes` — Canonical ordinary route entries; loaded into native route policy, with desktop host-route projection handled separately by the active mode and platform.
@@ -291,7 +291,7 @@ Defines client-side identity, target server, and traffic policy:
 
 The legacy `client.routing` policy is shared by both client modes. `tun` may additionally apply supported host routes or DNS settings; `proxy-only` suppresses desktop host-route/system-DNS takeover. Mobile bridges retain their minimal framework interface/subnet route in proxy-only mode. See the v2 policy section below for source selection.
 
-#### `client.policy` v2 (workspace implementation, not released)
+#### `client.policy` v2 (workspace implementation, planned for v2.1.7; absent from v2.1.6)
 
 `client.policy.version` must be integer `2`. v2 replaces the legacy policy source as a whole: it cannot coexist with `client.routing`, legacy `client.bypass`/`client.dns-rules`, top-level `routing`, `geo-rules`, `dns`, `bypass`, `dns-rules`, or `udp.dns`. A conflict is an error, not a precedence merge. With no v2 object, legacy adaptation remains available from `client.routing`, legacy configuration fields, and CLI inputs; see [Policy CLI and migration](../guides/POLICY_CLI.md) ([Chinese](../guides/POLICY_CLI_CN.md)).
 

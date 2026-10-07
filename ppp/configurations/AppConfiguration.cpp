@@ -386,6 +386,9 @@ namespace ppp {
             config.client.routing.routes.clear();
             config.client.routing.peer_routes.clear();
             config.client.routing.dns_rules.clear();
+            config.client.policy.reset();
+            config.client.policy_config_path.clear();
+            config.client.policy_config_file_backed = false;
             config.client.http_proxy.bind = "";
             config.client.http_proxy.port = PPP_DEFAULT_HTTP_PROXY_PORT;
             config.client.socks_proxy.bind = "";
@@ -420,6 +423,7 @@ namespace ppp {
             config.p2p.punch_timeout = 5;
             config.p2p.keep_alived = 15;
             config.p2p.stun_servers.clear();
+            config.p2p.stun_request_profile = "standard";
             config.p2p.max_probes = 2;
             config.p2p.probe_timeout_ms = 2000;
             config.p2p.heartbeat_interval_ms = 1000;
@@ -1214,6 +1218,10 @@ namespace ppp {
             }
             config.p2p.punch_timeout = std::max<int>(1, config.p2p.punch_timeout);
             config.p2p.keep_alived = std::max<int>(1, config.p2p.keep_alived);
+            config.p2p.stun_request_profile = ToLower(LTrim(RTrim(config.p2p.stun_request_profile)));
+            if (config.p2p.stun_request_profile != "tailnode") {
+                config.p2p.stun_request_profile = "standard";
+            }
             config.p2p.max_probes = std::clamp<int>(config.p2p.max_probes, 1, 10);
             config.p2p.probe_timeout_ms = std::clamp<int>(config.p2p.probe_timeout_ms, 500, 10000);
             config.p2p.heartbeat_interval_ms = std::clamp<int>(config.p2p.heartbeat_interval_ms, 500, 5000);
@@ -1268,11 +1276,25 @@ namespace ppp {
             }
 
             Json::Value json = JsonAuxiliary::FromString(json_string);
+            if (json.isObject() && json["client"].isObject() &&
+                json["client"].isMember("policy") && !json["client"]["policy"].isNull()) {
+                Json::CharReaderBuilder builder;
+                builder["rejectDupKeys"] = true;
+                builder["failIfExtra"] = true;
+                std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+                Json::Value strict_json;
+                Json::String errors;
+                if (!reader->parse(json_string.data(), json_string.data() + json_string.size(), &strict_json, &errors)) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                }
+                json = std::move(strict_json);
+            }
             if (!json.isObject()) {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::AppConfigurationLoadJsonNotObject);
             }
             else {
-                bool loaded = Load(json);
+                bool loaded = Load(json, file_path);
+                if (loaded && client.policy) client.policy_config_file_backed = true;
                 if (!loaded && ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigLoadFailed);
                 }
@@ -1768,9 +1790,46 @@ namespace ppp {
          * @return True when loading and normalization succeed.
          */
         bool AppConfiguration::Load(Json::Value& json) noexcept {
+            return Load(json, ppp::string());
+        }
+
+        bool AppConfiguration::Load(Json::Value& json, const ppp::string& config_path) noexcept {
             Clear();
             if (!json.isObject()) {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+            }
+
+            if (json["client"].isObject() && json["client"].isMember("policy") &&
+                !json["client"]["policy"].isNull()) {
+                const auto& policy = json["client"]["policy"];
+                if (!policy.isObject()) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                }
+                const auto& version = policy["version"];
+                if ((version.type() != Json::intValue && version.type() != Json::uintValue) ||
+                    !version.isInt() || version.asInt() != 2) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                }
+                for (const char* field : {"routing", "bypass", "dns-rules"}) {
+                    if (json["client"].isMember(field)) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                    }
+                }
+                for (const char* field : {"routing", "geo-rules", "dns", "bypass", "dns-rules"}) {
+                    if (json.isMember(field)) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                    }
+                }
+                if (json["udp"].isObject() && json["udp"].isMember("dns")) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigTypeMismatch);
+                }
+                auto definition = ppp::make_shared_object<Json::Value>(policy);
+                if (!definition) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                }
+                client.policy = std::move(definition);
+                client.policy_config_path = config_path.empty() ? "policy-memory.json" : config_path;
+                client.policy_config_file_backed = false;
             }
 
             AppConfiguration& config = *this;
@@ -2037,6 +2096,7 @@ namespace ppp {
                     AssignIfPresent(config.p2p.mode, p2p_json["mode"]);
                     AssignIfPresent(config.p2p.punch_timeout, p2p_json["punch-timeout"]);
                     AssignIfPresent(config.p2p.keep_alived, p2p_json["keep-alived"]);
+                    AssignIfPresent(config.p2p.stun_request_profile, p2p_json["stun"]["request-profile"]);
 
                     const Json::Value& stun_json = p2p_json["stun"]["servers"];
                     if (stun_json.isArray()) {
@@ -2411,6 +2471,9 @@ namespace ppp {
             }
 
             const AppConfiguration::ClientRoutingConfiguration& canonical_routing = config.client.routing;
+            if (config.client.policy) {
+                client["policy"] = *config.client.policy;
+            }
             const bool emit_canonical_routing =
                 canonical_routing.configured ||
                 !canonical_routing.bypass.empty() ||
@@ -2563,6 +2626,7 @@ namespace ppp {
             p2p["mode"] = config.p2p.mode;
             p2p["punch-timeout"] = config.p2p.punch_timeout;
             p2p["keep-alived"] = config.p2p.keep_alived;
+            p2p["stun"]["request-profile"] = config.p2p.stun_request_profile;
             p2p["max-probes"] = config.p2p.max_probes;
             p2p["probe-timeout-ms"] = config.p2p.probe_timeout_ms;
             p2p["heartbeat-interval-ms"] = config.p2p.heartbeat_interval_ms;
@@ -2650,6 +2714,15 @@ namespace ppp {
                 geo_rules["append-dns-rules"] = arr;
             }
             root["geo-rules"] = geo_rules;
+            if (config.client.policy) {
+                for (const char* field : {"routing", "geo-rules", "dns", "bypass", "dns-rules"}) {
+                    root.removeMember(field);
+                }
+                for (const char* field : {"routing", "bypass", "dns-rules"}) {
+                    root["client"].removeMember(field);
+                }
+                root["udp"].removeMember("dns");
+            }
 
             return root;
         }

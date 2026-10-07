@@ -1,10 +1,11 @@
 # Policy CLI 使用指南
 
-> **状态：**本地工作区中的未发布实现。当前已发布/可下载客户端不包含 `client.policy` 或 `ppp policy`。
-> **最后核对：**工作区源码与 Linux 实机报告，2026-10-07。
+> **状态：**目标版本 v2.1.7 包含此实现；v2.1.6 不包含 `client.policy` 或 `ppp policy`。
+> **可用性：**v2.1.7 包是否已可下载，请以发行页为准。
+> **最后核对：**策略源码与 Linux 实机报告，2026-10-07。
 > **English:** [Policy CLI](POLICY_CLI.md)
 
-本文说明本地内核工作区中显式启用的 v2 策略实现，不代表新版本已发布。[路由与 DNS](ROUTING_AND_DNS_CN.md) 中已有的 `client.routing` 仍适用于旧版已发布内核。单个配置只能选择一代策略；v2 会拒绝与其冲突的旧路由和 DNS 策略来源。
+本文说明目标版本 v2.1.7 中显式启用的 v2 策略实现；v2.1.6 客户端不包含该实现，v2.1.7 包是否可用请以发行页为准。[路由与 DNS](ROUTING_AND_DNS_CN.md) 中已有的 `client.routing` 仍适用于 v2.1.6。单个配置只能选择一代策略；v2 会拒绝与其冲突的旧路由和 DNS 策略来源。
 
 ## 新建与检查
 
@@ -141,4 +142,4 @@ ppp policy status --config ./client-test.json --json
 
 七个命令为 `init`、`check`、`explain`、`migrate`、`export`、`update`、`status`。退出码：`0` 成功；`2` 参数/配置/规则错误；`3` 来源、store 或状态租约不可用；`4` 所选能力不支持；`5` 迁移草案需人工审核。`--json` 输出 schema 1 诊断。
 
-Linux 实机证据覆盖部分 HTTP、80 端口 CONNECT、SOCKS UDP、DNS、Fake-IP 和受控策略更新场景。DNS 上游探针初始 2 秒超时，延长至 8 秒后成功；这不能证明所有公共 resolver 均可达。HTTPS CONNECT、SOCKS HTTPS、proxy TCP 与 TUN HTTPS 探针仍失败，不能写成 HTTPS 已通过。此次工作区改动未在 Windows、macOS、Android 或 iOS 构建、运行。详见 [Linux 实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)。
+Linux 实机证据覆盖部分 HTTP、80 端口 CONNECT、SOCKS UDP、DNS、Fake-IP 和受控策略更新场景。DNS 上游探针初始 2 秒超时，延长至 8 秒后成功；这不能证明所有公共 resolver 均可达。HTTPS CONNECT、SOCKS HTTPS、proxy TCP 与 TUN HTTPS 探针仍失败，不能写成 HTTPS 已通过。本报告所述验证未在 Windows、macOS、Android 或 iOS 构建、运行 v2.1.7 改动。详见 [Linux 实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)。

@@ -2806,6 +2806,7 @@ namespace ppp {
                     ipv6_requests_.clear();
                     ipv6_leases_.clear();
                     p2p_peers_.clear();
+                    p2p_v2_pairs_.clear();
                     p2p_virtual_ips_.clear();
                     peer_prefix_gateways_.clear();
                     peer_prefix_rib_.Clear();
@@ -3924,6 +3925,7 @@ namespace ppp {
                     connections_.clear();
 
                     p2p_peers_.clear();
+                    p2p_v2_pairs_.clear();
                     p2p_virtual_ips_.clear();
                     peer_prefix_gateways_.clear();
                     peer_prefix_rib_.Clear();
@@ -4762,6 +4764,10 @@ namespace ppp {
                 response.P2P.enabled = false;
                 response.P2P.mode = "relay";
                 response.P2P.virtual_ip = request.P2P.virtual_ip;
+                response.P2P.supported_versions = {1, 2};
+                if (request.P2P.action == "renew" || request.P2P.action == "key-active") {
+                    return UpdateP2PV2Control(exchanger, transmission, request.P2P, response.P2P);
+                }
 
                 // Fix #3: Only accept explicit "register" actions with enabled=true.
                 // Other actions/replies must not be treated as registration.
@@ -4818,6 +4824,14 @@ namespace ppp {
                 record.VirtualIP = virtual_ip;
                 record.Mode = requested_mode;
                 record.Candidates = request.P2P.candidates;
+                record.SupportedVersions = request.P2P.supported_versions;
+                record.CandidateRevision = request.P2P.candidate_revision;
+                const bool v2 = std::find(record.SupportedVersions.begin(), record.SupportedVersions.end(), 2) != record.SupportedVersions.end();
+                if (v2 && (record.CandidateRevision == 0 || record.Candidates.empty() || record.Candidates.size() > 2)) {
+                    response.P2P.action = "reject";
+                    response.P2P.reason = "invalid-v2-candidates";
+                    return false;
+                }
                 record.LastSeen = now;
                 record.Exchanger = exchanger;
 
@@ -4834,6 +4848,24 @@ namespace ppp {
                         uint32_t old_vip = existing_peer_it->second.VirtualIP;
                         if (old_vip == virtual_ip) {
                             record.ObservedEndpoint = existing_peer_it->second.ObservedEndpoint;
+                            const auto& previous = existing_peer_it->second;
+                            record.LastOfferAt = previous.LastOfferAt;
+                            record.LastOfferGeneration = previous.LastOfferGeneration;
+                            if (v2 && previous.CandidateRevision != 0) {
+                                auto endpoints = [](const auto& candidates) {
+                                    std::vector<ppp::string> values;
+                                    for (const auto& candidate : candidates) values.push_back(candidate.endpoint);
+                                    std::sort(values.begin(), values.end());
+                                    return values;
+                                };
+                                if (record.CandidateRevision < previous.CandidateRevision ||
+                                    (record.CandidateRevision == previous.CandidateRevision &&
+                                     endpoints(record.Candidates) != endpoints(previous.Candidates))) {
+                                    response.P2P.action = "reject";
+                                    response.P2P.reason = "candidate-revision-conflict";
+                                    return false;
+                                }
+                            }
                         }
                         if (old_vip != 0 && old_vip != virtual_ip) {
                             auto old_vip_it = p2p_virtual_ips_.find(old_vip);
@@ -4859,6 +4891,10 @@ namespace ppp {
                 response.P2P.action = "status";
                 response.P2P.reason = "registered";
                 response.P2P.candidates = P2PBuildCandidates(record);
+                if (v2) {
+                    response.P2P.candidates = record.Candidates;
+                    response.P2P.candidate_revision = record.CandidateRevision;
+                }
                 return true;
             }
 
@@ -4910,6 +4946,11 @@ namespace ppp {
                     p2p_virtual_ips_.erase(vip_it);
                 }
                 p2p_peers_.erase(it);
+                for (auto pair = p2p_v2_pairs_.begin(); pair != p2p_v2_pairs_.end();) {
+                    if (pair->second.InitiatorSession == session_id || pair->second.ResponderSession == session_id)
+                        pair = p2p_v2_pairs_.erase(pair);
+                    else ++pair;
+                }
                 return true;
             }
 
@@ -4987,6 +5028,12 @@ namespace ppp {
                     }
                 }
 
+                const auto supports_v2 = [](const auto& record) {
+                    return record.CandidateRevision != 0 &&
+                        std::find(record.SupportedVersions.begin(), record.SupportedVersions.end(), 2) != record.SupportedVersions.end();
+                };
+                const bool both_v2 = supports_v2(source_record) && supports_v2(destination_record);
+
                 // NAT classification check: skip offer if both peers have
                 // symmetric NAT or either is UDP-blocked.
                 //
@@ -4997,7 +5044,7 @@ namespace ppp {
                 // Unknown still allows bounded probing.
                 // Only Symmetric-Symmetric and UdpBlocked (based on real
                 // observations) cause immediate skip.
-                {
+                if (!both_v2) {
                     ppp::p2p::P2PNatClassification source_class = p2p_nat_classifier_.Classify(source_ip, now);
                     ppp::p2p::P2PNatClassification dest_class   = p2p_nat_classifier_.Classify(destination_ip, now);
                     if (!ppp::p2p::P2PNatClassifier::ShouldAttemptPunch(source_class, dest_class)) {
@@ -5062,6 +5109,10 @@ namespace ppp {
                 }
 
                 std::vector<ppp::p2p::P2PCandidateV1> canonical_candidates;
+                if (both_v2) {
+                    return OfferP2PPeerHintsV2(source_record, destination_record,
+                        source_transmission, destination_transmission, now);
+                }
                 ppp::p2p::P2POfferHash candidate_set_hash{};
                 if (!P2PCollectPeerCandidates(
                         source_record, destination_record, canonical_candidates) ||

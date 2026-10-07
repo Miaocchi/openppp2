@@ -6,12 +6,14 @@
 #include <ppp/app/client/proxys/VEthernetSocksProxySwitcher.h>
 #include <ppp/app/client/proxys/VEthernetSocksProxyConnection.h>
 #include <ppp/app/client/proxys/SocksAddressType.h>
+#include <ppp/app/client/proxys/LocalProxyPolicyDestination.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/Socket.h>
 #include <ppp/coroutines/asio/asio.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/TelemetryFwd.h>
 
 /**
  * @file VEthernetSocksProxyConnection.cpp
@@ -297,6 +299,8 @@ namespace ppp {
 
                     if (command == SOCKS_CMD_UDP) {
                         if (!OpenUdpAssociate(y)) {
+                            ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "socks", "UDP ASSOCIATE open failed error=%d",
+                                (int)ppp::diagnostics::GetLastErrorCode());
                             SendSocksRequestReply(GetSocket(), SOCKS_ERR_NO, y);
                             return false;
                         }
@@ -659,8 +663,11 @@ namespace ppp {
 
                     udp_buffer_ = Executors::GetCachedBuffer(context);
                     if (NULLPTR == udp_buffer_) {
-                        ppp::net::Socket::Closesocket(udp_socket);
-                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                        udp_buffer_ = ppp::threading::BufferswapAllocator::MakeByteArray(GetBufferAllocator(), PPP_BUFFER_SIZE);
+                        if (NULLPTR == udp_buffer_) {
+                            ppp::net::Socket::Closesocket(udp_socket);
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                        }
                     }
 
                     udp_socket_ = std::move(udp_socket);
@@ -678,7 +685,7 @@ namespace ppp {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionTransportMissing);
                     }
 
-                    if (NULLPTR == allocator || NULLPTR == context) {
+                    if (NULLPTR == context) {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeEnvironmentInvalid);
                     }
 
@@ -772,6 +779,17 @@ namespace ppp {
                     int offset = 3;
                     int atyp = packet[offset++];
                     boost::asio::ip::address destination_address;
+                    std::string original_domain;
+                    auto exchanger = GetExchanger();
+                    auto switcher = exchanger ? exchanger->GetSwitcher() : nullptr;
+                    auto snapshot = switcher ? switcher->GetPolicySnapshot() : nullptr;
+                    const bool policy_v2 = switcher && switcher->HasPolicyV2();
+                    if (policy_v2 && !switcher->IsPolicyBusinessAllowed()) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                    }
+                    if (policy_v2 && !snapshot) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                    }
                     if (atyp == SOCKS_ATYPE_IPV4) {
                         if (packet_length < offset + 4 + 2) {
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpPacketInvalid);
@@ -803,15 +821,18 @@ namespace ppp {
                         }
 
                         ppp::string host(reinterpret_cast<char*>(packet + offset), address_length);
+                        original_domain.assign(host.data(), host.size());
                         offset += address_length;
                         int port = (packet[offset] << 8) | packet[offset + 1];
                         if (port <= ppp::net::IPEndPoint::MinPort || port > ppp::net::IPEndPoint::MaxPort) {
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkPortInvalid);
                         }
 
-                        destination_address = ppp::coroutines::asio::GetAddressByHostName<boost::asio::ip::udp>(host.data(), port, y).address();
-                        if (ppp::net::IPEndPoint::IsInvalid(destination_address)) {
-                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                        if (!policy_v2) {
+                            destination_address = ppp::coroutines::asio::GetAddressByHostName<boost::asio::ip::udp>(host.data(), port, y).address();
+                            if (ppp::net::IPEndPoint::IsInvalid(destination_address)) {
+                                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                            }
                         }
                     }
                     else {
@@ -830,28 +851,86 @@ namespace ppp {
                     }
 
                     boost::asio::ip::udp::endpoint destinationEP(destination_address, destination_port);
-                    if (ppp::net::IPEndPoint::IsInvalid(destination_address)) {
+                    if (original_domain.empty() && ppp::net::IPEndPoint::IsInvalid(destination_address)) {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                    }
+
+                    auto policy_action = routing::RoutingAction::Auto;
+                    bool original_is_fake = false;
+                    if (policy_v2) {
+                        if (original_domain.empty()) {
+                            routing::ResolvedDestination identity;
+                            const auto host = destination_address.to_string();
+                            if (!switcher->ResolvePolicyDestinationIdentity(
+                                ppp::net::IPEndPoint(host.c_str(), destination_port), identity) ||
+                                (identity.is_fake_ip && identity.hostname.empty())) {
+                                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                            }
+                            if (identity.is_fake_ip) {
+                                original_domain = identity.hostname;
+                                original_is_fake = true;
+                            }
+                        }
+                        std::transform(original_domain.begin(), original_domain.end(), original_domain.begin(),
+                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        if (!original_domain.empty() && original_domain.back() == '.') original_domain.pop_back();
+                        if (atyp == SOCKS_ATYPE_DOMAIN && original_domain.empty()) {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                        }
+                        bool accepted = false;
+                        if (exchanger->TrySendToPinned(sourceEP, destinationEP, packet + offset,
+                            payload_length, original_domain, accepted, original_is_fake)) return accepted;
+                        if (!original_domain.empty() && !original_is_fake) {
+                            LocalProxyPolicyDestination target;
+                            if (!ResolveLocalProxyPolicyDestination(snapshot, original_domain, true,
+                                [&](const std::string& domain, boost::asio::ip::address& address) {
+                                    return switcher->ResolvePolicyDestination(domain, snapshot, y, address);
+                                }, target)) {
+                                if (target.policy_rejected) switcher->RecordPolicyDecision(policy::PolicyAction::Reject);
+                                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                            }
+                            destination_address = target.address;
+                            destinationEP = boost::asio::ip::udp::endpoint(destination_address, destination_port);
+                        }
+                        if (!destination_address.is_v4()) {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                        }
+                        auto decision = PlanLocalProxyUdpDestination(snapshot, original_domain, destination_address, original_is_fake);
+                        if ((decision.action == policy::PolicyAction::Reject && !decision.needs_ip_resolution) ||
+                            (!original_is_fake && decision.needs_ip_resolution)) {
+                            if (decision.action == policy::PolicyAction::Reject) {
+                                switcher->RecordPolicyDecision(policy::PolicyAction::Reject);
+                                exchanger->RecordPolicyUdpReject();
+                            }
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                        }
+                        if (!decision.needs_ip_resolution) switcher->RecordPolicyDecision(decision.action);
+                        policy_action = decision.action == policy::PolicyAction::Direct
+                            ? routing::RoutingAction::Direct : routing::RoutingAction::Proxy;
                     }
 
                     udp_client_ep_ = sourceEP;
                     udp_destination_clients_[destinationEP] = sourceEP;
 
-                    VEthernetExchangerPtr exchanger = GetExchanger();
                     if (NULLPTR == exchanger) {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionTransportMissing);
                     }
 
                     auto self = std::dynamic_pointer_cast<VEthernetSocksProxyConnection>(shared_from_this());
                     exchanger->RegisterDatagramHandler(sourceEP,
-                        [self](const boost::asio::ip::udp::endpoint& replySourceEP, const boost::asio::ip::udp::endpoint& relaySourceEP, void* responsePacket, int responsePacketLength) noexcept -> bool {
+                        [self](const boost::asio::ip::udp::endpoint& client_relay, const boost::asio::ip::udp::endpoint& remote, void* responsePacket, int responsePacketLength) noexcept -> bool {
                             if (NULLPTR == self || NULLPTR == responsePacket || responsePacketLength < 1) {
                                 return false;
                             }
 
-                            return self->SendUdpAssociatePacketToClient(replySourceEP, relaySourceEP, responsePacket, responsePacketLength);
+                            const SocksUdpReplyEndpoints reply = MakeSocksUdpReplyEndpoints(client_relay, remote);
+                            return self->SendUdpAssociatePacketToClient(reply.source, reply.destination, responsePacket, responsePacketLength);
                         });
 
+                    if (policy_v2) {
+                        return exchanger->SendTo(sourceEP, destinationEP, packet + offset, payload_length,
+                            policy_action, original_domain, snapshot, original_is_fake);
+                    }
                     return exchanger->SendTo(sourceEP, destinationEP, packet + offset, payload_length);
                 }
 

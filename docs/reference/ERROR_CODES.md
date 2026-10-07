@@ -23,7 +23,7 @@ a hand-maintained enumeration.
 
 ## Current catalog
 
-At the local workspace source verified on 2026-10-07, the catalog contains **632** entries. The policy runtime changes are not committed or released; this count does not describe released binaries.
+At the local workspace source verified on 2026-10-07, the catalog contains **632** entries. The policy runtime changes are planned for v2.1.7 and are not in v2.1.6; successful publication of v2.1.7 is not confirmed, so this count does not describe those releases.
 
 | Severity | Entries |
 |---|---:|

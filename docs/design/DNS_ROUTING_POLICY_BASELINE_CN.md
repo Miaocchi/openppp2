@@ -16,7 +16,8 @@
 所有域名和 IP 样本为测试值；provider 名称仅查询内置目录，不发起 DNS 请求。
 
 测试程序 `tests/cpp/routing_policy_baseline_test.cpp` 与静态合同
-`tests/contracts/routing-policy/v1/cases.json`（schema `1`）属于本地实现文件，未随此次文档发布。
+`tests/contracts/routing-policy/v1/cases.json`（schema `1`）是代码发布候选的一部分；目标版本为 v2.1.7，
+仍待代码推送和 CI 全绿，不能标为已发布。
 配置输出仅选择路由相关字段，并排除 Linux 专有的 `nic` 序列化字段；
 不比较整个配置，不把环境默认值或机器路径固定成策略语义。
 隔离链接复用配置测试的网络/coroutine/Executors stub；没有执行客户端启动、socket

@@ -1,11 +1,11 @@
 # P4：完整数据包更新实施约束
 
-> Status: Implemented; offline acceptance complete, Linux live acceptance partial
+> Status: Implemented; offline acceptance complete, Linux live acceptance partial; v2.1.7 pending
 > Type: Design
 > Last verified: 2026-10-07
 > Parent index: [设计文档](README.md)
 
-当前状态：P4 已实现并完成记录中的离线验收；内核改动仍是未发布的本地工作区实现。
+当前状态：P4 已实现并完成记录中的离线验收。代码推送已获授权，v2.1.7 仍待推送和 CI 全绿。
 Linux 实机已有受控更新成功与坏候选保留证据，完整平台及故障恢复验收仍未完成。
 依据 [总方案](DNS_ROUTING_POLICY_REFACTOR_CN.md)，保持 P2/P3 执行语义。
 

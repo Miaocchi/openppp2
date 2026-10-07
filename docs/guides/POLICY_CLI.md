@@ -1,10 +1,11 @@
 # Policy CLI
 
-> **Status:** Unpublished local-workspace implementation. The current published/downloadable client does not include `client.policy` or `ppp policy`.
-> **Last verified:** Workspace source and Linux live report, 2026-10-07.
+> **Status:** Included in target release v2.1.7; v2.1.6 does not include `client.policy` or `ppp policy`.
+> **Availability:** Check the release page for the v2.1.7 package.
+> **Last verified:** Policy source and Linux live report, 2026-10-07.
 > **Chinese:** [策略 CLI](POLICY_CLI_CN.md)
 
-This guide describes the opt-in v2 policy implementation in the local kernel workspace. It is not a release announcement. The existing `client.routing` interface documented in [Routing and DNS](ROUTING_AND_DNS.md) remains applicable to the older published kernel. A configuration must use one policy generation; v2 rejects legacy route and DNS policy sources when they conflict.
+This guide describes the opt-in v2 policy implementation included in target release v2.1.7. The v2.1.6 client does not include it; check the release page for package availability. The existing `client.routing` interface documented in [Routing and DNS](ROUTING_AND_DNS.md) remains applicable to v2.1.6. A configuration must use one policy generation; v2 rejects legacy route and DNS policy sources when they conflict.
 
 ## Create and check a policy
 
@@ -141,4 +142,4 @@ ppp policy status --config ./client-test.json --json
 
 The seven commands are `init`, `check`, `explain`, `migrate`, `export`, `update`, and `status`. Exit codes are `0` success, `2` argument/config/rule error, `3` unavailable source/store/status lease, `4` unsupported selected capability, and `5` migration draft requiring review. `--json` emits schema 1 diagnostics.
 
-Linux live evidence covers selected HTTP, CONNECT over port 80, SOCKS UDP, DNS, Fake-IP, and controlled policy update cases. The DNS upstream probe timed out at 2 seconds and succeeded after the timeout was raised to 8 seconds; this does not show that every public resolver is reachable. HTTPS CONNECT, SOCKS HTTPS, proxy TCP, and TUN HTTPS probes still failed; this is not a successful HTTPS claim. Windows, macOS, Android, and iOS were not built or run for this workspace change. See [Linux live report](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) for the tested cases and remaining gaps.
+Linux live evidence covers selected HTTP, CONNECT over port 80, SOCKS UDP, DNS, Fake-IP, and controlled policy update cases. The DNS upstream probe timed out at 2 seconds and succeeded after the timeout was raised to 8 seconds; this does not show that every public resolver is reachable. HTTPS CONNECT, SOCKS HTTPS, proxy TCP, and TUN HTTPS probes still failed; this is not a successful HTTPS claim. The validation reported here did not build or run the v2.1.7 change on Windows, macOS, Android, or iOS. See [Linux live report](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) for the tested cases and remaining gaps.

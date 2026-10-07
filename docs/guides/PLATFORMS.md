@@ -519,7 +519,7 @@ iOS has no desktop-style route mutation path in this repository. The application
 
 `routing.ip.peer-routes` is currently kept in the mobile native RIB/FIB in both modes; the Packet Tunnel provider does not turn each entry into an arbitrary `NEIPv4Route`. Additional per-prefix OS routing therefore requires explicit host integration.
 
-The iOS provider-owned P2P UDP adapter serializes session state on a private dispatch queue and applies per-endpoint admission limits of 32 pending packets and 64 KiB for writes and reads. Close cancels the current `NWUDPSession`s; completion and receive callbacks check that the adapter is still open and that the endpoint still refers to the same session instance, so callbacks arriving late after close or replacement are discarded. These are source-level observations only: this workspace change has not been built or run with the iOS toolchain. They do not establish general IPv6 or platform runtime acceptance.
+The iOS provider-owned P2P UDP adapter serializes session state on a private dispatch queue and applies per-endpoint admission limits of 32 pending packets and 64 KiB for writes and reads. Close cancels the current `NWUDPSession`s; completion and receive callbacks check that the adapter is still open and that the endpoint still refers to the same session instance, so callbacks arriving late after close or replacement are discarded. These are source-level behavior details for the v2.1.7 code release target; v2.1.6 does not include the capabilities described here. Check the [release page](https://github.com/Miaocchi/openppp2/releases) for package availability. This guide describes implementation structure and does not certify CI, cross-platform builds, or device acceptance.
 
 ### iOS Integration Boundary
 
@@ -601,7 +601,7 @@ For maximum efficiency, validate one platform at a time:
 
 ## 12. Runtime effects
 
-The v2 policy and iOS provider behavior described here reflect local workspace source changes that have not been released. The Linux report is limited to its named probes; IPv6 end-to-end coverage and Windows, macOS, Android, and iOS builds/runs remain incomplete. Do not read the platform source map as cross-platform acceptance evidence.
+The v2 policy and iOS provider behavior described here are part of the v2.1.7 code release target; v2.1.6 does not include these capabilities. Check the [release page](https://github.com/Miaocchi/openppp2/releases) for package availability. The Linux report is limited to its named probes, and HTTPS and some proxy TCP probes still time out. The platform source map describes implementation ownership; it is not CI, cross-platform build, or device acceptance evidence.
 
 Host-layer effects come from TUN/host integration, not from the existence of the native routing policy:
 

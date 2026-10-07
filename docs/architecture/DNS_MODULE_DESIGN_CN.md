@@ -1,7 +1,7 @@
 # DNS 模块设计
 > Status: Active
 > Type: Architecture
-> Last verified: legacy DNS sources and local v2 policy/DNS workspace sources, 2026-10-07
+> Last verified: legacy DNS sources and v2.1.7 policy/DNS sources, 2026-10-07
 >
 > **用途：**说明原生 client DNS 拦截与 resolver 的边界。
 > **适用对象：**贡献者与运维。
@@ -41,9 +41,9 @@ rule 是 plan 选择的输入；不能将 gateway 处理写成无条件高于所
 
 `DnsResolver` 当前实现 UDP、TCP、DoH 和 DoT upstream sender。没有 DoQ 或 DoH3 的 protocol enum/实现。provider entry 顺序提供 fallback 顺序；部署行为仍取决于已配置 endpoint 的可达性。
 
-## 工作区 v2 policy DNS（尚未发布）
+## v2 Policy DNS（v2.1.7 目标版本）
 
-以下仅描述当前本地工作区实现，尚未随内核版本发布；旧下载版本不具备这些保证。上文既有的 UDP/53 拦截边界仍然成立。
+本文描述的 v2 policy DNS 能力属于 v2.1.7 代码发布目标；v2.1.6 不包含这些能力。v2.1.7 包是否可用请查看[发行页](https://github.com/Miaocchi/openppp2/releases)。上文既有的 UDP/53 拦截边界仍然成立。
 
 使用 v2 policy snapshot 时，`PolicyResolverService` 按 DNS rule 求值，并采用选中的 resolver 定义与 `via` 动作。它的内存响应缓存和 in-flight 合并键包含 DNS question 以及选中的 resolver/transport/bootstrap 语义；in-flight operation 还会按 session 隔离。缓存遵守 TTL；in-flight 请求对 waiter 数、operation 数、字节数设上限，并设有 deadline。每个 waiter 有独立取消句柄。关闭 DNS session 会使其 transport 与待处理工作失效；最后一个 waiter 取消时会关闭该 operation，inactive/session 检查会丢弃晚到完成。这约束响应交付与对象所有权，但不保证每个底层网络操作立即结束。
 
@@ -67,7 +67,7 @@ server UDP/53 处理在启用时使用 `VirtualEthernetNamespaceCache`。cache m
 - Fake IP 不提供 IPv6/AAAA synthesis。
 - DNS controller/session cleanup 的目标是阻止关闭 session 后继续发送，不保证每个未完成的 upstream 操作都完成。
 - 配置字段和安全运维示例应以[参考](../reference/README_CN.md)与 routing/DNS guide 为准，不应由本文架构概览重复定义。
-- 上述工作区 v2 行为不代表已有发布版本；有限的真实主机观察及其失败/覆盖边界见[脱敏 Linux 证据报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)。
+- Linux 证据报告只记录其中列明的真实主机探针及其失败/覆盖边界；它不会扩大上述 DNS 拦截范围。
 
 ## 源码锚点
 

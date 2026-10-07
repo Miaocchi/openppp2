@@ -1,12 +1,12 @@
 # P5：旧适配、CLI 与发布实施约束
 
-> Status: Implemented; migration remains draft for unresolved differences
+> Status: Implemented; migration remains draft; v2.1.7 release pending
 > Type: Design
 > Last verified: 2026-10-07
 > Parent index: [设计文档](README.md)
 
 当前状态：P5 的 CLI 与兼容适配已实现并完成记录中的离线验收；迁移仍可能为 draft/exit5。
-内核改动仍是未发布的本地工作区实现，Linux 实机限制见 [实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)。
+代码推送已获授权，v2.1.7 仍待推送和 CI 全绿；Linux 实机限制见 [实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)。
 依据 [总方案](DNS_ROUTING_POLICY_REFACTOR_CN.md)，首期范围为内核与 CLI，不扩展 GUI。
 
 ## 1. 旧配置适配
@@ -172,7 +172,7 @@ Geo 和路由的来源优先级。迁移分别报告 host-routing 与 whole-poli
 
 ### 5.2 离线性能
 
-可选基准入口 `benchmarks/policy/README.md` 与复现命令属于本地实现文件，未随此次文档发布。
+可选基准入口 `benchmarks/policy/README.md` 与复现命令属于代码发布候选；目标版本为 v2.1.7，发布状态待 CI。
 GNU 14 Release、固定种子下，小型/十万/百万规模和缓存报告保存在
 `build/private/dns-policy-p5-benchmarks/`，不加入普通 CTest 或按机器速度设门槛。
 百万规则编译 4108.9ms，峰值 RSS 1,193,705,472 bytes，域名命中 p99 4451ns，
@@ -187,7 +187,7 @@ Windows/macOS/Android/iOS 未在适用工具链构建或运行；移动端 host 
 SDK 头文件停止。Windows 文件/目录 durability 仍需平台验证。
 真实 VPN TCP/UDP、DNS 实际出口、IPv6 阻断、路由/DNS 退出恢复、外网数据源更新、
 设备故障恢复及 direct/bypass 吞吐均未验证。GUI 改造仍在本期范围之外。
-本轮未改变系统网络状态，未安装驱动，未提交 Git；保留并行工作区改动。
+截至 2026-10-07 本轮检查时，未改变系统网络状态、未安装驱动、未提交 Git；保留并行工作区改动。
 
 ### 5.4 后续 Linux 实机验证
 

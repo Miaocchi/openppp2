@@ -7,7 +7,7 @@
 > **Audience:** OPENPPP2 协议、网络、平台及测试维护者。
 > **Parent index:** [Design Documents](../README.md)
 
-本轮仅发布文档。上文实现事实来自本地提交 `c10eb0f`、`6a6c436`，不在当前公开源码/站点基线 `99892a8` 中；不得据此推断已发布源码或二进制提供 v2 直连。核心生产 gate 在 `ppp/p2p/P2PCapabilityGate.h` 明确为 `false`，服务端 v2 offer 路径 `ppp/app/server/VirtualEthernetP2PV2.cpp` 也会检查该 gate。这里的源码路径作为内联引用，不链接到尚未发布的文件。
+本地实现提交 `c10eb0f`、`6a6c436` 已获准纳入目标版本 `v2.1.7`，但该版本尚未发布。发布前不得推断当前已发布源码或二进制提供 v2 直连。核心生产 gate 在 `ppp/p2p/P2PCapabilityGate.h` 明确为 `false`，服务端 v2 offer 路径 `ppp/app/server/VirtualEthernetP2PV2.cpp` 也会检查该 gate。源码路径使用内联引用；它们尚未出现在当前公开源码基线中。
 
 ## 目标
 

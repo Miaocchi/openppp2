@@ -5,8 +5,10 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/cryptography/noise/NoisePsk.h>
 #include <ppp/p2p/P2PRelayOffer.h>
+#include <ppp/p2p/P2PRelayOfferV2.h>
 #include <ppp/transmissions/ITcpipTransmission.h>
 #include <ppp/transmissions/IWebsocketTransmission.h>
+#include <ppp/transmissions/NoisePskAuthenticatedCarrierBinding.h>
 
 #include <boost/asio/post.hpp>
 
@@ -225,7 +227,9 @@ BOOST_AUTO_TEST_CASE(noise_binding_is_one_shot_typed_and_lifecycle_bound) {
 
     BOOST_TEST(transmission->GetAuthenticatedCarrierMethod() ==
         transmissions::AuthenticatedCarrierMethod::NoisePskV1);
-    BOOST_TEST(!transmission->IsAuthenticatedCarrierBindingActive());
+    context->restart();
+    BOOST_TEST(transmission->IsAuthenticatedCarrierBindingActive());
+    BOOST_TEST(transmission->HasAuthenticatedSessionExporter());
     BOOST_TEST(!transmission->ExportAuthenticatedSessionKey(
         protocol::SessionResumeRootExporterLabel,
         exporter_context.data(), exporter_context.size(),
@@ -237,6 +241,61 @@ BOOST_AUTO_TEST_CASE(noise_binding_is_one_shot_typed_and_lifecycle_bound) {
         BOOST_TEST(transmission->GetAuthenticatedCarrierMethod() ==
             transmissions::AuthenticatedCarrierMethod::None);
     });
+}
+
+BOOST_AUTO_TEST_CASE(noise_capability_is_visible_across_strands_but_export_is_owner_only) {
+    auto context = std::make_shared<asio::io_context>();
+    auto owner = std::make_shared<FakeTransmission::StrandPtr::element_type>(asio::make_strand(*context));
+    auto foreign = std::make_shared<FakeTransmission::StrandPtr::element_type>(asio::make_strand(*context));
+    auto other_context = std::make_shared<asio::io_context>();
+    auto other_owner = std::make_shared<FakeTransmission::StrandPtr::element_type>(asio::make_strand(*other_context));
+    auto transmission = std::make_shared<FakeTransmission>(context, owner,
+        transmissions::AuthenticatedCarrierKind::Tcp);
+    transmission->SetHandshakeComplete(true);
+    auto binding = std::make_shared<transmissions::NoisePskAuthenticatedCarrierBinding>(
+        context, owner, CompleteNoiseResult());
+    const auto exporter_context = Filled<ppp::p2p::P2PExporterContextV2{}.size()>(0x20);
+    std::array<std::uint8_t, 32> output{};
+    OnStrand(context, owner, [&]() {
+        BOOST_REQUIRE(transmission->InstallNoiseAuthenticatedCarrierBinding(CompleteNoiseResult()));
+        BOOST_REQUIRE(binding->IsAvailable(context, owner));
+        BOOST_REQUIRE(binding->Export(context, owner, ppp::p2p::P2PWrapExporterLabelV2,
+            exporter_context.data(), exporter_context.size(), output.data(), output.size()));
+    });
+    BOOST_TEST(!binding->IsAvailable(context, owner));
+    BOOST_TEST(!transmission->HasAuthenticatedSessionExporter());
+    context->restart();
+    BOOST_TEST(binding->IsAvailable(context, owner));
+    BOOST_TEST(transmission->HasAuthenticatedSessionExporter());
+    const auto unchanged = output;
+    BOOST_TEST(!binding->Export(context, owner, ppp::p2p::P2PWrapExporterLabelV2,
+        exporter_context.data(), exporter_context.size(), output.data(), output.size()));
+    BOOST_CHECK(output == unchanged);
+    OnStrand(context, foreign, [&]() {
+        BOOST_TEST(transmission->HasAuthenticatedSessionExporter());
+        BOOST_TEST(binding->IsAvailable(context, owner));
+        BOOST_TEST(!binding->IsAvailable(context, foreign));
+        BOOST_TEST(!binding->IsAvailable(other_context, other_owner));
+        BOOST_TEST(!binding->Export(context, owner, ppp::p2p::P2PWrapExporterLabelV2,
+            exporter_context.data(), exporter_context.size(), output.data(), output.size()));
+        BOOST_TEST(!transmission->ExportAuthenticatedSessionKey(ppp::p2p::P2PWrapExporterLabelV2,
+            exporter_context.data(), exporter_context.size(), output.data(), output.size()));
+        BOOST_CHECK(output == unchanged);
+    });
+    OnStrand(context, owner, [&]() {
+        BOOST_TEST(!binding->Export(context, foreign, ppp::p2p::P2PWrapExporterLabelV2,
+            exporter_context.data(), exporter_context.size(), output.data(), output.size()));
+        BOOST_TEST(!binding->Export(other_context, other_owner, ppp::p2p::P2PWrapExporterLabelV2,
+            exporter_context.data(), exporter_context.size(), output.data(), output.size()));
+        binding->Invalidate();
+        BOOST_TEST(!binding->IsAvailable(context, owner));
+        BOOST_TEST(!binding->Export(context, owner, ppp::p2p::P2PWrapExporterLabelV2,
+            exporter_context.data(), exporter_context.size(), output.data(), output.size()));
+        transmission->Dispose();
+        BOOST_TEST(!transmission->HasAuthenticatedSessionExporter());
+    });
+    context->restart(); context->stop();
+    BOOST_TEST(!binding->IsAvailable(context, owner));
 }
 
 BOOST_AUTO_TEST_CASE(noise_rejects_non_carriers_and_migration_invalidates) {

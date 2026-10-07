@@ -17,14 +17,13 @@ not describe an enabled production data path. The offer-v1 crypto and exchanger
 data path are implemented behind a fail-closed production capability gate;
 current releases remain relay-only.
 
-This documentation update publishes design text only. The v2 implementation
-facts below were checked against local commits `c10eb0f` and `6a6c436`, which
-are not present in the published source baseline `99892a8`; do not infer that
-published binaries or source include them. The gate is explicitly false in
-`ppp/p2p/P2PCapabilityGate.h`, and the server v2 offer path in
+The v2 implementation is authorized for target release `v2.1.7`, which has not
+been released yet. Until that release is published, do not infer that currently
+published binaries or source include it. The production gate is explicitly
+false in `ppp/p2p/P2PCapabilityGate.h`, and the server v2 offer path in
 `ppp/app/server/VirtualEthernetP2PV2.cpp` checks it before creating offers.
-These source paths are references, not links, because they are absent from the
-published baseline.
+These source paths are inline references because they are not in the current
+published source baseline.
 
 A peer advertises `p2p.direct.v1` only when all of these are true:
 

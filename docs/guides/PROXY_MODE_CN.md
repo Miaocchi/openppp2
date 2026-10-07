@@ -1,18 +1,18 @@
 # 纯代理模式
 > Status: Active
 > Type: Guide
-> Last verified: 2026-10-07 local workspace source
+> Last verified: 2026-10-07 policy source and Linux live evidence
 
 > **用途：**说明本主题的当前行为、配置或实现边界。
 > **适用对象：**OPENPPP2 用户、运维人员与开发者。
 > **当前状态：**当前有效。
-> **最后核对依据：**本地工作区源码与 Linux 实机记录，2026-10-07。
+> **最后核对依据：**策略源码与 Linux 实机记录，2026-10-07。
 > **上一层索引：**[返回索引](README_CN.md) · **English：**[Proxy-only mode](PROXY_MODE.md)
 
 
 纯代理模式连接 OPENPPP2 服务端，并提供**本地 HTTP 与 SOCKS5 转发代理**，不安装宿主系统路由条目或系统 DNS 设置，但仍会把 canonical 路由策略加载到 native client。桌面端使用 `TapStub`；移动端只保留运行时所需的最小 tunnel 接口。不安装宿主规则不等于对应的 native policy 失效。
 
-本文的 `client.routing` 接口仍适用于当前已发布的旧版内核。本地未发布工作区另有显式启用的 `client.policy.version: 2` 实现和 `ppp policy` CLI；当前可下载客户端尚不提供这些能力。两代策略不能在同一配置中混用。工作区 v2 的配置和限制见[Policy CLI](POLICY_CLI_CN.md)。
+本文的 `client.routing` 接口仍适用于 v2.1.6。目标版本 v2.1.7 包含显式启用的 `client.policy.version: 2` 实现和 `ppp policy` CLI；v2.1.6 不包含这些功能。v2.1.7 包是否已可下载，请以发行页为准。两代策略不能在同一配置中混用。v2.1.7 的配置和限制见[Policy CLI](POLICY_CLI_CN.md)。
 
 ## 快速开始
 
@@ -59,7 +59,7 @@ curl -x http://127.0.0.1:8080 https://example.com
 
 ## 平台行为
 
-以下平台说明描述旧版纯代理集成。本地 v2 能力检查根据源码路径报告支持情况，不代表各平台已经构建或实机验证。本次工作区改动未在 Windows、macOS、Android 或 iOS 上构建、运行。
+以下平台说明描述旧版纯代理集成。v2 能力检查根据源码路径报告支持情况，不代表各平台已经构建或实机验证。本次报告未在 Windows、macOS、Android 或 iOS 上构建、运行该改动。
 
 | 平台 | proxy-only 下的变化 | 仍然生效的内容 |
 |------|---------------------|----------------|

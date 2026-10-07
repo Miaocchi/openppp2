@@ -2,7 +2,7 @@
 
 新正文已迁移到 [guides/POLICY_CLI_CN.md](../guides/POLICY_CLI_CN.md)。保留本文件作为旧路径兼容入口，供已有书签和外部链接使用。
 
-当前文档站更新只发布文档，不发布本地内核改动或新客户端二进制。当前下载版本不应假定具备 `client.policy` 或 `ppp policy`。
+目标版本 v2.1.7 包含 `client.policy` 和 `ppp policy`；v2.1.6 不包含。v2.1.7 包是否已可下载，请以发行页为准。
 
 下列旧标题作为兼容锚点保留；内容已由新指南替代：
 

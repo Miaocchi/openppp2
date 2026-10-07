@@ -6,7 +6,7 @@
 > **用途：**说明本主题的当前行为、配置或实现边界。
 > **适用对象：**OPENPPP2 用户、运维人员与开发者。
 > **当前状态：**当前有效。
-> **最后核对依据：**本地工作区实现，2026-10-07。policy v2 尚未提交或发布。
+> **最后核对依据：**本地工作区实现，2026-10-07。policy v2 计划纳入 v2.1.7，v2.1.6 不含；v2.1.7 是否已成功发布尚未确认。
 > **上一层索引：**[返回索引](README_CN.md) · **English：**[CLI Reference](CLI_REFERENCE.md)
 
 
@@ -79,15 +79,15 @@ CLI 大致分为：
 
 纯代理启动会强制关闭 static transport，不发起 `STATIC`/`STATICACK`。如果服务端配置了 IPv4 分配，客户端会请求自动分配，而不是根据本地 TUN 地址发起手动请求。
 
-本地未发布的工作区实现增加了版本化 `client.policy` v2 来源。存在 v2 时它必须是唯一策略
+本地工作区实现增加了版本化 `client.policy` v2 来源，计划纳入 v2.1.7，v2.1.6 不含，且尚未确认 v2.1.7 已成功发布。存在 v2 时它必须是唯一策略
 来源；没有 v2 时，legacy adapter 读取 `client.routing` 和兼容的旧配置/CLI 输入。
 `client.routing` 仍为旧配置提供兼容，但不是当前唯一的策略入口。参见
 [配置模型](CONFIGURATION_CN.md)和[Policy CLI 指南](../guides/POLICY_CLI_CN.md)（[English](../guides/POLICY_CLI.md)）。
-v2 尚未提交或发布，不能假设已下载的旧 `ppp` 二进制支持它。
+不能假设现有下载或 v2.1.6 二进制支持它。
 
 ## 策略命令（工作区实现）
 
-以下七个离线/控制命令已在本地工作区实现。这不表示发行版 `ppp` 已支持 policy v2。
+以下七个离线/控制命令已在本地工作区实现，计划纳入 v2.1.7，v2.1.6 不含；尚未确认 v2.1.7 已成功发布。
 完整示例和报告字段见 [Policy CLI 指南](../guides/POLICY_CLI_CN.md)（[English](../guides/POLICY_CLI.md)）。
 
 | 命令 | 用途 |

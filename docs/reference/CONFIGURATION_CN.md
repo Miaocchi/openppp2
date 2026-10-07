@@ -6,7 +6,7 @@
 > **用途：**说明本主题的当前行为、配置或实现边界。
 > **适用对象：**OPENPPP2 用户、运维人员与开发者。
 > **当前状态：**当前有效。
-> **最后核对依据：**本地工作区实现，2026-10-07。policy v2 尚未提交或发布；已发行二进制不代表支持 v2。
+> **最后核对依据：**本地工作区实现，2026-10-07。policy v2 计划纳入 v2.1.7，v2.1.6 不含；v2.1.7 是否已成功发布尚未确认。
 > **上一层索引：**[返回索引](README_CN.md) · **English：**[Configuration Model](CONFIGURATION.md)
 
 
@@ -343,7 +343,7 @@ key.kf / key.kh / key.kl / key.kx / key.sb —— 非法值时重置为框架内
 | `socks-proxy.password` | string | SOCKS5 认证密码 |
 | `mappings` | array | FRP 端口映射规则列表 |
 | `proxy-only` | bool | 独立的顶层纯代理运行标志；关闭宿主路由/DNS 接管，但不关闭 native policy；`--mode=proxy` 选择相同行为 |
-| `policy` | object | 版本化客户端策略入口；当前工作区实现为 v2，未发布；与 legacy policy 来源互斥 |
+| `policy` | object | 版本化客户端策略入口；当前工作区实现为 v2，计划纳入 v2.1.7（v2.1.6 不含，且尚未确认成功发布）；与 legacy policy 来源互斥 |
 | `routing` | object | 兼容的 legacy IP/DNS policy 来源；v2 缺席时由 legacy adapter 使用，不是唯一的新策略入口 |
 
 #### `client.routing`：IP/DNS 分流策略
@@ -391,7 +391,7 @@ legacy `client.routing` 的优先级和兼容规则：
 
 legacy `client.routing` 的四个部分在两种客户端模式中都有效：bypass、普通 route 和 peer route 进入 native route policy/RIB/FIB，DNS rules 进入 native DNS policy。`tun` 可在支持的平台上另外应用宿主 route 或 DNS 设置；`proxy-only` 只抑制桌面宿主 route/系统 DNS 接管。移动端在 proxy-only 下仅保留框架所需的最小 interface/subnet route。
 
-#### `client.policy` v2（工作区实现，尚未发布）
+#### `client.policy` v2（工作区实现，计划纳入 v2.1.7；v2.1.6 不含）
 
 `client.policy.version` 必须是整数 `2`。v2 是完整策略来源，不能与 `client.routing`、旧
 `client.bypass`/`client.dns-rules`、顶层 `routing`、`geo-rules`、`dns`、`bypass`、

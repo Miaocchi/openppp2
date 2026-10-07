@@ -1,11 +1,12 @@
 # DNS 与分流策略 P1：离线编译和诊断
 
-> Status: Implemented; offline acceptance complete
+> Status: Implemented; offline acceptance complete; v2.1.7 release pending
 > Type: Design
 > Last verified: 2026-10-07
 > Parent index: [设计文档](README.md)
 
-当前状态：P1 已实现并通过记录中的离线验收；相关内核改动仍是未发布的本地工作区实现。
+当前状态：P1 已实现并通过记录中的离线验收。用户已授权推送代码，并在 CI 全绿后发布 v2.1.7；
+该版本目前不能标为已发布。
 本文件的“后续阶段”文字保留 P1 当时的时间边界，不表示 P2–P5 当前仍未实施。
 
 本文记录 [重构方案](DNS_ROUTING_POLICY_REFACTOR_CN.md) 中 P1 的实现边界。
@@ -149,7 +150,8 @@ build/private/dns-policy-p0/policy_offline_cli policy explain \
   --domain local.example.test --network tcp --port 443 --json
 ```
 
-`tests/contracts/routing-policy/v2/example.json` 只含测试值，属于本地实现文件，未随此次文档发布；
+`tests/contracts/routing-policy/v2/example.json` 只含测试值，属于代码发布候选；目标版本为 v2.1.7，
+仍待代码推送和 CI 全绿，不能标为已发布；
 切换 check 平台到 Linux 时，该 split 策略返回 4，说明当前 UDP direct 能力不足。
 原内核构建中的 `ppp policy ...` 使用同一命令模块，但本批没有构建或启动完整内核。
 

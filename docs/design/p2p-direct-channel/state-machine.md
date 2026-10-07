@@ -10,16 +10,14 @@
 > Type: Design
 > Last verified: 2026-10-05; isolated implementation acceptance, production gate disabled.
 
-This documentation update publishes design text only. The v2 state and
-recovery details below were checked against local commits `c10eb0f` and
-`6a6c436`, which are not present in the published source baseline `99892a8`.
-The production capability gate is explicitly false in
-`ppp/p2p/P2PCapabilityGate.h`; the server v2 offer path checks that gate.
-These source paths are references, not links, because they are absent from the
-published baseline. The sixteen-context cap is in
-`ppp/app/client/VEthernetExchanger.h`; queueing and recovery are in
-`ppp/app/client/VEthernetP2PV2.cpp`. Current published binaries and source must
-not be assumed to contain this implementation.
+The v2 implementation is authorized for target release `v2.1.7`, which has not
+been released yet. Until then, currently published binaries and source must
+not be assumed to contain it. The production capability gate is explicitly
+false in `ppp/p2p/P2PCapabilityGate.h`; the server v2 offer path checks that
+gate. The sixteen-context cap is in `ppp/app/client/VEthernetExchanger.h`;
+queueing and recovery are in `ppp/app/client/VEthernetP2PV2.cpp`. These source
+paths are inline references because they are not in the current published
+source baseline.
 
 ## States
 

@@ -1,7 +1,7 @@
 # DNS Module Design
 > Status: Active
 > Type: Architecture
-> Last verified: legacy DNS sources and local v2 policy/DNS workspace sources, 2026-10-07
+> Last verified: legacy DNS sources and v2.1.7 policy/DNS sources, 2026-10-07
 >
 > **Purpose:** Describe the native client DNS interception and resolver boundaries.
 > **Audience:** Contributors and operators.
@@ -41,9 +41,9 @@ Rules are an input to plan selection; do not document gateway handling as a blan
 
 `DnsResolver` currently implements UDP, TCP, DoH, and DoT upstream senders. There is no DoQ or DoH3 protocol enum/implementation. Provider entry order supplies the fallback order; deployment behavior still depends on reachable configured endpoints.
 
-## Workspace v2 policy DNS (not released)
+## v2 Policy DNS (v2.1.7 target)
 
-The following describes the current local workspace implementation only. It has not been published in a kernel release; older downloads do not provide these guarantees. The established UDP/53 interception boundary above still applies.
+The v2 policy DNS capabilities described here are part of the v2.1.7 code release target; v2.1.6 does not include them. Check the [release page](https://github.com/Miaocchi/openppp2/releases) for v2.1.7 package availability. The established UDP/53 interception boundary above still applies.
 
 With a v2 policy snapshot, `PolicyResolverService` evaluates the DNS rule and uses the selected resolver definition and `via` action. Its in-memory response cache and in-flight coalescing key include the DNS question and selected resolver/transport/bootstrap semantics; in-flight operations are additionally scoped to a session. Cached answers honor TTL; in-flight requests have bounded waiters, operation count, bytes, and a deadline. Each waiter gets an independent cancellation handle. Closing a DNS session invalidates its transport and pending work; cancelling the final waiter closes that operation, while late completions are ignored by the inactive/session checks. This bounds response delivery and ownership; it does not guarantee that every underlying network operation finishes immediately.
 
@@ -67,7 +67,7 @@ Server UDP/53 handling uses `VirtualEthernetNamespaceCache` when enabled. On a m
 - Fake IP does not provide IPv6/AAAA synthesis.
 - DNS controller/session cleanup is designed to prevent later sends through a closed session, not to guarantee completion of every outstanding upstream operation.
 - Configuration fields and safe operator examples belong in [Reference](../reference/README.md) and the routing/DNS guides, not this architecture overview.
-- The workspace v2 behavior above is not a release claim; use the [sanitized Linux evidence report](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) for the narrow real-host observations and its explicit failure/coverage limits.
+- The Linux evidence report records only its named real-host probes and their explicit failure/coverage limits; it does not broaden the DNS interception boundary above.
 
 ## Source anchors
 

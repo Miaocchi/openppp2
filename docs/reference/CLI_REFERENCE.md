@@ -6,7 +6,7 @@
 > **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
 > **Audience:** OPENPPP2 users, operators, and developers.
 > **Status:** Current.
-> **Last verified against:** Local workspace implementation, 2026-10-07. Policy v2 is not committed or released.
+> **Last verified against:** Local workspace implementation, 2026-10-07. Policy v2 is planned for v2.1.7 and is not in v2.1.6; successful publication of v2.1.7 is not confirmed.
 > **Parent index:** [Back to index](README.md) · **Chinese:** [命令行参考](CLI_REFERENCE_CN.md)
 
 
@@ -80,11 +80,11 @@ This choice changes the entire startup branch:
 
 Proxy-only startup forces static transport off and does not initiate `STATIC`/`STATICACK`. If server-side IPv4 allocation is configured, it requests automatic allocation rather than a manual request derived from the local TUN address.
 
-The unreleased workspace implementation adds the versioned `client.policy` v2 source. If it is present, it must be the only policy source; otherwise the legacy adapter reads `client.routing` and compatible legacy configuration/CLI inputs. `client.routing` remains supported for legacy configurations, but it is not the sole current policy entry point. See [Configuration Model](CONFIGURATION.md#client) and the [Policy CLI guide](../guides/POLICY_CLI.md) ([Chinese](../guides/POLICY_CLI_CN.md)). The v2 implementation is not committed or released, and existing downloads must not be assumed to support it.
+The workspace implementation adds the versioned `client.policy` v2 source, planned for v2.1.7 and absent from v2.1.6; successful publication of v2.1.7 is not confirmed. If present, it must be the only policy source; otherwise the legacy adapter reads `client.routing` and compatible legacy configuration/CLI inputs. `client.routing` remains supported for legacy configurations, but it is not the sole current policy entry point. See [Configuration Model](CONFIGURATION.md#client) and the [Policy CLI guide](../guides/POLICY_CLI.md) ([Chinese](../guides/POLICY_CLI_CN.md)). Existing downloads must not be assumed to support v2.
 
 ## Policy Commands (Workspace Implementation)
 
-These seven offline/control commands are implemented in the local workspace. They are not evidence that a released `ppp` binary supports policy v2. See the [Policy CLI guide](../guides/POLICY_CLI.md) ([Chinese](../guides/POLICY_CLI_CN.md)) for full examples and report fields.
+These seven offline/control commands are implemented in the local workspace and planned for v2.1.7; v2.1.6 does not include them, and successful publication of v2.1.7 is not confirmed. See the [Policy CLI guide](../guides/POLICY_CLI.md) ([Chinese](../guides/POLICY_CLI_CN.md)) for full examples and report fields.
 
 | Command | Purpose |
 |---|---|

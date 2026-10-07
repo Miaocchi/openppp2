@@ -1,5 +1,6 @@
 #include <ppp/app/client/AssignedAddressManager.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/dns/DnsController.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 #include <ppp/diagnostics/Error.h>
@@ -261,6 +262,16 @@ namespace ppp {
                     return false;
                 }
 
+                uint32_t fake_network = 0;
+                int fake_prefix = 0;
+                if (owner_->dns_controller_ && owner_->dns_controller_->GetFakeIpRoute(fake_network, fake_prefix) &&
+                    fake_prefix >= 0 && fake_prefix <= 32) {
+                    const uint32_t mask_value = fake_prefix == 0 ? 0u : 0xffffffffu << (32 - fake_prefix);
+                    if ((addr.to_v4().to_uint() & mask_value) == fake_network) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigFieldInvalid);
+                    }
+                }
+
                 ec.clear();
                 boost::asio::ip::address mask = StringToAddress(ipv4.mask.data(), ec);
                 if (ec || !mask.is_v4()) {
@@ -345,10 +356,10 @@ namespace ppp {
                     }
 
                     if (auto tap = owner_->GetTap(); NULLPTR != tap) {
-                        tap->IPAddress      = addr.to_v4().to_uint();
-                        tap->SubmaskAddress = mask.to_v4().to_uint();
+                        tap->IPAddress      = htonl(addr.to_v4().to_uint());
+                        tap->SubmaskAddress = htonl(mask.to_v4().to_uint());
                         if (!ec && gw.is_v4()) {
-                            tap->GatewayServer = gw.to_v4().to_uint();
+                            tap->GatewayServer = htonl(gw.to_v4().to_uint());
                         }
                     }
 
@@ -419,13 +430,13 @@ namespace ppp {
 
                 if (auto tap = owner_->GetTap(); NULLPTR != tap) {
                     if (restore_addr.is_v4()) {
-                        tap->IPAddress = restore_addr.to_v4().to_uint();
+                        tap->IPAddress = htonl(restore_addr.to_v4().to_uint());
                     }
                     if (restore_mask.is_v4()) {
-                        tap->SubmaskAddress = restore_mask.to_v4().to_uint();
+                        tap->SubmaskAddress = htonl(restore_mask.to_v4().to_uint());
                     }
                     if (restore_gw.is_v4()) {
-                        tap->GatewayServer = restore_gw.to_v4().to_uint();
+                        tap->GatewayServer = htonl(restore_gw.to_v4().to_uint());
                     }
                 }
 

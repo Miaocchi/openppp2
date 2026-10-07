@@ -7,7 +7,7 @@
 
 日期：2026-10-07。关联：[总方案](../design/DNS_ROUTING_POLICY_REFACTOR_CN.md)、
 [P2](../design/DNS_ROUTING_POLICY_P2_CN.md)、[P5](../design/DNS_ROUTING_POLICY_P5_CN.md)。
-候选内核为未发布的本地工作区构建；本报告不表示二进制发行已上线。
+候选内核来自本地构建。代码推送已获授权，v2.1.7 仍待推送完成和 CI 全绿；本报告不表示该版本已发布。
 
 用户授权在现有 Linux x86_64 客户端主机复用节点配置进行实机测试。
 候选二进制与派生配置放在 root 私有测试目录，未替换原安装或修改原配置。

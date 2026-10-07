@@ -167,7 +167,7 @@ jobs:
             mkdir -p "${{ github.workspace }}/device-evidence";
             gradle :app:connectedDebugAndroidTest --no-daemon --console=plain --stacktrace > "${{ github.workspace }}/device-evidence/gradle.txt" 2>&1; status=$?;
             cat "${{ github.workspace }}/device-evidence/gradle.txt";
-            adb logcat -d > "${{ github.workspace }}/device-evidence/logcat.txt" 2>&1 || true;
+            timeout 15s adb logcat -d > "${{ github.workspace }}/device-evidence/logcat.txt" 2>&1 || true;
             exit "${status}"
 
       - name: Upload emulator evidence

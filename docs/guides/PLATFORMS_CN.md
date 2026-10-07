@@ -516,7 +516,7 @@ iOS 在本仓库中没有桌面式的 PF_ROUTE 路由变更路径，应用层与
 
 `routing.ip.peer-routes` 当前在两种模式都进入移动端 native RIB/FIB；Packet Tunnel provider 不会把每一项自动转换成任意 `NEIPv4Route`。如需每前缀系统路由，必须由宿主接入层显式实现。
 
-iOS provider-owned P2P UDP adapter 在私有 dispatch queue 上串行化 session 状态，并按 endpoint 对写入和读取分别限制最多 32 个 pending packet、64 KiB。Close 会取消当前 `NWUDPSession`；完成和接收 callback 会检查 adapter 仍开启且 endpoint 仍指向同一 session 实例，因此关闭或替换后的晚到 callback 会被丢弃。这些只是源码观察：本工作区改动尚未用 iOS 工具链构建或运行，也不能证明完整 IPv6 或平台实机验收通过。
+iOS provider-owned P2P UDP adapter 在私有 dispatch queue 上串行化 session 状态，并按 endpoint 对写入和读取分别限制最多 32 个 pending packet、64 KiB。Close 会取消当前 `NWUDPSession`；完成和接收 callback 会检查 adapter 仍开启且 endpoint 仍指向同一 session 实例，因此关闭或替换后的晚到 callback 会被丢弃。这些是 v2.1.7 代码发布目标中的源码行为说明；v2.1.6 不包含本文所述能力。v2.1.7 包是否可用请查看[发行页](https://github.com/Miaocchi/openppp2/releases)。本文说明实现结构，不作为 CI、跨平台构建或设备验收证明。
 
 ### 9.1 iOS 集成边界
 
@@ -651,7 +651,7 @@ graph TD
 
 ## 13. 运行时效果
 
-本文描述的 v2 policy 与 iOS provider 行为来自尚未发布的本地工作区源码。Linux 报告只覆盖其中列明的探针；IPv6 端到端覆盖及 Windows、macOS、Android、iOS 的构建/运行仍不完整。不能把平台源码接线表当成跨平台验收证据。
+本文描述的 v2 policy 与 iOS provider 行为属于 v2.1.7 代码发布目标；v2.1.6 不包含这些能力。v2.1.7 包是否可用请查看[发行页](https://github.com/Miaocchi/openppp2/releases)。Linux 报告只覆盖其中列明的探针，HTTPS 与部分 proxy TCP 探针仍超时。平台源码接线表说明实现归属，不是 CI、跨平台构建或设备验收证明。
 
 宿主层效果只来自 TUN/宿主接入，而不是因为 native 路由策略不存在：
 

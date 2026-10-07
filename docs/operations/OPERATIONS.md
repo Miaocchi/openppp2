@@ -2,7 +2,7 @@
 
 > **Status:** Current
 > **Type:** Operations guide
-> **Last verified:** Runtime lifecycle, CLI help, stats, console UI, diagnostic sources, and local policy/DNS workspace sources, 2026-10-07
+> **Last verified:** Runtime lifecycle, CLI help, stats, console UI, diagnostic sources, and v2.1.7 policy/DNS sources, 2026-10-07
 > **Parent index:** [Operations](README.md) · **Chinese:** [运维与故障排查](OPERATIONS_CN.md)
 
 ## Start with observable state
@@ -60,9 +60,9 @@ Restart controls are CLI-only:
 4. Change one variable at a time; route/DNS and firewall changes can obscure one another.
 5. Use an explicit maintenance/rollback procedure for host-managed settings rather than assuming the application can restore unrelated state.
 
-## Workspace v2 policy and DNS diagnostics
+## v2 Policy and DNS Diagnostics (v2.1.7 target)
 
-The v2 policy, DNS, and durable-store behavior below describes local workspace source changes that have not been released. Older kernel downloads do not provide these guarantees. The status file is local and is not a public REST endpoint; its writer lease permits one process to update a given identity at a time and is released when the owner closes.
+The v2 policy, DNS, and durable-store capabilities below are part of the v2.1.7 code release target; v2.1.6 does not include them. Check the [release page](https://github.com/Miaocchi/openppp2/releases) for v2.1.7 package availability. The status file is local and is not a public REST endpoint; its writer lease permits one process to update a given identity at a time and is released when the owner closes.
 
 | Symptom | Evidence to inspect |
 |---|---|
@@ -73,7 +73,7 @@ The v2 policy, DNS, and durable-store behavior below describes local workspace s
 
 Keep private policy stores, status files, runtime configs, and logs in protected local storage. Share only redacted diagnostics; do not include node endpoints, credentials, private paths, or raw configuration in a report.
 
-For host recovery, compare the captured pre-test configuration, resolver settings, route tables, and policy rules with post-stop state. A running process or a successful HTTP probe alone does not prove complete restoration. The public sanitized [Linux live report](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) records its own before/after checks: service state, configuration hash, resolver file, routes/rules, and temporary interface/route cleanup. Its IPv6 route difference is limited to dynamic RA expiry and a recreated TAP link address; it does not establish general IPv6 validation. HTTPS and some proxy TCP probes remain failed, and other platforms were not built or run.
+For host recovery, compare the captured pre-test configuration, resolver settings, route tables, and policy rules with post-stop state. A running process or a successful HTTP probe alone does not prove complete restoration. The public sanitized [Linux live report](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) records its own before/after checks: service state, configuration hash, resolver file, routes/rules, and temporary interface/route cleanup. Its IPv6 route difference is limited to dynamic RA expiry and a recreated TAP link address; it does not establish general IPv6 validation. HTTPS and some proxy TCP probes remain failed; the report covers only its named Linux checks.
 
 ## Do not assume
 
@@ -82,7 +82,7 @@ For host recovery, compare the captured pre-test configuration, resolver setting
 - Console UI commands are not an authenticated remote administration protocol;
 - no undocumented `/metrics`, lease, or IPv6-state REST endpoint is supplied by this runtime;
 - default-route protection is not a universal kill switch.
-- older published binaries include the workspace v2 policy behavior described above;
+- that v2.1.6 already contains the v2 capabilities described above; these are targeted for v2.1.7, with package availability shown on the release page;
 - resolver upstream support for UDP/TCP/DoH/DoT means client TCP/53 or encrypted DNS is intercepted.
 
 ## Related pages

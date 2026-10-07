@@ -2,7 +2,7 @@
 
 > **状态：**当前有效
 > **类型：**运维指南
-> **最后核对：**运行时生命周期、CLI 帮助、统计、Console UI、诊断及本地 policy/DNS 工作区源码，2026-10-07
+> **最后核对：**运行时生命周期、CLI 帮助、统计、Console UI、诊断及 v2.1.7 policy/DNS 源码，2026-10-07
 > **上一层索引：**[部署与运维](README_CN.md) · **English：**[Operations and Troubleshooting](OPERATIONS.md)
 
 ## 从可观测状态开始
@@ -60,9 +60,9 @@ phase 是有用证据，但不能证明每项宿主网络操作或应用流均�
 4. 每次只修改一个变量；路由/DNS 和防火墙修改会相互掩盖问题。
 5. 对宿主机管理的设置使用明确维护/回滚流程，而不是假设应用能恢复无关状态。
 
-## 工作区 v2 policy 与 DNS 诊断
+## v2 Policy 与 DNS 诊断（v2.1.7 目标版本）
 
-以下 v2 policy、DNS 和 durable store 行为描述尚未发布的本地工作区源码；旧内核下载版本不具备这些保证。状态文件保存在本地，不是公开 REST endpoint；writer lease 只允许同一 identity 同时由一个进程更新，owner 关闭时释放。
+以下 v2 policy、DNS 和 durable store 能力属于 v2.1.7 代码发布目标；v2.1.6 不包含这些能力。v2.1.7 包是否可用请查看[发行页](https://github.com/Miaocchi/openppp2/releases)。状态文件保存在本地，不是公开 REST endpoint；writer lease 只允许同一 identity 同时由一个进程更新，owner 关闭时释放。
 
 | 现象 | 检查证据 |
 |---|---|
@@ -73,7 +73,7 @@ phase 是有用证据，但不能证明每项宿主网络操作或应用流均�
 
 将 private policy store、status 文件、运行时配置和日志保存在受保护的本地位置。分享前只提供脱敏诊断，不包含节点地址、凭据、私有路径或原始配置。
 
-恢复宿主状态时，将测试前保存的配置、resolver 设置、路由表与 policy rules 和停止后的状态比较。进程仍在运行或单次 HTTP 探针成功，都不足以证明完整恢复。公开脱敏的 [Linux 实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)记录了该次检查：服务状态、配置 hash、resolver 文件、路由/rules、临时接口与路由清理。报告中的 IPv6 route 差异限于动态 RA expires 和重建 TAP 的链路地址，不构成通用 IPv6 验收。HTTPS 与部分 proxy TCP 探针仍失败，其他平台未构建或运行。
+恢复宿主状态时，将测试前保存的配置、resolver 设置、路由表与 policy rules 和停止后的状态比较。进程仍在运行或单次 HTTP 探针成功，都不足以证明完整恢复。公开脱敏的 [Linux 实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)记录了该次检查：服务状态、配置 hash、resolver 文件、路由/rules、临时接口与路由清理。报告中的 IPv6 route 差异限于动态 RA expires 和重建 TAP 的链路地址，不构成通用 IPv6 验收。HTTPS 与部分 proxy TCP 探针仍失败；报告只覆盖其中列明的 Linux 检查。
 
 ## 不要假设
 
@@ -82,7 +82,7 @@ phase 是有用证据，但不能证明每项宿主网络操作或应用流均�
 - Console UI 命令不是经过认证的远程管理协议；
 - 运行时没有承诺未文档化的 `/metrics`、租约或 IPv6 状态 REST 端点；
 - 默认路由保护不是通用 kill switch。
-- 工作区 v2 policy 行为已包含在旧版已发布二进制中；
+- 认为 v2.1.6 已包含上述 v2 能力；这些能力的目标版本是 v2.1.7，发行包可用性以发行页为准；
 - resolver 上游 UDP/TCP/DoH/DoT 支持意味着 client TCP/53 或加密 DNS 会被拦截。
 
 ## 相关页面

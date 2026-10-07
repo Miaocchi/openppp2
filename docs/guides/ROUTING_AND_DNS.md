@@ -2,8 +2,8 @@
 
 > **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
 > **Audience:** OPENPPP2 users, operators, and developers.
-> **Status:** Current for the legacy `client.routing` interface; v2 notes describe an unpublished workspace implementation.
-> **Last verified against:** Local workspace source and Linux live evidence, 2026-10-07.
+> **Status:** Current for the legacy `client.routing` interface and the v2.1.7 policy implementation.
+> **Last verified against:** Policy source and Linux live evidence, 2026-10-07.
 > **Parent index:** [Back to index](README.md) · **Chinese:** [路由与 DNS](ROUTING_AND_DNS_CN.md)
 
 > Status: Active
@@ -105,9 +105,9 @@ The normalized configuration surface is `client.routing`:
 
 `client.proxy-only` and the top-level `--mode=client`/`--mode=proxy` select runtime mode. `client.routing` carries only four native IP/DNS inputs; source strings are trimmed and empty entries are removed. `file://` is case-insensitive; an existing path is read as a file, while an unresolvable source remains inline text. An old nested mode value does not select or override runtime mode.
 
-### Policy v2 in the local workspace
+### Policy v2 release scope
 
-The local, unpublished kernel also contains an opt-in `client.policy.version: 2` policy engine and the offline `ppp policy` command family. This is not present in the currently published/downloadable client. Existing `client.routing`, legacy route fields, and their compatibility behavior described above remain the applicable interface for the published older kernel. Do not combine v2 with legacy routing/DNS policy fields in one client configuration; the v2 loader rejects conflicting sources. See [Policy CLI](POLICY_CLI.md) for the local-workspace workflow.
+The target v2.1.7 release includes the opt-in `client.policy.version: 2` policy engine and offline `ppp policy` command family. The v2.1.6 client does not include these features. Check the release page for v2.1.7 package availability. Existing `client.routing`, legacy route fields, and their compatibility behavior described above remain the interface for v2.1.6. Do not combine v2 with legacy routing/DNS policy fields in one client configuration; the v2 loader rejects conflicting sources. See [Policy CLI](POLICY_CLI.md) for the v2.1.7 workflow.
 
 V2 rules use a rules file with one `default direct|proxy|reject` directive and action groups such as `[direct]`, `[proxy]`, and `[reject]`. Conditions include exact domain (`=host.example`), suffix (`host.example`), subdomain-only wildcard (`*.example`), keyword (`keyword:value`), regexp (`regexp:value`), and IPv4 CIDR entries. `[dns:NAME]` groups hold resolver-specific domain exceptions; `dns direct NAME` or `dns proxy NAME` associates a domain rule with a named resolver. Rule sets can add declared sources, but their format and content are validated before use. The default action is explicit and required.
 

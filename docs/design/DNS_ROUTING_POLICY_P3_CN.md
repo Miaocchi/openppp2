@@ -1,11 +1,11 @@
 # P3：DNS 与 Fake-IP 实施约束
 
-> Status: Implemented; offline acceptance complete, Linux live acceptance partial
+> Status: Implemented; offline acceptance complete, Linux live acceptance partial; v2.1.7 pending
 > Type: Design
 > Last verified: 2026-10-07
 > Parent index: [设计文档](README.md)
 
-当前状态：P3 已实现并完成记录中的离线验收；内核改动仍是未发布的本地工作区实现。
+当前状态：P3 已实现并完成记录中的离线验收。代码推送已获授权，v2.1.7 仍待推送和 CI 全绿；
 HTTPS 等 Linux 实机项未通过，Windows/macOS/Android/iOS 未验收。
 本文件细化 [总方案](DNS_ROUTING_POLICY_REFACTOR_CN.md) 的 P3；不得将设计项标为已验证。
 

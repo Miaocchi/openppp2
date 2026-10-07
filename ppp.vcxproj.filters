@@ -522,6 +522,12 @@
     <ClCompile Include="ppp\app\client\dns\FakeIpPool.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\app\client\dns\DurableFakeIpStore.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\dns\PolicyFakeIpAsync.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\app\client\routing\GeoDataReader.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -529,6 +535,45 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\client\routing\HumanRoutingRules.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\PolicySourceLoader.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\PolicyCompiler.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\PolicyRuntime.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\DurablePolicyBundle.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\PolicyUpdateFetcher.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\PolicyUpdateService.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\PolicyTunnelUpdateConnector.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\PolicyStatusFile.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\LegacyPolicyAdapter.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\policy\LegacyPolicyMigration.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\PolicyTunnelDnsStream.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\dns\PolicyResolverService.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\ApplicationPolicyCommand.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ppp\app\client\routing\ProtocolSniffer.cpp">
@@ -630,6 +675,14 @@
     <ClCompile Include="ppp\p2p\P2PRelayOffer.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\p2p\P2PRelayOfferV2.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="ppp\p2p\P2PV2ControlCodec.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="ppp\p2p\P2PV2DataCodec.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="ppp\p2p\P2PV2Channel.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="ppp\p2p\P2PProbeCoordinator.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="ppp\p2p\P2PIngressLimiter.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="ppp\app\client\VEthernetP2PV2.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="ppp\app\server\VirtualEthernetP2PV2.cpp"><Filter>源文件</Filter></ClCompile>
     <ClCompile Include="ppp\p2p\P2PClientOfferSession.cpp">
       <Filter>ppp\p2p</Filter>
     </ClCompile>
@@ -1391,6 +1444,12 @@
     <ClInclude Include="ppp\p2p\P2PKeyDerivation.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\p2p\P2PRelayOfferV2.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="ppp\p2p\P2PV2Codec.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="ppp\p2p\P2PV2Channel.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="ppp\p2p\P2PV2ServerCoordination.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="ppp\p2p\P2PProbeCoordinator.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="ppp\p2p\P2PIngressLimiter.h"><Filter>头文件</Filter></ClInclude>
     <ClInclude Include="ppp\p2p\P2POfferToken.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -1772,6 +1831,15 @@
     <ClInclude Include="ppp\app\client\dns\FakeIpPool.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\app\client\dns\DurableFakeIpStore.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\dns\PolicyFakeIpAsync.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\dns\PolicyTelemetry.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\app\client\dns\HumanDnsQueryPolicy.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -1782,6 +1850,63 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\client\routing\HumanRoutingRules.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicyModel.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicySourceLoader.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicyCompiler.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicyEvaluator.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicyRuntime.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicyTcpFlow.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\DurablePolicyBundle.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicyUpdateFetcher.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicyUpdateService.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicyTunnelUpdateConnector.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\PolicyStatusFile.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\LegacyPolicyAdapter.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\policy\LegacyPolicyMigration.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\proxys\LocalProxyPolicyDestination.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\PolicyTunnelDnsStream.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\dns\PolicyResolverService.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\udp\DirectDatagramFlow.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\udp\UdpFlowPolicy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\ApplicationPolicyCommand.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\client\routing\ProtocolSniffer.h">

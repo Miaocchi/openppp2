@@ -7,6 +7,7 @@
 #include <ppp/app/client/VEthernetNetworkTcpipForwarding.inl>
 #include <ppp/app/client/proxys/VEthernetLocalProxySwitcher.h>
 #include <ppp/app/client/proxys/VEthernetLocalProxyConnection.h>
+#include <ppp/app/client/proxys/LocalProxyPolicyDestination.h>
 #include <ppp/diagnostics/Error.h>
 
 #include <ppp/IDisposable.h>
@@ -213,7 +214,48 @@ namespace ppp {
                     }
 
                     auto self = shared_from_this();
-                    if (auto switcher = exchanger_->GetSwitcher(); NULLPTR != switcher) {
+                    ppp::string connect_host = destinationEP->Host;
+                    auto policy_switcher = exchanger_->GetSwitcher();
+                    auto policy_snapshot = policy_switcher ? policy_switcher->GetPolicySnapshot() : nullptr;
+                    if (policy_switcher && policy_switcher->HasPolicyV2()) {
+                        if (!policy_switcher->IsPolicyBusinessAllowed())
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketDisconnected);
+                        LocalProxyPolicyDestination target;
+                        std::string original_host(destinationEP->Host.data(), destinationEP->Host.size());
+                        boost::system::error_code identity_error;
+                        boost::asio::ip::make_address(original_host, identity_error);
+                        if (!identity_error) {
+                            routing::ResolvedDestination identity;
+                            if (!policy_switcher->ResolvePolicyDestinationIdentity(
+                                ppp::net::IPEndPoint(destinationEP->Host.c_str(), destinationEP->Port), identity) ||
+                                (identity.is_fake_ip && identity.hostname.empty())) {
+                                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                            }
+                            if (identity.is_fake_ip) original_host = identity.hostname;
+                        }
+                        if (!ResolveLocalProxyPolicyDestination(policy_snapshot, original_host, true,
+                            [&](const std::string& domain, boost::asio::ip::address& address) {
+                                return policy_switcher->ResolvePolicyDestination(domain, policy_snapshot, y, address);
+                            }, target)) {
+                            if (target.policy_rejected) policy_switcher->RecordPolicyDecision(policy::PolicyAction::Reject);
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                        }
+                        policy_switcher->RecordPolicyDecision(target.action);
+                        if (target.action == policy::PolicyAction::Direct) {
+                            const int status = VEthernetNetworkTcpipConnection::Rinetd(self,
+                                exchanger_, context_, strand_, configuration, socket,
+                                boost::asio::ip::tcp::endpoint(target.address, destinationEP->Port),
+                                true, connection_rinetd_, y);
+                            return status == 0;
+                        }
+                        // Keep the original domain as metadata; the peer connects to the policy DNS result.
+                        connect_host = target.address.to_string();
+                        if (!target.original_domain.empty()) {
+                            destinationEP->Host.assign(target.original_domain.data(), target.original_domain.size());
+                            destinationEP->Type = ppp::app::protocol::AddressType::Domain;
+                        }
+                    }
+                    else if (auto switcher = policy_switcher; NULLPTR != switcher) {
                         if (auto tap = switcher->GetTap(); NULLPTR != tap &&
                             (tap->IsHostedNetwork() || switcher->ProxyOnly(NULLPTR))) {
                             /**
@@ -250,13 +292,14 @@ namespace ppp {
 
                             destinationEP->Host = address.to_string();
                             destinationEP->Type = address.is_v4() ? ppp::app::protocol::AddressType::IPv4 : ppp::app::protocol::AddressType::IPv6;
+                            connect_host = destinationEP->Host;
                         }
                     }
 
                     /**
                      * @brief Attempt vmux fast path before creating a full transmission tunnel.
                      */
-                    int mux_status = VEthernetNetworkTcpipConnection::Mux(self, exchanger_, destinationEP->Host, destinationEP->Port, socket, connection_mux_, y);
+                    int mux_status = VEthernetNetworkTcpipConnection::Mux(self, exchanger_, connect_host, destinationEP->Port, socket, connection_mux_, y);
                     if (mux_status < 1) {
                         if (mux_status < 0) {
                             if (ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
@@ -296,7 +339,7 @@ namespace ppp {
                     }
 #endif
 
-                    bool ok = connection->Connect(y, transmission, destinationEP->Host, destinationEP->Port);
+                    bool ok = connection->Connect(y, transmission, connect_host, destinationEP->Port);
                     if (!ok) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpConnectFailed);
                         IDisposable::DisposeReferences(connection, transmission);
