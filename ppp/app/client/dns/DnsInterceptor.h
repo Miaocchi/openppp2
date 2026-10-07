@@ -31,7 +31,7 @@ namespace ppp {
                 public:
                     using RuleMap = ppp::unordered_map<ppp::string, Rule::Ptr>;
 
-                    DnsInterceptor() noexcept = default;
+                    DnsInterceptor() noexcept;
 
                     bool Open(
                         const std::shared_ptr<ppp::configurations::AppConfiguration>& configuration,
