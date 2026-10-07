@@ -1,12 +1,12 @@
 # DNS、域名/IP 分流与规则集重构详细方案
 
-> Status: Source and tests public; platform compatibility and TSan fixes in progress; v2.1.7 pending
+> Status: Source and tests public; platform builds updated; final CI and v2.1.7 pending
 > Type: Design
 > Last verified: 2026-10-07
 > **创建日期：**2026-10-05。
 > **用途：**记录客户端 DNS、域名/IP 分流与规则集的统一重构方案。
 > **适用对象：**内核与 CLI 开发者、维护者和评审者。
-> **当前状态：**P0–P5 源码与测试已随 merge `766333243d1b578b4dce539546cc6ce60f05c97f` 公开到 `main`，并包含 P2P 父提交 `c10eb0f`、`6a6c436`；后续平台修复 `50f49ab` 和候选提交 `8fe0718` 也已推送。当前正在修复平台兼容与 TSan 问题，并验证最终 CI；v2.1.7 tag/release 仍待完成。首轮文档整理曾是仅文档发布阶段，此历史状态不代表当前代码仍未公开。Linux 实机已有 HTTP、SOCKS UDP、DNS 四种上游、Fake-IP 与规则更新成功证据；HTTPS/proxy TCP 等仍有未通过项，其他平台运行验收尚未完成。迁移中的整份策略等价受已知语义差异限制，不能称完整发布验收或全平台验收完成。
+> **当前状态：**P0–P5 源码与测试已随 merge `766333243d1b578b4dce539546cc6ce60f05c97f` 公开到 `main`，并包含 P2P 父提交 `c10eb0f`、`6a6c436`；后续平台修复 `50f49ab` 和候选提交 `8fe0718` 也已推送。Android Boost.Filesystem 兼容修改已完成四 ABI 候选实链及 ZIP 验证，Debian 10 GNU `stdc++fs` CI 与 Windows x64/ARM64 构建成功。TSan 锁序和 FakeClock lost wakeup 均已修复；普通 target 通过，无 suppression 的 TSan 连续 50 次通过，修复前第 9 次复现。最终同 SHA 全套 CI 仍待验证，v2.1.7 tag/release 仍待完成。首轮文档整理曾是仅文档发布阶段，此历史状态不代表当前代码仍未公开。上述构建结果不等于全平台 VPN runtime 验收。Linux 实机已有 HTTP、SOCKS UDP、DNS 四种上游、Fake-IP 与规则更新成功证据；HTTPS/proxy TCP 等仍有未通过项，macOS/iOS 运行验收尚未完成。迁移中的整份策略等价受已知语义差异限制，不能称完整发布验收或全平台验收完成。
 > **P0 产物与验证：**[旧行为与平台能力基线](DNS_ROUTING_POLICY_BASELINE_CN.md)，包含静态样本、差分合同和验证边界。
 > **P1 产物与验证：**[离线编译和诊断](DNS_ROUTING_POLICY_P1_CN.md)，记录已实现语法、接口、CLI、扩展与运行时边界。
 >
@@ -613,9 +613,15 @@ DNS 与出口验证使用本地模拟上游和可注入传输接口；不能以�
 
 方案形成时仅完成源码分析，后续 P0–P5 已完成上文所列实现和 Linux 隔离离线验证。
 GitNexus 索引未更新，使用源码、调用点、差异及聚焦测试评估影响，未声称执行其当前索引
-分析。Windows/macOS/Android/iOS 缺少适用工具链，未构建或运行；真实 VPN 出口、
-系统路由/DNS 恢复、外网更新及实际 direct/bypass 吞吐在上述离线批次未验证。
-该离线批次未启动 PPP、改变路由/DNS、安装驱动或提交 Git。
+分析。2026-10-07 离线批次当时未构建 Windows/macOS/Android/iOS；之后 Android 四 ABI
+候选实链及 ZIP、Debian 10 GNU `stdc++fs` CI、Windows x64/ARM64 构建已有成功记录。
+这些构建不等于 VPN runtime 验收；macOS/iOS 仍未验证。真实 VPN 出口、系统路由/DNS 恢复、
+外网更新及实际 direct/bypass 吞吐在上述测试中未完整验证。离线批次未启动 PPP、改变路由/DNS
+或安装驱动。
+
+当前验证状态：TSan 锁序与 FakeClock lost wakeup 已修复；普通 target 通过，无 suppression 的
+TSan 连续 50 次通过，修复前第 9 次复现。最终同 SHA 全套 CI 待验证，不能据此声明 CI 全绿、
+版本已发布或全部 runtime 已验收。
 
 2026-10-07 后续按用户授权完成 Linux 实机测试及主动恢复，详见
 [实机验证记录](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)。原配置与系统 DNS

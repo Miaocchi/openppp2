@@ -209,6 +209,7 @@ public:
         {
             std::lock_guard<std::mutex> clock_lock(mutex_);
             wake_cv_ = &cv;
+            wait_mutex_.store(lock.mutex(), std::memory_order_release);
             ++wait_count_;
         }
         changed_.notify_all();
@@ -216,6 +217,9 @@ public:
     }
 
     void Advance(std::chrono::system_clock::duration amount) {
+        std::unique_lock<std::mutex> wait_lock;
+        if (auto* wait_mutex = wait_mutex_.load(std::memory_order_acquire))
+            wait_lock = std::unique_lock<std::mutex>(*wait_mutex);
         std::condition_variable* wake = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -239,6 +243,7 @@ private:
     std::condition_variable changed_;
     std::chrono::system_clock::time_point now_;
     std::condition_variable* wake_cv_ = nullptr;
+    std::atomic<std::mutex*> wait_mutex_{nullptr};
     std::size_t wait_count_ = 0;
 };
 

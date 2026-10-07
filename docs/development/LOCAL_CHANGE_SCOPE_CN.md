@@ -5,10 +5,12 @@
 > Last verified: 2026-10-07
 > Parent index: [开发文档](README_CN.md)
 
-当前状态：DNS 策略、P2P v2 的源码与测试已随 merge `766333243d1b578b4dce539546cc6ce60f05c97f`
-公开到 `main`，并包含 P2P 父提交 `c10eb0f`、`6a6c436`。之后平台兼容修复 `50f49ab` 和
-候选提交 `8fe0718` 也已推送。当前正在修复平台兼容与 TSan 问题并验证最终 CI；v2.1.7
-tag/release 仍待完成。这里不表示 CI 已全绿，也不表示全平台运行验收或发行已经完成。
+当前状态：main 位于 `6651e3f`。DNS 策略、P2P v2 源码与测试已公开；Android
+Boost.Filesystem 兼容修改已完成四 ABI 候选实链及 ZIP 验证，Debian 10 的 GNU `stdc++fs`
+CI 和 Windows x64/ARM64 构建成功。TSan 锁序与 FakeClock lost wakeup 均已修复；普通 target
+通过，无 suppression 的 TSan 连续 50 次通过（修复前第 9 次复现）。最终同 SHA 全套 CI
+仍待验证，v2.1.7 tag/release 仍待完成。这不表示
+CI 已全绿、完整 VPN runtime 已验收或版本已经发行。
 
 历史说明：2026-10-07 首轮文档整理时，远端 main 和文档站为 `99892a8`，当时的发布范围
 仅含文档，P2P 提交尚未推送。之后用户授权代码推送及 CI 全绿后发布 v2.1.7，代码与测试
@@ -17,8 +19,9 @@ tag/release 仍待完成。这里不表示 CI 已全绿，也不表示全平台�
 ## 1. 清点边界
 
 2026-10-07 开始整理时：44 个已跟踪文件修改，91 个新增代码、测试、基准和 Markdown
-文档文件。这是候选实现范围，尚未作为 Git 提交整理。其中新增生产文件 37 个、
-测试与样本 42 个、基准 3 个、文档 9 个；本清单与后续文档更新不计入该起始数量。
+文档文件。当时这些是尚未整理为 Git 提交的候选实现范围。其中新增生产文件 37 个、
+测试与样本 42 个、基准 3 个、文档 9 个；这些是当时的候选范围，计数不代表当前 Git 差异，
+本清单与后续文档更新不计入该起始数量。
 
 另有 178,157 个未跟踪文件属于临时树、历史构建、artifacts、perf.data 或补丁残留。
 保留这些文件，不删除、不移动、不发布，亦不把它们纳入代码清单或站点。
@@ -42,7 +45,7 @@ UDP provider 文件，不能按整个文件盲目归入单一重构提交。
 | 构建/诊断 | ppp.vcxproj、ppp.vcxproj.filters、tests/cpp/CMakeLists.txt、ErrorCodes.def | 测试链接 stub 与离线入口 | 新源码登记、独立测试构建、保留 CRLF、错误码说明 |
 | 验证/性能 | client_datagram_port_manager_test.cpp、dns_fake_ip_response_test.cpp、geo_data_reader_test.cpp、support/dns_host_wiring_switcher_stub.cpp | policy_*、durable_fake_ip_store、local_proxy、udp_direct_flow 测试及 benchmarks/policy/ | 测试层级、Linux 实机矩阵、sanitizer 限制与离线性能 |
 
-两个本地 P2P 提交的补充范围：`ppp/p2p/` 的 v2 编解码、channel、offer、limiter、
+两个 P2P 父提交的补充范围：`ppp/p2p/` 的 v2 编解码、channel、offer、limiter、
 coordinator 和 STUN；客户端/服务端 `VEthernetP2PV2.cpp`、INFO 注册与协调；
 Noise/authenticated carrier；P2P v2 isolation/recovery 脚本及对应 C++/tooling 测试；
 根 CMake、Android/测试 CI、Windows 登记。文档对应 protocol、state-machine、
@@ -61,7 +64,7 @@ v2-implementation-plan 和双语 TESTING。此范围与上表共享文件必须�
 3. 架构与运维：中英文 DNS 架构、平台能力和运维；区分源码接线、离线测试和实机证据。
 4. 实施记录与导航：P0–P5 元数据和状态、Linux 实机报告、测试说明、首页与各级索引。
    将仍适用的旧说明保留在明确的 legacy 范围中，不把历史缺口当作当前事实。
-5. P2P 本地提交记录：协议、状态机与实施方案，区分隔离测试、生产能力门禁和真实
+5. P2P 提交记录：协议、状态机与实施方案，区分隔离测试、生产能力门禁和真实
    NAT/平台验收；DNS 实机结果不能推断 P2P 直连已经验收。
 
 首轮文档阶段仅发布审核过的文档文件；之后代码与测试已按授权推送。当前待办为平台兼容
@@ -75,7 +78,11 @@ v2-implementation-plan 和双语 TESTING。此范围与上表共享文件必须�
   重启稳定性、有效更新和坏候选保留已有真实成功证据。
 - 未完成：HTTPS 与部分 proxy TCP 路径，非 DNS 的通用 TUN UDP、同出口上游故障注入、
   IPv6 全入口拒绝、流更新固定策略、长期故障恢复和实际吞吐的完整验收。
-- Windows/macOS/Android/iOS 缺少本次适用工具链，源码变更不能作为运行通过证据。
+- 构建：Android Boost.Filesystem 兼容修改完成四 ABI 候选实链及 ZIP 验证；Debian 10 GNU
+  `stdc++fs` CI 与 Windows x64/ARM64 构建成功。这些是构建证据，不代表设备上的 VPN runtime 验收；
+  macOS/iOS 本轮未验证。
+- 并发：TSan 锁序与 FakeClock lost wakeup 已修复；普通 target 通过，无 suppression 的 TSan
+  连续 50 次通过，修复前第 9 次复现。最终同 SHA 全套 CI 待验证，尚不能宣称 CI 全绿。
 - 原服务已经恢复，配置、系统 DNS、IPv4 路由和规则保持基线；IPv6 差异为动态
   RA expires 与重建 TAP 的本地地址变化。详细依据见
   [Linux 实机验证](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)。
