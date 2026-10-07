@@ -58,7 +58,7 @@ namespace ppp {
         namespace client {
             namespace dns {
 
-                DnsInterceptor::DnsInterceptor() noexcept = default;
+                DnsInterceptor::DnsInterceptor() noexcept {}
 
                 static bool ParseStunCandidate(const ppp::string& s, ppp::dns::StunCandidate& out) noexcept {
                     ppp::string text = ATrim(s);
