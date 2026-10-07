@@ -69,20 +69,22 @@ v2-implementation-plan 和双语 TESTING。此范围与上表共享文件必须�
 5. P2P 提交记录：协议、状态机与实施方案，区分隔离测试、生产能力门禁和真实
    NAT/平台验收；DNS 实机结果不能推断 P2P 直连已经验收。
 
-首轮文档阶段仅发布审核过的文档文件；之后代码与测试已按授权推送。当前待办为平台兼容
-与 TSan 修复、最终 CI 验证及 v2.1.7 tag/release。临时产物和真实配置不进入文档站发布范围。
+首轮文档阶段仅发布审核过的文档文件；之后代码与测试已按授权推送。平台兼容与 TSan
+修复、发行源码 CI 验证及 v2.1.7 tag/release 已完成，参见本文顶部发行记录。
+临时产物和真实配置不进入文档站发布范围。
 
 ## 4. 证据与限制
 
 - 离线：169 项测试合计通过；9 项 socket 测试先受沙箱 EPERM 限制，放行后重跑通过。
-  最新相关 ASan/UBSan 与 Linux native 编译链接通过，未全量重跑 sanitizer。
+  本地验证包括相关 ASan/UBSan 与 Linux native 编译链接；全套普通单测与 TSan、
+  P2P 及生命周期 ASan/UBSan 已在发行源码 CI 中通过。
 - 实机：HTTP/CONNECT80、SOCKS UDP direct/proxy/DOMAIN、四种 DNS 上游、Fake-IP
   重启稳定性、有效更新和坏候选保留已有真实成功证据。
 - 未完成：HTTPS 与部分 proxy TCP 路径，非 DNS 的通用 TUN UDP、同出口上游故障注入、
   IPv6 全入口拒绝、流更新固定策略、长期故障恢复和实际吞吐的完整验收。
-- 构建：Android Boost.Filesystem 兼容修改完成四 ABI 候选实链及 ZIP 验证；Debian 10 GNU
-  `stdc++fs` CI 与 Windows x64/ARM64 构建成功。这些是构建证据，不代表设备上的 VPN runtime 验收；
-  macOS/iOS 本轮未验证。
+- 构建：Android 四 ABI、签名 APK、Debian 10、Windows x64/ARM64、macOS 和 Linux
+  变体及交叉架构均通过发行源码 CI；iOS 模拟器单测与 Swift 类型检查通过。
+  这些是构建与隔离测试证据，各平台设备上的完整 VPN runtime 验收仍未完成。
 - 并发：TSan 锁序与 FakeClock lost wakeup 已修复；普通 target 通过，无 suppression 的 TSan
   连续 50 次通过，修复前第 9 次复现。最终同 SHA 全套 CI 待验证，尚不能宣称 CI 全绿。
 - 原服务已经恢复，配置、系统 DNS、IPv4 路由和规则保持基线；IPv6 差异为动态
