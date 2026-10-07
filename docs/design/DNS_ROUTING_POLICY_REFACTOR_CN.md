@@ -6,7 +6,7 @@
 > **创建日期：**2026-10-05。
 > **用途：**记录客户端 DNS、域名/IP 分流与规则集的统一重构方案。
 > **适用对象：**内核与 CLI 开发者、维护者和评审者。
-> **当前状态：**P0–P5 源码与测试及 P2P 改动已在 [v2.1.7](https://github.com/Miaocchi/openppp2/releases/tag/v2.1.7) 发行，标签源码为 `85220d2`。发行源码及后续发布流程修复 `9c3fbe5` 的十项 CI 均已通过，覆盖 Android 四 ABI 与签名 APK、Windows x64/ARM64、macOS、Linux 变体及交叉架构、普通单测和 TSan。发行共有 32 个安装包与 3 个校验/来源文件，资产摘要已核验。首轮仅文档发布属于历史阶段。上述构建与发行结果不等于全平台 VPN runtime 验收：Linux 实机已有 HTTP、SOCKS UDP、DNS 四种上游、Fake-IP 与规则更新成功证据；HTTPS/proxy TCP 等仍有未通过项，其他平台完整运行验收尚未完成。迁移中的整份策略等价受已知语义差异限制，P2P 生产认证控制开关仍保持关闭。
+> **当前状态：**P0–P5 策略代码已从正式客户端/CLI 入口接入，P2P v2 production gate 已默认开启并接入桌面、Windows、Android、iOS 生产构建；跨平台 VPN runtime、真实 NAT 和设备验收仍不完整。v2.1.7 已发布的策略资产与后续版本候选需以对应发行页和 CI 为准。Linux 实机已有 HTTP、SOCKS UDP、DNS 四种上游、Fake-IP 与规则更新成功证据；HTTPS/proxy TCP 等仍有未通过项。迁移中的整份策略等价受已知语义差异限制，运行时显式 `p2p.enabled=false` 仍可回 relay。
 > **P0 产物与验证：**[旧行为与平台能力基线](DNS_ROUTING_POLICY_BASELINE_CN.md)，包含静态样本、差分合同和验证边界。
 > **P1 产物与验证：**[离线编译和诊断](DNS_ROUTING_POLICY_P1_CN.md)，记录已实现语法、接口、CLI、扩展与运行时边界。
 >
@@ -512,7 +512,7 @@ CLI 约定：
 P0 已完成（2026-10-05）：50 个手工预期案例直接调用现有配置/规则解析器和纯决策函数，
 离线比较框架支持实际报告导出和独立候选报告比较。隔离构建与 7 个相关 CTest 目标通过。
 平台接入能力仅按源码固定，未验证真实 VPN 会话或 DNS 实际出口；完整验证记录见
-[P0 基线](DNS_ROUTING_POLICY_BASELINE_CN.md)。本批没有启用新版策略或改变旧生产语义。
+[P0 基线](DNS_ROUTING_POLICY_BASELINE_CN.md)。新版策略仍由显式 `client.policy.version=2` 选择，P2P v2 则由生产构建 gate 和运行时配置独立控制。
 
 P1 已完成（2026-10-05）：新增独立 v2 加载器、不可变快照与匹配索引，提供启动前分派的
 离线 `check/explain`。来源 SHA 校验和内存物化防止编译读取未校验版本。

@@ -50,6 +50,10 @@ BOOST_AUTO_TEST_CASE(default_and_relay_modes_are_not_advertised) {
     BOOST_TEST(std::string(relay.reason) == "relay-only");
 }
 
+BOOST_AUTO_TEST_CASE(production_v2_gate_is_enabled_by_default) {
+    BOOST_TEST(ProductionAuthenticatedControlV1Ready);
+}
+
 BOOST_AUTO_TEST_CASE(direct_requires_authenticated_exporter_and_socket_protection) {
     const auto raw_tcp = P2PCapabilityGate::Evaluate(true, "direct-preferred", false, true, true);
     BOOST_TEST(!raw_tcp.allowed);

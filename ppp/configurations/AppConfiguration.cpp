@@ -418,8 +418,11 @@ namespace ppp {
             config.telemetry.console_metric = true;
             config.telemetry.console_span = true;
 
-            config.p2p.enabled = false;
-            config.p2p.mode = "relay";
+            // P2P v2 is the production-preferred path.  The relay remains the
+            // explicit fallback when a deployment sets enabled=false or when
+            // capability negotiation cannot complete.
+            config.p2p.enabled = true;
+            config.p2p.mode = "direct-preferred";
             config.p2p.punch_timeout = 5;
             config.p2p.keep_alived = 15;
             config.p2p.stun_servers.clear();

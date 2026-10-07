@@ -2,35 +2,33 @@
 
 > **Purpose:** Define the authenticated P2P direct-channel wire protocol.
 > **Audience:** Protocol, networking, and security maintainers.
-> **Status:** Current design evidence; not an enabled production data path.
-> **Last verified against:** P2P v2 isolated tests and fail-closed production capability gate, 2026-10-05.
+> **Status:** Current production protocol; cross-platform runtime acceptance remains incomplete.
+> **Last verified against:** P2P v2 isolated tests and production capability wiring, 2026-10-07.
 > **Parent index:** [Design Documents](../README.md)
 
-> Status: Draft
+> Status: Implemented; production entry wired
 > Type: Design
-> Last verified: 2026-10-05; isolated implementation acceptance, production gate disabled.
+> Last verified: 2026-10-07; isolated implementation acceptance and production gate wiring.
 
 ## Scope And Eligibility
 
-This document specifies an experimental protected UDP channel. It does
-not describe an enabled production data path. The offer-v1 crypto and exchanger
-data path are implemented behind a fail-closed production capability gate;
-current releases remain relay-only.
+This document specifies the authenticated protected UDP channel used by the
+production v2 path. The relay path remains authoritative whenever capability
+negotiation, socket protection, authentication, or probing fails.
 
-The v2 implementation is authorized for target release `v2.1.7`, which has not
-been released yet. Until that release is published, do not infer that currently
-published binaries or source include it. The production gate is explicitly
-false in `ppp/p2p/P2PCapabilityGate.h`, and the server v2 offer path in
+The v2 implementation is wired into the production client and server source.
+`ppp/p2p/P2PCapabilityGate.h` defaults to enabled and each production build
+system injects `OPENPPP2_P2P_V2_PRODUCTION=1`; the server v2 offer path in
 `ppp/app/server/VirtualEthernetP2PV2.cpp` checks it before creating offers.
-These source paths are inline references because they are not in the current
-published source baseline.
+Set `ENABLE_P2P_V2_PRODUCTION=OFF` only for an emergency build rollback.
 
 A peer advertises `p2p.direct.v1` only when all of these are true:
 
 - the experimental configuration flag is enabled;
 - the authenticated relay session exposes a session exporter;
 - socket protection is available for the platform;
-- the final authenticated-control production gate is enabled (it is currently false);
+- the final authenticated-control production gate is enabled by default through
+  `ENABLE_P2P_V2_PRODUCTION`;
 - the peer implements this version and its required cipher and parser rules.
 
 Missing capability, missing exporter, a disabled production gate, raw TCP,
@@ -44,7 +42,9 @@ an older or unbound direct protocol.
 
 Version 2 is explicitly negotiated through INFO `supported-versions` and
 `offer-v2`; a selected v2 session cannot fall back to the v1 wire protocol.
-The production gate remains `ProductionAuthenticatedControlV1Ready = false`.
+The production gate is `ProductionAuthenticatedControlV1Ready = true` in release
+builds. A build may set `ENABLE_P2P_V2_PRODUCTION=OFF` for emergency rollback;
+runtime `p2p.enabled=false` still selects relay mode.
 The v1 layout and TTL semantics below remain unchanged.
 
 The v2 common offer is 193 bytes, the recipient encoding 270 bytes, and the

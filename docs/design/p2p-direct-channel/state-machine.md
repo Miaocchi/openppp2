@@ -2,28 +2,25 @@
 
 > **Purpose:** Define P2P direct-channel states, transitions, and failure behavior.
 > **Audience:** Protocol, networking, and platform maintainers.
-> **Status:** Current design evidence; not an enabled production data path.
-> **Last verified against:** P2P v2 isolated tests and fail-closed production capability gate, 2026-10-05.
+> **Status:** Current production state machine; cross-platform runtime acceptance remains incomplete.
+> **Last verified against:** P2P v2 isolated tests and production capability wiring, 2026-10-07.
 > **Parent index:** [Design Documents](../README.md)
 
-> Status: Draft
+> Status: Implemented; production entry wired
 > Type: Design
-> Last verified: 2026-10-05; isolated implementation acceptance, production gate disabled.
+> Last verified: 2026-10-07; isolated implementation acceptance and production gate wiring.
 
-The v2 implementation is authorized for target release `v2.1.7`, which has not
-been released yet. Until then, currently published binaries and source must
-not be assumed to contain it. The production capability gate is explicitly
-false in `ppp/p2p/P2PCapabilityGate.h`; the server v2 offer path checks that
-gate. The sixteen-context cap is in `ppp/app/client/VEthernetExchanger.h`;
-queueing and recovery are in `ppp/app/client/VEthernetP2PV2.cpp`. These source
-paths are inline references because they are not in the current published
-source baseline.
+The v2 implementation is wired into the production client and server source.
+The capability gate defaults to enabled in `ppp/p2p/P2PCapabilityGate.h` and is
+explicitly injected by each production build system. The sixteen-context cap is
+in `ppp/app/client/VEthernetExchanger.h`; queueing and recovery are in
+`ppp/app/client/VEthernetP2PV2.cpp`.
 
 ## States
 
 The direct-channel design reserves these stable values. The implementation
-remains behind the fail-closed production gate. `Failed` remains a target state;
-isolated v2 tests do not establish production availability of these transitions.
+is capability-gated at runtime and fails back to relay on any failed transition;
+isolated v2 tests do not establish cross-platform device availability.
 
 | State | Meaning | Effective path |
 |---|---|---|

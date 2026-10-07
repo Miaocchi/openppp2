@@ -353,8 +353,8 @@ namespace ppp {
                 bool                                                        console_span;   ///< Show span events on local console/file sink.
             }                                                               telemetry;       ///< Optional telemetry/observability configuration.
             struct {
-                bool                                                        enabled;        ///< Enable server-coordinated P2P path discovery.
-                ppp::string                                                 mode;           ///< "relay" keeps server relay only; "direct-preferred" advertises peer candidates.
+                bool                                                        enabled;        ///< Enable server-coordinated P2P path discovery (production default true).
+                ppp::string                                                 mode;           ///< "relay" keeps server relay only; "direct-preferred" is the production default.
                 int                                                         punch_timeout;  ///< UDP punch timeout in seconds.
                 int                                                         keep_alived;    ///< P2P keep-alive interval in seconds.
                 ppp::vector<ppp::string>                                    stun_servers;   ///< STUN servers used for future UDP candidate discovery.
