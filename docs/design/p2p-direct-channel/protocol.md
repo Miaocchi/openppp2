@@ -127,7 +127,8 @@ isolated tests. A root-linked test additionally runs the actual Exchanger
 recovery implementation: nine cases passed in normal, ASan/UBSan/LSan and
 separate TSan builds. Registration, transport and relay output are injected
 dependencies. Real INFO delivery, native socket protection, real NAT and
-device transitions still require acceptance before enabling production.
+device transitions still require additional acceptance; capability or probe
+failure keeps the production runtime on relay.
 
 Version 1 uses a versioned relay offer plus protected UDP control and data
 messages. Every parsed message is length checked before field access. Reserved
@@ -200,9 +201,9 @@ direct send failure tears down the direct attempt and sends the current packet
 through relay.
 
 The codec, session-owned key boundary, protected transport, and TAP forwarding
-are implemented. The advertised production capability remains disabled while
-cross-NAT and platform evidence is incomplete, so default and current release
-behavior remains relay-only.
+are implemented. Release builds advertise the production capability by
+default; incomplete cross-NAT or platform evidence does not disable the gate,
+because capability, socket-protection, and probe failures fall back to relay.
 
 `ttl_seconds` is an integer from 1 through 30. It is authenticated by the relay
 offer. A client starts a local steady-clock deadline when the offer is received;
