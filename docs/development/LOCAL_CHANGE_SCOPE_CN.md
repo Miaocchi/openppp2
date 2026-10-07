@@ -5,12 +5,14 @@
 > Last verified: 2026-10-07
 > Parent index: [开发文档](README_CN.md)
 
-当前状态：main 位于 `6651e3f`。DNS 策略、P2P v2 源码与测试已公开；Android
-Boost.Filesystem 兼容修改已完成四 ABI 候选实链及 ZIP 验证，Debian 10 的 GNU `stdc++fs`
-CI 和 Windows x64/ARM64 构建成功。TSan 锁序与 FakeClock lost wakeup 均已修复；普通 target
-通过，无 suppression 的 TSan 连续 50 次通过（修复前第 9 次复现）。最终同 SHA 全套 CI
-仍待验证，v2.1.7 tag/release 仍待完成。这不表示
-CI 已全绿、完整 VPN runtime 已验收或版本已经发行。
+发行记录：[v2.1.7](https://github.com/Miaocchi/openppp2/releases/tag/v2.1.7) 已公开，
+标签源码为 `85220d2`，含 DNS 策略、P2P v2、平台兼容及 FakeClock 修复。
+发行源码和后续发布流程修复 `9c3fbe5` 的十项 CI 均已通过，包括四 Android ABI、签名 APK、
+Windows x64/ARM64、macOS、Linux 变体与交叉架构、普通单测和 TSan。
+发行包含 32 个安装包及校验、来源记录，共 35 个资产；摘要与 `SHA256SUMS.txt` 一致。
+TSan 本地连续 50 次验证也通过（修复前第 9 次复现）。自动发布令牌曾收到 403，
+本次经授权凭据完成公开，并补充已发布资产的重复执行核验。
+CI 与发行成功不表示完整 VPN runtime 或全平台运行验收通过。
 
 历史说明：2026-10-07 首轮文档整理时，远端 main 和文档站为 `99892a8`，当时的发布范围
 仅含文档，P2P 提交尚未推送。之后用户授权代码推送及 CI 全绿后发布 v2.1.7，代码与测试

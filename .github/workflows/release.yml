@@ -234,7 +234,45 @@ jobs:
           echo "Release assets:"
           find release-assets -maxdepth 1 -type f -printf '%f\t%s bytes\n' | sort
 
+      - name: Verify an existing published release
+        id: published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --slurp)
+          release_id=$(jq -r --arg tag "$RELEASE_TAG" '.[][] | select(.tag_name == $tag and .draft == false) | .id' <<<"$releases")
+          if [[ -z "$release_id" ]]; then
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::Published release lookup returned an invalid or ambiguous ID"
+            exit 1
+          fi
+          prerelease=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --jq '.prerelease')
+          if [[ "$prerelease" != "$RELEASE_PRERELEASE" ]]; then
+            echo "::error::Published release type differs from the requested release"
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" --paginate --slurp \
+            | jq -r '.[][] | [.name, ((.digest // "") | sub("^sha256:"; ""))] | @tsv' \
+            | sort > published-assets.tsv
+          (
+            cd release-assets
+            sha256sum -- * | awk '{print $2 "\t" $1}' | sort
+          ) > expected-assets.tsv
+          if ! diff -u expected-assets.tsv published-assets.tsv; then
+            echo "::error::Published release assets differ from the verified build artifacts"
+            exit 1
+          fi
+          echo "reuse=true" >> "$GITHUB_OUTPUT"
+
       - name: Create draft release and upload verified assets
+        if: steps.published.outputs.reuse != 'true'
         id: draft
         uses: softprops/action-gh-release@v2
         with:
@@ -256,6 +294,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_SHA: ${{ steps.release.outputs.tag_sha }}
           RELEASE_ID: ${{ steps.draft.outputs.id }}
+          REUSE_PUBLISHED: ${{ steps.published.outputs.reuse }}
         shell: bash
         run: |
           set -euo pipefail
@@ -272,6 +311,10 @@ jobs:
           if [[ "$object_type" != "commit" || "$object_sha" != "$RELEASE_SHA" ]]; then
             echo "::error::Remote tag changed before publication (resolved ${object_type} ${object_sha}, expected ${RELEASE_SHA})"
             exit 1
+          fi
+          if [[ "$REUSE_PUBLISHED" == "true" ]]; then
+            echo "Verified existing published release and all asset digests"
+            exit 0
           fi
           if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
             echo "::error::Draft release action did not provide a valid release ID"

@@ -119,6 +119,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("ASan archives are diagnostic builds", self.workflow)
         self.assertNotIn("*-asan.zip", self.workflow)
 
+    def test_published_release_retries_require_identical_assets(self):
+        self.assertIn("id: published", self.workflow)
+        self.assertIn("if: steps.published.outputs.reuse != 'true'", self.workflow)
+        self.assertIn(".tag_name == $tag and .draft == false", self.workflow)
+        self.assertIn("--paginate --slurp", self.workflow)
+        self.assertIn("diff -u expected-assets.tsv published-assets.tsv", self.workflow)
+        self.assertIn(".digest", self.workflow)
+        self.assertIn("Published release type differs", self.workflow)
+        self.assertIn("REUSE_PUBLISHED: ${{ steps.published.outputs.reuse }}", self.workflow)
+        self.assertLess(self.workflow.index("Remote tag changed before publication"),
+                        self.workflow.index('if [[ "$REUSE_PUBLISHED" == "true" ]]'))
+
     def test_remote_tag_sha_is_verified_before_checkout_release_and_publication(self):
         self.assertIn("ref: ${{ inputs.tag }}", self.workflow)
         self.assertIn('git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}"', self.workflow)

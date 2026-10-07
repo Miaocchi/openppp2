@@ -1,12 +1,12 @@
 # DNS、域名/IP 分流与规则集重构详细方案
 
-> Status: Source and tests public; platform builds updated; final CI and v2.1.7 pending
+> Status: Released in v2.1.7; cross-platform runtime acceptance remains incomplete
 > Type: Design
 > Last verified: 2026-10-07
 > **创建日期：**2026-10-05。
 > **用途：**记录客户端 DNS、域名/IP 分流与规则集的统一重构方案。
 > **适用对象：**内核与 CLI 开发者、维护者和评审者。
-> **当前状态：**P0–P5 源码与测试已随 merge `766333243d1b578b4dce539546cc6ce60f05c97f` 公开到 `main`，并包含 P2P 父提交 `c10eb0f`、`6a6c436`；后续平台修复 `50f49ab` 和候选提交 `8fe0718` 也已推送。Android Boost.Filesystem 兼容修改已完成四 ABI 候选实链及 ZIP 验证，Debian 10 GNU `stdc++fs` CI 与 Windows x64/ARM64 构建成功。TSan 锁序和 FakeClock lost wakeup 均已修复；普通 target 通过，无 suppression 的 TSan 连续 50 次通过，修复前第 9 次复现。最终同 SHA 全套 CI 仍待验证，v2.1.7 tag/release 仍待完成。首轮文档整理曾是仅文档发布阶段，此历史状态不代表当前代码仍未公开。上述构建结果不等于全平台 VPN runtime 验收。Linux 实机已有 HTTP、SOCKS UDP、DNS 四种上游、Fake-IP 与规则更新成功证据；HTTPS/proxy TCP 等仍有未通过项，macOS/iOS 运行验收尚未完成。迁移中的整份策略等价受已知语义差异限制，不能称完整发布验收或全平台验收完成。
+> **当前状态：**P0–P5 源码与测试及 P2P 改动已在 [v2.1.7](https://github.com/Miaocchi/openppp2/releases/tag/v2.1.7) 发行，标签源码为 `85220d2`。发行源码及后续发布流程修复 `9c3fbe5` 的十项 CI 均已通过，覆盖 Android 四 ABI 与签名 APK、Windows x64/ARM64、macOS、Linux 变体及交叉架构、普通单测和 TSan。发行共有 32 个安装包与 3 个校验/来源文件，资产摘要已核验。首轮仅文档发布属于历史阶段。上述构建与发行结果不等于全平台 VPN runtime 验收：Linux 实机已有 HTTP、SOCKS UDP、DNS 四种上游、Fake-IP 与规则更新成功证据；HTTPS/proxy TCP 等仍有未通过项，其他平台完整运行验收尚未完成。迁移中的整份策略等价受已知语义差异限制，P2P 生产认证控制开关仍保持关闭。
 > **P0 产物与验证：**[旧行为与平台能力基线](DNS_ROUTING_POLICY_BASELINE_CN.md)，包含静态样本、差分合同和验证边界。
 > **P1 产物与验证：**[离线编译和诊断](DNS_ROUTING_POLICY_P1_CN.md)，记录已实现语法、接口、CLI、扩展与运行时边界。
 >
