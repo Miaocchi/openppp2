@@ -1,5 +1,6 @@
 #include "PolicyStatusFile.h"
 #include "PolicyUpdateService.h"
+#include <ppp/Filesystem.h>
 
 #include <json/json.h>
 
@@ -7,7 +8,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <fstream>
-#include <filesystem>
 #include <initializer_list>
 #include <iterator>
 #include <memory>
@@ -34,7 +34,8 @@
 
 namespace ppp::app::client::policy {
 namespace {
-namespace fs = std::filesystem;
+namespace fs = ppp::filesystem::fs;
+using ppp::filesystem::error_code;
 
 bool HasOnlyKeys(const Json::Value& value, const std::initializer_list<const char*>& keys) {
     if (!value.isObject()) return false;
@@ -369,7 +370,7 @@ bool PolicyStatusWriterLease::TryAcquire(const std::string& statusPath,
         return false;
     }
     const fs::path parent = fs::path(statusPath).parent_path();
-    std::error_code ec;
+    error_code ec;
     if (!parent.empty()) fs::create_directories(parent, ec);
     if (ec) {
         error = "cannot create status directory";

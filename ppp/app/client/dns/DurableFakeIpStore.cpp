@@ -1,4 +1,5 @@
 #include "DurableFakeIpStore.h"
+#include <ppp/Filesystem.h>
 
 #include <algorithm>
 #include <array>
@@ -6,7 +7,6 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -27,7 +27,8 @@
 
 namespace ppp::app::client::dns {
 namespace {
-namespace fs = std::filesystem;
+namespace fs = ppp::filesystem::fs;
+using ppp::filesystem::error_code;
 constexpr uint32_t kSchema = 1;
 constexpr std::size_t kMaxStoreFileBytes = 64u * 1024u * 1024u;
 constexpr std::size_t kMaxHostnameBytes = 253;
@@ -166,10 +167,10 @@ bool WriteAll(int fd, const char* bytes, std::size_t size) {
 #endif
 
 bool ReadFile(const fs::path& path, std::string& bytes) {
-    std::error_code ec;
+    error_code ec;
     const auto size = fs::file_size(path, ec);
     if (ec || size > kMaxStoreFileBytes) return false;
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(ppp::filesystem::StreamPath(path), std::ios::binary);
     if (!file) return false;
     bytes.resize(static_cast<std::size_t>(size));
     if (!bytes.empty()) file.read(&bytes[0], static_cast<std::streamsize>(bytes.size()));
@@ -211,7 +212,7 @@ bool EnsureStorageDirectory(const fs::path& directory,
 #if defined(_WIN32)
     // Windows has no portable equivalent to fsync(parent-directory); file flushes
     // and MOVEFILE_WRITE_THROUGH remain the available durability primitives here.
-    std::error_code ec;
+    error_code ec;
     if (!fs::exists(directory, ec)) {
         if (options.allow_stage && !options.allow_stage(DurableFakeIpStore::Stage::DirectoryCreate)) {
             SetError(error, "storage directory create failed");
@@ -422,7 +423,7 @@ bool DurableFakeIpStore::Open(const std::string& directory, const std::string& i
         return false;
     };
     options_ = options;
-    std::error_code ec;
+    error_code ec;
     const fs::path absolute_directory = fs::absolute(directory, ec).lexically_normal();
     if (ec) return fail_persistence("storage path unavailable");
     if (!EnsureStorageDirectory(absolute_directory, options_, error)) return fail_persistence("storage directory unavailable");

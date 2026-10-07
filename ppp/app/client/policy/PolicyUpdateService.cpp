@@ -1,14 +1,16 @@
 #include "PolicyUpdateService.h"
+#include <ppp/Filesystem.h>
 
 #include <algorithm>
 #include <chrono>
-#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <sstream>
 
 namespace ppp::app::client::policy {
 namespace {
+namespace fs = ppp::filesystem::fs;
+using ppp::filesystem::error_code;
 constexpr std::size_t kSourceLimit = 64u * 1024u * 1024u;
 constexpr std::size_t kAggregateLimit = 256u * 1024u * 1024u;
 constexpr auto kRequestLimit = std::chrono::seconds(30);
@@ -34,10 +36,10 @@ std::string BundleDigest(const DurablePolicyBundle& bundle) {
 }
 
 bool ReadBytes(const std::string& path, std::size_t max_size, std::string& bytes) {
-    std::error_code ec;
-    const auto size_before = std::filesystem::file_size(path, ec);
+    error_code ec;
+    const auto size_before = fs::file_size(path, ec);
     if (ec || size_before > max_size || size_before > std::numeric_limits<std::size_t>::max()) return false;
-    const auto modified_before = std::filesystem::last_write_time(path, ec);
+    const auto modified_before = fs::last_write_time(path, ec);
     if (ec) return false;
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
@@ -47,9 +49,9 @@ bool ReadBytes(const std::string& path, std::size_t max_size, std::string& bytes
     char extra = 0;
     if (input.get(extra)) return false;
     if (!input.eof()) return false;
-    const auto size_after = std::filesystem::file_size(path, ec);
+    const auto size_after = fs::file_size(path, ec);
     if (ec || size_after != size_before) return false;
-    const auto modified_after = std::filesystem::last_write_time(path, ec);
+    const auto modified_after = fs::last_write_time(path, ec);
     return !ec && modified_after == modified_before;
 }
 

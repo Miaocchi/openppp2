@@ -56,9 +56,9 @@
 
 #include <ppp/net/asio/vdns.h>
 #include <ppp/net/Ipep.h>
+#include <ppp/Filesystem.h>
 
 #include <chrono>
-#include <filesystem>
 #include <openssl/sha.h>
 
 namespace {
@@ -72,7 +72,7 @@ std::string FakeIpIdentityDirectory(const std::string& root, const std::string& 
         leaf.push_back(hex[byte >> 4]);
         leaf.push_back(hex[byte & 0x0f]);
     }
-    return (std::filesystem::path(root) / leaf).lexically_normal().string();
+    return (ppp::filesystem::fs::path(root) / leaf).lexically_normal().string();
 }
 
 bool ParseUpdateBootstrap(const std::vector<std::string>& uris,
@@ -1357,7 +1357,7 @@ namespace ppp {
                             prepared_fake_ip_store = store;
                         }
 
-                        const std::filesystem::path cache_root = policy::PolicyStoreRootForConfig(config_path);
+                        const ppp::filesystem::fs::path cache_root = policy::PolicyStoreRootForConfig(config_path);
                         const auto identity = policy::PolicyUpdateService::ImmutableFingerprint(loaded.source);
                         auto durable_store = std::make_shared<policy::FileDurablePolicyBundleStore>(cache_root.string());
                         std::function<policy::PolicyLoadResult()> declaration_loader;

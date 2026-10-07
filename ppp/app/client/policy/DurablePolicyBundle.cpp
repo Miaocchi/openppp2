@@ -1,4 +1,5 @@
 #include "DurablePolicyBundle.h"
+#include <ppp/Filesystem.h>
 
 #include <json/json.h>
 #include <openssl/evp.h>
@@ -6,7 +7,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -22,7 +22,8 @@
 #endif
 
 namespace ppp::app::client::policy {
-namespace fs = std::filesystem;
+namespace fs = ppp::filesystem::fs;
+using ppp::filesystem::error_code;
 namespace {
 constexpr std::size_t kSourceLimit = 64u * 1024u * 1024u;
 constexpr std::size_t kBundleLimit = 256u * 1024u * 1024u;
@@ -48,10 +49,10 @@ Json::String Jstr(const std::string& value) { return Json::String(value.data(), 
 std::string Stdstr(const Json::String& value) { return std::string(value.data(), value.size()); }
 
 bool ReadFile(const fs::path& path, std::size_t max_size, std::string& bytes) {
-    std::error_code ec;
+    error_code ec;
     const auto size = fs::file_size(path, ec);
     if (ec || size > max_size || size > std::numeric_limits<std::size_t>::max()) return false;
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(ppp::filesystem::StreamPath(path), std::ios::binary);
     if (!input) return false;
     bytes.resize(static_cast<std::size_t>(size));
     if (size != 0) input.read(bytes.data(), static_cast<std::streamsize>(size));
@@ -102,7 +103,7 @@ bool AtomicWrite(const fs::path& target, const std::string& bytes, std::string& 
         return false;
     }
     {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        std::ofstream output(ppp::filesystem::StreamPath(temporary), std::ios::binary | std::ios::trunc);
         if (!output) { error = "cannot create durable temporary file"; return false; }
         output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         output.flush();
@@ -118,7 +119,7 @@ bool AtomicWrite(const fs::path& target, const std::string& bytes, std::string& 
         fs::remove(temporary);
         return false;
     }
-    std::error_code ec;
+    error_code ec;
     if (allow_stage && !allow_stage(FileDurablePolicyBundleStore::Stage::Rename)) {
         error = "cannot atomically replace durable pointer";
         fs::remove(temporary);
@@ -127,7 +128,7 @@ bool AtomicWrite(const fs::path& target, const std::string& bytes, std::string& 
     if (rename_attempted) *rename_attempted = true;
 #if defined(_WIN32)
     if (!MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) ec = std::error_code(GetLastError(), std::system_category());
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) ec = error_code(GetLastError(), std::system_category());
 #else
     fs::rename(temporary, target, ec);
 #endif
@@ -145,7 +146,7 @@ bool AtomicWrite(const fs::path& target, const std::string& bytes, std::string& 
 }
 
 bool EnsureDirectory(const fs::path& path, std::string& error) {
-    std::error_code ec;
+    error_code ec;
     fs::create_directories(path, ec);
     if (ec || !fs::is_directory(path, ec) || ec) {
         error = "cannot create durable policy directory";
@@ -181,7 +182,7 @@ bool ReadPointer(const fs::path& path, std::string& digest) {
 
 bool RemoveAndFlush(const fs::path& path, std::string& error,
     const std::function<bool(FileDurablePolicyBundleStore::Stage)>& allow_stage) {
-    std::error_code ec;
+    error_code ec;
     fs::remove(path, ec);
     if (ec) { error = "cannot remove durable pointer"; return false; }
     if ((allow_stage && !allow_stage(FileDurablePolicyBundleStore::Stage::DirectoryFlush)) ||
@@ -192,9 +193,9 @@ bool RemoveAndFlush(const fs::path& path, std::string& error,
 bool PersistImmutable(const fs::path& path, const std::string& bytes, std::size_t max_size,
     std::string& error,
     const std::function<bool(FileDurablePolicyBundleStore::Stage)>& allow_stage) {
-    std::error_code ec;
+    error_code ec;
     const auto status = fs::symlink_status(path, ec);
-    if (!ec && status.type() != fs::file_type::not_found) {
+    if (!ec && !ppp::filesystem::IsNotFound(status.type())) {
         std::string existing;
         if (!fs::is_regular_file(status) || !ReadFile(path, max_size, existing) || existing != bytes) {
             error = "content-addressed durable file already exists with different or invalid contents";
@@ -202,7 +203,7 @@ bool PersistImmutable(const fs::path& path, const std::string& bytes, std::size_
         }
         return true;
     }
-    if (ec && ec != std::errc::no_such_file_or_directory) {
+    if (ec && !ppp::filesystem::IsNotFound(ec)) {
         error = "cannot inspect content-addressed durable file";
         return false;
     }
@@ -433,7 +434,7 @@ bool FileDurablePolicyBundleStore::Commit(const DurablePolicyBundle& bundle, std
     const fs::path current_path = directory / "CURRENT";
     const fs::path previous_path = directory / "PREVIOUS";
     std::string old_current_raw, old_previous_raw, old_current;
-    std::error_code ec;
+    error_code ec;
     const bool had_current = fs::exists(current_path, ec);
     if (ec || (had_current && !ReadFile(current_path, 128, old_current_raw))) { error = "cannot snapshot durable current pointer"; return false; }
     const bool had_previous = fs::exists(previous_path, ec);
@@ -524,7 +525,7 @@ bool FileDurablePolicyBundleStore::RestorePreviousAsCurrent(const std::string& i
     ReadPointer(directory / "CURRENT", current);
     if (current == previous) return true;
     std::string current_raw;
-    std::error_code ec;
+    error_code ec;
     const bool had_current = fs::exists(directory / "CURRENT", ec);
     if (ec || (had_current && !ReadFile(directory / "CURRENT", 128, current_raw))) { error = "cannot snapshot current pointer before fallback"; return false; }
     if (AtomicWrite(directory / "CURRENT", previous + "\n", error,
@@ -540,7 +541,7 @@ bool FileDurablePolicyBundleStore::RestorePreviousAsCurrent(const std::string& i
 bool FileDurablePolicyBundleStore::ClearCurrent(const std::string& identity, std::string& error) {
     if (!SafeDigest(identity)) { error = "invalid durable identity fingerprint"; return false; }
     const fs::path directory = fs::path(root_directory_) / identity;
-    std::error_code ec;
+    error_code ec;
     fs::remove(directory / "CURRENT", ec);
     if (ec) { error = "cannot clear durable current pointer"; return false; }
     if ((StageAllowed(Stage::DirectoryFlush) == false) || !FlushDirectory(directory)) {
@@ -554,7 +555,7 @@ bool FileDurablePolicyBundleStore::CapturePointerState(const std::string& identi
     if (!SafeDigest(identity)) { error = "invalid durable identity fingerprint"; return false; }
     const fs::path directory = fs::path(root_directory_) / identity;
     auto capture = [&](const fs::path& path, bool& present, std::string& bytes) {
-        std::error_code ec;
+        error_code ec;
         present = fs::exists(path, ec);
         return !ec && (!present || ReadFile(path, 128, bytes));
     };

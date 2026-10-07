@@ -1,11 +1,11 @@
 #include <ppp/app/client/policy/LegacyPolicyAdapter.h>
 
 #include <ppp/app/client/ClientRoutingSources.h>
+#include <ppp/Filesystem.h>
 #include <boost/asio/ip/address_v4.hpp>
 
 #include <algorithm>
 #include <cctype>
-#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -159,8 +159,8 @@ LegacyPolicyModel LegacyPolicyAdapter::Adapt(const ppp::configurations::AppConfi
     if (!human_path.empty()) {
         ppp::string raw = ppp::io::File::RewritePath(configuration.routing.rules.data());
         ppp::string path = ppp::io::File::GetFullPath(raw.data());
-        std::error_code ec;
-        const bool exists = !path.empty() && std::filesystem::is_regular_file(path.data(), ec);
+        ppp::filesystem::error_code ec;
+        const bool exists = !path.empty() && ppp::filesystem::fs::is_regular_file(path.data(), ec);
         model.sources.push_back({ LegacySourceRole::HumanRules,
             exists ? LegacySourceKind::File : LegacySourceKind::UnavailableFile,
             order++, human_path, path.empty() ? human_path : Std(path) });

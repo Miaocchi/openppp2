@@ -7,13 +7,13 @@
 #include <ppp/app/client/policy/PolicyStatusFile.h>
 #include <ppp/app/client/policy/PolicyUpdateService.h>
 #include <ppp/configurations/AppConfiguration.h>
+#include <ppp/Filesystem.h>
 
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <filesystem>
 #include <fstream>
 #include <openssl/sha.h>
 #include <map>
@@ -25,7 +25,8 @@
 namespace ppp::app {
 namespace {
 namespace policy = client::policy;
-namespace fs = std::filesystem;
+namespace fs = ppp::filesystem::fs;
+using ppp::filesystem::error_code;
 
 std::string Sha256(const std::string& bytes) {
     unsigned char digest[SHA256_DIGEST_LENGTH];
@@ -242,14 +243,14 @@ bool ReadJsonFile(const std::string& path, Json::Value& value) {
 
 bool WriteFilesNoReplace(const std::vector<std::pair<fs::path, std::string>>& files, std::string& error) {
     for (const auto& item : files) {
-        std::error_code ec;
+        error_code ec;
         if (fs::exists(item.first, ec) || ec) { error = "An output file already exists or cannot be inspected."; return false; }
     }
     std::vector<fs::path> temps;
     std::vector<fs::path> installed;
     const auto nonce = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     auto cleanup = [&]() {
-        std::error_code ec;
+        error_code ec;
         for (const auto& path : temps) fs::remove(path, ec);
         for (const auto& path : installed) fs::remove(path, ec);
     };
@@ -257,14 +258,14 @@ bool WriteFilesNoReplace(const std::vector<std::pair<fs::path, std::string>>& fi
         auto temp = files[i].first;
         temp += ".tmp-" + nonce + "-" + std::to_string(i);
         temps.push_back(temp);
-        std::ofstream stream(temp, std::ios::binary | std::ios::out | std::ios::trunc);
+        std::ofstream stream(ppp::filesystem::StreamPath(temp), std::ios::binary | std::ios::out | std::ios::trunc);
         if (!stream) { error = "Could not create a temporary output file."; cleanup(); return false; }
         stream.write(files[i].second.data(), static_cast<std::streamsize>(files[i].second.size()));
         stream.close();
         if (!stream) { error = "Could not complete a temporary output file."; cleanup(); return false; }
     }
     for (std::size_t i = 0; i < files.size(); ++i) {
-        std::error_code ec;
+        error_code ec;
         if (fs::exists(files[i].first, ec) || ec) {
             error = "An output file appeared while writing; no existing file was replaced.";
             cleanup(); return false;
@@ -278,7 +279,7 @@ bool WriteFilesNoReplace(const std::vector<std::pair<fs::path, std::string>>& fi
 }
 
 void RemoveEmptyDirectoriesReverse(const std::vector<fs::path>& directories) noexcept {
-    std::error_code ec;
+    error_code ec;
     for (auto it = directories.rbegin(); it != directories.rend(); ++it) {
         fs::remove(*it, ec);
         ec.clear();
@@ -289,7 +290,7 @@ bool CreateParentDirectories(const fs::path& directory,
     std::vector<fs::path>& created, std::string& error) {
     created.clear();
     fs::path current = directory.root_path();
-    std::error_code ec;
+    error_code ec;
     for (const auto& component : directory.relative_path()) {
         current /= component;
         if (fs::exists(current, ec)) {
@@ -342,7 +343,7 @@ int HandleInit(const ParsedOptions& parsed, Json::Value& report, bool json,
             rule_set["source"]["url"] = JsonString(value);
             return true;
         }
-        std::error_code ec;
+        error_code ec;
         if (!fs::is_regular_file(value, ec) || ec) return false;
         const auto size = fs::file_size(value, ec);
         if (ec || size > 64u * 1024u * 1024u) return false;
@@ -390,7 +391,7 @@ int HandleInit(const ParsedOptions& parsed, Json::Value& report, bool json,
     config["template"] = name.c_str();
     config["runtime"] = runtime.c_str();
     fs::path directory = fs::absolute(out_value).lexically_normal();
-    std::error_code ec;
+    error_code ec;
     const bool existed = fs::exists(directory, ec);
     if (ec || (existed && !fs::is_directory(directory, ec)))
         return fail("E_POLICY_STORAGE", "--out must name a directory that can be created.", 3);
@@ -449,7 +450,7 @@ int HandleMigrate(const ParsedOptions& parsed, Json::Value& report, bool json,
         return fail("E_POLICY_SOURCE_UNAVAILABLE", "Legacy configuration changed during migration analysis; no output was written.", 3);
     report["source_sha256"] = original_hash.c_str();
     fs::path directory = fs::absolute(parsed.values.at("--out")).lexically_normal();
-    std::error_code ec;
+    error_code ec;
     const bool existed = fs::exists(directory, ec);
     if (ec || (existed && !fs::is_directory(directory, ec)))
         return fail("E_POLICY_STORAGE", "--out must name a directory that can be created.", 3);

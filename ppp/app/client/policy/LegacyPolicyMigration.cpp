@@ -1,11 +1,11 @@
 #include "LegacyPolicyMigration.h"
+#include <ppp/Filesystem.h>
 
 #include "PolicyEvaluator.h"
 
 #include <ppp/dns/DnsProviderCatalog.h>
 
 #include <algorithm>
-#include <filesystem>
 #include <set>
 #include <tuple>
 #include <sstream>
@@ -246,9 +246,9 @@ LegacyPolicyMigrationResult LegacyPolicyMigration::CreateDraft(const LegacyPolic
     result.rules_text = rules.str();
 
     PolicySource source;
-    source.config_path = std::filesystem::absolute(output_config_path).lexically_normal().string();
-    source.base_path = std::filesystem::path(source.config_path).parent_path().string();
-    source.rules_path = (std::filesystem::path(source.base_path) / "routing.rules").string();
+    source.config_path = ppp::filesystem::fs::absolute(output_config_path).lexically_normal().string();
+    source.base_path = ppp::filesystem::fs::path(source.config_path).parent_path().string();
+    source.rules_path = (ppp::filesystem::fs::path(source.base_path) / "routing.rules").string();
     source.rules_text = result.rules_text;
     source.dns_mode = "real";
     source.fake_ip_identity = "migration-draft";

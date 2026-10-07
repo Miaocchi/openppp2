@@ -1,4 +1,5 @@
 #include "PolicySourceLoader.h"
+#include <ppp/Filesystem.h>
 #include <ppp/dns/DnsProviderCatalog.h>
 #include <openssl/sha.h>
 #include <boost/asio/ip/address_v4.hpp>
@@ -6,7 +7,6 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -14,7 +14,8 @@
 
 namespace ppp::app::client::policy {
 namespace {
-namespace fs = std::filesystem;
+namespace fs = ppp::filesystem::fs;
+using ppp::filesystem::error_code;
 
 std::string Std(const Json::String& value) { return std::string(value.data(), value.size()); }
 
@@ -64,7 +65,7 @@ PolicyAction Via(PolicyLoadResult& r, const Json::Value& v, const std::string& p
 }
 
 bool Read(PolicyLoadResult& r, const std::string& file, const std::string& path, std::string& text) {
-    std::error_code ec;
+    error_code ec;
     if (!fs::is_regular_file(file, ec)) {
         Error(r, "E_POLICY_SOURCE_UNAVAILABLE", path, "Source must be an existing regular file.");
         return false;
@@ -260,7 +261,7 @@ PolicyLoadResult PolicySourceLoader::LoadInternal(const Json::Value& config, con
     bool declarations_only) {
     PolicyLoadResult result;
     auto& source = result.source;
-    std::error_code ec;
+    error_code ec;
     const auto absolute = fs::weakly_canonical(fs::absolute(fs::path(config_path), ec), ec);
     if (config_path.empty() || config_path.find('\0') != std::string::npos || ec) {
         Error(result, "E_POLICY_CONFIG", "$", "A configuration file path is required to resolve resources.");
