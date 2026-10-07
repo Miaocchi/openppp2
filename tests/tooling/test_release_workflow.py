@@ -126,6 +126,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("Remote tag points to", self.workflow)
         self.assertIn("Remote tag changed before publication", self.workflow)
         self.assertIn("draft: true", self.workflow)
+        self.assertIn("id: draft", self.workflow)
+        self.assertIn("RELEASE_ID: ${{ steps.draft.outputs.id }}", self.workflow)
+        self.assertIn('[[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]', self.workflow)
+        self.assertIn('releases/${RELEASE_ID}', self.workflow)
+        self.assertNotIn('releases/tags/${RELEASE_TAG}', self.workflow)
         self.assertIn('-F draft=false', self.workflow)
         self.assertLess(
             self.workflow.index("Remote tag changed before publication"),

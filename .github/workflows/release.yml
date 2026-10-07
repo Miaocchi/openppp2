@@ -255,6 +255,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_SHA: ${{ steps.release.outputs.tag_sha }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -272,5 +273,8 @@ jobs:
             echo "::error::Remote tag changed before publication (resolved ${object_type} ${object_sha}, expected ${RELEASE_SHA})"
             exit 1
           fi
-          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.id')
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" -F draft=false
+          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::Draft release action did not provide a valid release ID"
+            exit 1
+          fi
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false
