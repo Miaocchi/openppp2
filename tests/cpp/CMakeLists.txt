@@ -870,6 +870,9 @@ openppp2_add_cpp_test(asynchronous_write_io_queue_test SOURCES
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
 target_link_libraries(asynchronous_write_io_queue_test PRIVATE boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+openppp2_add_cpp_test(shared_buffer_receive_test SOURCES
+    shared_buffer_receive_test.cpp)
+target_link_libraries(shared_buffer_receive_test PRIVATE Threads::Threads)
 openppp2_add_cpp_test(protector_network_request_test SOURCES
     protector_network_request_test.cpp)
 target_link_libraries(protector_network_request_test PRIVATE Threads::Threads)

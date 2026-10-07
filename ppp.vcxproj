@@ -1012,6 +1012,7 @@
     <ClCompile Include="windows\ppp\tap\TapWindows.cpp" />
     <ClInclude Include="ppp\threading\Timer.h" />
     <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h" />
+    <ClInclude Include="ppp\net\asio\SharedBufferReceive.h" />
     <ClInclude Include="ppp\transmissions\IAuthenticatedCarrierBinding.h" />
     <ClInclude Include="ppp\transmissions\ITcpipTransmission.h" />
     <ClInclude Include="ppp\transmissions\ITransmission.h" />

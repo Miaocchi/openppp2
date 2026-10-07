@@ -1570,6 +1570,9 @@
     <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\net\asio\SharedBufferReceive.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\transmissions\ITcpipTransmission.h">
       <Filter>头文件</Filter>
     </ClInclude>

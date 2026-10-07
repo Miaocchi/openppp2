@@ -70,7 +70,10 @@ namespace ppp
             std::atomic<int64_t>                                                DefaultThreadId = 0;
             std::atomic<uint64_t>                                               TickCount = 0;
             std::atomic<bool>                                                   TickThreadStop = false;
-            DateTime                                                           Now;
+            /** @brief Set while the default context is attached; read lock-free by GetTickCount(). */
+            std::atomic<bool>                                                   DefaultAttached = false;
+            /** @brief Cached DateTime ticks published by the tick thread; read lock-free by Now(). */
+            std::atomic<int64_t>                                                NowTicks = 0;
             ExecutorContextPtr                                                  Default;
             ExecutorContextPtr                                                  Scheduler;
             SynchronizedObject                                                  Lock;
@@ -89,6 +92,8 @@ namespace ppp
 
         /** @brief Process-wide singleton containing executor runtime state. */
         static std::shared_ptr<ExecutorsInternal>                               Internal;
+        /** @brief Context bound to the calling thread by the default or worker run loop. */
+        static thread_local ExecutorContextPtr                                  CurrentThreadContext;
         /** @brief Public application-exit callback storage. */
         Executors::ApplicationExitEventHandler                                  Executors::ApplicationExit;
 
@@ -110,15 +115,12 @@ namespace ppp
                             SetThreadName("tick");
                             while (!i->TickThreadStop.load(std::memory_order_acquire))
                             {
+                                // Published without the executor lock: every IO thread reads these
+                                // values per packet, so they must not contend with this loop.
                                 UInt64 now = ppp::GetTickCount();
-                                bool past = false;
-                                {
-                                    SynchronizedObjectScope scope(i->Lock);
-                                    UInt64 previous = i->TickCount.load(std::memory_order_relaxed);
-                                    past = (now / kSecondsPerTickUnit) != (previous / kSecondsPerTickUnit);
-                                    i->TickCount.store(now, std::memory_order_relaxed);
-                                    i->Now = DateTime::Now();
-                                }
+                                UInt64 previous = i->TickCount.exchange(now, std::memory_order_relaxed);
+                                bool past = (now / kSecondsPerTickUnit) != (previous / kSecondsPerTickUnit);
+                                i->NowTicks.store(DateTime::Now().Ticks(), std::memory_order_relaxed);
 
                                 if (past)
                                 {
@@ -200,6 +202,8 @@ namespace ppp
             Internal->Default = context;
             Internal->DefaultThreadId = GetCurrentThreadId();
             Internal->Buffers[context.get()] = BufferswapAllocator::MakeByteArray(allocator, PPP_BUFFER_SIZE);
+            Internal->DefaultAttached.store(true, std::memory_order_release);
+            CurrentThreadContext = context;
 
             return context;
         }
@@ -226,6 +230,7 @@ namespace ppp
             Internal->ContextTable[threadId] = context;
             Internal->Threads[key] = Thread::GetCurrentThread();
             Internal->Buffers[key] = BufferswapAllocator::MakeByteArray(allocator, PPP_BUFFER_SIZE);
+            CurrentThreadContext = context;
             return context;
         }
 
@@ -239,6 +244,7 @@ namespace ppp
             ExecutorLinkedList& fifo = Internal->ContextFifo;
             ExecutorTable& contexts = Internal->ContextTable;
             ExecutorThreadTable& threads = Internal->Threads;
+            CurrentThreadContext.reset();
             SynchronizedObjectScope scope(Internal->Lock);
 
             auto CONTEXT_TABLE_TAIL = contexts.find(threadId);
@@ -271,7 +277,9 @@ namespace ppp
          */
         static void Executors_UnattachDefaultContext(const std::shared_ptr<boost::asio::io_context>& context) noexcept
         {
+            CurrentThreadContext.reset();
             SynchronizedObjectScope scope(Internal->Lock);
+            Internal->DefaultAttached.store(false, std::memory_order_release);
             Internal->DefaultThreadId = 0;
             Internal->Default.reset();
 
@@ -362,26 +370,13 @@ namespace ppp
          */
         std::shared_ptr<boost::asio::io_context> Executors::GetCurrent(bool defaultContext) noexcept
         {
-            std::shared_ptr<ExecutorsInternal> i = Internal;
-            if (NULLPTR == i)
+            // The run loops bind their context to the thread, so the common case needs no lock.
+            if (NULLPTR != CurrentThreadContext)
             {
-                return NULLPTR;
+                return CurrentThreadContext;
             }
 
-            int64_t threadId = GetCurrentThreadId();
-            SynchronizedObjectScope scope(i->Lock);
-            if (threadId == i->DefaultThreadId.load(std::memory_order_relaxed))
-            {
-                return i->Default;
-            }
-
-            ExecutorTable::iterator tail = i->ContextTable.find(threadId);
-            if (tail != i->ContextTable.end())
-            {
-                return tail->second;
-            }
-
-            return defaultContext ? i->Default : NULLPTR;
+            return defaultContext ? GetDefault() : NULLPTR;
         }
 
         /**
@@ -806,14 +801,15 @@ namespace ppp
          */
         DateTime Executors::Now() noexcept
         {
-            std::shared_ptr<ExecutorsInternal> i = Internal;
+            // Internal is created once and never reset; reading through the raw pointer avoids
+            // bouncing the shared control block between IO threads.
+            ExecutorsInternal* i = Internal.get();
             if (NULLPTR == i)
             {
                 return DateTime::Now();
             }
 
-            SynchronizedObjectScope scope(i->Lock);
-            return i->Now;
+            return DateTime(i->NowTicks.load(std::memory_order_relaxed));
         }
 
         /**
@@ -822,14 +818,10 @@ namespace ppp
          */
         uint64_t Executors::GetTickCount() noexcept
         {
-            std::shared_ptr<ExecutorsInternal> i = Internal;
-            if (NULLPTR != i)
+            ExecutorsInternal* i = Internal.get();
+            if (NULLPTR != i && i->DefaultAttached.load(std::memory_order_acquire))
             {
-                SynchronizedObjectScope scope(i->Lock);
-                if (NULLPTR != i->Default)
-                {
-                    return i->TickCount.load(std::memory_order_relaxed);
-                }
+                return i->TickCount.load(std::memory_order_relaxed);
             }
 
             return ppp::GetTickCount();
@@ -914,6 +906,7 @@ namespace ppp
          */
         ExecutorsInternal::ExecutorsInternal() noexcept
             : TickCount(ppp::GetTickCount())
+            , NowTicks(DateTime::Now().Ticks())
         {
             if (ppp::RT)
             {

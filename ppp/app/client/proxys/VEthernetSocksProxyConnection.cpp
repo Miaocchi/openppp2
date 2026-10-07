@@ -14,6 +14,7 @@
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
+#include <ppp/net/asio/SharedBufferReceive.h>
 
 /**
  * @file VEthernetSocksProxyConnection.cpp
@@ -698,12 +699,14 @@ namespace ppp {
                     }
 
                     auto self = std::dynamic_pointer_cast<VEthernetSocksProxyConnection>(shared_from_this());
-                    udp_socket->async_receive_from(boost::asio::buffer(udp_buffer.get(), PPP_BUFFER_SIZE), udp_remote_ep_,
+                    ppp::net::asio::AsyncReceiveFromSharedBuffer(*udp_socket, udp_buffer.get(), PPP_BUFFER_SIZE, udp_remote_ep_,
                         [self, this, udp_socket, udp_buffer, allocator, context](const boost::system::error_code& ec, std::size_t sz) noexcept {
                             bool disposing = false;
                             if (ec == boost::system::errc::success) {
                                 if (sz > 0) {
-                                    std::shared_ptr<Byte> packet = ppp::net::asio::IAsynchronousWriteIoQueue::Copy(allocator, udp_buffer, udp_buffer.get(), (int)sz);
+                                    // udp_buffer may be the per-context shared buffer and the packet is used
+                                    // by a coroutine after this handler returns, so copy it.
+                                    std::shared_ptr<Byte> packet = ppp::net::asio::IAsynchronousWriteIoQueue::Copy(allocator, udp_buffer.get(), (int)sz);
                                     if (NULLPTR == packet) {
                                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                                     }

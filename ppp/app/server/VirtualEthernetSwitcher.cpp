@@ -42,6 +42,7 @@
 
 #include <ppp/collections/Dictionary.h>
 #include <ppp/threading/Executors.h>
+#include <ppp/net/asio/SharedBufferReceive.h>
 #include <ppp/transmissions/ITcpipTransmission.h>
 #include <ppp/transmissions/IWebsocketTransmission.h>
 
@@ -3434,7 +3435,7 @@ namespace ppp {
                 }
 
                 auto self = shared_from_this();
-                static_echo_socket_.async_receive_from(boost::asio::buffer(static_echo_buffers_.get(), PPP_BUFFER_SIZE), static_echo_source_ep_,
+                ppp::net::asio::AsyncReceiveFromSharedBuffer(static_echo_socket_, static_echo_buffers_.get(), PPP_BUFFER_SIZE, static_echo_source_ep_,
                     [self, this](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         if (ec == boost::system::errc::operation_canceled) {
                             return false;
