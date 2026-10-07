@@ -129,6 +129,7 @@ private:
     const std::string identity_fingerprint_;
     mutable std::mutex operation_mutex_;
     mutable std::mutex fetcher_mutex_;
+    std::mutex lifecycle_mutex_;
     std::mutex publication_mutex_;
     mutable std::mutex status_mutex_;
     std::mutex worker_mutex_;

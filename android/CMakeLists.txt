@@ -150,3 +150,10 @@ TARGET_LINK_LIBRARIES(${NAME}
     libboost_context.a
     libboost_regex.a
     libboost_filesystem.a)
+
+# NDK r20b ships LLVM 8 libc++, whose C++17 filesystem implementation is
+# provided by the separate libc++fs archive. LLVM 9 and later include it in
+# libc++ itself.
+IF(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+    TARGET_LINK_LIBRARIES(${NAME} c++fs)
+ENDIF()

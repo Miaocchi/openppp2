@@ -158,8 +158,7 @@ struct NativeFixture {
         gatherer->Cancel();
         transport->Close();
         responder.Close();
-        boost::system::error_code ec;
-        watchdog.cancel(ec);
+        watchdog.cancel();
     }
 };
 

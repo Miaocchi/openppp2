@@ -238,8 +238,8 @@ namespace ppp {
         }
 
         bool P2PStunGatherer::BeginServerLocked() noexcept {
-            boost::system::error_code ec;
-            timer_.cancel(ec);
+            try { timer_.cancel(); }
+            catch (...) {}
             if (server_index_ >= server_count_ || !transport_ || !transport_->IsReady()) {
                 FinishLocked({});
                 return false;
@@ -386,8 +386,8 @@ namespace ppp {
         void P2PStunGatherer::ClearLocked() noexcept {
             running_.store(false, std::memory_order_release);
             ++transaction_serial_;
-            boost::system::error_code ec;
-            timer_.cancel(ec);
+            try { timer_.cancel(); }
+            catch (...) {}
             transport_.reset();
             completion_ = nullptr;
             request_.fill(0);

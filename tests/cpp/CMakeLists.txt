@@ -50,6 +50,11 @@ function(openppp2_add_cpp_test target)
     cmake_parse_arguments(ARG "" "" "SOURCES" ${ARGN})
     add_executable(${target} ${ARG_SOURCES})
     target_compile_features(${target} PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+        AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9
+        AND NOT ANDROID)
+        target_link_libraries(${target} PRIVATE stdc++fs)
+    endif()
     target_include_directories(${target} PRIVATE ${OPENPPP2_TEST_INCLUDES})
     target_compile_options(${target} PRIVATE
         -Wno-format
@@ -1001,6 +1006,11 @@ target_include_directories(openppp2_policy_test_core PUBLIC ${OPENPPP2_TEST_INCL
 target_compile_definitions(openppp2_policy_test_core PRIVATE FUNCTION)
 target_compile_options(openppp2_policy_test_core PRIVATE -Wno-deprecated-declarations -Wno-format)
 target_link_libraries(openppp2_policy_test_core PUBLIC Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+    AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9
+    AND NOT ANDROID)
+    target_link_libraries(openppp2_policy_test_core PUBLIC stdc++fs)
+endif()
 target_sources(client_datagram_port_manager_test PRIVATE support/policy_no_coroutine_stubs.cpp)
 target_link_libraries(client_datagram_port_manager_test PRIVATE openppp2_policy_test_core)
 if(ENABLE_COVERAGE)

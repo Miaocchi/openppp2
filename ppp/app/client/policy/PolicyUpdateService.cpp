@@ -543,21 +543,30 @@ PolicyUpdateResult PolicyUpdateService::RunOnceLocked(PolicyUpdateMode mode) {
 
 bool PolicyUpdateService::Start() {
     {
-        std::lock_guard<std::mutex> lock(worker_mutex_);
-        if (closed_) return false;
-        if (started_) return true;
-        std::chrono::seconds interval;
-        if (!ParseInterval(declared_source_.updates_interval, interval)) interval = std::chrono::hours(24);
-        if (declared_source_.updates_enabled) {
-            if (!CheckedAdd(clock_->Now(), interval, next_attempt_)) return false;
-        } else next_attempt_ = std::chrono::system_clock::time_point::max();
-        started_ = true;
+        std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
+        std::int64_t next_attempt_ms = 0;
+        {
+            std::lock_guard<std::mutex> lock(worker_mutex_);
+            if (closed_) return false;
+            if (started_) return true;
+            std::chrono::seconds interval;
+            if (!ParseInterval(declared_source_.updates_interval, interval)) interval = std::chrono::hours(24);
+            if (declared_source_.updates_enabled) {
+                if (!CheckedAdd(clock_->Now(), interval, next_attempt_)) return false;
+                next_attempt_ms = Millis(next_attempt_);
+            } else next_attempt_ = std::chrono::system_clock::time_point::max();
+        }
         {
             std::lock_guard<std::mutex> status_lock(status_mutex_);
-            status_.next_attempt_ms = declared_source_.updates_enabled ? Millis(next_attempt_) : 0;
+            status_.next_attempt_ms = next_attempt_ms;
         }
-        try { worker_ = std::thread([this] { Worker(); }); }
-        catch (...) { started_ = false; return false; }
+        {
+            std::lock_guard<std::mutex> lock(worker_mutex_);
+            if (closed_) return false;
+            started_ = true;
+            try { worker_ = std::thread([this] { Worker(); }); }
+            catch (...) { started_ = false; return false; }
+        }
     }
     PublishStatus();
     return true;
@@ -603,11 +612,15 @@ void PolicyUpdateService::Worker() {
         }
         const auto now = clock_->Now();
         if (!CheckedAdd(now, kStatusHeartbeat, next_heartbeat)) next_heartbeat = std::chrono::system_clock::time_point::max();
+        std::int64_t next_attempt_ms = 0;
         {
-            std::lock_guard<std::mutex> worker_lock(worker_mutex_);
-            std::lock_guard<std::mutex> status_lock(status_mutex_);
-            status_.next_attempt_ms = declared_source_.updates_enabled && next_attempt_ != std::chrono::system_clock::time_point::max()
-                ? Millis(next_attempt_) : 0;
+            std::lock_guard<std::mutex> lock(worker_mutex_);
+            if (declared_source_.updates_enabled && next_attempt_ != std::chrono::system_clock::time_point::max())
+                next_attempt_ms = Millis(next_attempt_);
+        }
+        {
+            std::lock_guard<std::mutex> lock(status_mutex_);
+            status_.next_attempt_ms = next_attempt_ms;
         }
         PublishStatus();
     }
@@ -616,15 +629,18 @@ void PolicyUpdateService::Worker() {
 void PolicyUpdateService::Close() noexcept {
     if (cancellation_) cancellation_->store(true, std::memory_order_release);
     {
-        std::lock_guard<std::mutex> publication(publication_mutex_);
-        std::lock_guard<std::mutex> lock(worker_mutex_);
-        if (!closed_.exchange(true, std::memory_order_acq_rel)) {
-            triggered_ = false;
+        std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
+        {
+            std::lock_guard<std::mutex> publication(publication_mutex_);
+            std::lock_guard<std::mutex> lock(worker_mutex_);
+            if (!closed_.exchange(true, std::memory_order_acq_rel)) {
+                triggered_ = false;
+            }
         }
+        gate_.Close();
+        worker_cv_.notify_all();
+        if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id()) worker_.join();
     }
-    gate_.Close();
-    worker_cv_.notify_all();
-    if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id()) worker_.join();
     {
         std::lock_guard<std::mutex> lock(status_mutex_);
         status_.offline = true;

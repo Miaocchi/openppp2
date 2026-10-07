@@ -1,12 +1,12 @@
 # DNS、域名/IP 分流与规则集重构详细方案
 
-> Status: Implemented; offline acceptance complete; v2.1.7 release pending platform/runtime acceptance
+> Status: Source and tests public; platform compatibility and TSan fixes in progress; v2.1.7 pending
 > Type: Design
 > Last verified: 2026-10-07
 > **创建日期：**2026-10-05。
 > **用途：**记录客户端 DNS、域名/IP 分流与规则集的统一重构方案。
 > **适用对象：**内核与 CLI 开发者、维护者和评审者。
-> **当前状态：**P0–P5 内核与 CLI 实现已完成 Linux 完整编译链接及离线验收。用户已授权推送代码，并在 CI 全绿后发布 v2.1.7；代码推送、CI 与版本发布均待实际完成。Linux 实机已有 HTTP、SOCKS UDP、DNS 四种上游、Fake-IP 与规则更新成功证据；HTTPS/proxy TCP 等仍有未通过项，其他平台尚未验收。迁移中的整份策略等价受已知语义差异限制，不能称完整发布验收或全平台验收完成。
+> **当前状态：**P0–P5 源码与测试已随 merge `766333243d1b578b4dce539546cc6ce60f05c97f` 公开到 `main`，并包含 P2P 父提交 `c10eb0f`、`6a6c436`；后续平台修复 `50f49ab` 和候选提交 `8fe0718` 也已推送。当前正在修复平台兼容与 TSan 问题，并验证最终 CI；v2.1.7 tag/release 仍待完成。首轮文档整理曾是仅文档发布阶段，此历史状态不代表当前代码仍未公开。Linux 实机已有 HTTP、SOCKS UDP、DNS 四种上游、Fake-IP 与规则更新成功证据；HTTPS/proxy TCP 等仍有未通过项，其他平台运行验收尚未完成。迁移中的整份策略等价受已知语义差异限制，不能称完整发布验收或全平台验收完成。
 > **P0 产物与验证：**[旧行为与平台能力基线](DNS_ROUTING_POLICY_BASELINE_CN.md)，包含静态样本、差分合同和验证边界。
 > **P1 产物与验证：**[离线编译和诊断](DNS_ROUTING_POLICY_P1_CN.md)，记录已实现语法、接口、CLI、扩展与运行时边界。
 >
