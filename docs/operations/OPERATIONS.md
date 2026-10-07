@@ -2,7 +2,7 @@
 
 > **Status:** Current
 > **Type:** Operations guide
-> **Last verified:** Runtime lifecycle, CLI help, stats, console UI, and diagnostic sources, 2026-07-22
+> **Last verified:** Runtime lifecycle, CLI help, stats, console UI, diagnostic sources, and local policy/DNS workspace sources, 2026-10-07
 > **Parent index:** [Operations](README.md) · **Chinese:** [运维与故障排查](OPERATIONS_CN.md)
 
 ## Start with observable state
@@ -60,6 +60,21 @@ Restart controls are CLI-only:
 4. Change one variable at a time; route/DNS and firewall changes can obscure one another.
 5. Use an explicit maintenance/rollback procedure for host-managed settings rather than assuming the application can restore unrelated state.
 
+## Workspace v2 policy and DNS diagnostics
+
+The v2 policy, DNS, and durable-store behavior below describes local workspace source changes that have not been released. Older kernel downloads do not provide these guarantees. The status file is local and is not a public REST endpoint; its writer lease permits one process to update a given identity at a time and is released when the owner closes.
+
+| Symptom | Evidence to inspect |
+|---|---|
+| DNS answer differs by policy or resolver | Confirm the selected rule/resolver and `via` action, then inspect local status counters for cache hits, misses, coalescing, timeouts, upstream failures, and cancellations. Do not infer TCP/53 or encrypted-DNS interception from upstream UDP/TCP/DoH/DoT support. |
+| Fake-IP changes after restart or is unavailable | Check the configured identity and pool, exclusive store lock, snapshot/journal integrity, mapping count, exhaustion, and persistence-error counters. A mismatched/corrupt store or failed durable append is an error condition; do not delete or recreate it as a first recovery step. |
+| Policy update is prepared or fails | Inspect the redacted source metadata, validation diagnostic, durable current/previous state, and process identity in the local status record. Startup validates `CURRENT` and can restore validated `PREVIOUS`; a fetched candidate is fully compiled before runtime publication. Failed publication restores the durable pointer where possible. Shutdown cancels the updater, and a cancelled operation must not publish late results. |
+| Status is missing or stale | Check whether another process owns the status writer lease and whether local status writes are failing. Policy execution can remain enabled without status reporting; the status file is observability evidence, not the authority for routing decisions. |
+
+Keep private policy stores, status files, runtime configs, and logs in protected local storage. Share only redacted diagnostics; do not include node endpoints, credentials, private paths, or raw configuration in a report.
+
+For host recovery, compare the captured pre-test configuration, resolver settings, route tables, and policy rules with post-stop state. A running process or a successful HTTP probe alone does not prove complete restoration. The public sanitized [Linux live report](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) records its own before/after checks: service state, configuration hash, resolver file, routes/rules, and temporary interface/route cleanup. Its IPv6 route difference is limited to dynamic RA expiry and a recreated TAP link address; it does not establish general IPv6 validation. HTTPS and some proxy TCP probes remain failed, and other platforms were not built or run.
+
 ## Do not assume
 
 - a `connected` snapshot is not an end-to-end traffic test;
@@ -67,6 +82,8 @@ Restart controls are CLI-only:
 - Console UI commands are not an authenticated remote administration protocol;
 - no undocumented `/metrics`, lease, or IPv6-state REST endpoint is supplied by this runtime;
 - default-route protection is not a universal kill switch.
+- older published binaries include the workspace v2 policy behavior described above;
+- resolver upstream support for UDP/TCP/DoH/DoT means client TCP/53 or encrypted DNS is intercepted.
 
 ## Related pages
 

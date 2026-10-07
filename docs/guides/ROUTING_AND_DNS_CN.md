@@ -2,13 +2,13 @@
 
 > **用途：**说明本主题的当前行为、配置或实现边界。
 > **适用对象：**OPENPPP2 用户、运维人员与开发者。
-> **当前状态：**当前有效。
-> **最后核对依据：**当前仓库结构、实现路径与 main 验证记录，2026-07-18。
+> **当前状态：**`client.routing` 旧接口当前有效；v2 说明仅描述尚未发布的工作区实现。
+> **最后核对依据：**本地工作区源码与 Linux 实机记录，2026-10-07。
 > **上一层索引：**[返回索引](README_CN.md) · **English：**[Routing And DNS](ROUTING_AND_DNS.md)
 
 > Status: Active
 > Type: Reference
-> Last verified: c993753
+> Last verified: 2026-10-07 local workspace source
 
 [English Version](ROUTING_AND_DNS.md)
 
@@ -98,6 +98,16 @@ flowchart TD
 4. canonical 的普通路由和 peer 前缀路由会镜像回旧字段，供旧平台消费者迁移期间继续使用。旧 routing 对象中的 mode 字段会被忽略且不会由序列化输出。
 
 `client.proxy-only` 与顶层 `--mode=client`/`--mode=proxy` 决定运行模式。`client.routing` 只承载四类 native IP/DNS 输入；路由 source 字符串会 trim 并移除空项；`file://` scheme 不区分大小写；已存在的路径按文件读取，无法解析的 source 保留为 inline 文本。旧的嵌套 mode 值不会选择或覆盖运行模式。
+
+### 本地工作区中的 Policy v2
+
+本地尚未发布的内核还包含显式启用的 `client.policy.version: 2` 策略引擎和离线 `ppp policy` 命令。这些能力不在当前已发布/可下载客户端中。上文 `client.routing`、旧路由字段及兼容行为仍是旧版已发布内核适用的接口。不要在同一客户端配置中混用 v2 与旧路由/DNS 策略字段；v2 加载器会拒绝冲突来源。工作区用法见[Policy CLI](POLICY_CLI_CN.md)。
+
+v2 规则文件要求且只允许一条 `default direct|proxy|reject` 默认动作，并可使用 `[direct]`、`[proxy]`、`[reject]` 动作组。条件包括域名精确匹配（`=host.example`）、后缀（`host.example`）、仅子域通配（`*.example`）、关键词（`keyword:value`）、正则（`regexp:value`）和 IPv4 CIDR。`[dns:NAME]` 组放置指定 resolver 的域名例外；`dns direct NAME` 或 `dns proxy NAME` 将域名规则关联到命名 resolver。规则集可声明附加来源，使用前会校验格式和内容。
+
+v2 DNS 策略与 DNS 报文拦截范围是两件事。resolver 的 `servers` URI 选择上游传输（UDP、TCP、DoT 或 DoH），`via` 选择 resolver 连接走 direct 还是 proxy 出口；这不会扩大报文拦截范围：当前 TUN DNS 拦截器处理目的端口为 53 的 UDP 查询，不拦截任意 TCP/53，也不接管其他应用发起的加密 DNS。配置 DoH/DoT 上游说明的是策略引擎如何访问上游，不代表截获客户端的 DoH/DoT 会话。
+
+v2 更新下载同样需要明确出口（`--interface` 配合 direct bootstrap resolver，或 `--proxy-endpoint`）；`client.policy.updates.via` 声明预期策略，并会与所选传输核对。更新命令成功只会准备 durable candidate，不会向已运行进程发布新策略。状态分别报告 runtime-active 与 prepared 版本。
 
 canonical 客户端策略分为 IP 和 DNS 两层：
 

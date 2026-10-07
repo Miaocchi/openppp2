@@ -1,12 +1,12 @@
 # 项目接口全景图
 > Status: Active
 > Type: Reference
-> Last verified: a7e9b99
+> Last verified: local workspace, 2026-10-07
 
 > **用途：**盘点 OPENPPP2 全部可发现的调用面和序列化边界，区分受支持契约、实验接口、内部实现和已知缺口。
 > **适用对象：**用户、运维人员、客户端作者、集成人员和维护者。
 > **当前状态：**当前有效。本页是发现入口，不等同于 ABI 兼容承诺。
-> **最后核对依据：**仓库源码与测试 `a7e9b99`，2026-07-19。
+> **最后核对依据：**本地工作区源码，2026-10-07。policy v2 是未发布的工作区实现。
 > **上一层索引：**[参考手册](README_CN.md) · **English：**[Project Interface Map](PROJECT_INTERFACE_MAP.md)
 
 ## 如何阅读本页
@@ -27,8 +27,8 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 
 | 领域 | 提供方 | 主要调用方 | 输入 / 输出 | 稳定性 | 详细文档 |
 |---|---|---|---|---|---|
-| `ppp` 进程和 CLI | C++ 可执行文件 | 用户、服务管理器、脚本 | 参数和文件 / 退出状态、日志、TUI | **稳定**，但有缺口 | [CLI 参考](CLI_REFERENCE_CN.md) |
-| `appsettings.json` | C++ 配置加载器 | 用户和平台客户端 | JSON / 归一化运行策略 | 事实上的**稳定** | [配置模型](CONFIGURATION_CN.md) |
+| `ppp` 进程和 CLI | C++ 可执行文件 | 用户、服务管理器、脚本 | 参数和文件 / 退出状态、日志、TUI | **稳定**，但有缺口；策略命令仅为未发布工作区接口 | [CLI 参考](CLI_REFERENCE_CN.md) |
+| `appsettings.json` | C++ 配置加载器 | 用户和平台客户端 | JSON / 归一化运行策略 | 事实上的**稳定**；`client.policy` v2 未发布 | [配置模型](CONFIGURATION_CN.md) |
 | 连接 URI | C++ 客户端 | 用户、配置档和订阅生成器 | `ppp://`、`ppp://ws/`、`ppp://wss/` | **稳定** | [配置模型](CONFIGURATION_CN.md) |
 | 隧道线上协议 | C++ 客户端/服务端 | OPENPPP2 对端 | 加密帧、握手、操作码、INFO JSON | 事实上的**稳定** | [包格式](PACKET_FORMATS_CN.md)、[链路层](LINKLAYER_PROTOCOL_CN.md) |
 | Runtime Snapshot JSON v1 | C++ 运行时 | TUI、Android、iOS | 版本化 JSON 快照 | **稳定** | [UI Runtime 契约](UI_RUNTIME_CONTRACT_CN.md) |
@@ -58,6 +58,7 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 |---|---|---|
 | 角色与配置 | `--mode`、`--config`、`--proxy-http-port`、`--proxy-socks-port` | **稳定** |
 | 运行策略 | `--rt`、`--dns`、`--tun-flash`、`--auto-restart`、`--link-restart`、`--block-quic`、`--firewall-rules`、`--lwip`、`--vbgp` | **稳定** |
+| 策略工具（仅工作区） | `ppp policy check`、`explain`、`init`、`export`、`status`、`update`、`migrate` | 本地已实现；v2 **未发布**，已有下载不代表支持 |
 | 网卡与地址 | `--nic`、`--ngw`、`--tun`、`--tun-ip`、`--tun-ipv6`、`--tun-gw`、`--tun-mask` | **稳定** |
 | 隧道行为 | `--tun-vnet`、`--tun-host`、`--tun-static`、`--tun-promisc`、`--tun-ssmt`、`--tun-route`、`--tun-protect`、`--tun-lease-time-in-seconds` | **稳定** |
 | MUX | `--tun-mux`、`--tun-mux-acceleration`、`--mux-mode`、`--mux-mode-turbo` | `compat`、`flow`、`balance` 事实**稳定**；`stripe` 为**实验** |
@@ -79,14 +80,35 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 | `tcp`、`udp`、`websocket`、`cdn` | 载体监听、连接策略、TLS/WS 和端口模式 | 传输层 | **稳定** | 同上 |
 | `mux` | 多路复用模式与限制 | 传输/运行时 | `compat`/`flow`/`balance` 事实**稳定**；`stripe` 和实时控制为**实验** |
 | `server` | 地址池、映射、后端、策略、IPv6、计费身份 | 服务端运行时 | **稳定** | 同上 |
-| `client` | 服务端 URI、重连、带宽、代理和 canonical `client.routing` IP/DNS policy（`ip.bypass`、`ip.routes`、`ip.peer-routes`、`dns.rules`）；运行模式由顶层 `--mode` 和 `client.proxy-only` 决定 | 客户端运行时 | **稳定** | 同上 |
+| `client` | 服务端 URI、重连、带宽、代理、legacy `client.routing` 和仅工作区实现的 `client.policy` v2；运行模式由顶层 `--mode` 和 `client.proxy-only` 决定 | 客户端运行时 | legacy 字段事实上的**稳定**；v2 **未发布** | 同上 |
 | `ip`、`virr`、`vbgp` | 地址、路由/规则和路由传播输入 | 网络切换器 | 事实上的**稳定** | 同上 |
 | `dns` | resolver、拦截、fallback、cache 和 policy | 客户端/服务端 DNS 运行时 | 事实上的**稳定** | 同上 |
 | `telemetry` | exporter、signal、sampling 和 resource attributes | 诊断/平台桥 | **实验** | 同上 |
 | `p2p` | 直连发现、信令、传输和 fallback | 客户端/服务端 P2P 运行时 | **实验** | 同上 |
 | `geo-rules` | 地理路由/规则来源与行为 | 路由/DNS policy | **实验** | 同上 |
 
-`client.routing` 是 canonical client IP/DNS policy。四类来源在两种模式下都进入 native route/DNS policy；顶层 `--mode=client`/`--mode=proxy` 与独立的 `client.proxy-only` 标志决定宿主集成。`proxy-only` 抑制桌面宿主路由和系统 DNS 接管；移动端 bridge 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS 或本地 HTTP proxy。旧 routing 对象中的 mode 字段会被忽略且不会序列化。
+`client.routing` 仍是受支持的 legacy client IP/DNS policy 来源。本地未发布的工作区实现中，
+`client.policy` v2 是独立的版本化来源，与 legacy policy 字段冲突，不会合并。运行模式仍由顶层
+`--mode` 和 `client.proxy-only` 决定。`proxy-only` 抑制桌面宿主路由和系统 DNS 接管；移动端
+bridge 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS 或本地 HTTP proxy。字段和
+命令契约见[配置模型](CONFIGURATION_CN.md)与[CLI 参考](CLI_REFERENCE_CN.md)。
+
+### Policy v2 内部组件（工作区实现）
+
+以下路径描述本地源码边界，不是发行版 SDK 接口。代码尚未出现在远端 `main`，因此此处以内联路径标识。
+
+| 边界 | 职责 | 分类 |
+|---|---|---|
+| `ppp/app/ApplicationPolicyCommand.cpp` | 分发七个 `ppp policy` 命令，输出文本/JSON 报告和退出状态。 | 内部 CLI 实现；未发布 |
+| `ppp/app/client/policy/PolicySourceLoader.cpp`、`PolicyCompiler.cpp`、`PolicyEvaluator.h` | 加载 v2 来源、校验/编译规则并计算路由/DNS 决策。 | 内部策略引擎；未发布 |
+| `ppp/app/client/policy/PolicyRuntime.cpp` | 发布不可变策略快照并协调运行时决策。 | 内部运行时边界；未发布 |
+| `ppp/app/client/dns/PolicyResolverService.cpp` | 通过配置的上游传输和缓存/合并服务执行策略选定的 DNS 解析。 | 内部 DNS 边界；未发布 |
+| `ppp/app/client/policy/DurablePolicyBundle.cpp`、`PolicyUpdateService.cpp` | 保存已验证的 current/previous bundle，并获取、校验后准备或发布更新。 | 内部持久化/更新边界；未发布 |
+| `ppp/app/client/policy/LegacyPolicyAdapter.cpp`、`LegacyPolicyMigration.cpp` | v2 缺席时适配 legacy 输入，并写出供人工复核的迁移草案。 | 内部兼容边界；未发布 |
+
+目前只有 Linux HTTP/UDP/DNS 上游、更新和 Fake-IP 行为具备
+[实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)所列证据。HTTPS 和部分 proxy TCP 路径
+仍未验证；Windows/macOS/Android/iOS 未构建或运行。本地实现尚未提交或发布。
 
 完整字段和模板见 [配置模型](CONFIGURATION_CN.md)。平台配置档存储会包装这份 JSON，但不会取代其契约。
 
@@ -220,7 +242,7 @@ Guardian 配置和实例状态以 `0600` 模式写入 JSON；profiles/backups �
 
 `PppVpnService` 运行在 `:vpn`。它此前发布事件的 EventChannel 解析到的是进程内 static sink，什么也送不出去，现已移除；Service 改为把每个 runtime snapshot 与错误镜像到上述文件，UI 进程在可见时每秒轮询一次。native 侧的发布经 `runtime_snapshot` JNI 回调抵达 Service，并按 snapshot 自身的 `generation` 与 `monotonic_ms` 排序。
 
-对于 proxy-only 配置，Android 仍会加载 native `client.routing` policy。`VpnService.Builder` 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS 或本地 HTTP proxy。
+对于 proxy-only 配置，Android 仍会加载 native client policy。`VpnService.Builder` 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS 或本地 HTTP proxy。
 
 **缺口：**debug 构建会去掉 Service 的 `android:process`（`app/src/debug/AndroidManifest.xml`），因此 instrumentation 始终单进程运行，无法复现跨进程投递。上述缺陷正是被这个覆盖掩盖的。release 布局目前由 `tests/tooling/test_runtime_ui_wiring.py` 的源码级检查保证，而非设备测试。
 
@@ -240,7 +262,7 @@ Guardian 配置和实例状态以 `0600` 模式写入 JSON；profiles/backups �
 
 配置档导出 v1 对内置 iOS App 是**稳定**契约；C ABI 和 provider-message 命令仍为**内部**。
 
-对于 proxy-only 配置，Packet Tunnel 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS、tunnel DNS 或本地 HTTP proxy；native `client.routing` policy 仍保持生效。
+对于 proxy-only 配置，Packet Tunnel 只保留最小 interface/subnet 路由，不发布默认路由、系统 DNS、tunnel DNS 或本地 HTTP proxy；native client policy 仍保持生效。
 
 **缺口：**provider 消息使用未版本化裸字符串，并以 `nil` 表示多种失败；C struct 没有 ABI version 或 `struct_size`；buffer 截断约定不完整；Actions 没有构建 native iOS static library，也没有真实 Packet Tunnel 集成测试。
 
@@ -281,8 +303,8 @@ TUI 依赖 TTY，并受 `PPP_NO_TUI` 控制。命令在 ConsoleUI 生命周期�
 | Windows | Wintun/TAP、路由/DNS/代理辅助、服务/进程辅助 | 网卡和网络修改需要 Administrator | `windows/`、`TapWindows.*` | 辅助命令退出/错误行为缺少统一表 |
 | Linux | TUN、route/rule/DNS、可选 io_uring/SYSNAT | root/CAP_NET_ADMIN | `linux/`、`TapLinux.*` | 发行版相关命令/回滚需要集成覆盖 |
 | macOS | utun、route/DNS | 桌面隧道需要 root | `darwin/`、`TapDarwin.*` | macOS 构建不等于 iOS 扩展验证 |
-| Android | `VpnService`、protected socket、JNI callback；proxy-only 只保留最小 interface/subnet 路由，同时 native `client.routing` policy 仍生效 | 用户批准 VPN；Service 持有 TUN fd | `android/` | 跨进程 Runtime Snapshot 缺陷和设备测试不足 |
-| iOS | Packet Tunnel、C callback 桥、App Group；proxy-only 只保留最小 interface/subnet 路由，同时 native `client.routing` policy 仍生效 | entitlement 和 provider 持有包流 | `ios/` | CI 未端到端构建 native library 和 provider IPC |
+| Android | `VpnService`、protected socket、JNI callback；proxy-only 只保留最小 interface/subnet 路由，同时 native client policy 仍生效 | 用户批准 VPN；Service 持有 TUN fd | `android/` | 跨进程 Runtime Snapshot 缺陷和设备测试不足 |
+| iOS | Packet Tunnel、C callback 桥、App Group；proxy-only 只保留最小 interface/subnet 路由，同时 native client policy 仍生效 | entitlement 和 provider 持有包流 | `ios/` | CI 未端到端构建 native library 和 provider IPC |
 
 ## 15. 错误、诊断、Telemetry 与持久化
 

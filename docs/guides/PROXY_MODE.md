@@ -1,16 +1,18 @@
 # Proxy-only mode
 > Status: Active
 > Type: Guide
-> Last verified: 63fc030
+> Last verified: local workspace source and Linux live evidence, 2026-10-07
 
 > **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
 > **Audience:** OPENPPP2 users, operators, and developers.
 > **Status:** Current.
-> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-31.
+> **Last verified against:** Local workspace source and Linux live evidence, 2026-10-07.
 > **Parent index:** [Back to index](README.md) · **Chinese:** [纯代理模式](PROXY_MODE_CN.md)
 
 
 Proxy-only mode connects to an OpenPPP2 server and exposes **local HTTP and SOCKS5 forward proxies** without installing host-system route entries or system DNS settings. It still loads the canonical routing policy into the native client. Desktop startup uses `TapStub`; mobile platforms keep only the minimal tunnel interface needed by the runtime. Not installing a host rule does not disable the corresponding native policy.
+
+The `client.routing` interface described here remains applicable to the currently published older kernel. A separate opt-in `client.policy.version: 2` implementation and `ppp policy` CLI exist in the local unpublished workspace; the published/downloadable client does not yet provide them. The two policy generations cannot be combined in one configuration. See [Policy CLI](POLICY_CLI.md) for the workspace-only v2 setup and limits.
 
 ## Quick start
 
@@ -56,6 +58,8 @@ When ports or bind addresses are omitted, defaults are applied automatically:
 | SOCKS5   | 127.0.0.1    | 1080         |
 
 ## Platform behavior
+
+The platform statements below describe the legacy proxy-only integration. V2 platform capability checks report source-path support and do not prove that each platform has been built or runtime-tested. In particular, this workspace's change set has not been built or run on Windows, macOS, Android, or iOS.
 
 | Platform | What changes in proxy-only | What stays active |
 |----------|---------------------------|-------------------|

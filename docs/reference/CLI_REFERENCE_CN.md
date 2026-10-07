@@ -1,12 +1,12 @@
 # 命令行参考
 > Status: Active
 > Type: Reference
-> Last verified: 63fc030
+> Last verified: local workspace, 2026-10-07
 
 > **用途：**说明本主题的当前行为、配置或实现边界。
 > **适用对象：**OPENPPP2 用户、运维人员与开发者。
 > **当前状态：**当前有效。
-> **最后核对依据：**当前仓库结构、实现路径与文档链接，2026-07-18。
+> **最后核对依据：**本地工作区实现，2026-10-07。policy v2 尚未提交或发布。
 > **上一层索引：**[返回索引](README_CN.md) · **English：**[CLI Reference](CLI_REFERENCE.md)
 
 
@@ -79,7 +79,30 @@ CLI 大致分为：
 
 纯代理启动会强制关闭 static transport，不发起 `STATIC`/`STATICACK`。如果服务端配置了 IPv4 分配，客户端会请求自动分配，而不是根据本地 TUN 地址发起手动请求。
 
-存在 `client.routing` 时，它是 canonical policy。没有该对象时，旧的 `--bypass` 和 `--dns-rules` 作为同一套 native policy 的兼容输入；它们不是仅供 TUN 使用的开关。
+本地未发布的工作区实现增加了版本化 `client.policy` v2 来源。存在 v2 时它必须是唯一策略
+来源；没有 v2 时，legacy adapter 读取 `client.routing` 和兼容的旧配置/CLI 输入。
+`client.routing` 仍为旧配置提供兼容，但不是当前唯一的策略入口。参见
+[配置模型](CONFIGURATION_CN.md)和[Policy CLI 指南](../guides/POLICY_CLI_CN.md)（[English](../guides/POLICY_CLI.md)）。
+v2 尚未提交或发布，不能假设已下载的旧 `ppp` 二进制支持它。
+
+## 策略命令（工作区实现）
+
+以下七个离线/控制命令已在本地工作区实现。这不表示发行版 `ppp` 已支持 policy v2。
+完整示例和报告字段见 [Policy CLI 指南](../guides/POLICY_CLI_CN.md)（[English](../guides/POLICY_CLI.md)）。
+
+| 命令 | 用途 |
+|---|---|
+| `ppp policy check --config FILE --runtime tun\|http\|socks [--platform linux\|windows\|macos\|android\|ios] [--json]` | 校验 v2 来源并编译策略，检查适用的能力声明；不启动运行时，也不下载远端来源。 |
+| `ppp policy explain --config FILE --runtime RUNTIME [--platform PLATFORM] (--domain HOST\|--ip ADDRESS) [--network tcp\|udp] [--port PORT] [--json]` | 解释路由与 DNS 计划，不执行 DNS 解析；目标 IPv6 不支持。 |
+| `ppp policy init --out DIR --template proxy-all\|direct-all\|split-cn --runtime RUNTIME [--geoip PATH_OR_URL --geosite PATH_OR_URL] [--json]` | 写出 v2 起始策略包；`split-cn` 必须同时提供来源。本地文件必须已存在且不超过 64 MiB；显式 HTTP(S) URL 只记录为远端来源，不在 init 中下载。 |
+| `ppp policy export --config FILE --out FILE [--store DIR] [--json]` | 检查/物化输入后，仅导出策略数据和元数据；不导出完整 app 配置或 Fake-IP 映射。 |
+| `ppp policy status --config FILE [--store DIR] [--json]` | 读取更新/策略包状态。 |
+| `ppp policy update --config FILE [--store DIR] (--interface IFACE [--bootstrap udp://IPv4:PORT] \| --proxy-endpoint 127.0.0.1:PORT) [--json]` | 使用明确指定的出口获取并校验声明的远端来源。 |
+| `ppp policy migrate --config LEGACY_FILE --out DIR [--bypass FILE] [--dns-rules FILE] [--runtime RUNTIME] [--platform PLATFORM] [--json]` | 写入迁移草案和报告；不覆盖输入，也不宣称整体策略等价。 |
+
+策略命令退出码：`0` 成功，`2` 参数/配置/编译错误，`3` 来源不可用或存储失败，`4` 能力
+不支持，`5` 迁移草案需要复核或无法证明等价。迁移返回 `5` 时仍可能已写出草案文件。
+`--json` 输出机器可读报告。这些是命令退出状态，不是 `ErrorCodes.def` 的枚举数值。
 
 ```mermaid
 flowchart TD

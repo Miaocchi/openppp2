@@ -516,6 +516,8 @@ iOS 在本仓库中没有桌面式的 PF_ROUTE 路由变更路径，应用层与
 
 `routing.ip.peer-routes` 当前在两种模式都进入移动端 native RIB/FIB；Packet Tunnel provider 不会把每一项自动转换成任意 `NEIPv4Route`。如需每前缀系统路由，必须由宿主接入层显式实现。
 
+iOS provider-owned P2P UDP adapter 在私有 dispatch queue 上串行化 session 状态，并按 endpoint 对写入和读取分别限制最多 32 个 pending packet、64 KiB。Close 会取消当前 `NWUDPSession`；完成和接收 callback 会检查 adapter 仍开启且 endpoint 仍指向同一 session 实例，因此关闭或替换后的晚到 callback 会被丢弃。这些只是源码观察：本工作区改动尚未用 iOS 工具链构建或运行，也不能证明完整 IPv6 或平台实机验收通过。
+
 ### 9.1 iOS 集成边界
 
 | 层 | 当前职责 |
@@ -524,6 +526,8 @@ iOS 在本仓库中没有桌面式的 PF_ROUTE 路由变更路径，应用层与
 | `PacketTunnelProvider.swift` | 设置 included/excluded IPv4 routes、隧道 DNS，并启动/停止扩展 |
 | `OpenPPP2PacketTunnelAdapter.swift` | 桥接 `NEPacketTunnelFlow` 数据包和 provider-owned P2P transport |
 | `OpenPPP2PacketTunnelBridge.cpp` | 创建 `TapIos`、运行 C++ client，并暴露 C callback |
+
+policy direct 与 proxy 出口是显式选择。direct policy socket 使用 direct connector 以及配置的接口/保护行为；proxy policy socket 使用选定的 local SOCKS5 或 tunnel connector。connector 遇到另一类出口请求会拒绝，不会静默切换出口。这是实现约束，不代表所有目标或平台路径均可达。尤其 HTTPS 与部分 proxy TCP 探针在公开脱敏的 [Linux 实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)中仍超时。DNS 上游 UDP/TCP/DoH/DoT 描述 resolver 到上游的 transport，不会把 client 拦截范围扩展到 UDP/53 以外，也不表示 TCP/53 或加密 DNS 被拦截。
 
 ---
 
@@ -646,6 +650,8 @@ graph TD
 ---
 
 ## 13. 运行时效果
+
+本文描述的 v2 policy 与 iOS provider 行为来自尚未发布的本地工作区源码。Linux 报告只覆盖其中列明的探针；IPv6 端到端覆盖及 Windows、macOS、Android、iOS 的构建/运行仍不完整。不能把平台源码接线表当成跨平台验收证据。
 
 宿主层效果只来自 TUN/宿主接入，而不是因为 native 路由策略不存在：
 

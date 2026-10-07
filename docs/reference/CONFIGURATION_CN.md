@@ -1,12 +1,12 @@
 # 配置模型
 > Status: Active
 > Type: Reference
-> Last verified: 63fc030
+> Last verified: local workspace, 2026-10-07
 
 > **用途：**说明本主题的当前行为、配置或实现边界。
 > **适用对象：**OPENPPP2 用户、运维人员与开发者。
 > **当前状态：**当前有效。
-> **最后核对依据：**当前仓库结构、实现路径与文档链接，2026-07-18。
+> **最后核对依据：**本地工作区实现，2026-10-07。policy v2 尚未提交或发布；已发行二进制不代表支持 v2。
 > **上一层索引：**[返回索引](README_CN.md) · **English：**[Configuration Model](CONFIGURATION.md)
 
 
@@ -343,7 +343,8 @@ key.kf / key.kh / key.kl / key.kx / key.sb —— 非法值时重置为框架内
 | `socks-proxy.password` | string | SOCKS5 认证密码 |
 | `mappings` | array | FRP 端口映射规则列表 |
 | `proxy-only` | bool | 独立的顶层纯代理运行标志；关闭宿主路由/DNS 接管，但不关闭 native policy；`--mode=proxy` 选择相同行为 |
-| `routing` | object | 权威客户端 IP/DNS policy；四个部分在 `tun`/`proxy-only` 中都进入 native policy，运行模式由顶层标志决定 |
+| `policy` | object | 版本化客户端策略入口；当前工作区实现为 v2，未发布；与 legacy policy 来源互斥 |
+| `routing` | object | 兼容的 legacy IP/DNS policy 来源；v2 缺席时由 legacy adapter 使用，不是唯一的新策略入口 |
 
 #### `client.routing`：IP/DNS 分流策略
 
@@ -380,15 +381,49 @@ key.kf / key.kh / key.kl / key.kx / key.sb —— 非法值时重置为框架内
 | `routing.ip.peer-routes` | array | peer 前缀网关 route；进入两种模式共用的 native peer-prefix RIB/FIB，proxy-only 不安装桌面宿主 route |
 | `routing.dns.rules` | string[] | DNS rule source；进入两种模式共用的 native DNS policy；tun 可另行接管 tunnel/system DNS，proxy-only 不接管系统 DNS |
 
-优先级和兼容规则：
+legacy `client.routing` 的优先级和兼容规则：
 
 1. `client.routing` 对象存在时，其 IP/DNS policy source 是权威来源；`routing.ip` / `routing.dns` 中的嵌套字段优先于同级短别名。
 2. `routing.bypass`、`routing.routes`、`routing.peer-routes`、`routing.dns-rules` 是兼容的直接别名。
 3. `client.proxy-only` 是独立顶层标志，无论是否存在 `client.routing` 都会读取；`client.routes`、`client.peer-routes` 和旧 DNS/CLI 来源仅在没有 `client.routing` 时使用。
-4. canonical 的普通 routes 和 peer-routes 会镜像到旧字段，方便旧平台消费者平滑迁移；旧 routing 对象中的 mode 字段会被忽略且不由 `ToJson()` 输出。
+4. 此 legacy routing 对象中的普通 routes 和 peer-routes 会镜像到旧字段，方便旧平台消费者平滑迁移；对象中的 mode 字段会被忽略且不由 `ToJson()` 输出。
 5. source 字符串会 trim 并移除空项；`file://` scheme 大小写不敏感。缺失文件不会被当作已加载的文件源。
 
-`client.routing` 的四个部分在两种客户端模式中都有效：bypass、普通 route 和 peer route 进入 native route policy/RIB/FIB，DNS rules 进入 native DNS policy。`tun` 可在支持的平台上另外应用宿主 route 或 DNS 设置；`proxy-only` 只抑制桌面宿主 route/系统 DNS 接管，不会关闭 native policy。移动端在 proxy-only 下仅保留框架所需的最小 interface/subnet route。
+legacy `client.routing` 的四个部分在两种客户端模式中都有效：bypass、普通 route 和 peer route 进入 native route policy/RIB/FIB，DNS rules 进入 native DNS policy。`tun` 可在支持的平台上另外应用宿主 route 或 DNS 设置；`proxy-only` 只抑制桌面宿主 route/系统 DNS 接管。移动端在 proxy-only 下仅保留框架所需的最小 interface/subnet route。
+
+#### `client.policy` v2（工作区实现，尚未发布）
+
+`client.policy.version` 必须是整数 `2`。v2 是完整策略来源，不能与 `client.routing`、旧
+`client.bypass`/`client.dns-rules`、顶层 `routing`、`geo-rules`、`dns`、`bypass`、
+`dns-rules` 或 `udp.dns` 混用；冲突会报错，不会按优先级合并。没有 v2 对象时，仍可通过
+`client.routing`、旧配置字段和 CLI 输入使用 legacy adapter。详见
+[Policy CLI 与迁移指南](../guides/POLICY_CLI_CN.md)（[English](../guides/POLICY_CLI.md)）。
+
+| 字段 | 类型 | 默认值 | 约束 / 行为 |
+|---|---|---|---|
+| `client.policy.version` | integer | 必填 | 必须为 `2`。 |
+| `client.policy.rules.path` | string | 策略编译必填 | 相对路径以配置文件目录为基准；离线读取上限 64 MiB。 |
+| `client.policy.ipv6` | string | `block` | 当前阶段只支持 `block`。 |
+| `client.policy.tcp-domain-sniff` | bool | `false` | 仅适用于 TUN；iOS TUN 不支持；本地 HTTP/SOCKS 不适用。 |
+| `client.policy.dns.mode` | string | `auto` | `auto`、`real`、`fake-ip`。`auto` 在 TUN 选择 Fake-IP，在本地代理运行时保留原域名；显式 Fake-IP 需要 TUN DNS 拦截。 |
+| `client.policy.dns.resolvers` | object | 必填 | 非空映射；每项包含 `via`（`direct`/`proxy`）和非空、有序的 `servers`。服务器可用 provider 名、数值 IPv4 endpoint 字符串，或 `{uri, addresses?, bootstrap?}` 对象；主机名 endpoint 必须给出数值地址或 direct UDP bootstrap。 |
+| `client.policy.dns.fake-ip.range` | IPv4 CIDR | `198.18.0.0/16` | 必须是有效 IPv4 CIDR。 |
+| `client.policy.dns.fake-ip.storage` | path | `./dns-fake-ip` | 持久映射存储路径，相对于配置文件；`mode: fake-ip` 时必需。 |
+| `client.policy.dns.fake-ip.identity` | string | 根据配置路径派生 | 稳定标识，1–128 个字母、数字或 `.`, `_`, `-`, `:`。 |
+| `client.policy.rule-sets.<name>.format` | string | 每个集合必填 | `geoip-text`、`geosite-text`、`geoip-dat`、`geosite-dat`；二进制格式还必须提供 `tag`。 |
+| `client.policy.rule-sets.<name>.source` | object | 每个集合必填 | `path` 与 `url` 必须且只能指定一个；URL 限 HTTP(S)。离线 check 需要本地物化的数据。 |
+| `client.policy.rule-sets.<name>.sha256` | hex string | 无 | 可选的 64 位 SHA-256 pin，按源文件原始字节核验。 |
+| `client.policy.rule-sets.<name>.tag` | string | `.dat` 必需 | 指定二进制规则集的数据标签。 |
+| `client.policy.updates.enabled` | bool | `false` | 启用声明的远端规则集定期获取。 |
+| `client.policy.updates.interval` | duration | `24h` | 正整数加 `s`、`m`、`h` 或 `d`。 |
+| `client.policy.updates.via` | string | `proxy` | `direct` 或 `proxy`；更新传输方式必须匹配。 |
+| `client.policy.updates.bootstrap` | string[] | 空 | 显式数值 IPv4 `udp://IP:PORT` resolver；不支持隐式主机名解析。 |
+| `client.policy.updates.allow-http` | bool | `false` | 开启后允许明文 HTTP 规则集 URL；默认应使用 HTTPS。 |
+
+规则语法、匹配次序、durable 更新行为和命令示例集中维护在
+[Policy CLI 指南](../guides/POLICY_CLI_CN.md)（[English](../guides/POLICY_CLI.md)），此处不重复完整设计。运行时/平台支持仍受
+本地实现和[Linux 实机报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)证据约束；该报告
+未构建或运行 Windows、macOS、Android、iOS。
 
 客户端 URI 格式：
 

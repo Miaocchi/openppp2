@@ -26,7 +26,90 @@ scripts/run-cpp-tests.sh
 
 That project requires CMake 3.16 or newer, a C++17-capable compiler, OpenSSL, and Ninja because the script selects it explicitly. It writes its build tree to `build/test`.
 
+### Focused P2P V2 Isolation
+
+Run the fixed suite from the repository root; each mode uses its own build
+directory and also compiles the real application wiring:
+
+```sh
+sh scripts/run-p2p-v2-isolation.sh normal
+sh scripts/run-p2p-v2-isolation.sh asan
+sh scripts/run-p2p-v2-isolation.sh tsan
+```
+
+Set `OPENPPP2_P2P_BUILD_DIR` to a separate directory when existing build
+artifacts must be preserved. `CXX` selects the compiler and
+`OPENPPP2_BUILD_JOBS` controls build parallelism.
+
+Configure `tests/cpp` in a separate build directory and build the `p2p_*`
+targets. The v2 targets include `p2p_v2_offer_test`, `p2p_v2_channel_test`,
+`p2p_v2_noise_test`, `p2p_v2_integration_test`, `p2p_probe_coordinator_test`,
+`p2p_ingress_limiter_test`, `p2p_stun_gatherer_test` and
+`p2p_native_socket_stun_test`. The fixed suite additionally includes
+`p2p_information_message_test` and `p2p_v2_server_coordination_test`, the latter
+testing the production coordination helper for concurrent renew, bilateral
+activation, cancellation, stale callbacks and conservative predecessor recovery.
+`p2p_v2_app_wiring_compile` compiles the actual
+client, server and carrier wiring without linking or starting PPP.
+
+Use separate `-DENABLE_SANITIZERS=ON` and `-DENABLE_TSAN=ON` trees. Native
+socket tests use only unprivileged loopback UDP; a sandbox may require
+permission to open those sockets. Never run PPP or privileged netns for this
+suite. The integration test uses real offer/channel/codec and IPv4 parsing,
+with simulated NAT/relay/clock, including 180 seconds of rotation, 100
+connect/refresh/stop cycles, migration, nonce exhaustion and lost CommitACK.
+That integration target does not instantiate full Exchanger automatic socket recovery.
+The separate root-linked recovery target below uses the actual Exchanger. These
+checks do not establish Android device behavior, real NAT traversal or Linux
+SO_MARK bypass of TUN. Keep the production gate disabled.
+
+The P2P v2 changes and their 2026-10-05 test results described here are from the local
+implementation relative to the published `main` snapshot; they have not been released upstream.
+
+On 2026-10-05 the ordinary P2P and existing Noise regression suite passed 30 targets, including
+separate unprivileged loopback runs for socket-restricted tests. Both existing
+Noise handshake/exporter targets also passed. The final focused suite
+passed 10 targets and 80 cases under ASan/UBSan/LSan and separately under TSan;
+the integration target contains 16 cases, including the 180-second and
+100-cycle scenarios. The actual application wiring object target also compiled.
+The final channel tests cover large authenticated numeric RX sequence advances
+without wrap, duplicate delivery or receive-window mutation on failed AEAD.
+The associated tooling suite passed 46 tests.
+These focused results concern isolated Linux checks. The subsequent root
+Linux Release build completed all 283 compilation/link actions and was
+incrementally relinked after the recovery fix. The final production build has
+no recovery-test macro and keeps the gate closed. This does not establish
+Windows MSBuild, Android SDK/device tests or live network acceptance.
+
 ### Root CMake tests
+
+For actual Exchanger recovery, prepare the root native dependency layout and
+run the dedicated script. Pass the dependency root as a CMake option; no
+dependencies are installed by this script:
+
+```sh
+sh scripts/run-p2p-v2-exchanger-recovery.sh normal -DTHIRD_PARTY_LIBRARY_DIR=/path/to/native-deps
+sh scripts/run-p2p-v2-exchanger-recovery.sh asan -DTHIRD_PARTY_LIBRARY_DIR=/path/to/native-deps
+sh scripts/run-p2p-v2-exchanger-recovery.sh tsan -DTHIRD_PARTY_LIBRARY_DIR=/path/to/native-deps
+```
+
+Each mode builds the actual `openppp2_lib` in a separate directory and runs only
+`p2p_v2_exchanger_recovery_test`, without starting PPP. Override
+`OPENPPP2_P2P_RECOVERY_BUILD_DIR`, `CC`, `CXX` and `OPENPPP2_BUILD_JOBS` as needed.
+The root option `ENABLE_P2P_RECOVERY_TESTS` defaults to OFF. Its compile-gated
+dependency hooks require explicit test capability; the production gate stays
+closed. The test exercises socket failure, retry backoff, registration failure,
+scheduling failure, stale callbacks and suspended coroutines, authenticated v2
+reconnection, v1 rejection and FRP maintenance through the actual Update method.
+Root ASan/UBSan and TSan builds must use separate directories.
+
+On 2026-10-05 all nine actual Exchanger cases passed in normal,
+ASan/UBSan/LSan and separate TSan builds of the full library. The script was
+repeated successfully in each mode. LSan required permission for isolated
+process inspection in this sandbox. Registration, transport and relay output
+are simulated dependencies; native socket protection, real INFO delivery,
+NAT traversal and device behavior remain unverified. Recovery failure without
+a ready transport now schedules its retry without sending a renewal.
 
 Prepare the root dependency layout first, then configure the root project with `ENABLE_TESTS`:
 

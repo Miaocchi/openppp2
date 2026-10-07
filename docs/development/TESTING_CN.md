@@ -26,7 +26,75 @@ scripts/run-cpp-tests.sh
 
 该项目需要 CMake 3.16 或更高版本、支持 C++17 的编译器、OpenSSL 和 Ninja（脚本明确选择它）。构建目录为 `build/test`。
 
+### 聚焦 P2P v2 隔离验收
+
+在仓库根目录运行固定套件；三种模式使用独立构建目录，并编译真实应用接线：
+
+```sh
+sh scripts/run-p2p-v2-isolation.sh normal
+sh scripts/run-p2p-v2-isolation.sh asan
+sh scripts/run-p2p-v2-isolation.sh tsan
+```
+
+需保留已有构建产物时，以 `OPENPPP2_P2P_BUILD_DIR` 指定独立目录；
+`CXX` 选择编译器，`OPENPPP2_BUILD_JOBS` 控制编译并发数。
+
+在独立目录配置 `tests/cpp`，构建 `p2p_*` targets。新增 v2 目标包括
+`p2p_v2_offer_test`、`p2p_v2_channel_test`、`p2p_v2_noise_test`、
+`p2p_v2_integration_test`、`p2p_probe_coordinator_test`、
+`p2p_ingress_limiter_test`、`p2p_stun_gatherer_test` 和
+`p2p_native_socket_stun_test`。固定套件还包含 `p2p_information_message_test`
+与 `p2p_v2_server_coordination_test`；后者测试生产协调 helper 的并发刷新、
+双边激活、取消、迟回调和保守 predecessor 恢复。
+`p2p_v2_app_wiring_compile` 对真实客户端、
+server 和 carrier 接线进行对象编译，不链接或启动 PPP。
+
+ASan/UBSan 使用 `-DENABLE_SANITIZERS=ON`，TSan 使用独立目录及
+`-DENABLE_TSAN=ON`，不能混用。native 测试仅使用非特权 loopback UDP；
+sandbox 可能要求开放 socket 的执行权限。禁止为该套件启动 PPP 或特权 netns。
+集成测试使用真实 offer/channel/codec 和 IPv4 parser，只模拟 NAT、relay 与时钟，
+覆盖 180 秒轮换、100 次连接/刷新/停止、迁移、nonce 耗尽与 CommitACK 丢失。
+该 integration target 未实例化完整 Exchanger 自动恢复；下文独立的根链接恢复目标
+使用真实 Exchanger。上述证据不代表 Android 真机、
+真实 NAT 或 Linux SO_MARK 绕过 TUN 已验收，生产 gate 必须保持关闭。
+
+本节描述的 P2P v2 改动及 2026-10-05 测试结果来自相对已发布 `main` 的本地实现，尚未向上游发布。
+
+2026-10-05 普通 P2P 与原有 Noise 回归套件 30 targets 通过，包括因 socket 权限限制
+单独运行的非特权 loopback 检查；原有 Noise handshake/exporter 两个目标也通过。
+最终 focused 套件 10 targets、80 cases
+在 ASan/UBSan/LSan 与独立 TSan 下均通过。integration target 共 16 cases，
+包含 180 秒与 100 次循环场景；真实应用接线对象目标编译通过。
+最终 channel 用例覆盖认证 RX 序号大幅数值前进，仍禁止回绕、重复交付，
+失败 AEAD 不提交接收窗口更新。相关 tooling 套件 46 项通过。
+上述 focused 结果覆盖 Linux 隔离检查。后续根项目 Linux Release 完成 283 项
+全量编译/链接，并在恢复修复后增量重新链接；最终生产构建无恢复测试宏，gate 关闭。
+这不代表 Windows MSBuild、Android SDK/真机或真实网络已验收。
+
 ### 根 CMake 测试
+
+验收真实 Exchanger 恢复前，先准备根项目所需的原生依赖目录布局，再运行独立脚本。
+依赖根通过 CMake 参数传入；脚本不会安装依赖：
+
+```sh
+sh scripts/run-p2p-v2-exchanger-recovery.sh normal -DTHIRD_PARTY_LIBRARY_DIR=/path/to/native-deps
+sh scripts/run-p2p-v2-exchanger-recovery.sh asan -DTHIRD_PARTY_LIBRARY_DIR=/path/to/native-deps
+sh scripts/run-p2p-v2-exchanger-recovery.sh tsan -DTHIRD_PARTY_LIBRARY_DIR=/path/to/native-deps
+```
+
+三种模式在独立目录构建真实 `openppp2_lib`，只运行
+`p2p_v2_exchanger_recovery_test`，不启动 PPP。可按需设置
+`OPENPPP2_P2P_RECOVERY_BUILD_DIR`、`CC`、`CXX` 和 `OPENPPP2_BUILD_JOBS`。
+根选项 `ENABLE_P2P_RECOVERY_TESTS` 默认 OFF；编译隔离的依赖钩子要求显式测试
+capability，生产 gate 继续关闭。用例通过真实恢复与 Update 方法覆盖 socket 故障、
+退避、登记失败、调度失败、旧回调及挂起协程隔离、认证 v2 重连、v1 拒绝和 FRP 维护。
+根项目 ASan/UBSan 和 TSan 构建必须使用不同目录。
+
+2026-10-05 真实 Exchanger 的 9 个用例在完整库普通、ASan/UBSan/LSan 和独立
+TSan 构建下全部通过，脚本三种模式也分别复验通过。此 sandbox 中 LSan 需要
+隔离进程检查权限。登记、transport 和 relay 输出属于模拟依赖；原生 socket
+保护、真实 INFO 交付、NAT 穿透和设备行为仍未验收。恢复失败且无就绪 transport
+时，现已按退避安排重试而不发送 renew。
 
 先准备根依赖目录布局，再用 `ENABLE_TESTS` 配置根项目：
 

@@ -1,12 +1,12 @@
 # Task Guides
 > Status: Active
 > Type: Guide
-> Last verified: 63fc030
+> Last verified: 2026-10-07
 
 > **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
 > **Audience:** OPENPPP2 users, operators, and developers.
 > **Status:** Current.
-> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-18.
+> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-10-07.
 > **Parent index:** [Back to index](../README.md) · **Chinese:** [任务指南](README_CN.md)
 
 
@@ -21,5 +21,6 @@ For client traffic steering, start with [`client.routing`](ROUTING_AND_DNS.md). 
 - [Management Backend](MANAGEMENT_BACKEND.md)
 - [Peer Prefix Routing (Site-to-Site Gateway) — Design Specification](PEER_PREFIX_ROUTING.md)
 - [Platform Integration](PLATFORMS.md)
+- [Policy CLI](POLICY_CLI.md) · [中文](POLICY_CLI_CN.md)
 - [Proxy-only mode](PROXY_MODE.md) · [中文](PROXY_MODE_CN.md)
 - [Routing And DNS](ROUTING_AND_DNS.md)

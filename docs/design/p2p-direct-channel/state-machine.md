@@ -3,18 +3,29 @@
 > **Purpose:** Define P2P direct-channel states, transitions, and failure behavior.
 > **Audience:** Protocol, networking, and platform maintainers.
 > **Status:** Current design evidence; not an enabled production data path.
-> **Last verified against:** P2P integration and fail-closed production capability gate, 2026-07-22.
+> **Last verified against:** P2P v2 isolated tests and fail-closed production capability gate, 2026-10-05.
 > **Parent index:** [Design Documents](../README.md)
 
 > Status: Draft
 > Type: Design
-> Last verified: 8c8a888
+> Last verified: 2026-10-05; isolated implementation acceptance, production gate disabled.
+
+This documentation update publishes design text only. The v2 state and
+recovery details below were checked against local commits `c10eb0f` and
+`6a6c436`, which are not present in the published source baseline `99892a8`.
+The production capability gate is explicitly false in
+`ppp/p2p/P2PCapabilityGate.h`; the server v2 offer path checks that gate.
+These source paths are references, not links, because they are absent from the
+published baseline. The sixteen-context cap is in
+`ppp/app/client/VEthernetExchanger.h`; queueing and recovery are in
+`ppp/app/client/VEthernetP2PV2.cpp`. Current published binaries and source must
+not be assumed to contain this implementation.
 
 ## States
 
-The direct-channel design reserves these stable values. The current
-fail-closed scaffold does not expose an enabled production path or currently
-emit `Failed`; do not read every listed transition as present runtime behavior.
+The direct-channel design reserves these stable values. The implementation
+remains behind the fail-closed production gate. `Failed` remains a target state;
+isolated v2 tests do not establish production availability of these transitions.
 
 | State | Meaning | Effective path |
 |---|---|---|
@@ -23,7 +34,7 @@ emit `Failed`; do not read every listed transition as present runtime behavior.
 | `Relay` | Base tunnel is healthy; no direct attempt is active | `relay` |
 | `Eligible` | Both peers and local policy permit a bounded attempt | `relay` |
 | `Probing` | Authenticated probes are in flight | `relay` |
-| `Direct` | An authenticated probe ACK established the UDP channel | `direct` |
+| `Direct` | v1 authenticated probe ACK, or v2 bilateral Ready and Commit confirmation | `direct` |
 | `Suspect` | Direct liveness is uncertain | `relay` |
 | `FallingBack` | Direct state is being discarded | `relay` |
 | `Failed` | Target state for a recorded failed attempt; relay remains healthy | `relay` |
@@ -32,7 +43,30 @@ emit `Failed`; do not read every listed transition as present runtime behavior.
 may publish `direct`. P2P failure does not change a healthy base runtime phase
 from `Connected`.
 
+For v2 these states belong to each virtual IPv4 peer context, with at most
+sixteen contexts per client. The aggregate runtime state is `Direct` when
+any peer is Direct, otherwise `Probing` when any peer is Probing, otherwise
+`Relay`. Aggregate Direct does not authorize direct delivery to other peers:
+outbound traffic selects its destination VIP context and falls back to relay
+unless that peer is Direct. Keys, probes, liveness and renew/report timers are
+independent; protected UDP, STUN, candidate history and socket recovery are
+shared. A shared socket failure resets all peer direct state.
+Known peer control admission and egress budgets are also independent; unknown
+sources remain subject to shared admission. Exhausting one peer's control
+budget does not consume another peer's reserved budget.
+
 ## Target Transitions
+
+For v2, an ACK alone does not establish Direct. Both sides prime candidate
+pairs, the initiator nominates with Commit, and bilateral Ready plus
+CommitACK (or matching new-key data) authorizes promotion. Responder ACKs
+before Commit only cache transactions. Healthy current data remains usable
+while pending probes run. Pending failure before Commit preserves current;
+an uncertain committed transaction falls back by its ten-second deadline.
+Previous receives for at most five seconds and never extends current liveness.
+The client/server wiring publishes the channel state without changing the
+healthy base relay phase, and continues FRP and relay maintenance in v2 and
+socket recovery branches. Production remains gated off.
 
 ```text
 Disabled -> Relay                 experimental flag enabled
@@ -41,7 +75,7 @@ Unavailable -> Relay             prerequisites recover; no valid offer yet
 Unavailable -> Eligible          prerequisites recover with a valid fresh offer
 Relay -> Eligible                exporter, peer capability, policy, protection ready
 Eligible -> Probing              valid unexpired relay offer accepted
-Probing -> Direct                authenticated probe ACK accepted
+Probing -> Direct                v1 authenticated probe ACK; v2 bilateral Ready and Commit confirmed
 Probing -> FallingBack           timeout, auth failure, UDP blocked, cancellation
 Direct -> Suspect                liveness loss, endpoint change, socket warning
 Suspect -> Direct                authenticated recovery ACK or valid authenticated peer data
@@ -60,10 +94,15 @@ Eligible/Probing/Direct/Suspect -> FallingBack
 The relay forwarding path stays active through `Eligible`, `Probing`,
 `Suspect`, `FallingBack`, and `Failed`. A coordinator may suppress duplicate
 delivery while Direct is healthy, but it cannot dispose the relay session.
-After authenticating a peer Probe and producing its ACK, `Probing` may accept
+For v1, after authenticating a peer Probe and producing its ACK, `Probing` may accept
 authenticated inbound data from that exact peer endpoint; it must not send
 direct data or suppress outbound relay delivery until its own Probe ACK is
 authenticated and the state reaches `Direct`.
+For v2, pending-key application data is not delivered before promotion.
+Authenticated pending-key data confirms a lost CommitACK only when its
+offer, epoch, hashes and nominated pair match the committed transaction and
+bilateral Ready is complete. A cached responder ProbeACK does not nominate a
+pair or permit application delivery.
 Direct data is scoped to the authenticated IPv4 virtual-peer pair. Traffic for
 other destinations, including Internet and IPv6 traffic, continues over relay
 and does not trigger `FallingBack`.
