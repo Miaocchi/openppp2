@@ -292,12 +292,16 @@ namespace ppp {
                         exchanger->Dispose();
                         return;
                     }
+                    std::string interface_name;
+                    std::uint32_t interface_index = 0;
+#if !defined(_ANDROID) && !defined(_IPHONE)
                     const auto interface = underlying_ni_;
-                    const std::string interface_name = interface
-                        ? std::string(interface->Name.begin(), interface->Name.end()) : std::string();
+                    if (interface) {
+                        interface_name.assign(interface->Name.begin(), interface->Name.end());
+                        if (interface->Index > 0) interface_index = static_cast<std::uint32_t>(interface->Index);
+                    }
+#endif
                     const ppp::string protected_interface(interface_name.data(), interface_name.size());
-                    const auto interface_index = interface && interface->Index > 0
-                        ? static_cast<std::uint32_t>(interface->Index) : 0;
                     const std::weak_ptr<VEthernetNetworkSwitcher> weak =
                         std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
                     const auto protect_socket = [weak, protected_interface, interface_index](
@@ -319,11 +323,16 @@ namespace ppp {
 #endif
                     };
                     if (policy_updates_direct_) {
+#if defined(_ANDROID)
+                        bool direct_capable = GetProtectorNetwork() != nullptr &&
+                            ppp::android::IsProtectBridgeReady();
+#elif defined(_IPHONE)
+                        bool direct_capable = false;
+#else
                         bool direct_capable = interface != nullptr && !interface_name.empty();
 #if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
                         direct_capable = direct_capable && interface_index > 0;
-#elif defined(_IPHONE)
-                        direct_capable = false;
+#endif
 #endif
                         if (!direct_capable) {
                             policy_update_service_->Gate().Fail();

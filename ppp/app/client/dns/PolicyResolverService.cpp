@@ -363,8 +363,10 @@ struct PolicyResolverService::Operation : std::enable_shared_from_this<Operation
     void Complete(Packet response) {
         if (done.exchange(true)) return;
         active = false;
-        boost::system::error_code ec;
-        deadline.cancel(ec); retry.cancel(ec);
+        try { deadline.cancel(); }
+        catch (...) {}
+        try { retry.cancel(); }
+        catch (...) {}
         std::vector<Waiter> pending;
         {
             std::lock_guard<std::mutex> lock(owner->mutex_);
@@ -498,8 +500,8 @@ struct PolicyResolverService::Operation : std::enable_shared_from_this<Operation
         ScheduleRetry(current, [self = shared_from_this()] { self->Advance(); self->Next(); });
         const auto self = shared_from_this();
         Send(entries[index].endpoint, via, query, current, [self](Packet response) {
-            boost::system::error_code ec;
-            self->retry.cancel(ec);
+            try { self->retry.cancel(); }
+            catch (...) {}
             if (SameQuestion(self->query, response) && !(response[2] & 0x02) &&
                 ((response[3] & 15) == 0 || (response[3] & 15) == 3)) self->Complete(std::move(response));
             else {
@@ -520,8 +522,8 @@ struct PolicyResolverService::Operation : std::enable_shared_from_this<Operation
         ScheduleRetry(current, [self = shared_from_this()] { self->BootstrapNext(); });
         const auto self = shared_from_this();
         Send(bootstrap, Action::Direct, bootstrap_query, current, [self, bootstrap_query](Packet response) {
-            boost::system::error_code ec;
-            self->retry.cancel(ec);
+            try { self->retry.cancel(); }
+            catch (...) {}
             const auto address = SameQuestion(bootstrap_query, response) && !(response[2] & 0x02) &&
                 (response[3] & 15) == 0 ? PolicyResolverService::FirstAddress(response) : boost::asio::ip::address{};
             if (!address.is_v4() || address.is_unspecified()) {
@@ -778,8 +780,12 @@ void PolicyResolverService::ExchangePacket(const Entry& entry, Action via, const
             boost::asio::post(operation->strand, [operation, transport, local, active, callback, response = std::move(response)]() mutable {
             if (operation->done.exchange(true)) return;
             transport->ReleaseDatagramHandler(local);
+            try { operation->timer.cancel(); }
+            catch (...) {}
+            try { operation->activity.cancel(); }
+            catch (...) {}
             boost::system::error_code ignored;
-            operation->timer.cancel(ignored); operation->activity.cancel(ignored); operation->socket.close(ignored);
+            operation->socket.close(ignored);
             if (!active()) response.clear();
             operation->active = {};
             operation->finish = {};

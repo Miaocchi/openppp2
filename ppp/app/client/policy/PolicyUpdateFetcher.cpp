@@ -39,6 +39,14 @@ using TlsStream = beast::ssl_stream<Tcp::socket&>;
 constexpr std::size_t kHeaderLimit = 64u * 1024u;
 constexpr int kRedirectLimit = 5;
 
+template<class Timer>
+void CancelTimer(Timer& timer) noexcept {
+    try {
+        timer.cancel();
+    } catch (...) {
+    }
+}
+
 struct ParsedUrl final {
     std::string scheme;
     std::string host;
@@ -126,7 +134,7 @@ bool RunAsync(asio::io_context& io, Socket& socket, std::chrono::steady_clock::t
             boost::system::error_code ignored;
             socket.cancel(ignored);
             socket.close(ignored);
-            cancel_timer->cancel(ignored);
+            CancelTimer(*cancel_timer);
         }
     });
     auto poll = std::make_shared<std::function<void()>>();
@@ -137,7 +145,7 @@ bool RunAsync(asio::io_context& io, Socket& socket, std::chrono::steady_clock::t
             result->completed = true;
             boost::system::error_code ignored;
             socket.cancel(ignored); socket.close(ignored);
-            deadline_timer->cancel(ignored); cancel_timer->cancel(ignored);
+            CancelTimer(*deadline_timer); CancelTimer(*cancel_timer);
             return;
         }
         cancel_timer->expires_after(std::chrono::milliseconds(20));
@@ -148,7 +156,7 @@ bool RunAsync(asio::io_context& io, Socket& socket, std::chrono::steady_clock::t
     start([result, deadline_timer, cancel_timer](const boost::system::error_code& ec, std::size_t = 0) {
         if (!result->completed) { result->error = ec; result->completed = true; }
         boost::system::error_code ignored;
-        deadline_timer->cancel(ignored); cancel_timer->cancel(ignored);
+        CancelTimer(*deadline_timer); CancelTimer(*cancel_timer);
     });
     io.run();
     *poll = {};
@@ -164,7 +172,8 @@ bool WaitReady(Tcp::socket& socket, Tcp::socket::wait_type wait, std::chrono::st
     const std::shared_ptr<std::atomic_bool>& cancelled) {
     while (std::chrono::steady_clock::now() < deadline && !(cancelled && cancelled->load(std::memory_order_acquire))) {
         boost::system::error_code ec;
-        if (socket.wait(wait, ec) && !ec) return true;
+        socket.wait(wait, ec);
+        if (!ec) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return false;
@@ -172,7 +181,13 @@ bool WaitReady(Tcp::socket& socket, Tcp::socket::wait_type wait, std::chrono::st
 
 bool SetBoundInterface(Tcp::socket& socket, const DirectPolicySocketOptions& options, std::string& error) {
     const auto handle = socket.native_handle();
-#if defined(__linux__)
+#if defined(_ANDROID)
+    if (!options.protect_socket || !options.protect_socket(
+            static_cast<Tcp::socket::native_handle_type>(handle))) {
+        error = "platform rejected policy socket protection"; return false;
+    }
+    return true;
+#elif defined(__linux__)
     if (options.interface_name.empty()) { error = "direct policy fetch requires an explicit network interface"; return false; }
     if (::setsockopt(handle, SOL_SOCKET, SO_BINDTODEVICE, options.interface_name.c_str(),
             static_cast<socklen_t>(options.interface_name.size() + 1)) != 0) {
@@ -193,7 +208,8 @@ bool SetBoundInterface(Tcp::socket& socket, const DirectPolicySocketOptions& opt
 #else
     error = "direct policy socket binding is unsupported on this platform"; return false;
 #endif
-    if (options.protect_socket && !options.protect_socket(handle)) {
+    if (options.protect_socket && !options.protect_socket(
+            static_cast<Tcp::socket::native_handle_type>(handle))) {
         error = "platform rejected policy socket protection"; return false;
     }
     return true;
@@ -201,7 +217,13 @@ bool SetBoundInterface(Tcp::socket& socket, const DirectPolicySocketOptions& opt
 
 bool SetBoundInterface(Udp::socket& socket, const DirectPolicySocketOptions& options, std::string& error) {
     const auto handle = socket.native_handle();
-#if defined(__linux__)
+#if defined(_ANDROID)
+    if (!options.protect_socket || !options.protect_socket(
+            static_cast<Tcp::socket::native_handle_type>(handle))) {
+        error = "platform rejected bootstrap DNS socket protection"; return false;
+    }
+    return true;
+#elif defined(__linux__)
     if (options.interface_name.empty()) { error = "direct policy fetch requires an explicit network interface"; return false; }
     if (::setsockopt(handle, SOL_SOCKET, SO_BINDTODEVICE, options.interface_name.c_str(),
             static_cast<socklen_t>(options.interface_name.size() + 1)) != 0) {
@@ -222,7 +244,8 @@ bool SetBoundInterface(Udp::socket& socket, const DirectPolicySocketOptions& opt
 #else
     error = "direct policy socket binding is unsupported on this platform"; return false;
 #endif
-    if (options.protect_socket && !options.protect_socket(handle)) {
+    if (options.protect_socket && !options.protect_socket(
+            static_cast<Tcp::socket::native_handle_type>(handle))) {
         error = "platform rejected bootstrap DNS socket protection"; return false;
     }
     return true;
@@ -395,7 +418,7 @@ bool HttpExchange(Stream& stream, Tcp::socket& socket, const PolicyFetchRequest&
     deadline_timer->async_wait([result, deadline_timer, cancel_timer, &socket](const boost::system::error_code& ec) {
         if (!ec && !result->completed) {
             result->error = asio::error::timed_out; result->completed = true;
-            boost::system::error_code ignored; socket.cancel(ignored); socket.close(ignored); cancel_timer->cancel(ignored);
+            boost::system::error_code ignored; socket.cancel(ignored); socket.close(ignored); CancelTimer(*cancel_timer);
         }
     });
     auto poll = std::make_shared<std::function<void()>>();
@@ -404,7 +427,7 @@ bool HttpExchange(Stream& stream, Tcp::socket& socket, const PolicyFetchRequest&
         if (cancelled && cancelled->load(std::memory_order_acquire)) {
             result->error = asio::error::operation_aborted; result->completed = true;
             boost::system::error_code ignored; socket.cancel(ignored); socket.close(ignored);
-            deadline_timer->cancel(ignored); cancel_timer->cancel(ignored); return;
+            CancelTimer(*deadline_timer); CancelTimer(*cancel_timer); return;
         }
         cancel_timer->expires_after(std::chrono::milliseconds(20));
         cancel_timer->async_wait([poll](const boost::system::error_code& ec) { if (!ec) (*poll)(); });
@@ -425,10 +448,10 @@ bool HttpExchange(Stream& stream, Tcp::socket& socket, const PolicyFetchRequest&
                         });
                 }
                 if (result->completed) {
-                    boost::system::error_code ignored; deadline_timer->cancel(ignored); cancel_timer->cancel(ignored);
+                    CancelTimer(*deadline_timer); CancelTimer(*cancel_timer);
                 }
             });
-        if (result->completed) { boost::system::error_code ignored; deadline_timer->cancel(ignored); cancel_timer->cancel(ignored); }
+        if (result->completed) { CancelTimer(*deadline_timer); CancelTimer(*cancel_timer); }
     });
     io.run();
     *poll = {};
@@ -485,7 +508,7 @@ bool FetchOne(PolicyUpdateSocketConnector& connector, const ParsedUrl& url,
             deadline_timer->expires_at(request.deadline);
             deadline_timer->async_wait([result, deadline_timer, cancel_timer, &socket](const boost::system::error_code& ec) {
                 if (!ec && !result->completed) { result->error = asio::error::timed_out; result->completed = true;
-                    boost::system::error_code ignored; socket.cancel(ignored); socket.close(ignored); cancel_timer->cancel(ignored); }
+                    boost::system::error_code ignored; socket.cancel(ignored); socket.close(ignored); CancelTimer(*cancel_timer); }
             });
             auto poll = std::make_shared<std::function<void()>>();
             *poll = [result, deadline_timer, cancel_timer, &socket, cancelled = request.cancelled, poll]() {
@@ -493,7 +516,7 @@ bool FetchOne(PolicyUpdateSocketConnector& connector, const ParsedUrl& url,
                 if (cancelled && cancelled->load(std::memory_order_acquire)) {
                     result->error = asio::error::operation_aborted; result->completed = true;
                     boost::system::error_code ignored; socket.cancel(ignored); socket.close(ignored);
-                    deadline_timer->cancel(ignored); cancel_timer->cancel(ignored); return;
+                    CancelTimer(*deadline_timer); CancelTimer(*cancel_timer); return;
                 }
                 cancel_timer->expires_after(std::chrono::milliseconds(20));
                 cancel_timer->async_wait([poll](const boost::system::error_code& ec) { if (!ec) (*poll)(); });
@@ -502,7 +525,7 @@ bool FetchOne(PolicyUpdateSocketConnector& connector, const ParsedUrl& url,
             stream.async_handshake(asio::ssl::stream_base::client,
                 [result, deadline_timer, cancel_timer](const boost::system::error_code& ec) {
                     if (!result->completed) { result->error = ec; result->completed = true; }
-                    boost::system::error_code ignored; deadline_timer->cancel(ignored); cancel_timer->cancel(ignored);
+                    CancelTimer(*deadline_timer); CancelTimer(*cancel_timer);
                 });
             io.restart();
             io.run();

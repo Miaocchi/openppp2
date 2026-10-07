@@ -133,7 +133,8 @@ bool ResolveWithBootstrap(const std::string& hostname, const std::vector<Udp::en
     boost::asio::io_context context;
     auto resolver = std::make_shared<ppp::dns::DnsResolver>(context);
     resolver->SetProtectSocketCallback([protect_socket](ppp::dns::DnsResolver::NativeSocketHandle handle) {
-        return protect_socket && protect_socket(handle);
+        return protect_socket && protect_socket(
+            static_cast<Udp::socket::native_handle_type>(handle));
     });
     ppp::function<bool()> active = [deadline, cancelled] { return IsActive(deadline, cancelled); };
     resolver->SetQueryActiveCheck(active);

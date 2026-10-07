@@ -92,8 +92,9 @@ namespace ppp::app::client::udp {
             --packets_; bytes_ -= packet->size();
         }
         void Stop() noexcept {
+            try { timer_.cancel(); }
+            catch (...) {}
             boost::system::error_code ec;
-            timer_.cancel(ec);
             if (!protecting_) { socket_.cancel(ec); socket_.close(ec); }
             if (provider_) provider_->Close();
             while (!queue_.empty()) { Complete(queue_.front()); queue_.pop_front(); }
@@ -177,7 +178,7 @@ namespace ppp::app::client::udp {
             boost::system::error_code ec;
             socket_.open(boost::asio::ip::udp::v4(), ec);
             if (ec) { Close(); return; }
-            const auto handle = socket_.native_handle();
+            const auto handle = static_cast<ClientUnderlyingSocketHandle>(socket_.native_handle());
             // Android protection may suspend; readiness and all socket I/O are
             // published back on the strand only after protection succeeds.
             protecting_ = true;

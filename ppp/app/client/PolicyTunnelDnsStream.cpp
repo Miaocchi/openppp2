@@ -93,7 +93,10 @@ struct StreamOperation final : std::enable_shared_from_this<StreamOperation> {
         boost::system::error_code ignored;
         if (listener) listener->close(ignored);
         if (peer) peer->close(ignored);
-        if (timer) timer->cancel(ignored);
+        if (timer) {
+            try { timer->cancel(); }
+            catch (...) {}
+        }
         auto cancel = std::move(pending_cancel);
         try { if (cancel) cancel(); }
         catch (...) {}

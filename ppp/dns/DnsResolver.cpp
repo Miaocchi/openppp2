@@ -2061,7 +2061,7 @@ namespace ppp {
             ppp::net::Socket::SetTypeOfService(socket->native_handle());
             ppp::net::Socket::SetSignalPipeline(socket->native_handle(), false);
             ppp::net::Socket::ReuseSocketAddress(socket->native_handle(), true);
-            if (!ProtectSocket(socket->native_handle())) {
+            if (!ProtectSocket(static_cast<NativeSocketHandle>(socket->native_handle()))) {
                 CountDnsTransport(Protocol::UDP, DnsTransportStage::Socket, DnsTransportReason::ProtectFailed);
                 state->Complete(ppp::vector<Byte>());
                 return;
@@ -2772,7 +2772,7 @@ namespace ppp {
             ppp::net::Socket::SetTypeOfService(socket->native_handle());
             ppp::net::Socket::SetSignalPipeline(socket->native_handle(), false);
             ppp::net::Socket::ReuseSocketAddress(socket->native_handle(), true);
-            if (!ProtectSocket(socket->native_handle())) {
+            if (!ProtectSocket(static_cast<NativeSocketHandle>(socket->native_handle()))) {
                 state->Complete(boost::asio::ip::address());
                 return;
             }

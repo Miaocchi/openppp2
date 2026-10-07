@@ -319,7 +319,7 @@ namespace ppp {
 #if defined(_IPHONE)
                     return ClientUnderlyingSocketProtector();
 #elif defined(_ANDROID)
-                    return BuildClientUnderlyingSocketProtector(true, switcher->GetUnderlyingNetworkInterface(), switcher->GetProtectorNetwork());
+                    return BuildClientUnderlyingSocketProtector(true, nullptr, switcher->GetProtectorNetwork());
 #else
                     if (switcher->ProxyOnly(nullptr)) {
                         return ClientUnderlyingSocketProtector([](ClientUnderlyingSocketHandle handle, YieldContext&) noexcept {
