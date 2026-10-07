@@ -20,6 +20,16 @@ P2PCandidateEndpoint Candidate(std::uint8_t host, std::uint16_t port = 4000) {
     return endpoint;
 }
 
+P2PCandidateEndpoint Candidate6(std::uint8_t host, std::uint16_t port = 4000) {
+    P2PCandidateEndpoint endpoint;
+    endpoint.address_family = 6;
+    endpoint.address[0] = 0x20;
+    endpoint.address[1] = 0x01;
+    endpoint.address[15] = host;
+    endpoint.port = port;
+    return endpoint;
+}
+
 const std::vector<P2PCandidateEndpoint> Local{Candidate(1), Candidate(2)};
 const std::vector<P2PCandidateEndpoint> Peer{Candidate(3), Candidate(4)};
 
@@ -45,6 +55,40 @@ BOOST_AUTO_TEST_CASE(controlling_probes_four_pairs_in_two_bounded_rounds) {
     BOOST_TEST(coordinator.Poll(5000, 7).size == 0u);
     BOOST_TEST(coordinator.Snapshot().timed_out);
     BOOST_TEST(!coordinator.Snapshot().active);
+}
+
+BOOST_AUTO_TEST_CASE(priority_controls_candidate_family_order) {
+    const std::vector<P2PCandidateEndpoint> locals{Candidate(1), Candidate6(1)};
+    const std::vector<P2PCandidateEndpoint> peers{Candidate(2), Candidate6(2)};
+    P2PProbeCoordinator coordinator;
+
+    coordinator.SetPriority(P2PPeerPriority::IPv4First);
+    BOOST_REQUIRE(coordinator.Begin(P2PProbeRole::Controlling, locals, peers, 1000, 7));
+    auto batch = coordinator.Poll(1000, 7);
+    BOOST_REQUIRE_EQUAL(batch.size, 2u);
+    BOOST_TEST(batch.tasks[0].pair.local.address_family == 4);
+    BOOST_TEST(batch.tasks[1].pair.local.address_family == 6);
+
+    coordinator.SetPriority(P2PPeerPriority::IPv6First);
+    BOOST_REQUIRE(coordinator.Begin(P2PProbeRole::Controlling, locals, peers, 2000, 8));
+    batch = coordinator.Poll(2000, 8);
+    BOOST_REQUIRE_EQUAL(batch.size, 2u);
+    BOOST_TEST(batch.tasks[0].pair.local.address_family == 6);
+    BOOST_TEST(batch.tasks[1].pair.local.address_family == 4);
+}
+
+BOOST_AUTO_TEST_CASE(relay_first_suppresses_direct_probe_batches) {
+    P2PProbeCoordinator coordinator;
+    coordinator.SetPriority(P2PPeerPriority::RelayFirst);
+    BOOST_TEST(!coordinator.Begin(P2PProbeRole::Controlling, Local, Peer, 1000, 7));
+    BOOST_TEST(static_cast<int>(coordinator.Priority()) ==
+        static_cast<int>(P2PPeerPriority::RelayFirst));
+    BOOST_TEST(coordinator.Poll(1000, 7).size == 0u);
+    BOOST_TEST(coordinator.Snapshot().pair_count == 0u);
+
+    coordinator.SetPriority(P2PPeerPriority::IPv4First);
+    BOOST_REQUIRE(coordinator.Begin(P2PProbeRole::Controlling, Local, Peer, 2000, 8));
+    BOOST_TEST(coordinator.Poll(2000, 8).size == 4u);
 }
 
 BOOST_AUTO_TEST_CASE(validated_ack_stops_all_other_pairs_and_rejects_late_acks) {

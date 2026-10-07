@@ -15,6 +15,45 @@ enum class P2PProbeRole : std::uint8_t {
     Controlled,
 };
 
+// Controls which candidate family is attempted first. RelayFirst deliberately
+// keeps a peer on the authenticated relay path and suppresses direct probes.
+enum class P2PPeerPriority : std::uint8_t {
+    IPv4First,
+    IPv6First,
+    RelayFirst,
+};
+
+constexpr const char* P2PPeerPriorityName(P2PPeerPriority priority) noexcept {
+    switch (priority) {
+    case P2PPeerPriority::IPv4First: return "ipv4-first";
+    case P2PPeerPriority::IPv6First: return "ipv6-first";
+    case P2PPeerPriority::RelayFirst: return "relay-first";
+    }
+    return "ipv6-first";
+}
+
+constexpr bool ParseP2PPeerPriority(const char* value,
+    P2PPeerPriority& output) noexcept {
+    if (!value) return false;
+    const auto equal = [](const char* a, const char* b) {
+        while (*a && *b && *a == *b) { ++a; ++b; }
+        return *a == *b;
+    };
+    if (equal(value, "ipv4-first")) {
+        output = P2PPeerPriority::IPv4First;
+        return true;
+    }
+    if (equal(value, "ipv6-first")) {
+        output = P2PPeerPriority::IPv6First;
+        return true;
+    }
+    if (equal(value, "relay-first")) {
+        output = P2PPeerPriority::RelayFirst;
+        return true;
+    }
+    return false;
+}
+
 struct P2PProbeCandidatePair {
     P2PCandidateEndpoint local;
     P2PCandidateEndpoint peer;
@@ -61,6 +100,9 @@ public:
     static constexpr std::uint64_t ProbeWindowMs = 4000;
     static constexpr std::uint64_t SetupWindowMs = 10000;
 
+    void SetPriority(P2PPeerPriority priority) noexcept;
+    P2PPeerPriority Priority() const noexcept { return priority_; }
+
     bool Begin(P2PProbeRole role,
         const std::vector<P2PCandidateEndpoint>& local_candidates,
         const std::vector<P2PCandidateEndpoint>& peer_candidates,
@@ -102,6 +144,7 @@ private:
     std::optional<std::size_t> nominated_pair_;
     std::optional<std::size_t> acknowledged_pair_;
     std::array<bool, MaxPairs> acknowledged_pairs_{};
+    P2PPeerPriority priority_ = P2PPeerPriority::IPv6First;
 };
 
 }

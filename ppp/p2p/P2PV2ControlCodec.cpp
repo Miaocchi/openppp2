@@ -12,7 +12,6 @@ bool Valid(const P2PV2ControlPacket& p) noexcept {
         p.sender_role!=p.receiver_role && p.direction==p.sender_role && p.setup_ttl_seconds==10 &&
         p.sequence!=std::numeric_limits<std::uint32_t>::max() &&
         p.offer_hash!=P2POfferHash{} && p.connection_epoch!=P2PId{} &&
-        p.source.address_family==4 && p.destination.address_family==4 &&
         IsCanonicalP2PCandidate(p.source) && IsCanonicalP2PCandidate(p.destination);
 }
 void Endpoint(std::uint8_t* b,const P2PCandidateEndpoint& e) noexcept {

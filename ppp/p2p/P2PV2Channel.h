@@ -42,6 +42,8 @@ struct P2PV2Snapshot {
     bool has_current = false, has_pending = false, has_previous = false;
     bool pending_ready = false, commit_started = false, migration_pending = false;
     P2PPeerRole local_role = P2PPeerRole::Initiator;
+    // Remote peer identity from the authenticated relay offer.
+    P2PId peer_uuid{};
     P2POfferHash current_offer_hash{}, pending_offer_hash{}, previous_offer_hash{};
     P2PCandidateEndpoint local_candidate, peer_candidate;
     std::uint64_t generation = 0, key_generation = 0;
@@ -87,7 +89,12 @@ public:
         const P2PCandidateEndpoint& observed_source, std::uint64_t now_ms,
         std::uint64_t generation, P2PV2ControlResult&) noexcept;
     P2PV2TickResult Tick(std::uint64_t now_ms, std::uint64_t generation) noexcept;
+    // Cancel an in-flight offer and request an authenticated replacement on
+    // the next Tick. The current direct key, when present, remains usable.
+    void RequestRenew(std::uint64_t generation) noexcept;
     P2PV2Snapshot Snapshot() const noexcept;
+    void RequestRenew() noexcept;
+    void SetRelayOnly(bool enabled) noexcept;
     void Reset(std::uint64_t generation) noexcept;
     void ConfigureLiveness(int interval_ms, int miss_max,
         int suspect_timeout_ms, int migration_grace_ms) noexcept;

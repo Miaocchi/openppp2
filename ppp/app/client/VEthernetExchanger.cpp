@@ -2,6 +2,7 @@
 #include <ppp/transmissions/proxys/IForwarding.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/app/client/VEthernetExchanger.h>
+#include <ppp/app/client/PolicyTunnelDnsStream.h>
 #include <ppp/app/client/VEthernetDatagramPort.h>
 #include <ppp/app/client/udp/ClientDatagramPortManager.h>
 #include <ppp/app/client/ClientFrpRegistry.h>
@@ -46,6 +47,7 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <cctype>
 
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
@@ -88,6 +90,47 @@ namespace ppp {
             using ppp::app::protocol::SessionResumeProof;
             using ppp::app::protocol::SessionResumeSecret;
             using ppp::app::protocol::SessionResumeTranscriptFields;
+
+            static std::string RuntimeEndpointText(
+                const boost::asio::ip::udp::endpoint& endpoint) {
+                if (endpoint.address().is_unspecified() || !endpoint.port()) return {};
+                boost::system::error_code ec;
+                const auto address = endpoint.address().to_string(ec);
+                if (ec) return {};
+                return address + ":" + std::to_string(endpoint.port());
+            }
+
+            static bool ParsePeerUuid(const ppp::string& text,
+                ppp::p2p::P2PId& output) noexcept {
+                if (text.size() != output.size() * 2u) return false;
+                ppp::p2p::P2PId parsed{};
+                for (std::size_t i = 0; i < parsed.size(); ++i) {
+                    const auto hex = [](char c) noexcept -> int {
+                        if (c >= '0' && c <= '9') return c - '0';
+                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                        return -1;
+                    };
+                    const int hi = hex(text[i * 2u]);
+                    const int lo = hex(text[i * 2u + 1u]);
+                    if (hi < 0 || lo < 0) return false;
+                    parsed[i] = static_cast<std::uint8_t>((hi << 4) | lo);
+                }
+                if (parsed == ppp::p2p::P2PId{}) return false;
+                output = parsed;
+                return true;
+            }
+
+            static std::string PeerUuidText(const ppp::p2p::P2PId& id) {
+                static constexpr char Hex[] = "0123456789abcdef";
+                std::string output;
+                output.reserve(id.size() * 2u);
+                for (const auto byte : id) {
+                    output.push_back(Hex[byte >> 4]);
+                    output.push_back(Hex[byte & 0x0f]);
+                }
+                return output;
+            }
 
             template <std::size_t N>
             class SessionResumeArrayCleanser final {
@@ -306,6 +349,36 @@ namespace ppp {
                 VEthernetExchanger* self = this;
 
                 udp::UdpRelayHostPorts host;
+                host.get_context = [self]() noexcept { return self->GetContext(); };
+                host.resolve_policy_destination = [self](const std::string& domain,
+                    const std::shared_ptr<const policy::PolicySnapshot>& snapshot, YieldContext& y, boost::asio::ip::address& address) noexcept {
+                    return self->switcher_->ResolvePolicyDestination(domain, snapshot, y, address);
+                };
+                host.get_owner = [self]() noexcept { return std::static_pointer_cast<void>(self->shared_from_this()); };
+                host.get_direct_protector = [self]() noexcept {
+                    auto switcher = self->switcher_;
+                    if (!switcher) return ClientUnderlyingSocketProtector();
+#if defined(_IPHONE)
+                    return ClientUnderlyingSocketProtector();
+#elif defined(_ANDROID)
+                    return BuildClientUnderlyingSocketProtector(true, nullptr, switcher->GetProtectorNetwork());
+#else
+                    if (switcher->ProxyOnly(nullptr)) {
+                        return ClientUnderlyingSocketProtector([](ClientUnderlyingSocketHandle handle, YieldContext&) noexcept {
+                            return IsClientUnderlyingSocketHandleValid(handle);
+                        });
+                    }
+                    return BuildClientUnderlyingSocketProtector(true, switcher->GetUnderlyingNetworkInterface(), nullptr);
+#endif
+                };
+#if defined(_IPHONE)
+                host.create_direct_transport = [self]() noexcept -> std::shared_ptr<ppp::p2p::IP2PDatagramTransport> {
+                    auto tap = std::dynamic_pointer_cast<ppp::tap::TapIos>(self->switcher_->GetTap());
+                    auto factory = tap ? tap->GetP2PDatagramTransportFactory() : nullptr;
+                    auto context = self->GetContext();
+                    return factory && context ? factory->Create(*context) : nullptr;
+                };
+#endif
                 host.datagram_output =
                     [self](const boost::asio::ip::udp::endpoint& source, const boost::asio::ip::udp::endpoint& destination,
                            const std::shared_ptr<Byte>& owner, void* packet, int packet_size, bool caching) noexcept {
@@ -407,7 +480,26 @@ namespace ppp {
                     request.ClientIPv4Req = ipv4_req;
                 }
 
-                const auto protector = ppp::p2p::CreateSocketProtector();
+                int p2p_interface_index = -1;
+                std::string p2p_interface_name;
+#if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE))
+                if (switcher) {
+                    const auto underlying = switcher->GetUnderlyingNetworkInterface();
+                    if (underlying) {
+                        p2p_interface_index = underlying->Index;
+                        p2p_interface_name = underlying->Name;
+                    }
+                }
+#elif defined(_LINUX) && !defined(_ANDROID)
+                if (switcher) {
+                    const auto underlying = switcher->GetUnderlyingNetworkInterface();
+                    if (underlying) {
+                        p2p_interface_name = underlying->Name;
+                    }
+                }
+#endif
+                const auto protector = ppp::p2p::CreateSocketProtector(
+                    p2p_interface_index, p2p_interface_name);
                 const auto p2p_capability = ppp::p2p::P2PCapabilityGate::Evaluate(
                     configuration->p2p.enabled,
                     configuration->p2p.mode.c_str(),
@@ -464,6 +556,7 @@ namespace ppp {
                         ? candidate_transport->LocalEndpoint()
                         : boost::asio::ip::udp::endpoint();
                     boost::asio::ip::address candidate_address;
+                    std::shared_ptr<ClientNetworkInterface> underlying;
 #if defined(_IPHONE)
                     candidate_address = bound.address();
 #elif defined(_ANDROID)
@@ -475,7 +568,7 @@ namespace ppp {
                             Socket::GetBestInterfaceIP(destination));
                     }
 #else
-                    auto underlying = switcher
+                    underlying = switcher
                         ? switcher->GetUnderlyingNetworkInterface()
                         : nullptr;
                     if (underlying) {
@@ -502,6 +595,27 @@ namespace ppp {
                     ppp::vector<ppp::app::protocol::P2PEndpointCandidate> gathered;
                     if (!candidate.endpoint.empty()) {
                         gathered.emplace_back(candidate);
+                    }
+                    // Add verified global IPv6 addresses from the physical
+                    // interface. They share the protected transport port and
+                    // are advertised alongside the legacy IPv4 host candidate.
+                    if (underlying && bound.port() != 0) {
+                        for (const auto& address : underlying->IPv6Addresses) {
+                            if (!address.is_v6() || address.is_unspecified() ||
+                                address.is_loopback() || address.is_multicast() ||
+                                (address.is_v6() && address.to_v6().is_link_local())) continue;
+                            const auto value = ppp::app::P2PEndpointToString(
+                                boost::asio::ip::udp::endpoint(address, bound.port()));
+                            if (value.empty()) continue;
+                            ppp::app::protocol::P2PEndpointCandidate v6_candidate;
+                            v6_candidate.endpoint.assign(value.data(), value.size());
+                            v6_candidate.source = "host-v6";
+                            if (std::find_if(gathered.begin(), gathered.end(),
+                                [&v6_candidate](const auto& item) {
+                                    return item.endpoint == v6_candidate.endpoint;
+                                }) == gathered.end()) gathered.emplace_back(std::move(v6_candidate));
+                            if (gathered.size() >= 2) break;
+                        }
                     }
 
                     std::shared_ptr<ppp::p2p::IP2PDatagramTransport> previous_transport;
@@ -1365,7 +1479,9 @@ namespace ppp {
             }
 
             /** @brief Opens a transport connection to current remote endpoint. */
-            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::OpenTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, ppp::transmissions::TcpTransmissionRole role) noexcept {
+            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::OpenTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, ppp::transmissions::TcpTransmissionRole role,
+                const ppp::function<bool()>& active,
+                const ppp::function<void(const ppp::function<void()>&)>& register_cancel) noexcept {
                 boost::asio::ip::tcp::endpoint remoteEP;
                 ppp::string hostname;
                 ppp::string address;
@@ -1434,6 +1550,14 @@ namespace ppp {
                 if (!socket) {
                     rollback_windows_ipv6_route();
                     return NULLPTR;
+                }
+                if (active && !active()) {
+                    rollback_windows_ipv6_route();
+                    Socket::Closesocket(socket);
+                    return NULLPTR;
+                }
+                if (register_cancel) {
+                    register_cancel([socket]() noexcept { Socket::Closesocket(socket); });
                 }
 
 #if defined(_LINUX)
@@ -1746,12 +1870,17 @@ namespace ppp {
             }
 
             /** @brief Connects and handshakes a child transmission for mux use. */
-            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::ConnectTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, uint64_t* ios_child_slot_generation) noexcept {
+            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::ConnectTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, uint64_t* ios_child_slot_generation,
+                const ppp::function<bool()>& active,
+                const ppp::function<void(const ppp::function<void()>&)>& register_cancel) noexcept {
                 if (NULLPTR == context) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeIoContextMissing, VEthernetExchanger::ITransmissionPtr(NULLPTR));
                 }
 
                 if (disposed_.load(std::memory_order_acquire)) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed, VEthernetExchanger::ITransmissionPtr(NULLPTR));
+                }
+                if (active && !active()) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed, VEthernetExchanger::ITransmissionPtr(NULLPTR));
                 }
 
@@ -1768,7 +1897,7 @@ namespace ppp {
                     *ios_child_slot_generation = 0;
                 }
                 if (ios_child_slot) {
-                    if (!TryReserveIosChildTransmissionSlot(context, y, ios_reserved_generation)) {
+                    if (!TryReserveIosChildTransmissionSlot(context, y, ios_reserved_generation, active)) {
                         if (disposed_.load(std::memory_order_acquire)) {
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionDisposed, VEthernetExchanger::ITransmissionPtr(NULLPTR));
                         }
@@ -1783,8 +1912,9 @@ namespace ppp {
                 }
 #endif
 
-                ITransmissionPtr transmission = OpenTransmission(context, strand, y, ppp::transmissions::TcpTransmissionRole::Child);
+                ITransmissionPtr transmission = OpenTransmission(context, strand, y, ppp::transmissions::TcpTransmissionRole::Child, active, register_cancel);
                 if (NULLPTR == transmission) {
+                    if (register_cancel) register_cancel({});
 #if defined(_IPHONE)
                     if (ios_child_slot) {
                         ReleaseIosChildTransmissionSlot(ios_reserved_generation);
@@ -1793,8 +1923,21 @@ namespace ppp {
                     return NULLPTR;
                 }
 
+                if (register_cancel) {
+                    register_cancel([transmission]() noexcept { transmission->Dispose(); });
+                }
+                if (active && !active()) {
+                    transmission->Dispose();
+                    if (register_cancel) register_cancel({});
+#if defined(_IPHONE)
+                    if (ios_child_slot) ReleaseIosChildTransmissionSlot(ios_reserved_generation);
+#endif
+                    return NULLPTR;
+                }
+
                 bool noerror = transmission->HandshakeServer(y, GetId(), false);
-                if (noerror) {
+                if (noerror && (!active || active())) {
+                    if (register_cancel) register_cancel({});
 #if defined(_IPHONE)
                     if (ios_child_slot && NULLPTR != ios_child_slot_generation) {
                         *ios_child_slot_generation = ios_reserved_generation;
@@ -1805,6 +1948,7 @@ namespace ppp {
                 else {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionHandshakeFailed);
                     transmission->Dispose();
+                    if (register_cancel) register_cancel({});
 #if defined(_IPHONE)
                     if (ios_child_slot) {
                         ReleaseIosChildTransmissionSlot(ios_reserved_generation);
@@ -1865,7 +2009,8 @@ namespace ppp {
                 ios_child_transmission_active_.store(active - 1, std::memory_order_release);
             }
 
-            bool VEthernetExchanger::TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y, uint64_t& generation) noexcept {
+            bool VEthernetExchanger::TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y, uint64_t& generation,
+                const ppp::function<bool()>& active) noexcept {
                 generation = 0;
                 ios_child_connect_waiters_.fetch_add(1, std::memory_order_relaxed);
                 struct WaiterGuard final {
@@ -1880,6 +2025,9 @@ namespace ppp {
 
                 int waited_ms = 0;
                 for (;;) {
+                    if (active && !active()) {
+                        return false;
+                    }
                     if (disposed_.load(std::memory_order_acquire)) {
                         return false;
                     }
@@ -2655,6 +2803,7 @@ namespace ppp {
                     network_state_.store(NetworkState_Established, std::memory_order_relaxed);
                 }
                 reconnection_count_ = 0;
+                if (switcher_) switcher_->OnExchangerEstablished();
             }
 
             /** @brief Transitions state to connecting. */
@@ -2690,7 +2839,6 @@ namespace ppp {
             }
 
             VEthernetExchanger::RuntimeStateSnapshot VEthernetExchanger::GetRuntimeState() const noexcept {
-                std::lock_guard<std::mutex> scope(runtime_state_mutex_);
                 RuntimeStateSnapshot snapshot;
                 snapshot.network_state = network_state_.load(std::memory_order_relaxed);
                 if (disposed_.load(std::memory_order_acquire)) {
@@ -2702,7 +2850,99 @@ namespace ppp {
                 else {
                     snapshot.p2p_state = p2p_state_.load(std::memory_order_relaxed);
                 }
+                std::lock_guard<std::mutex> scope(p2p_offer_mutex_);
+                snapshot.peers.reserve(p2p_v2_peers_.size());
+                for (const auto& item : p2p_v2_peers_) {
+                    const auto& peer = *item.second;
+                    const auto channel = peer.channel.Snapshot();
+                    ppp::app::runtime::RuntimePeerSnapshot current;
+                    current.peer_uuid = PeerUuidText(peer.peer_uuid);
+                    const auto configured_priority = p2p_peer_priorities_.find(peer.peer_uuid);
+                    current.p2p_priority = ppp::p2p::P2PPeerPriorityName(
+                        configured_priority == p2p_peer_priorities_.end()
+                            ? p2p_peer_priority_.load(std::memory_order_acquire)
+                            : configured_priority->second);
+                    current.virtual_ip = peer.virtual_ip;
+                    current.state = channel.state;
+                    current.effective_path = channel.effective_path ? channel.effective_path : "relay";
+                    current.has_current = channel.has_current;
+                    current.has_pending = channel.has_pending;
+                    current.has_previous = channel.has_previous;
+                    current.pending_ready = channel.pending_ready;
+                    current.migration_pending = channel.migration_pending;
+                    current.generation = channel.generation;
+                    current.key_generation = channel.key_generation;
+                    current.key_deadline_ms = channel.key_deadline_ms;
+                    current.last_receive_ms = channel.last_receive_ms;
+                    current.local_candidate = RuntimeEndpointText(peer.local_candidate);
+                    current.peer_candidate = RuntimeEndpointText(peer.peer_candidate);
+                    snapshot.peers.emplace_back(std::move(current));
+                }
+                std::sort(snapshot.peers.begin(), snapshot.peers.end(),
+                    [](const auto& left, const auto& right) {
+                        return left.virtual_ip < right.virtual_ip;
+                    });
                 return snapshot;
+            }
+
+            void VEthernetExchanger::SetP2PPeerPriority(ppp::p2p::P2PPeerPriority priority) noexcept {
+                p2p_peer_priority_.store(priority, std::memory_order_release);
+                std::lock_guard<std::mutex> scope(p2p_offer_mutex_);
+                for (auto& item : p2p_v2_peers_) {
+                    if (item.second) {
+                        item.second->probes.SetPriority(priority);
+                        item.second->channel.SetRelayOnly(priority == ppp::p2p::P2PPeerPriority::RelayFirst);
+                        if (priority != ppp::p2p::P2PPeerPriority::RelayFirst) {
+                            const auto generation = item.second->channel.Snapshot().generation;
+                            item.second->channel.RequestRenew(generation);
+                        }
+                    }
+                }
+            }
+
+            void VEthernetExchanger::SetP2PPeerPriority(
+                const ppp::p2p::P2PId& peer_id,
+                ppp::p2p::P2PPeerPriority priority) noexcept {
+                if (peer_id == ppp::p2p::P2PId{}) return;
+                std::lock_guard<std::mutex> scope(p2p_offer_mutex_);
+                p2p_peer_priorities_[peer_id] = priority;
+                for (auto& item : p2p_v2_peers_) {
+                    if (item.second && item.second->peer_uuid == peer_id) {
+                        item.second->probes.SetPriority(priority);
+                        item.second->channel.SetRelayOnly(priority == ppp::p2p::P2PPeerPriority::RelayFirst);
+                        if (priority == ppp::p2p::P2PPeerPriority::RelayFirst) {
+                            const auto generation = item.second->channel.Snapshot().generation;
+                            item.second->probes.Cancel(generation);
+                            item.second->deferred_packets.clear();
+                            item.second->last_renew_ms = 0;
+                        } else {
+                            // A priority change after relay-first should cause
+                            // the next P2P tick to renew immediately, rather
+                            // than waiting for the normal ten-second cadence.
+                            item.second->last_renew_ms = 0;
+                            const auto generation = item.second->channel.Snapshot().generation;
+                            item.second->channel.RequestRenew(generation);
+                        }
+                    }
+                }
+            }
+
+            ppp::p2p::P2PPeerPriority VEthernetExchanger::GetP2PPeerPriority(
+                const ppp::p2p::P2PId& peer_id) const noexcept {
+                std::lock_guard<std::mutex> scope(p2p_offer_mutex_);
+                const auto found = p2p_peer_priorities_.find(peer_id);
+                return found == p2p_peer_priorities_.end()
+                    ? p2p_peer_priority_.load(std::memory_order_acquire)
+                    : found->second;
+            }
+
+            bool VEthernetExchanger::SetP2PPeerPriority(
+                const ppp::string& peer_uuid,
+                ppp::p2p::P2PPeerPriority priority) noexcept {
+                ppp::p2p::P2PId parsed{};
+                if (!ParsePeerUuid(peer_uuid, parsed)) return false;
+                SetP2PPeerPriority(parsed, priority);
+                return true;
             }
 
             /** @brief Registers all configured FRP mapping ports. */
@@ -2940,7 +3180,8 @@ namespace ppp {
                         for (const auto& value : stun_servers) {
                             if (servers.size() == ppp::p2p::P2PStunGatherer::MaxServers) break;
                             const auto endpoint = Ipep::ParseEndPoint(value);
-                            if (endpoint.address().is_v4() && !endpoint.address().is_unspecified() && endpoint.port())
+                            if ((endpoint.address().is_v4() || endpoint.address().is_v6()) &&
+                                !endpoint.address().is_unspecified() && endpoint.port())
                                 servers.push_back(endpoint);
                         }
                         std::weak_ptr<ppp::app::protocol::VirtualEthernetLinklayer> weak_self = self;
@@ -3114,11 +3355,7 @@ namespace ppp {
                         auto peer = FindP2PV2Peer(hash);
                         if (peer) {
                             ppp::p2p::P2PCandidateEndpoint source;
-                            if (sender.address().is_v4()) {
-                                source.address_family = 4; source.port = sender.port();
-                                source.address[10] = source.address[11] = 0xff;
-                                const auto bytes = sender.address().to_v4().to_bytes();
-                                std::copy(bytes.begin(), bytes.end(), source.address.begin() + 12);
+                            if (P2PControlCandidateFromEndpoint(sender, source)) {
                                 if (sender == peer->peer_candidate ||
                                     std::find(peer->candidates.begin(), peer->candidates.end(), source) != peer->candidates.end())
                                     known_peer = peer;
@@ -3673,7 +3910,37 @@ namespace ppp {
             }
 
             bool VEthernetExchanger::SendDnsDatagram(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size) noexcept {
+                if (switcher_ && switcher_->HasPolicyV2()) {
+                    return SendTo(sourceEP, destinationEP, packet, packet_size, routing::RoutingAction::Proxy);
+                }
                 return SendTo(sourceEP, destinationEP, packet, packet_size);
+            }
+
+            void VEthernetExchanger::ConnectDnsStream(boost::asio::ip::tcp::socket& socket,
+                const boost::asio::ip::tcp::endpoint& endpoint,
+                const std::function<bool()>& active,
+                const ppp::function<void(boost::system::error_code)>& callback) noexcept {
+                dns::PolicyTunnelDnsStream::Connect(std::static_pointer_cast<VEthernetExchanger>(shared_from_this()), socket, endpoint, active, callback);
+            }
+
+            bool VEthernetExchanger::SendTo(const boost::asio::ip::udp::endpoint& sourceEP,
+                const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size,
+                routing::RoutingAction action, const std::string& original_domain,
+                const std::shared_ptr<const policy::PolicySnapshot>& snapshot, bool resolve_domain) noexcept {
+                if (disposed_.load(std::memory_order_acquire) || !datagram_manager_) return false;
+                return datagram_manager_->SendTo(sourceEP, destinationEP, packet, packet_size, action, original_domain, snapshot, resolve_domain);
+            }
+
+            bool VEthernetExchanger::TrySendToPinned(const boost::asio::ip::udp::endpoint& source,
+                const boost::asio::ip::udp::endpoint& destination, const void* packet, int packet_size,
+                const std::string& domain, bool& accepted, bool original_is_fake) noexcept {
+                accepted = false;
+                return !disposed_.load(std::memory_order_acquire) && datagram_manager_ &&
+                    datagram_manager_->TrySendPinned(source, destination, packet, packet_size, domain, accepted, original_is_fake);
+            }
+
+            void VEthernetExchanger::RecordPolicyUdpReject() noexcept {
+                if (datagram_manager_) datagram_manager_->RecordPolicyReject();
             }
 
             /** @brief Registers a local datagram reply handler for a specific source endpoint. */

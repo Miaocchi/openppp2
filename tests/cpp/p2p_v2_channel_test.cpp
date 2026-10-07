@@ -63,6 +63,13 @@ BOOST_AUTO_TEST_CASE(stale_generation_cannot_clear_or_authenticate_new_channel) 
     pair.channels[0].Reset(8); BOOST_CHECK(!pair.channels[0].Snapshot().has_current);
     BOOST_CHECK(!pair.channels[0].AcceptOffer(pair.encoded[0],pair.contexts[0],pair.exporters[0],1001,7));
 }
+BOOST_AUTO_TEST_CASE(same_generation_reset_allows_fresh_registration) {
+    Pair pair; pair.Offer();
+    pair.channels[0].Reset(7); pair.channels[1].Reset(7);
+    pair.Offer(2000, 1);
+    BOOST_CHECK(pair.channels[0].Snapshot().has_pending);
+    BOOST_CHECK(pair.channels[1].Snapshot().has_pending);
+}
 BOOST_AUTO_TEST_CASE(new_pair_cannot_restart_probing_after_original_four_second_window) {
     Pair pair; pair.Offer(); std::vector<std::uint8_t> packet;
     BOOST_CHECK(!pair.channels[0].CreateProbe(Endpoint(1),Endpoint(2),5000,7,packet));

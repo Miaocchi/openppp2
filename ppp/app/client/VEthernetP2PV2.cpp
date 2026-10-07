@@ -18,31 +18,50 @@ using ppp::net::Ipep;
 
 P2PCandidateEndpoint Candidate(const boost::asio::ip::udp::endpoint& endpoint) {
     P2PCandidateEndpoint result;
-    if (!endpoint.address().is_v4()) return result;
-    result.address_family = 4; result.port = endpoint.port();
-    result.address[10] = result.address[11] = 0xff;
-    const auto bytes = endpoint.address().to_v4().to_bytes();
-    std::copy(bytes.begin(), bytes.end(), result.address.begin() + 12);
+    if (endpoint.port() == 0 || endpoint.address().is_unspecified()) return result;
+    result.address_family = endpoint.address().is_v4() ? 4 : 6;
+    result.port = endpoint.port();
+    if (endpoint.address().is_v4()) {
+        result.address[10] = result.address[11] = 0xff;
+        const auto bytes = endpoint.address().to_v4().to_bytes();
+        std::copy(bytes.begin(), bytes.end(), result.address.begin() + 12);
+    } else if (endpoint.address().is_v6()) {
+        const auto bytes = endpoint.address().to_v6().to_bytes();
+        std::copy(bytes.begin(), bytes.end(), result.address.begin());
+    } else {
+        result = {};
+    }
     return result;
 }
 boost::asio::ip::udp::endpoint Endpoint(const P2PCandidateEndpoint& candidate) {
-    if (candidate.address_family != 4) return {};
-    boost::asio::ip::address_v4::bytes_type bytes{};
-    std::copy(candidate.address.begin() + 12, candidate.address.end(), bytes.begin());
-    return {boost::asio::ip::address_v4(bytes), candidate.port};
+    if (!IsCanonicalP2PCandidate(candidate)) return {};
+    if (candidate.address_family == 4) {
+        boost::asio::ip::address_v4::bytes_type bytes{};
+        std::copy(candidate.address.begin() + 12, candidate.address.end(), bytes.begin());
+        return {boost::asio::ip::address_v4(bytes), candidate.port};
+    }
+    boost::asio::ip::address_v6::bytes_type bytes{};
+    std::copy(candidate.address.begin(), candidate.address.end(), bytes.begin());
+    return {boost::asio::ip::address_v6(bytes), candidate.port};
 }
 bool Candidates(const ppp::vector<ppp::app::protocol::P2PEndpointCandidate>& values,
     std::vector<P2PCandidateEndpoint>& out) {
     if (values.empty() || values.size() > 2) return false;
     for (const auto& value : values) {
         auto ep = Ipep::ParseEndPoint(value.endpoint);
-        if (!ep.address().is_v4() || ep.address().is_unspecified() || ep.address().is_multicast() || !ep.port()) return false;
+        if ((!(ep.address().is_v4() || ep.address().is_v6())) ||
+            ep.address().is_unspecified() || ep.address().is_multicast() || !ep.port()) return false;
         auto candidate = Candidate(ep);
+        if (!IsCanonicalP2PCandidate(candidate)) return false;
         if (std::find(out.begin(), out.end(), candidate) != out.end()) return false;
         out.push_back(candidate);
     }
     std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
-        return a.address < b.address || (a.address == b.address && a.port < b.port);
+        // Prefer globally routable IPv6 before IPv4 while retaining stable
+        // ordering within each family for deterministic offer hashes.
+        return a.address_family != b.address_family
+            ? a.address_family == 6
+            : (a.address < b.address || (a.address == b.address && a.port < b.port));
     });
     return true;
 }
@@ -66,6 +85,21 @@ void VEthernetExchanger::ResetP2PV2Peers(uint64_t generation, bool clear) noexce
         peer.ingress_limiter.Clear(); peer.egress_limiter.Clear();
     }
     if (clear) p2p_v2_peers_.clear();
+}
+
+void VEthernetExchanger::PruneP2PV2Peers(uint64_t now, uint64_t generation) noexcept {
+    for (auto it = p2p_v2_peers_.begin(); it != p2p_v2_peers_.end();) {
+        const auto snapshot = it->second->channel.Snapshot();
+        const auto last_activity = it->second->last_activity_ms;
+        const bool idle = last_activity != 0 && now >= last_activity &&
+            now - last_activity >= P2PV2PeerIdleTimeoutMs;
+        if (idle && !snapshot.has_current && !snapshot.has_pending && !snapshot.has_previous) {
+            it->second->probes.Cancel(generation);
+            it = p2p_v2_peers_.erase(it);
+            continue;
+        }
+        ++it;
+    }
 }
 
 std::shared_ptr<VEthernetExchanger::P2PV2PeerContext> VEthernetExchanger::FindP2PV2Peer(const P2POfferHash& hash) noexcept {
@@ -116,14 +150,17 @@ void VEthernetExchanger::HandleP2PV2RelayOffer(const ITransmissionPtr& tx,
                 if (peer != p2p_v2_peers_.end()) {
                     const auto current = peer->second->channel.Snapshot();
                     if (current.has_current && message.enabled && message.reason == "key-active-current" &&
-                        message.current_offer_hash == Hex(current.current_offer_hash).c_str())
+                        message.current_offer_hash == Hex(current.current_offer_hash).c_str()) {
                         peer->second->reported_key_hash = current.current_offer_hash;
+                        peer->second->last_activity_ms = now;
+                    }
                 }
                 return;
             }
             if (!P2PRecoveryAllowed() || !message.enabled || message.action != "offer-v2" ||
                 !message.peer_virtual_ip || message.peer_virtual_ip == message.virtual_ip ||
                 std::find(message.supported_versions.begin(), message.supported_versions.end(), 2) == message.supported_versions.end()) return;
+            PruneP2PV2Peers(now, generation);
             auto found = p2p_v2_peers_.find(message.peer_virtual_ip);
             if (found == p2p_v2_peers_.end() && p2p_v2_peers_.size() >= P2PV2MaxPeers) return;
             auto frozen = p2p_candidate_history_.find(message.candidate_revision);
@@ -159,13 +196,23 @@ void VEthernetExchanger::HandleP2PV2RelayOffer(const ITransmissionPtr& tx,
                 peer->virtual_ip = message.peer_virtual_ip;
                 p2p_v2_peers_.emplace(message.peer_virtual_ip, peer);
             }
+            peer->last_activity_ms = now;
             const auto after = peer->channel.Snapshot();
+            // Keep the configured strategy bound to the authenticated remote
+            // UUID, even when the peer context is recreated.
+            peer->peer_uuid = after.peer_uuid;
             peer->candidates = recipient.peer_candidates;
             p2p_v2_selected_ = true;
             auto config = GetConfiguration();
             if (config) peer->channel.ConfigureLiveness(config->p2p.heartbeat_interval_ms,
                 config->p2p.heartbeat_miss_max, config->p2p.suspect_timeout_ms, config->p2p.migration_grace_ms);
             if (after.has_pending && (!before.has_pending || before.pending_offer_hash != after.pending_offer_hash)) {
+                const auto configured = p2p_peer_priorities_.find(peer->peer_uuid);
+                const auto priority = configured == p2p_peer_priorities_.end()
+                    ? p2p_peer_priority_.load(std::memory_order_acquire)
+                    : configured->second;
+                peer->probes.SetPriority(priority);
+                peer->channel.SetRelayOnly(priority == P2PPeerPriority::RelayFirst);
                 peer->probes.Begin(after.local_role == P2PPeerRole::Initiator ? P2PProbeRole::Controlling : P2PProbeRole::Controlled,
                     recipient.local_candidates, recipient.peer_candidates, now, generation);
             }
@@ -326,6 +373,8 @@ void VEthernetExchanger::HandleP2PV2Datagram(const ITransmissionPtr& tx, uint64_
                 peer->probes.NominateResponderPair(pair, now, generation);
             }
         }
+        if (accepted || result.event != P2PV2ControlEvent::None)
+            peer->last_activity_ms = now;
         auto snapshot = peer->channel.Snapshot();
         if (snapshot.has_current) {
             peer->local_candidate = Endpoint(snapshot.local_candidate);
@@ -357,6 +406,7 @@ void VEthernetExchanger::TickP2PV2(const ITransmissionPtr& tx, uint64_t now, uin
         if (disposed_.load() || generation != p2p_offer_generation_.load() || !p2p_v2_selected_ ||
             p2p_registered_transmission_.lock() != tx) return;
         registration = p2p_transport_registration_id_;
+        PruneP2PV2Peers(now, generation);
         for (auto& item : p2p_v2_peers_) {
         auto& peer = *item.second;
         Work action; action.peer_ip = item.first;
@@ -378,12 +428,20 @@ void VEthernetExchanger::TickP2PV2(const ITransmissionPtr& tx, uint64_t now, uin
                 (!peer.last_key_report_ms || now - peer.last_key_report_ms >= 1000)) {
                 action.report_key = true; action.report = snapshot.current_offer_hash; peer.last_key_report_ms = now;
             }
-        } else if (!snapshot.has_pending && (!peer.last_renew_ms || now - peer.last_renew_ms >= 10000)) {
+        } else if (!snapshot.has_pending && (tick.fallback || !peer.last_renew_ms || now - peer.last_renew_ms >= 10000)) {
+            // A failed probe/commit already invalidated the authenticated
+            // offer.  Re-register immediately instead of waiting for the
+            // normal ten-second keepalive interval; this keeps relay/direct
+            // policy changes bounded by one control tick while retaining the
+            // authenticated renew path.
             tick.renew = true; peer.last_renew_ms = now;
         }
         if (!snapshot.has_pending) peer.probes.Cancel(generation);
         work.push_back(std::move(action));
         }
+        // A liveness timeout can clear a channel during the loop above. Drop
+        // its now-empty context before the next renew/capacity decision.
+        PruneP2PV2Peers(now, generation);
         PublishP2PV2State();
         retry = (!p2p_candidate_transport_ || !p2p_candidate_transport_->IsReady()) && now >= p2p_retry_at_ms_;
     }

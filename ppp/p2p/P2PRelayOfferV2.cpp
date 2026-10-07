@@ -190,8 +190,10 @@ bool HashP2PV2CandidateSet(const P2PId& si,const P2PId& sr,std::uint64_t ri,std:
         const auto& input=role==0?ci:cr;
         std::array<std::array<std::uint8_t,19>,2> sorted{};
         for (std::size_t n=0; n<input.size(); ++n) {
-            if (input[n].address_family!=4 || !IsCanonicalP2PCandidate(input[n])) return false;
-            auto* target=sorted[n].data(); *target++=4; Put(target,input[n].address); Number(target,input[n].port,2);
+            if ((input[n].address_family != 4 && input[n].address_family != 6) ||
+                !IsCanonicalP2PCandidate(input[n])) return false;
+            auto* target=sorted[n].data(); *target++=input[n].address_family;
+            Put(target,input[n].address); Number(target,input[n].port,2);
         }
         std::sort(sorted.begin(),sorted.begin()+input.size());
         if (input.size()==2 && sorted[0]==sorted[1]) return false;

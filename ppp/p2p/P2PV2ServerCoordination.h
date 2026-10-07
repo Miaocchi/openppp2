@@ -28,9 +28,11 @@ struct P2PV2ServerCoordination {
         }
         return false;
     }
-    bool Begin(std::uint64_t now, std::uint64_t generation) noexcept {
+    bool Begin(std::uint64_t now, std::uint64_t generation,
+        bool explicit_renew = false) noexcept {
         if (!generation || generation <= Generation || Generating || PendingHash != Hash{} ||
-            (Generation && (now < LastOfferAt || now - LastOfferAt < 10000))) return false;
+            (Generation && (now < LastOfferAt ||
+                (!explicit_renew && now - LastOfferAt < 10000u)))) return false;
         Generation = generation;
         Generating = true;
         StartedAt = LastOfferAt = now;
@@ -75,6 +77,15 @@ struct P2PV2ServerCoordination {
             CurrentExpiresAt = 0;
         }
         return CurrentHash == hash;
+    }
+    // An authenticated client may have discarded its local channel while the
+    // server still holds the previous key (for example after relay-first).
+    // Clear the server-side predecessor so the next renew can converge
+    // immediately instead of waiting for the 60-second key expiry.
+    void ResetForExplicitRenew() noexcept {
+        CurrentHash = {};
+        CurrentExpiresAt = 0;
+        ClearPending();
     }
     bool PrepareOffer(std::uint64_t now, bool explicit_renew) noexcept {
         // Explicit renew already authenticated its predecessor under this lock.

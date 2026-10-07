@@ -40,11 +40,13 @@
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/SessionResumeAuthenticator.h>
 #include <ppp/app/client/routing/HumanRoutingRules.h>
+#include <ppp/app/client/policy/PolicyCompiler.h>
 #include <ppp/configurations/AppConfigurationFwd.h>
 #include <ppp/configurations/MappingConfiguration.h>
 #include <ppp/app/protocol/VirtualEthernetMappingPort.h>
 #include <ppp/app/protocol/VirtualEthernetPacket.h>
 #include <ppp/app/mux/MuxRuntimeState.h>
+#include <ppp/app/runtime/RuntimeSnapshot.h>
 #include <ppp/cryptography/Ciphertext.h>
 #include <ppp/diagnostics/LinkTelemetry.h>
 #include <ppp/Int128.h>
@@ -236,6 +238,7 @@ namespace ppp {
                 struct RuntimeStateSnapshot final {
                     NetworkState network_state = NetworkState_Connecting;
                     ppp::p2p::P2PState p2p_state = ppp::p2p::P2PState::Disabled;
+                    std::vector<ppp::app::runtime::RuntimePeerSnapshot> peers;
                 };
 
             public:
@@ -246,6 +249,15 @@ namespace ppp {
                  */
                 NetworkState                                                            GetNetworkState()       noexcept { return network_state_.load(); }
                 RuntimeStateSnapshot                                                    GetRuntimeState() const noexcept;
+                /** @brief Changes candidate family preference for current and future peers. */
+                void                                                                    SetP2PPeerPriority(ppp::p2p::P2PPeerPriority priority) noexcept;
+                /** @brief Changes candidate preference for one authenticated peer UUID. */
+                void                                                                    SetP2PPeerPriority(const ppp::p2p::P2PId& peer_id, ppp::p2p::P2PPeerPriority priority) noexcept;
+                bool                                                                    SetP2PPeerPriority(const ppp::string& peer_uuid, ppp::p2p::P2PPeerPriority priority) noexcept;
+                ppp::p2p::P2PPeerPriority                                                GetP2PPeerPriority(const ppp::p2p::P2PId& peer_id) const noexcept;
+                ppp::p2p::P2PPeerPriority                                                GetP2PPeerPriority() const noexcept {
+                    return p2p_peer_priority_.load(std::memory_order_acquire);
+                }
 
                 /**
                  * @brief Gets the shared receive buffer used by async IO paths.
@@ -319,7 +331,9 @@ namespace ppp {
                  * @return Shared ITransmission on success; null on failure.
                  * @note Called from vmux internal machinery to establish multiplexed sub-connections.
                  */
-                virtual ITransmissionPtr                                                ConnectTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, uint64_t* ios_child_slot_generation = NULLPTR) noexcept;
+                virtual ITransmissionPtr                                                ConnectTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, uint64_t* ios_child_slot_generation = NULLPTR,
+                    const ppp::function<bool()>& active = {},
+                    const ppp::function<void(const ppp::function<void()>&)>& register_cancel = {}) noexcept;
 
 #if defined(_IPHONE)
                 /** @brief True when ctcp peer-connect backlog is above the soft backpressure threshold. */
@@ -415,7 +429,15 @@ namespace ppp {
 
                 virtual bool                                                            SendTo(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size) noexcept;
                 virtual bool                                                            SendTo(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size, routing::RoutingAction action) noexcept;
+                virtual bool                                                            SendTo(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size, routing::RoutingAction action, const std::string& original_domain, const std::shared_ptr<const policy::PolicySnapshot>& snapshot, bool resolve_domain = false) noexcept;
+                bool TrySendToPinned(const boost::asio::ip::udp::endpoint& source, const boost::asio::ip::udp::endpoint& destination,
+                    const void* packet, int packet_size, const std::string& domain, bool& accepted, bool original_is_fake = false) noexcept;
+                void RecordPolicyUdpReject() noexcept;
                 bool                                                                    SendDnsDatagram(const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP, const void* packet, int packet_size) noexcept override;
+                void ConnectDnsStream(boost::asio::ip::tcp::socket& socket,
+                    const boost::asio::ip::tcp::endpoint& endpoint,
+                    const std::function<bool()>& active,
+                    const ppp::function<void(boost::system::error_code)>& callback) noexcept override;
 
                 /**
                  * @brief Registers an optional local handler for inbound UDP replies keyed by source endpoint.
@@ -682,7 +704,9 @@ namespace ppp {
                  * @param role     Main VPN session or per-flow child transmission.
                  * @return Shared ITransmission on success; null on failure.
                  */
-                virtual ITransmissionPtr                                                OpenTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, ppp::transmissions::TcpTransmissionRole role = ppp::transmissions::TcpTransmissionRole::Child) noexcept;
+                virtual ITransmissionPtr                                                OpenTransmission(const ContextPtr& context, const StrandPtr& strand, YieldContext& y, ppp::transmissions::TcpTransmissionRole role = ppp::transmissions::TcpTransmissionRole::Child,
+                    const ppp::function<bool()>& active = {},
+                    const ppp::function<void(const ppp::function<void()>&)>& register_cancel = {}) noexcept;
 
             protected:
                 /**
@@ -1027,17 +1051,24 @@ namespace ppp {
                         uint64_t expires_ms = 0;
                     };
                     uint32_t virtual_ip = 0;
+                    ppp::p2p::P2PId peer_uuid{};
                     ppp::p2p::P2PV2Channel channel;
                     ppp::p2p::P2PProbeCoordinator probes;
                     boost::asio::ip::udp::endpoint local_candidate, peer_candidate;
                     uint64_t last_key_report_ms = 0, last_renew_ms = 0;
+                    // Updated by authenticated offers/control/data.  Once a
+                    // channel has no active key, this bounds how long its
+                    // context can occupy the peer table.
+                    uint64_t last_activity_ms = 0;
                     ppp::p2p::P2POfferHash reported_key_hash{};
                     std::vector<ppp::p2p::P2PCandidateEndpoint> candidates;
                     ppp::p2p::P2PIngressLimiter ingress_limiter, egress_limiter;
                     std::deque<DeferredPacket> deferred_packets;
                 };
                 static constexpr std::size_t P2PV2MaxPeers = 16;
+                static constexpr uint64_t P2PV2PeerIdleTimeoutMs = 30000;
                 void ResetP2PV2Peers(uint64_t, bool clear = false) noexcept;
+                void PruneP2PV2Peers(uint64_t, uint64_t) noexcept;
                 std::shared_ptr<P2PV2PeerContext> FindP2PV2Peer(const ppp::p2p::P2POfferHash&) noexcept;
                 void PublishP2PV2State() noexcept;
                 void TickP2PStunRefresh(const ITransmissionPtr&, uint64_t) noexcept;
@@ -1112,6 +1143,8 @@ namespace ppp {
                 const ppp::p2p::P2PState                                                configured_p2p_state_;
                 /** @brief Fail-closed P2P capability state published to RuntimeSnapshot. */
                 std::atomic<ppp::p2p::P2PState>                                         p2p_state_{ppp::p2p::P2PState::Disabled};
+                std::atomic<ppp::p2p::P2PPeerPriority>                                 p2p_peer_priority_{ppp::p2p::P2PPeerPriority::IPv6First};
+                std::map<ppp::p2p::P2PId, ppp::p2p::P2PPeerPriority>                    p2p_peer_priorities_;
                 /** @brief Authenticated offer and derived-key owner for the active relay generation. */
                 ppp::p2p::P2PClientOfferSession                                         p2p_offer_session_;
                 std::map<uint32_t, std::shared_ptr<P2PV2PeerContext>>                    p2p_v2_peers_;
@@ -1184,7 +1217,8 @@ namespace ppp {
                 /** @brief Serializes active/generation updates for iOS child slots. */
                 mutable std::mutex                                                      ios_child_slots_mutex_;
 
-                bool                                                                    TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y, uint64_t& generation) noexcept;
+                bool                                                                    TryReserveIosChildTransmissionSlot(const ContextPtr& context, YieldContext& y, uint64_t& generation,
+                    const ppp::function<bool()>& active = {}) noexcept;
                 void                                                                    ResetIosChildTransmissionSlots(const char* reason) noexcept;
 #endif
             };

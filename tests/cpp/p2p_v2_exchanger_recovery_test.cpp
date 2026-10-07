@@ -433,6 +433,19 @@ BOOST_AUTO_TEST_CASE(socket_error_closes_immediately_and_invalidates_registratio
     BOOST_TEST(!f.Running()); f.CheckRelay();
 }
 
+BOOST_AUTO_TEST_CASE(idle_peer_context_is_reclaimed_after_channel_liveness_timeout) {
+    Fixture f;
+    f.Handshake();
+    BOOST_TEST(f.PeerCount() == 1u);
+
+    // The direct channel has already lost liveness by this point.  Tick must
+    // clear its channel and release the map entry so a later peer can reuse
+    // the bounded table slot.
+    f.now += 30000;
+    f.Tick();
+    BOOST_TEST(f.PeerCount() == 0u);
+}
+
 BOOST_AUTO_TEST_CASE(failed_registration_obeys_one_two_four_eight_ten_second_backoff) {
     Fixture f; f.registration_ok = false;
     f.Error();
@@ -447,11 +460,11 @@ BOOST_AUTO_TEST_CASE(failed_registration_obeys_one_two_four_eight_ten_second_bac
     }
 }
 
-BOOST_AUTO_TEST_CASE(production_gate_stays_closed_and_test_capability_is_explicit) {
-    BOOST_TEST(!ppp::p2p::ProductionAuthenticatedControlV1Ready);
-    Fixture f; f.DisableGate(); f.Error();
+BOOST_AUTO_TEST_CASE(production_gate_allows_recovery_when_enabled) {
+    BOOST_TEST(ppp::p2p::ProductionAuthenticatedControlV1Ready);
+    Fixture f; f.Error();
     f.now = f.Deadline(); f.Retry(); f.Pump();
-    BOOST_TEST(f.registrations == 0u); BOOST_TEST(!f.Running());
+    BOOST_TEST(f.registrations == 1u); BOOST_TEST(!f.Running());
 }
 
 BOOST_AUTO_TEST_CASE(registration_failure_without_socket_waits_and_does_not_send_renew) {

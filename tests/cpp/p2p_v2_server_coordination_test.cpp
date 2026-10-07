@@ -94,3 +94,23 @@ BOOST_AUTO_TEST_CASE(explicit_renew_preserves_authenticated_predecessor_after_se
     BOOST_REQUIRE(state.PrepareOffer(60013, false));
     BOOST_TEST(state.CurrentHash == State::Hash{}, boost::test_tools::per_element());
 }
+
+BOOST_AUTO_TEST_CASE(explicit_renew_can_restart_before_offer_throttle) {
+    State state;
+    Pending(state);
+    BOOST_REQUIRE(state.Activate(Hash(1), true, 11) == 1u);
+    BOOST_REQUIRE(state.Activate(Hash(1), false, 12) == 2u);
+    BOOST_TEST(!state.Begin(100, 2));
+    BOOST_REQUIRE(state.Begin(100, 2, true));
+}
+
+BOOST_AUTO_TEST_CASE(explicit_zero_predecessor_clears_stale_current) {
+    State state;
+    Pending(state);
+    BOOST_REQUIRE(state.Activate(Hash(1), true, 11) == 1u);
+    BOOST_REQUIRE(state.Activate(Hash(1), false, 12) == 2u);
+    state.ResetForExplicitRenew();
+    BOOST_TEST(state.CurrentHash == State::Hash{}, boost::test_tools::per_element());
+    BOOST_TEST(state.CurrentExpiresAt == 0u);
+    BOOST_REQUIRE(state.Begin(100, 2, true));
+}

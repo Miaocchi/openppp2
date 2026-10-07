@@ -110,7 +110,7 @@ namespace ppp {
                 }
 
                 if (attr_type == STUN_ATTR_XOR_MAPPED_ADDR) {
-                    if (found || attr_len != 8 || response[attr_offset] != 0) {
+                    if (found || (attr_len != 8 && attr_len != 20) || response[attr_offset] != 0) {
                         return false;
                     }
                     uint8_t family = response[attr_offset + 1];
@@ -118,7 +118,7 @@ namespace ppp {
                                       static_cast<uint16_t>(response[attr_offset + 3]);
                     uint16_t port = xport ^ static_cast<uint16_t>(STUN_MAGIC_COOKIE >> 16);
 
-                    if (family == 0x01) {
+                    if (family == 0x01 && attr_len == 8) {
                         uint32_t xaddr = (static_cast<uint32_t>(response[attr_offset + 4]) << 24) |
                                          (static_cast<uint32_t>(response[attr_offset + 5]) << 16) |
                                          (static_cast<uint32_t>(response[attr_offset + 6]) << 8) |
@@ -138,8 +138,22 @@ namespace ppp {
                         }
                         mapped = boost::asio::ip::udp::endpoint(address, port);
                         found = true;
-                    }
-                    else {
+                    } else if (family == 0x02 && attr_len == 20) {
+                        boost::asio::ip::address_v6::bytes_type bytes{};
+                        const std::uint32_t cookie = STUN_MAGIC_COOKIE;
+                        bytes[0] = response[attr_offset + 4] ^ static_cast<std::uint8_t>(cookie >> 24);
+                        bytes[1] = response[attr_offset + 5] ^ static_cast<std::uint8_t>(cookie >> 16);
+                        bytes[2] = response[attr_offset + 6] ^ static_cast<std::uint8_t>(cookie >> 8);
+                        bytes[3] = response[attr_offset + 7] ^ static_cast<std::uint8_t>(cookie);
+                        for (std::size_t n = 4; n < bytes.size(); ++n)
+                            bytes[n] = response[attr_offset + n] ^ txn_id[n - 4];
+                        const auto address = boost::asio::ip::address_v6(bytes);
+                        if (port == 0 || address.is_unspecified() || address.is_loopback() ||
+                            address.is_multicast() || address.is_link_local() ||
+                            (bytes[0] & 0xfe) == 0xfc) return false;
+                        mapped = boost::asio::ip::udp::endpoint(address, port);
+                        found = true;
+                    } else {
                         return false;
                     }
                 }
@@ -202,7 +216,7 @@ namespace ppp {
             }
             try {
                 for (const auto& server : servers) {
-                    if (!server.address().is_v4() || server.address().is_unspecified() ||
+                    if (!(server.address().is_v4() || server.address().is_v6()) || server.address().is_unspecified() ||
                         server.address().is_multicast() || server.port() == 0 ||
                         server.address().to_v4().to_uint() == 0xffffffffu) {
                         continue;
@@ -238,8 +252,8 @@ namespace ppp {
         }
 
         bool P2PStunGatherer::BeginServerLocked() noexcept {
-            boost::system::error_code ec;
-            timer_.cancel(ec);
+            try { timer_.cancel(); }
+            catch (...) {}
             if (server_index_ >= server_count_ || !transport_ || !transport_->IsReady()) {
                 FinishLocked({});
                 return false;
@@ -386,8 +400,8 @@ namespace ppp {
         void P2PStunGatherer::ClearLocked() noexcept {
             running_.store(false, std::memory_order_release);
             ++transaction_serial_;
-            boost::system::error_code ec;
-            timer_.cancel(ec);
+            try { timer_.cancel(); }
+            catch (...) {}
             transport_.reset();
             completion_ = nullptr;
             request_.fill(0);
@@ -420,11 +434,14 @@ namespace ppp {
 
             // Create a dedicated temporary socket (#13).
             boost::system::error_code ec;
-            boost::asio::ip::udp::socket tmp_socket(io_ctx, boost::asio::ip::udp::v4());
+            boost::asio::ip::udp::socket tmp_socket(io_ctx,
+                stun_server.address().is_v6() ? boost::asio::ip::udp::v6() : boost::asio::ip::udp::v4());
             if (!tmp_socket.is_open()) {
                 return result;
             }
-            tmp_socket.bind(boost::asio::ip::udp::endpoint(boost::asio::ip::address_v4::any(), 0), ec);
+            tmp_socket.bind(stun_server.address().is_v6()
+                ? boost::asio::ip::udp::endpoint(boost::asio::ip::address_v6::any(), 0)
+                : boost::asio::ip::udp::endpoint(boost::asio::ip::address_v4::any(), 0), ec);
             if (ec) {
                 return result;
             }

@@ -5,6 +5,24 @@
 
 namespace ppp::p2p {
 
+void P2PProbeCoordinator::SetPriority(P2PPeerPriority priority) noexcept {
+    priority_ = priority;
+    if (priority_ == P2PPeerPriority::RelayFirst) {
+        // A runtime switch to relay-first must stop an already scheduled
+        // direct attempt immediately. The authenticated relay remains owned
+        // by the surrounding P2P channel.
+        active_ = false;
+        timed_out_ = false;
+        probing_started_ = false;
+        cancelled_ = true;
+        pair_count_ = 0;
+        emitted_rounds_ = 0;
+        nominated_pair_.reset();
+        acknowledged_pair_.reset();
+        acknowledged_pairs_ = {};
+    }
+}
+
 bool P2PProbeCoordinator::Begin(P2PProbeRole role,
     const std::vector<P2PCandidateEndpoint>& local_candidates,
     const std::vector<P2PCandidateEndpoint>& peer_candidates,
@@ -38,6 +56,41 @@ bool P2PProbeCoordinator::Begin(P2PProbeRole role,
         if (count == MaxPairs) break;
     }
     if (count == 0) return false;
+    if (priority_ == P2PPeerPriority::RelayFirst) {
+        // Keep the relay path selected without creating direct probe traffic.
+        active_ = false;
+        timed_out_ = false;
+        probing_started_ = false;
+        cancelled_ = true;
+        role_ = role;
+        generation_ = generation;
+        started_at_ms_ = now_ms;
+        setup_deadline_ms_ = now_ms;
+        deadline_ms_ = now_ms;
+        pairs_ = {};
+        pair_count_ = 0;
+        emitted_rounds_ = 0;
+        nominated_pair_.reset();
+        acknowledged_pair_.reset();
+        acknowledged_pairs_ = {};
+        return false;
+    }
+    std::stable_sort(pairs.begin(), pairs.begin() + count,
+        [this](const P2PProbeCandidatePair& a, const P2PProbeCandidatePair& b) {
+            const auto rank = [](const P2PCandidateEndpoint& endpoint) {
+                return endpoint.address_family == 6 ? 0 : 1;
+            };
+            const auto family_rank = [this, &rank](const P2PProbeCandidatePair& pair) {
+                if (priority_ == P2PPeerPriority::IPv4First) {
+                    return pair.local.address_family == 4 ? 0 : 1;
+                }
+                return rank(pair.local);
+            };
+            const auto a_rank = family_rank(a);
+            const auto b_rank = family_rank(b);
+            return a_rank != b_rank ? a_rank < b_rank
+                : rank(a.peer) < rank(b.peer);
+        });
 
     active_ = true;
     timed_out_ = false;

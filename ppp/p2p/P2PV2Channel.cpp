@@ -138,6 +138,7 @@ struct P2PV2Channel::Impl {
     P2PState state=P2PState::Relay;
     P2POfferHash cancelled{};
     bool needs_renew=false,fallback_event=false,activation_event=false;
+    bool relay_only=false;
     std::uint64_t heartbeat_ms=1000,suspect_after_ms=2000,failure_after_ms=4000,migration_grace_ms=5000;
     bool Generation(std::uint64_t value) const noexcept { return generation==value; }
     void Clear() noexcept {
@@ -156,7 +157,7 @@ struct P2PV2Channel::Impl {
             current->previous_ms=std::min(current->key_ms,now+pending->offer.previous_receive_grace_ms);
             previous=std::move(current);
         }
-        current=std::move(pending); state=P2PState::Direct;
+        current=std::move(pending); state=relay_only ? P2PState::Relay : P2PState::Direct;
         current->last_rx_ms=now; current->last_heartbeat_ms=0;
         activation_event=true; needs_renew=false;
     }
@@ -322,7 +323,7 @@ bool P2PV2Channel::AcceptOffer(const std::string& encoded,const P2PV2RecipientCo
             (impl_->current && (!Alive(*impl_->current,now) || impl_->current->migration.active)) ||
             offer.previous_offer_hash!=(impl_->current?impl_->current->hash:P2POfferHash{})) return false;
         impl_->high_water=offer.key_generation; impl_->pending=std::move(slot);
-        if (!impl_->current) impl_->state=P2PState::Probing;
+        if (!impl_->current && !impl_->relay_only) impl_->state=P2PState::Probing;
         return true;
     } catch (...) { OPENSSL_cleanse(&keys,sizeof(keys)); return false; }
 }
@@ -361,7 +362,7 @@ bool P2PV2Channel::SealData(const std::uint8_t* data,std::size_t size,std::uint6
     std::uint64_t generation,std::vector<std::uint8_t>& out) noexcept {
     if (!impl_) return false;
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (!impl_->Generation(generation) || !impl_->current || impl_->state!=P2PState::Direct) return false;
+    if (!impl_->Generation(generation) || !impl_->current || impl_->state!=P2PState::Direct || impl_->relay_only) return false;
     if (!Alive(*impl_->current,now) || impl_->current->next_sequence==MaxSequence) { impl_->Fallback(); return false; }
     return Seal(*impl_->current,data,size,out);
 }
@@ -393,7 +394,7 @@ bool P2PV2Channel::HandleNewEndpointData(const std::vector<std::uint8_t>& packet
     if (!impl_) return false;
     try { std::lock_guard<std::mutex> lock(impl_->mutex);
         if (!impl_->Generation(generation) || !impl_->current || !Alive(*impl_->current,now) ||
-            sender.address_family!=4 || !IsCanonicalP2PCandidate(sender)) return false;
+            !IsCanonicalP2PCandidate(sender)) return false;
         auto& s=*impl_->current;
         if (sender==s.peer || s.migration.active || s.migration_attempts>=2) return false;
         auto replay=s.replay; std::vector<std::uint8_t> plaintext;
@@ -460,6 +461,23 @@ P2PV2TickResult P2PV2Channel::Tick(std::uint64_t now,std::uint64_t generation) n
         return result;
     } catch (...) { result={}; return result; }
 }
+void P2PV2Channel::RequestRenew(std::uint64_t generation) noexcept {
+    if (!impl_) return;
+    try {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->Generation(generation)) return;
+        if (impl_->pending) {
+            impl_->cancelled = impl_->pending->hash;
+            impl_->pending.reset();
+        }
+        if (impl_->current) {
+            impl_->current->renew_requested = false;
+            impl_->current->renew_attempts = 0;
+        }
+        impl_->needs_renew = true;
+        if (!impl_->current) impl_->state = P2PState::Relay;
+    } catch (...) {}
+}
 P2PV2Snapshot P2PV2Channel::Snapshot() const noexcept {
     P2PV2Snapshot out; if (!impl_) return out;
     std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -469,11 +487,17 @@ P2PV2Snapshot P2PV2Channel::Snapshot() const noexcept {
     out.has_previous=static_cast<bool>(impl_->previous);
     if (impl_->current) {
         const auto& s=*impl_->current; out.current_offer_hash=s.hash; out.local_role=s.role;
+        out.peer_uuid = s.role == P2PPeerRole::Initiator
+            ? s.offer.responder_session_id : s.offer.initiator_session_id;
         out.local_candidate=s.local; out.peer_candidate=s.peer; out.key_generation=s.offer.key_generation;
         out.key_deadline_ms=s.key_ms; out.last_receive_ms=s.last_rx_ms; out.migration_pending=s.migration.active;
     }
     if (impl_->pending) {
         auto& s=*impl_->pending; out.pending_offer_hash=s.hash; out.setup_deadline_ms=s.setup_ms;
+        if (out.peer_uuid == P2PId{}) {
+            out.peer_uuid = s.role == P2PPeerRole::Initiator
+                ? s.offer.responder_session_id : s.offer.initiator_session_id;
+        }
         out.pending_ready=Ready(s); out.commit_started=s.commit_sent || s.commit_received;
         if (!impl_->current) out.local_role=s.role;
     }
@@ -485,8 +509,25 @@ void P2PV2Channel::Reset(std::uint64_t generation) noexcept {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (generation<impl_->generation) return;
     impl_->Clear(); impl_->fallback_event=false; impl_->cancelled={};
-    if (generation>impl_->generation) impl_->high_water=0;
+    // A same-generation reset is also a fresh registration boundary.
+    impl_->high_water=0;
     impl_->generation=generation;
+}
+void P2PV2Channel::RequestRenew() noexcept {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->needs_renew=true;
+    if (impl_->current) {
+        impl_->current->renew_requested=false;
+        impl_->current->renew_attempts=0;
+    }
+}
+void P2PV2Channel::SetRelayOnly(bool enabled) noexcept {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->relay_only=enabled;
+    if (enabled) impl_->state=P2PState::Relay;
+    else if (!impl_->current && impl_->pending) impl_->state=P2PState::Probing;
 }
 void P2PV2Channel::ConfigureLiveness(int interval,int misses,int suspect,int migration) noexcept {
     if (!impl_) return;

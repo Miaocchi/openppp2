@@ -49,13 +49,20 @@ bool Candidates(const VirtualEthernetSwitcher::P2PPeerRecord& record,
     if (record.Candidates.empty() || record.Candidates.size() > 2) return false;
     for (const auto& candidate : record.Candidates) {
         auto endpoint = ppp::net::Ipep::ParseEndPoint(candidate.endpoint);
-        if (!endpoint.address().is_v4() || endpoint.address().is_unspecified() ||
-            endpoint.address().is_multicast() || !endpoint.port()) return false;
+        if (!(endpoint.address().is_v4() || endpoint.address().is_v6()) ||
+            endpoint.address().is_unspecified() || endpoint.address().is_multicast() || !endpoint.port()) return false;
         P2PCandidateEndpoint value;
-        value.address_family = 4; value.port = endpoint.port();
-        const auto bytes = endpoint.address().to_v4().to_bytes();
-        value.address[10] = value.address[11] = 0xff;
-        std::copy(bytes.begin(), bytes.end(), value.address.begin() + 12);
+        value.address_family = endpoint.address().is_v4() ? 4 : 6;
+        value.port = endpoint.port();
+        if (endpoint.address().is_v4()) {
+            const auto bytes = endpoint.address().to_v4().to_bytes();
+            value.address[10] = value.address[11] = 0xff;
+            std::copy(bytes.begin(), bytes.end(), value.address.begin() + 12);
+        } else {
+            const auto bytes = endpoint.address().to_v6().to_bytes();
+            std::copy(bytes.begin(), bytes.end(), value.address.begin());
+        }
+        if (!IsCanonicalP2PCandidate(value)) return false;
         if (std::find(out.begin(), out.end(), value) == out.end()) out.push_back(value);
     }
     return !out.empty();
@@ -164,7 +171,8 @@ bool VirtualEthernetSwitcher::OfferP2PPeerHintsV2(const P2PPeerRecord& source,
             cached = true; cached_i = pair.InitiatorOffer; cached_r = pair.ResponderOffer;
         } else {
             if (!pair.PrepareOffer(now, renew)) return true;
-            if (p2p_v2_generation_ == UINT64_MAX || !pair.Begin(now, p2p_v2_generation_ + 1)) return false;
+            if (p2p_v2_generation_ == UINT64_MAX ||
+                !pair.Begin(now, p2p_v2_generation_ + 1, renew)) return false;
             ++p2p_v2_generation_;
             pair.InitiatorSession = initiator.SessionId; pair.ResponderSession = responder.SessionId;
             pair.InitiatorIP = initiator.VirtualIP; pair.ResponderIP = responder.VirtualIP;
@@ -277,9 +285,15 @@ bool VirtualEthernetSwitcher::UpdateP2PV2Control(const std::shared_ptr<VirtualEt
             response.enabled = true; response.current_offer_hash = request.current_offer_hash;
             return true;
         }
-        // A client that lost its key waits for the old key's hard expiry. Only
-        // then may an authenticated zero-predecessor renew start a fresh pair.
-        if (!pair.MatchesPredecessor(current, now)) return false;
+        // A client may intentionally drop its local channel when switching to
+        // relay-first. Its authenticated renew with an empty predecessor is
+        // an explicit restart request; clear the stale server key immediately
+        // so direct probing can converge without waiting for key expiry.
+        if (current == P2POfferHash{} && request.cancel_offer_hash.empty()) {
+            pair.ResetForExplicitRenew();
+        } else if (!pair.MatchesPredecessor(current, now)) {
+            return false;
+        }
         if (!request.cancel_offer_hash.empty()) {
             if (!DecodeHash(request.cancel_offer_hash, cancel) || !pair.Cancel(current, cancel)) return false;
             pair.InitiatorOffer.Clear(); pair.ResponderOffer.Clear();
