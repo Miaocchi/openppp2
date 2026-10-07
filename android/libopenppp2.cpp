@@ -1662,7 +1662,7 @@ static int                                                                      
         if (app->dns_rules_list_) {
             legacy_input.cli_dns_rules.emplace_back(app->dns_rules_list_->data(), app->dns_rules_list_->size());
         }
-        legacy_input.bypass_gateway = network_interface->BypassNgw.to_string();
+        // Android exposes no separate bypass gateway; GatewayServer is the VPN gateway.
         const auto legacy_policy = ppp::app::client::policy::LegacyPolicyAdapter::Adapt(*configuration, legacy_input);
         const bool canonical_routing_configured = legacy_policy.canonical_routing;
         auto sources_for = [&legacy_policy](ppp::app::client::policy::LegacySourceRole role) {

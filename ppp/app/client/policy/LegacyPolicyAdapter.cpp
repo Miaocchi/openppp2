@@ -52,7 +52,9 @@ void AddRoutes(LegacyPolicyModel& model,
     for (const auto& route : routes) {
         LegacyPolicyRoute item;
         item.path.assign(route.path.data(), route.path.size());
+#if defined(_LINUX)
         item.nic.assign(route.nic.data(), route.nic.size());
+#endif
         item.gateway = std::to_string(route.ngw);
         item.peer.assign(route.vbgp.data(), route.vbgp.size());
         item.peer_route = peer_routes;
