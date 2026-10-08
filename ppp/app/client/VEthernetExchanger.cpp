@@ -94,9 +94,7 @@ namespace ppp {
             static std::string RuntimeEndpointText(
                 const boost::asio::ip::udp::endpoint& endpoint) {
                 if (endpoint.address().is_unspecified() || !endpoint.port()) return {};
-                boost::system::error_code ec;
-                const auto address = endpoint.address().to_string(ec);
-                if (ec) return {};
+                const auto address = endpoint.address().to_string();
                 return address + ":" + std::to_string(endpoint.port());
             }
 
