@@ -107,6 +107,8 @@ namespace ppp {
              * @return Encrypted buffer, or null on failure.
              */
             std::shared_ptr<Byte>                                               Encrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept;
+            /** @brief Encrypts into caller-owned @p output of at least @p datalen bytes. */
+            bool                                                                EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept;
             /**
              * @brief Decrypts input bytes.
              * @param allocator Output buffer allocator.

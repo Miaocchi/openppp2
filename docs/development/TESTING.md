@@ -63,6 +63,10 @@ The separate root-linked recovery target below uses the actual Exchanger. These
 checks do not establish Android device behavior, real NAT traversal or Linux
 SO_MARK bypass of TUN. Keep the production gate disabled.
 
+The P2P v2 changes and their 2026-10-05 test results described here are from the local
+implementation relative to the then-published `main` snapshot. Code push is now authorized;
+the v2.1.7 release remains pending until the push completes and CI is green.
+
 On 2026-10-05 the ordinary P2P and existing Noise regression suite passed 30 targets, including
 separate unprivileged loopback runs for socket-restricted tests. Both existing
 Noise handshake/exporter targets also passed. The final focused suite

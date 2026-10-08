@@ -6,7 +6,7 @@
 > **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
 > **Audience:** OPENPPP2 users, operators, and developers.
 > **Status:** Current.
-> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-18.
+> **Last verified against:** v2.1.6 client baseline, v2.1.7 target scope, and Linux live evidence, 2026-10-07.
 > **Parent index:** [Back to index](README.md) · **Chinese:** [用户手册](USER_MANUAL_CN.md)
 
 
@@ -16,6 +16,8 @@
 
 This is the user-facing guide to OPENPPP2 as a network runtime.
 It covers what OPENPPP2 is, how to run it, how to configure it for common scenarios, and what host changes to expect.
+
+> **Version scope:** The target v2.1.7 release includes policy v2; v2.1.6 does not. Check the release page for v2.1.7 package availability. The legacy client setup below remains the quick-start path for v2.1.6; see [Policy CLI](../guides/POLICY_CLI.md) for v2.1.7 policy use.
 
 ---
 

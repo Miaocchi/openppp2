@@ -460,6 +460,13 @@ BOOST_AUTO_TEST_CASE(failed_registration_obeys_one_two_four_eight_ten_second_bac
     }
 }
 
+BOOST_AUTO_TEST_CASE(production_gate_stays_closed_and_test_capability_is_explicit) {
+    BOOST_TEST(ppp::p2p::ProductionAuthenticatedControlV1Ready);
+    Fixture f; f.DisableGate(); f.Error();
+    f.now = f.Deadline(); f.Retry(); f.Pump();
+    BOOST_TEST(f.registrations == 0u); BOOST_TEST(!f.Running());
+}
+
 BOOST_AUTO_TEST_CASE(production_gate_allows_recovery_when_enabled) {
     BOOST_TEST(ppp::p2p::ProductionAuthenticatedControlV1Ready);
     Fixture f; f.Error();

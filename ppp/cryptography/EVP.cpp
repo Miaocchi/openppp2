@@ -161,30 +161,66 @@ namespace ppp {
                 return NULLPTR;
             }
 
-            // INIT-CTX
-            SynchronizedObjectScope scope(_syncobj);
-            if (EVP_CipherInit_ex(_encryptCTX.get(), _cipher, NULLPTR, _key.get(), _iv.get(), 1) < 1) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
-                return NULLPTR;
-            }
-
-            // ENCR-DATA
-            int feedbacklen = datalen + EVP_CIPHER_block_size(_cipher);
-            std::shared_ptr<Byte> cipherText = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, feedbacklen);
+            int capacity = datalen + EVP_CIPHER_block_size(_cipher);
+            std::shared_ptr<Byte> cipherText = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, capacity);
             if (NULLPTR == cipherText) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                 return NULLPTR;
             }
 
+            return EncryptTo(cipherText.get(), capacity, data, datalen, outlen) ? cipherText : NULLPTR;
+        }
+
+        bool EVP::EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept {
+            outlen = 0;
+            if (datalen < 1 || NULLPTR == data || NULLPTR == output) {
+                outlen = ~0;
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::EvpEncryptInvalidArguments);
+                return false;
+            }
+
+            if (_aes.IsAttached()) {
+                if (output_capacity < datalen || !_aes.EncryptTo(output, data, datalen)) {
+                    outlen = ~0;
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                    return false;
+                }
+
+                outlen = datalen;
+                return true;
+            }
+
+            if (NULLPTR == _cipher || NULLPTR == _encryptCTX) {
+                outlen = ~0;
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::CryptoAlgorithmUnsupported);
+                return false;
+            }
+
+            // EVP_CipherUpdate may write up to one block beyond the input length.
+            int feedbacklen = datalen + EVP_CIPHER_block_size(_cipher);
+            if (output_capacity < feedbacklen) {
+                outlen = ~0;
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::EvpEncryptInvalidArguments);
+                return false;
+            }
+
+            // INIT-CTX
+            SynchronizedObjectScope scope(_syncobj);
+            if (EVP_CipherInit_ex(_encryptCTX.get(), _cipher, NULLPTR, _key.get(), _iv.get(), 1) < 1) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                return false;
+            }
+
+            // ENCR-DATA
             if (EVP_CipherUpdate(_encryptCTX.get(),
-                cipherText.get(), &feedbacklen, data, datalen) < 1) {
+                output, &feedbacklen, data, datalen) < 1) {
                 outlen = ~0;
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
-                return NULLPTR;
+                return false;
             }
 
             outlen = feedbacklen;
-            return cipherText;
+            return true;
         }
 
         /**

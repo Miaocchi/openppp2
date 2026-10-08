@@ -309,6 +309,9 @@ namespace ppp {
                     bool                                                    enabled;        ///< Require transport-auth PSK during client handshakes.
                 }                                                           transport_auth;
                 ClientRoutingConfiguration                                   routing;        ///< Canonical routing policy; legacy route/proxy fields remain mirrored during migration.
+                std::shared_ptr<const Json::Value>                          policy;         ///< Explicit v2 source definition; prepared before opening client services.
+                ppp::string                                                 policy_config_path; ///< Configuration filename anchoring relative policy resources.
+                bool                                                        policy_config_file_backed = false; ///< True only when Load(path) parsed this policy file.
 #if defined(_WIN32)
                 struct {
                     bool                                                    tcp;            ///< Enable Paper Airplane TCP acceleration driver on Windows when true.
@@ -350,8 +353,8 @@ namespace ppp {
                 bool                                                        console_span;   ///< Show span events on local console/file sink.
             }                                                               telemetry;       ///< Optional telemetry/observability configuration.
             struct {
-                bool                                                        enabled;        ///< Enable server-coordinated P2P path discovery.
-                ppp::string                                                 mode;           ///< "relay" keeps server relay only; "direct-preferred" advertises peer candidates.
+                bool                                                        enabled;        ///< Enable server-coordinated P2P path discovery (production default true).
+                ppp::string                                                 mode;           ///< "relay" keeps server relay only; "direct-preferred" is the production default.
                 int                                                         punch_timeout;  ///< UDP punch timeout in seconds.
                 int                                                         keep_alived;    ///< P2P keep-alive interval in seconds.
                 ppp::vector<ppp::string>                                    stun_servers;   ///< STUN servers used for future UDP candidate discovery.
@@ -445,6 +448,7 @@ namespace ppp {
              * @return True when loading and normalization succeed.
              */
             bool                                                            Load(Json::Value& json) noexcept;
+            bool                                                            Load(Json::Value& json, const ppp::string& config_path) noexcept;
             /**
              * @brief Loads configuration data from a JSON file path.
              * @param path Path to the configuration file.

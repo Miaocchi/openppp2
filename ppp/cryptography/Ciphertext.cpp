@@ -48,6 +48,24 @@ namespace ppp {
         }
 
         /**
+         * @brief Encrypts data through the initialized backend into caller-owned memory.
+         */
+        bool Ciphertext::EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept {
+            outlen = -1;
+
+            if (NULLPTR != evp_) {
+                return evp_->EncryptTo(output, output_capacity, data, datalen, outlen);
+            }
+
+            if (NULLPTR != rc4_) {
+                return rc4_->EncryptTo(output, output_capacity, data, datalen, outlen);
+            }
+
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::CryptoAlgorithmUnsupported);
+            return false;
+        }
+
+        /**
          * @brief Decrypts data through the initialized backend.
          * @param allocator Output allocator.
          * @param data Ciphertext bytes.

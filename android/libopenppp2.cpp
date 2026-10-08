@@ -30,6 +30,7 @@
 #include <ppp/app/server/VirtualEthernetManagedServer.h>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/policy/LegacyPolicyAdapter.h>
 #include <ppp/app/client/proxys/VEthernetHttpProxySwitcher.h>
 #include <ppp/app/client/proxys/VEthernetSocksProxySwitcher.h>
 #include <common/aggligator/aggligator.h>
@@ -38,6 +39,7 @@
 #include <ppp/app/runtime/RuntimeSnapshotJson.h>
 
 #include <android/OpenPPP2VpnProtectBridge.h>
+#include <ppp/app/client/udp/UdpFlowPolicy.h>
 #include <android/OpenPPP2TelemetryBridge.h>
 
 #include <linux/ppp/tap/TapLinux.h>
@@ -1632,12 +1634,8 @@ static int                                                                      
     std::shared_ptr<AppConfiguration>                                               configuration) noexcept {
     const auto open_switcher_begin = std::chrono::steady_clock::now();
 
-    bool lwip = false;
-    int max_concurrent = ppp::GetProcesserCount();
     const bool proxy_only_runtime = configuration->client.proxy_only;
-    const bool canonical_routing_configured = configuration->client.routing.configured;
 
-    client = ppp::make_shared_object<VEthernetNetworkSwitcher>(context, lwip, network_interface->VNet, max_concurrent > 1, configuration);
     if (NULLPTR == client) {
         __android_log_print(ANDROID_LOG_ERROR, "libopenppp2", "open_switcher: create client failed");
         return LIBOPENPPP2_ERROR_ALLOCATED_MEMORY;
@@ -1656,141 +1654,161 @@ static int                                                                      
         __android_log_print(ANDROID_LOG_INFO, "libopenppp2", "open_switcher: proxy-only mode enabled");
     }
 
-    // Legacy JNI sources are used only when client.routing is absent.  When
-    // canonical routing is present, its source vectors are authoritative and
-    // stale platform-provided values are deliberately ignored.
-    ppp::string bypass_text;
-    ppp::string canonical_bypass_text;
-    if (canonical_routing_configured) {
-        for (const ppp::string& source : configuration->client.routing.bypass) {
-            ppp::string resolved_path;
-            ppp::string inline_text;
-            const bool source_is_file = libopenppp2_read_routing_source(
-                source, resolved_path, inline_text);
-            libopenppp2_append_routing_text(canonical_bypass_text, inline_text);
-            __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-                "open_switcher: canonical bypass source type=%s len=%d path=%s",
-                source_is_file ? "file" : "inline",
-                (int)inline_text.size(),
-                source_is_file ? resolved_path.data() : "");
+    if (!client->HasPolicyV2()) {
+        ppp::app::client::policy::LegacyPolicyAdapterInput legacy_input;
+        if (app->bypass_ip_list_) {
+            legacy_input.cli_bypass.emplace_back(app->bypass_ip_list_->data(), app->bypass_ip_list_->size());
         }
-    }
-    elif (!canonical_routing_configured) {
-        std::shared_ptr<ppp::string> bypass_ip_list = std::move(app->bypass_ip_list_);
-        if (NULLPTR != bypass_ip_list) {
-            bypass_text = std::move(*bypass_ip_list);
-            __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-                "open_switcher: legacy bypass ip list captured len=%d",
-                (int)bypass_text.size());
+        if (app->dns_rules_list_) {
+            legacy_input.cli_dns_rules.emplace_back(app->dns_rules_list_->data(), app->dns_rules_list_->size());
         }
-    }
-
-    // Legacy DNS is loaded before Geo for compatibility. Canonical DNS sources
-    // are loaded after Geo below, giving explicit canonical rules precedence.
-    std::shared_ptr<ppp::string> dns_rules_list;
-    if (!canonical_routing_configured) {
-        dns_rules_list = std::move(app->dns_rules_list_);
-        if (NULLPTR != dns_rules_list) {
-            bool dns_ok = client->LoadAllDnsRules(*dns_rules_list, false);
-            __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-                "open_switcher: legacy dns rules applied len=%d ok=%d",
-                (int)dns_rules_list->size(), dns_ok ? 1 : 0);
-        }
-    }
-
-    // Phase G: GeoIP/GeoSite rule generation pipeline.
-    //
-    // ApplicationInitialize.cpp gates this behind `#if !defined(_ANDROID)`,
-    // so on Android we have to invoke it explicitly here. The generator reads
-    // configuration->geo_rules.{geoip_dat, geosite_dat, geoip[], geosite[],
-    // dns_provider_*, output_*} (already populated by AppConfiguration::Load
-    // from the JSON `geo-rules` block) and writes two text files:
-    //   - output_bypass:    newline-separated CIDR list
-    //   - output_dns_rules: newline-separated DNS redirect rules
-    // We then feed those files back into the client.
-    if (configuration->geo_rules.enabled) {
-        const auto geo_begin = std::chrono::steady_clock::now();
-        __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-            "open_switcher: geo-rules enabled country=%s geoip_dat=%s geosite_dat=%s",
-            configuration->geo_rules.country.data(),
-            configuration->geo_rules.geoip_dat.data(),
-            configuration->geo_rules.geosite_dat.data());
-
-        // Build a bypass-file seed list from canonical sources, mirroring the
-        // desktop behaviour in ApplicationClientBootstrap.cpp.  When canonical
-        // routing is absent the generator runs without a seed (NULLPTR), which
-        // was the previous Android behaviour.
-        ppp::vector<ppp::string> bypass_seed_paths;
+        // Android exposes no separate bypass gateway; GatewayServer is the VPN gateway.
+        const auto legacy_policy = ppp::app::client::policy::LegacyPolicyAdapter::Adapt(*configuration, legacy_input);
+        const bool canonical_routing_configured = legacy_policy.canonical_routing;
+        auto sources_for = [&legacy_policy](ppp::app::client::policy::LegacySourceRole role) {
+            std::vector<const ppp::app::client::policy::LegacyPolicySource*> sources;
+            for (const auto& source : legacy_policy.sources) {
+                if (source.role == role) sources.push_back(&source);
+            }
+            return sources;
+        };
+        // Legacy JNI sources are used only when client.routing is absent.  When
+        // canonical routing is present, its source vectors are authoritative and
+        // stale platform-provided values are deliberately ignored.
+        ppp::string bypass_text;
+        ppp::string canonical_bypass_text;
         if (canonical_routing_configured) {
-            for (const ppp::string& source : configuration->client.routing.bypass) {
+            for (const auto* source : sources_for(ppp::app::client::policy::LegacySourceRole::Bypass)) {
                 ppp::string resolved_path;
                 ppp::string inline_text;
-                if (libopenppp2_read_routing_source(source, resolved_path, inline_text) &&
-                    !resolved_path.empty()) {
-                    bypass_seed_paths.emplace_back(resolved_path);
+                const bool source_is_file = libopenppp2_read_routing_source(
+                    ppp::string(source->original.data(), source->original.size()), resolved_path, inline_text);
+                libopenppp2_append_routing_text(canonical_bypass_text, inline_text);
+                __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                    "open_switcher: canonical bypass source type=%s len=%d path=%s",
+                    source_is_file ? "file" : "inline",
+                    (int)inline_text.size(),
+                    source_is_file ? resolved_path.data() : "");
+            }
+        }
+        elif (!canonical_routing_configured) {
+            std::shared_ptr<ppp::string> bypass_ip_list = std::move(app->bypass_ip_list_);
+            if (NULLPTR != bypass_ip_list) {
+                bypass_text = std::move(*bypass_ip_list);
+                __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                    "open_switcher: legacy bypass ip list captured len=%d",
+                    (int)bypass_text.size());
+            }
+        }
+
+        // Legacy DNS is loaded before Geo for compatibility. Canonical DNS sources
+        // are loaded after Geo below, giving explicit canonical rules precedence.
+        std::shared_ptr<ppp::string> dns_rules_list;
+        if (!canonical_routing_configured) {
+            dns_rules_list = std::move(app->dns_rules_list_);
+            if (NULLPTR != dns_rules_list) {
+                bool dns_ok = client->LoadAllDnsRules(*dns_rules_list, false);
+                __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                    "open_switcher: legacy dns rules applied len=%d ok=%d",
+                    (int)dns_rules_list->size(), dns_ok ? 1 : 0);
+            }
+        }
+
+        // Phase G: GeoIP/GeoSite rule generation pipeline.
+        //
+        // ApplicationInitialize.cpp gates this behind `#if !defined(_ANDROID)`,
+        // so on Android we have to invoke it explicitly here. The generator reads
+        // configuration->geo_rules.{geoip_dat, geosite_dat, geoip[], geosite[],
+        // dns_provider_*, output_*} (already populated by AppConfiguration::Load
+        // from the JSON `geo-rules` block) and writes two text files:
+        //   - output_bypass:    newline-separated CIDR list
+        //   - output_dns_rules: newline-separated DNS redirect rules
+        // We then feed those files back into the client.
+        if (configuration->geo_rules.enabled) {
+            const auto geo_begin = std::chrono::steady_clock::now();
+            __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                "open_switcher: geo-rules enabled country=%s geoip_dat=%s geosite_dat=%s",
+                configuration->geo_rules.country.data(),
+                configuration->geo_rules.geoip_dat.data(),
+                configuration->geo_rules.geosite_dat.data());
+
+            // Build a bypass-file seed list from canonical sources, mirroring the
+            // desktop behaviour in ApplicationClientBootstrap.cpp.  When canonical
+            // routing is absent the generator runs without a seed (NULLPTR), which
+            // was the previous Android behaviour.
+            ppp::vector<ppp::string> bypass_seed_paths;
+            if (canonical_routing_configured) {
+                for (const auto* source : sources_for(ppp::app::client::policy::LegacySourceRole::Bypass)) {
+                    ppp::string resolved_path;
+                    ppp::string inline_text;
+                    if (libopenppp2_read_routing_source(
+                        ppp::string(source->original.data(), source->original.size()), resolved_path, inline_text) &&
+                        !resolved_path.empty()) {
+                        bypass_seed_paths.emplace_back(resolved_path);
+                    }
                 }
             }
-        }
-        const ppp::vector<ppp::string>* seed_ptr =
-            bypass_seed_paths.empty() ? NULLPTR : &bypass_seed_paths;
+            const ppp::vector<ppp::string>* seed_ptr =
+                bypass_seed_paths.empty() ? NULLPTR : &bypass_seed_paths;
 
-        ppp::app::client::GeoRuleGenerateResult geo_result =
-            ppp::app::client::GeoRuleGenerator::Generate(*configuration, seed_ptr);
+            ppp::app::client::GeoRuleGenerateResult geo_result =
+                ppp::app::client::GeoRuleGenerator::Generate(*configuration, seed_ptr);
 
-        const auto geo_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - geo_begin).count();
-        __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-            "open_switcher: geo-rules %s bypass=%s(%d) dns_rules=%s(%d) elapsed_ms=%lld",
-            geo_result.cache_hit ? "cache_hit" : "generated",
-            geo_result.output_bypass_path.data(), geo_result.bypass_line_count,
-            geo_result.output_dns_rules_path.data(), geo_result.dns_rule_line_count,
-            static_cast<long long>(geo_elapsed_ms));
-
-        // Merge generated bypass CIDRs after legacy/default sources. Canonical
-        // sources are appended after Geo below so they remain explicit.
-        if (!geo_result.output_bypass_path.empty()) {
-            ppp::string geo_bypass_text =
-                ppp::io::File::ReadAllText(geo_result.output_bypass_path.data());
-            libopenppp2_append_routing_text(bypass_text, geo_bypass_text);
-        }
-
-        // Load generated DNS redirect rules from file.
-        if (!geo_result.output_dns_rules_path.empty()) {
-            bool ok = client->LoadAllDnsRules(geo_result.output_dns_rules_path, true);
+            const auto geo_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - geo_begin).count();
             __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-                "open_switcher: geo-rules dns rules loaded path=%s ok=%d",
-                geo_result.output_dns_rules_path.data(), ok ? 1 : 0);
-        }
-    }
+                "open_switcher: geo-rules %s bypass=%s(%d) dns_rules=%s(%d) elapsed_ms=%lld",
+                geo_result.cache_hit ? "cache_hit" : "generated",
+                geo_result.output_bypass_path.data(), geo_result.bypass_line_count,
+                geo_result.output_dns_rules_path.data(), geo_result.dns_rule_line_count,
+                static_cast<long long>(geo_elapsed_ms));
 
-    if (canonical_routing_configured) {
-        for (const ppp::string& source : configuration->client.routing.dns_rules) {
-            ppp::string resolved_path;
-            ppp::string inline_text;
-            const bool source_is_file = libopenppp2_read_routing_source(
-                source, resolved_path, inline_text);
-            const ppp::string& rules = source_is_file ? resolved_path : inline_text;
-            if (rules.empty()) {
-                continue;
+            // Merge generated bypass CIDRs after legacy/default sources. Canonical
+            // sources are appended after Geo below so they remain explicit.
+            if (!geo_result.output_bypass_path.empty()) {
+                ppp::string geo_bypass_text =
+                    ppp::io::File::ReadAllText(geo_result.output_bypass_path.data());
+                libopenppp2_append_routing_text(bypass_text, geo_bypass_text);
             }
-            bool dns_ok = client->LoadAllDnsRules(rules, source_is_file);
-            __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-                "open_switcher: canonical dns rules applied type=%s len=%d path=%s ok=%d",
-                source_is_file ? "file" : "inline",
-                (int)rules.size(),
-                source_is_file ? resolved_path.data() : "",
-                dns_ok ? 1 : 0);
+
+            // Load generated DNS redirect rules from file.
+            if (!geo_result.output_dns_rules_path.empty()) {
+                bool ok = client->LoadAllDnsRules(geo_result.output_dns_rules_path, true);
+                __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                    "open_switcher: geo-rules dns rules loaded path=%s ok=%d",
+                    geo_result.output_dns_rules_path.data(), ok ? 1 : 0);
+            }
         }
-        libopenppp2_append_routing_text(bypass_text, canonical_bypass_text);
-    }
 
-    if (!bypass_text.empty()) {
-        int bypass_len = (int)bypass_text.size();
-        client->SetBypassIpList(std::move(bypass_text));
-        __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
-            "open_switcher: bypass ip list applied (legacy+geo+canonical) len=%d", bypass_len);
-    }
+        if (canonical_routing_configured) {
+            for (const auto* source : sources_for(ppp::app::client::policy::LegacySourceRole::DnsRules)) {
+                ppp::string resolved_path;
+                ppp::string inline_text;
+                const bool source_is_file = libopenppp2_read_routing_source(
+                    ppp::string(source->original.data(), source->original.size()), resolved_path, inline_text);
+                const ppp::string& rules = source_is_file ? resolved_path : inline_text;
+                if (rules.empty()) {
+                    continue;
+                }
+                bool dns_ok = client->LoadAllDnsRules(rules, source_is_file);
+                __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                    "open_switcher: canonical dns rules applied type=%s len=%d path=%s ok=%d",
+                    source_is_file ? "file" : "inline",
+                    (int)rules.size(),
+                    source_is_file ? resolved_path.data() : "",
+                    dns_ok ? 1 : 0);
+            }
+            libopenppp2_append_routing_text(bypass_text, canonical_bypass_text);
+        }
 
+        if (!bypass_text.empty()) {
+            int bypass_len = (int)bypass_text.size();
+            client->SetBypassIpList(std::move(bypass_text));
+            __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
+                "open_switcher: bypass ip list applied (legacy+geo+canonical) len=%d", bypass_len);
+        }
+
+    }
     __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
         "open_switcher: before client->Open tap=%p vnet=%d static=%d mux=%d",
         tap.get(), network_interface->VNet ? 1 : 0, network_interface->StaticMode ? 1 : 0, network_interface->VMux);
@@ -1850,6 +1868,21 @@ static int                                                                      
         return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::AppConfigurationMissing, LIBOPENPPP2_ERROR_APP_CONFIGURATION_NOT_CONFIGURED);
     }
 
+    if (configuration->client.policy && !configuration->client.proxy_only && network_interface->IPAddress.is_v4() &&
+        ppp::app::client::udp::UdpRelayIdentity::IsIdentity(network_interface->IPAddress.to_v4().to_uint())) {
+        return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::ConfigPolicyUdpIdentityConflict,
+            LIBOPENPPP2_ERROR_OPEN_VETHERNET_FAIL);
+    }
+    client = ppp::make_shared_object<VEthernetNetworkSwitcher>(context, false, network_interface->VNet,
+        ppp::GetProcesserCount() > 1, configuration);
+    if (!client) {
+        return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::MemoryAllocationFailed,
+            LIBOPENPPP2_ERROR_ALLOCATED_MEMORY);
+    }
+    if (!client->PreparePolicy(network_interface->IPAddress.is_v4()
+            ? network_interface->IPAddress.to_v4().to_uint() : 0, configuration->client.proxy_only)) {
+        return LIBOPENPPP2_ERROR_OPEN_VETHERNET_FAIL;
+    }
     std::shared_ptr<ITap> tap = libopenppp2_from_tuntap_driver_new(context, network_interface);
     __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
         "try_open_switcher: tap=%p fd=%d ip=%s mask=%s gw=%s",

@@ -7,6 +7,7 @@
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
+#include <ppp/net/asio/SharedBufferReceive.h>
 
 /**
  * @file VEthernetDatagramPort.cpp
@@ -391,7 +392,7 @@ namespace ppp {
                 // The completion callback re-enters Loopback() which re-acquires syncobj_; holding
                 // the mutex here would create a Pattern-D deadlock on the first callback dispatch.
                 auto self = shared_from_this();
-                socket_.async_receive_from(boost::asio::buffer(buffer_.get(), PPP_BUFFER_SIZE), remoteEP_,
+                ppp::net::asio::AsyncReceiveFromSharedBuffer(socket_, buffer_.get(), PPP_BUFFER_SIZE, remoteEP_,
                     [self, this](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool disposing = false;
                         if (ec == boost::system::errc::success) {
