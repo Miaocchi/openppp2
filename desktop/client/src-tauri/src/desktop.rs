@@ -1,4 +1,6 @@
-use crate::config::{apply_network_overrides, build_node_config_with_base, default_config_string};
+use crate::config::{
+    apply_network_overrides, build_node_config_with_base, default_config_string, prepare_policy_v2,
+};
 use crate::connection::ConnectionSnapshot;
 use crate::launch_options::{append_launch_args, merge_launch_options};
 use crate::lifecycle::{
@@ -87,6 +89,7 @@ struct BootstrapPayload {
     network_overrides: Value,
     administrator: bool,
     proxy_recovery_pending: bool,
+    policy_dir: String,
 }
 
 #[derive(Serialize)]
@@ -233,6 +236,11 @@ impl DesktopState {
             proxy: Mutex::new(ProxySession::default()),
             _instance: instance,
         })
+    }
+
+    /// Base directory for relative policy v2 rule, rule-set and fake-IP paths.
+    fn policy_dir(&self) -> PathBuf {
+        self.data_dir.join("policy")
     }
 
     fn save_preferences(&self, preferences: &Preferences) -> Result<(), String> {
@@ -496,6 +504,7 @@ fn client_preview(
         apply_network_overrides(&mut config, &preferences.network_overrides)
             .map_err(|e| e.to_string())?;
     }
+    prepare_policy_v2(&mut config, &state.policy_dir());
     let node_options = node_id
         .as_ref()
         .and_then(|id| find_node(&preferences.manual_nodes, nodes, id))
@@ -557,6 +566,7 @@ fn client_bootstrap(state: State<'_, DesktopState>) -> Result<BootstrapPayload, 
         },
         administrator: crate::windows::administrator(),
         proxy_recovery_pending: state.data_dir.join("proxy-recovery.json").exists(),
+        policy_dir: state.policy_dir().to_string_lossy().into_owned(),
     })
 }
 
@@ -721,6 +731,11 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
         apply_network_overrides(&mut config, &preferences.network_overrides)
             .map_err(|e| e.to_string())?;
     }
+    if crate::config::uses_policy_v2(&config) {
+        let policy_dir = state.policy_dir();
+        fs::create_dir_all(&policy_dir).map_err(|error| error.to_string())?;
+        prepare_policy_v2(&mut config, &policy_dir);
+    }
     if preferences.settings.connection_mode == "client" && !crate::windows::administrator() {
         return Err("Virtual adapter requires administrator privileges; restart as administrator in Settings".into());
     }
@@ -786,13 +801,23 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
     })
 }
 
-#[tauri::command]
-fn client_disconnect(state: State<'_, DesktopState>) -> Result<ConnectionSnapshot, String> {
+/// Stops the kernel without holding `state.process`: the stop emits tray
+/// updates that wait for the main thread, which may itself be waiting on
+/// that lock.
+fn stop_process(state: &DesktopState) -> Result<ProcessManager, String> {
     let mut process = state
         .process
         .lock()
-        .map_err(|_| "进程状态锁已损坏".to_string())?;
+        .map_err(|_| "进程状态锁已损坏".to_string())?
+        .clone();
     process.stop().map_err(|error| error.to_string())?;
+    Ok(process)
+}
+
+// Graceful stop can wait for the kernel's rollback; keep it off the main thread.
+#[tauri::command(async)]
+fn client_disconnect(state: State<'_, DesktopState>) -> Result<ConnectionSnapshot, String> {
+    let process = stop_process(&state)?;
     crate::windows::restore_proxy(&state.data_dir.join("proxy-recovery.json"), false)?;
     Ok(process.snapshot())
 }
@@ -1173,13 +1198,16 @@ fn handle_tray_primary(app: &AppHandle) -> Result<(), String> {
             connect_node(&node_id, &state)?;
         }
         TrayPrimaryAction::Disconnect => {
-            state
-                .process
-                .lock()
-                .map_err(|_| "进程状态锁已损坏".to_string())?
-                .stop()
-                .map_err(|error| error.to_string())?;
-            update_tray(&state, false, None);
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let state = app.state::<DesktopState>();
+                match stop_process(&state) {
+                    Ok(_) => update_tray(&state, false, None),
+                    Err(error) => {
+                        let _ = app.emit("client://tray-error", error);
+                    }
+                }
+            });
         }
         TrayPrimaryAction::ShowWindow => show_main_window(app),
     }
@@ -1192,12 +1220,7 @@ fn prepare_exit(app: &AppHandle) {
         return;
     }
     if should_disconnect_on_exit(true) {
-        let result = state
-            .process
-            .lock()
-            .map_err(|_| "进程状态锁已损坏".to_string())
-            .and_then(|mut process| process.stop().map_err(|error| error.to_string()));
-        if let Err(error) = result {
+        if let Err(error) = stop_process(&state) {
             let _ = app.emit("client://tray-error", error);
         }
         if let Err(error) =

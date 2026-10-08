@@ -68,6 +68,9 @@ pub enum ProcessError {
 type Emitter = Arc<dyn Fn(ProcessMessage) + Send + Sync + 'static>;
 type EventSink = Arc<dyn Fn(ProcessEvent) + Send + Sync + 'static>;
 
+/// Clones share the same child; `stop` can then run without holding the
+/// caller's lock on the manager.
+#[derive(Clone)]
 pub struct ProcessManager {
     child: Arc<Mutex<Option<Child>>>,
     emit: Emitter,
@@ -174,23 +177,32 @@ impl ProcessManager {
             event: ProcessEvent::State(state.clone()),
             connection: state,
         });
-        request_graceful_stop(pid);
-        let deadline = Instant::now() + Duration::from_millis(750);
+        // The kernel rolls back routes, DNS and the adapter on shutdown; give it
+        // time to finish before falling back to a hard kill.
+        let grace = if request_graceful_stop(pid) {
+            GRACEFUL_STOP_TIMEOUT
+        } else {
+            Duration::ZERO
+        };
+        let deadline = Instant::now() + grace;
+        // Only this pid is ours to stop: a new session may start once it exits.
+        let owns = |slot: &Option<Child>| slot.as_ref().is_some_and(|child| child.id() == pid);
         while Instant::now() < deadline {
-            if !self.is_running() {
+            if !owns(&self.child.lock().expect("process lock poisoned")) {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(25));
         }
         let exit = {
             let mut slot = self.child.lock().expect("process lock poisoned");
-            if let Some(child) = slot.as_mut() {
-                child.kill()?;
-                child.wait()?;
-                slot.take();
-                true
-            } else {
-                false
+            match slot.as_mut().filter(|child| child.id() == pid) {
+                Some(child) => {
+                    child.kill()?;
+                    child.wait()?;
+                    slot.take();
+                    true
+                }
+                None => false,
             }
         };
         if exit {
@@ -306,18 +318,37 @@ fn read_stats(
     }
 }
 
+const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Delivers CTRL_C_EVENT to the kernel's hidden console. `taskkill` without
+/// `/F` only posts WM_CLOSE, which a windowless console process never sees.
 #[cfg(windows)]
-fn request_graceful_stop(pid: u32) {
-    use std::os::windows::process::CommandExt;
-    let _ = Command::new("taskkill")
-        .args(["/PID", &pid.to_string()])
-        .creation_flags(0x0800_0000)
-        .status();
+fn request_graceful_stop(pid: u32) -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+        fn FreeConsole() -> i32;
+        fn GenerateConsoleCtrlEvent(ctrl_event: u32, process_group_id: u32) -> i32;
+        fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+    }
+    const CTRL_C_EVENT: u32 = 0;
+    static CONSOLE: Mutex<()> = Mutex::new(());
+    let _guard = CONSOLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    unsafe {
+        FreeConsole();
+        if AttachConsole(pid) == 0 {
+            return false;
+        }
+        // Ignore the event in this process. It stays ignored: the GUI never
+        // handles Ctrl+C, and restoring it early could race the delivery.
+        SetConsoleCtrlHandler(None, 1);
+        let sent = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) != 0;
+        FreeConsole();
+        sent
+    }
 }
 
 #[cfg(unix)]
-fn request_graceful_stop(pid: u32) {
-    unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
-    }
+fn request_graceful_stop(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
 }

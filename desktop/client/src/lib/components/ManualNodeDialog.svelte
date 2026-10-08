@@ -109,7 +109,7 @@
       ...(config.client || {}), server, guid: guid.trim(), bandwidth: Number(bandwidth) || 0,
       'http-proxy': { bind: httpBind.trim() || '127.0.0.1', port: proxyHttpPort },
       'socks-proxy': { bind: socksBind.trim() || '127.0.0.1', port: proxySocksPort },
-      mappings: [],
+      mappings: Array.isArray(config.client?.mappings) ? config.client.mappings : [],
     }
     return config
   }

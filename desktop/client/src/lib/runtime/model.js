@@ -41,7 +41,9 @@ export function createClientState() {
       qualityGrade: '优',
       activeLinks: 4,
       requestedLinks: 4,
-      effectivePath: '直连',
+      effectivePath: 'direct',
+      p2pState: 'direct',
+      peers: [{ virtualIp: '10.8.0.7', state: 'direct', effectivePath: 'direct' }],
       tunIp: '10.8.0.2/24',
       gateway: '10.8.0.1',
       httpProxy: '127.0.0.1:1080',
@@ -94,7 +96,7 @@ export function createEmptyClientState() {
     stats: {
       rxRateMbps: 0, txRateMbps: 0, rxBytes: 0, txBytes: 0,
       qualityPercent: 0, qualityGrade: '', activeLinks: 0,
-      effectivePath: '', tunIp: '', gateway: '', httpProxy: '', socksProxy: '',
+      effectivePath: '', p2pState: '', peers: [], tunIp: '', gateway: '', httpProxy: '', socksProxy: '',
     },
     events: [],
     subscription: {
@@ -103,7 +105,7 @@ export function createEmptyClientState() {
     },
     config: '{}',
     launchOptions: {},
-    networkOverrides: {}, history: [], kernel: null, administrator: false, proxyRecoveryPending: false,
+    networkOverrides: {}, history: [], kernel: null, administrator: false, proxyRecoveryPending: false, policyDir: '',
     settings: {
       autostart: false, closeToTray: true, disconnectOnExit: true,
       language: '简体中文', appearance: 'system', connectionMode: 'client', pppPath: '', autoSystemProxy: true,

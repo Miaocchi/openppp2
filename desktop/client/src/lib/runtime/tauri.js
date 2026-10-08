@@ -96,6 +96,7 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
     state.networkOverrides = bootstrap.networkOverrides || {}
     state.administrator = !!bootstrap.administrator
     state.proxyRecoveryPending = !!bootstrap.proxyRecoveryPending
+    state.policyDir = bootstrap.policyDir || ''
     if (bootstrap.connection) {
       state.connection = { ...state.connection, ...bootstrap.connection, currentNodeId: bootstrap.currentNodeId, mode: state.settings.connectionMode, statsAvailable: !!bootstrap.connection.stats }
       if (bootstrap.connection.stats) state.stats = { ...state.stats, ...bootstrap.connection.stats }

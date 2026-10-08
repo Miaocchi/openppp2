@@ -31,5 +31,5 @@ test('Windows kernel permits ordinary proxy-mode launches', () => {
   const levels = [...project.matchAll(/<UACExecutionLevel>([^<]+)<\/UACExecutionLevel>/g)]
   assert.equal(levels.length, 6)
   assert(levels.every((match) => match[1] === 'AsInvoker'))
-  assert.match(project, /<AdditionalOptions>\/utf-8 %\(AdditionalOptions\)<\/AdditionalOptions>/)
+  assert.match(project, /<AdditionalOptions>\/utf-8 (?:[^<]* )?%\(AdditionalOptions\)<\/AdditionalOptions>/)
 })
