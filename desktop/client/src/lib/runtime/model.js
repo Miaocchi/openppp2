@@ -96,7 +96,7 @@ export function createEmptyClientState() {
     stats: {
       rxRateMbps: 0, txRateMbps: 0, rxBytes: 0, txBytes: 0,
       qualityPercent: 0, qualityGrade: '', activeLinks: 0,
-      effectivePath: '', p2pState: '', peers: [], tunIp: '', gateway: '', httpProxy: '', socksProxy: '',
+      effectivePath: '', p2pState: '', peers: [], tcpStack: '', tunIp: '', gateway: '', httpProxy: '', socksProxy: '',
     },
     events: [],
     subscription: {
@@ -105,7 +105,7 @@ export function createEmptyClientState() {
     },
     config: '{}',
     launchOptions: {},
-    networkOverrides: {}, history: [], kernel: null, administrator: false, proxyRecoveryPending: false, policyDir: '',
+    networkOverrides: {}, history: [], kernel: null, administrator: false, proxyRecoveryPending: false, policyDir: '', policyEnabled: false,
     settings: {
       autostart: false, closeToTray: true, disconnectOnExit: true,
       language: '简体中文', appearance: 'system', connectionMode: 'client', pppPath: '', autoSystemProxy: true,

@@ -1,10 +1,10 @@
 <script>
-  import { ArrowRightLeft, RadioTower, Settings, Waypoints, Network, Logs } from 'lucide-svelte'
+  import { ArrowRightLeft, RadioTower, Settings, Waypoints, Network, Logs, Route } from 'lucide-svelte'
   import { t } from '../i18n.js'
   export let current = 'connection'
   export let navigate
   export let version = ''
-  const items = [['connection','Connection','连接',ArrowRightLeft], ['nodes','Nodes','节点',Waypoints], ['subscription','Subscriptions','订阅',RadioTower], ['network','Network','网络',Network], ['logs','Logs','日志',Logs], ['settings','Settings','设置',Settings]]
+  const items = [['connection','Connection','连接',ArrowRightLeft], ['nodes','Nodes','节点',Waypoints], ['subscription','Subscriptions','订阅',RadioTower], ['network','Network','网络',Network], ['policy','Policy','策略',Route], ['logs','Logs','日志',Logs], ['settings','Settings','设置',Settings]]
 </script>
 <aside class="sidebar">
   <div class="brand"><img src="/icon.ico" alt="" width="24" height="24"/><strong>OpenPPP2</strong></div>

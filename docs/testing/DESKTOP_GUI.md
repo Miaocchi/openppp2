@@ -17,6 +17,8 @@ cargo test --offline --manifest-path desktop/client/src-tauri/Cargo.toml
 cargo build --offline --manifest-path desktop/client/src-tauri/Cargo.toml
 ```
 
+`tests/policy_workspace.rs` also runs an end-to-end check against a real policy-capable kernel when `OPENPPP2_POLICY_CLI` points to it (offline `policy init/check/explain/migrate` only); without the variable the test returns early.
+
 The Rust suite covers profile merging, missing-section handling, unknown-field preservation, network validation, credential redaction, multi-source cache isolation, preference migration, intentional disconnect, process stop/restart, telemetry precedence and reversible proxy recovery with external changes. The native proxy query test is read-only.
 
 Browser smoke checks require Playwright and Microsoft Edge, plus Vite at port 1420:
@@ -44,6 +46,8 @@ The wrapper requires Playwright at `build/gui-tools/node_modules/playwright` and
 - With UAC elevation, verify virtual-adapter traffic and original routes/DNS after disconnect and explicit exit.
 - Verify Windows proxy/PAC write and exact restoration on disconnect, exit and crash recovery; test an external proxy change during connection.
 - Cancel administrator restart, then accept it; confirm one active GUI after successful handoff.
+- With policy v2 enabled, verify a template policy connects, `policy check` failures block the connection, Status shows the active version after connecting, and manual update succeeds through the SOCKS listener.
+- In virtual-adapter mode, disconnect and confirm the kernel exits through Ctrl+C (log shows cleanup) with routes and DNS restored, rather than the 5-second forced stop.
 - Verify tray close/reopen, explicit exit, duplicate launches and autostart after Windows login.
 
 Local automated proxy recovery uses injected settings, not writes to the host. Administrator restart, TUN routing/DNS rollback and traffic through a valid VPN server remain live acceptance work.

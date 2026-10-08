@@ -204,3 +204,26 @@ test('bootstrap restores proxy addresses and inspects configured kernel; history
   assert.ok(state.history.at(-1).time - state.history[0].time >= 58_000)
   await unsubscribe()
 })
+
+test('policy methods call the backend commands and track the enabled flag', async () => {
+  const fake = fakeBridge({ policyDir: 'C:\\data\\policy', policyEnabled: false }, {
+    policy_set_enabled: (args) => args.enabled,
+    policy_explain: () => ({ exitCode: 0, report: { route: { action: 'direct' } } }),
+  })
+  const runtime = createTauriRuntime(fake.bridge)
+  let latest
+  runtime.subscribe((state) => { latest = state })
+  await runtime.ready
+  assert.equal(latest.policyDir, 'C:\\data\\policy')
+  assert.equal(latest.policyEnabled, false)
+  assert.equal(await runtime.policySetEnabled(true), true)
+  assert.equal(latest.policyEnabled, true)
+  const draft = { version: 2 }
+  const result = await runtime.policyExplain(draft, 'default proxy\n', 'example.com', 'tcp', 0)
+  assert.equal(result.report.route.action, 'direct')
+  assert.deepEqual(fake.calls.find(([name]) => name === 'policy_explain')[1],
+    { policy: draft, rules: 'default proxy\n', target: 'example.com', network: 'tcp', port: null })
+  await runtime.policyInit('split-cn', ' ', 'https://rules.example.test/geosite.dat')
+  assert.deepEqual(fake.calls.find(([name]) => name === 'policy_init')[1],
+    { template: 'split-cn', geoip: ' ', geosite: 'https://rules.example.test/geosite.dat' })
+})

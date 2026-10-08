@@ -198,6 +198,11 @@ fn stats_sampler_reports_p2p_state_and_per_peer_paths() {
     assert_eq!(view.peers.len(), 1);
     assert_eq!(view.peers[0].virtual_ip, "10.0.0.7");
     assert_eq!(view.peers[0].effective_path, "direct");
+    assert_eq!(view.tcp_stack, "");
+
+    value["tcp_stack"] = serde_json::json!({"requested": "lwip", "active": "lwip"});
+    value["monotonic_ms"] = serde_json::json!(1500);
+    assert_eq!(sampler.consume_line(&value.to_string()).unwrap().tcp_stack, "lwip");
 
     let legacy = sampler.consume_line(&stats_line(2000, 2, 2)).unwrap();
     assert_eq!(legacy.p2p_state, "");

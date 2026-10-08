@@ -97,6 +97,7 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
     state.administrator = !!bootstrap.administrator
     state.proxyRecoveryPending = !!bootstrap.proxyRecoveryPending
     state.policyDir = bootstrap.policyDir || ''
+    state.policyEnabled = !!bootstrap.policyEnabled
     if (bootstrap.connection) {
       state.connection = { ...state.connection, ...bootstrap.connection, currentNodeId: bootstrap.currentNodeId, mode: state.settings.connectionMode, statsAvailable: !!bootstrap.connection.stats }
       if (bootstrap.connection.stats) state.stats = { ...state.stats, ...bootstrap.connection.stats }
@@ -234,6 +235,17 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
       state.events = []
       emit()
     },
+    // Policy v2 workspace and offline `ppp policy` commands; the page keeps the draft.
+    policyLoad() { return bridge.core.invoke('policy_load') },
+    async policySetEnabled(enabled) { state.policyEnabled = await bridge.core.invoke('policy_set_enabled', { enabled }); emit(); return state.policyEnabled },
+    policySave(policy, rules) { return bridge.core.invoke('policy_save', { policy, rules }) },
+    policyCheck(policy, rules) { return bridge.core.invoke('policy_check', { policy, rules }) },
+    policyExplain(policy, rules, target, network, port) { return bridge.core.invoke('policy_explain', { policy, rules, target, network, port: port || null }) },
+    policyInit(template, geoip, geosite) { return bridge.core.invoke('policy_init', { template, geoip: geoip || null, geosite: geosite || null }) },
+    policyMigrate() { return bridge.core.invoke('policy_migrate') },
+    policyStatus() { return bridge.core.invoke('policy_status') },
+    policyUpdate() { return bridge.core.invoke('policy_update') },
+    policyResetFakeIp() { return bridge.core.invoke('policy_reset_fake_ip') },
   }
   runtime.ready = initialize()
   return runtime

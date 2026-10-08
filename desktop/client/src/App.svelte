@@ -9,6 +9,7 @@
   import Config from './routes/Config.svelte'
   import Settings from './routes/Settings.svelte'
   import Network from './routes/Network.svelte'
+  import Policy from './routes/Policy.svelte'
   import { language } from './lib/i18n.js'
   import { createRuntime } from './lib/runtime/index.js'
 
@@ -72,6 +73,8 @@
           <Config {state} {runtime} />
         {:else if state.route === 'network'}
           <Network {state} {runtime} />
+        {:else if state.route === 'policy'}
+          <Policy {state} {runtime} />
         {:else if state.route === 'settings'}
           <Settings {state} {runtime} />
         {/if}

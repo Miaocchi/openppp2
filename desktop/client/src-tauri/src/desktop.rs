@@ -2,6 +2,7 @@ use crate::config::{
     apply_network_overrides, build_node_config_with_base, default_config_string, prepare_policy_v2,
 };
 use crate::connection::ConnectionSnapshot;
+use crate::policy::{PolicyReport, Staging, Workspace};
 use crate::launch_options::{append_launch_args, merge_launch_options};
 use crate::lifecycle::{
     close_action, should_disconnect_on_exit, tray_primary_action, CloseAction, TrayPrimaryAction,
@@ -44,6 +45,8 @@ pub struct DesktopState {
     tray_items: Mutex<Option<TrayItems>>,
     exit_requested: AtomicBool,
     proxy: Mutex<ProxySession>,
+    /// (kernel path, modified time, supports `ppp policy`) from the last probe.
+    policy_kernel: Mutex<Option<(PathBuf, Option<std::time::SystemTime>, bool)>>,
     _instance: crate::windows::InstanceGuard,
 }
 
@@ -90,6 +93,7 @@ struct BootstrapPayload {
     administrator: bool,
     proxy_recovery_pending: bool,
     policy_dir: String,
+    policy_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -119,6 +123,25 @@ struct NodePayload {
     options: Option<Value>,
     source_id: String,
     source_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicyPayload {
+    enabled: bool,
+    policy_dir: String,
+    policy: Option<Value>,
+    rules: String,
+    kernel_supported: Option<bool>,
+    kernel_error: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicyDraftPayload {
+    policy: Option<Value>,
+    rules: String,
+    result: PolicyReport,
 }
 
 #[derive(Serialize)]
@@ -234,6 +257,7 @@ impl DesktopState {
             tray_items: Mutex::new(None),
             exit_requested: AtomicBool::new(false),
             proxy: Mutex::new(ProxySession::default()),
+            policy_kernel: Mutex::new(None),
             _instance: instance,
         })
     }
@@ -500,6 +524,7 @@ fn client_preview(
         })
         .map_err(|e| e.to_string())?
     };
+    apply_local_policy(&mut config, &preferences, &state)?;
     if preferences.network_overrides.is_object() {
         apply_network_overrides(&mut config, &preferences.network_overrides)
             .map_err(|e| e.to_string())?;
@@ -567,6 +592,7 @@ fn client_bootstrap(state: State<'_, DesktopState>) -> Result<BootstrapPayload, 
         administrator: crate::windows::administrator(),
         proxy_recovery_pending: state.data_dir.join("proxy-recovery.json").exists(),
         policy_dir: state.policy_dir().to_string_lossy().into_owned(),
+        policy_enabled: preferences.policy_enabled,
     })
 }
 
@@ -727,6 +753,7 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
         .ok_or_else(|| "找不到所选节点".to_string())?;
     let mut config = build_node_config_with_base(&node, Some(&preferences.raw_config))
         .map_err(|error| error.to_string())?;
+    apply_local_policy(&mut config, &preferences, state)?;
     if preferences.network_overrides.is_object() {
         apply_network_overrides(&mut config, &preferences.network_overrides)
             .map_err(|e| e.to_string())?;
@@ -735,6 +762,7 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
         let policy_dir = state.policy_dir();
         fs::create_dir_all(&policy_dir).map_err(|error| error.to_string())?;
         prepare_policy_v2(&mut config, &policy_dir);
+        check_policy_before_connect(&config, &preferences.settings.connection_mode, state)?;
     }
     if preferences.settings.connection_mode == "client" && !crate::windows::administrator() {
         return Err("Virtual adapter requires administrator privileges; restart as administrator in Settings".into());
@@ -1125,6 +1153,358 @@ fn network_payload(options: &BTreeMap<String, Value>, config: &Value) -> Value {
     })
 }
 
+/// Uses the GUI-managed policy v2 for this connection when the user enabled it.
+fn apply_local_policy(
+    config: &mut Value,
+    preferences: &Preferences,
+    state: &DesktopState,
+) -> Result<(), String> {
+    if !preferences.policy_enabled {
+        return Ok(());
+    }
+    let policy = Workspace::new(state.policy_dir())
+        .load()?
+        .policy
+        .ok_or("Local policy v2 is enabled but not created yet; create it on the Policy page or turn it off")?;
+    let client = config
+        .get_mut("client")
+        .and_then(Value::as_object_mut)
+        .ok_or("Node configuration has no client object")?;
+    client.insert("policy".into(), policy);
+    Ok(())
+}
+
+/// Resolves the kernel and requires `ppp policy` support. An older kernel
+/// would ignore `client.policy` and, worse, start a client for `ppp policy`.
+fn policy_kernel(state: &DesktopState) -> Result<PathBuf, String> {
+    let configured = state
+        .preferences
+        .lock()
+        .map_err(|_| "Preferences lock")?
+        .ppp_path
+        .clone();
+    let path = resolve_ppp_path(&configured)?;
+    let modified = fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let cached = state
+        .policy_kernel
+        .lock()
+        .map_err(|_| "Kernel lock")?
+        .clone()
+        .filter(|(cached, time, _)| *cached == path && *time == modified);
+    let supported = match cached {
+        Some((_, _, supported)) => supported,
+        None => {
+            let info = crate::kernel::inspect(&path)?;
+            let supported = info["policySupported"].as_bool() == Some(true);
+            *state.policy_kernel.lock().map_err(|_| "Kernel lock")? =
+                Some((path.clone(), modified, supported));
+            supported
+        }
+    };
+    if supported {
+        Ok(path)
+    } else {
+        Err("The selected ppp kernel does not support policy v2 (requires 2.1.7 or later)".into())
+    }
+}
+
+fn policy_staging(state: &DesktopState) -> Result<Staging, String> {
+    Staging::new(&state.data_dir.join("policy-staging"))
+}
+
+fn policy_runtime(state: &DesktopState) -> Result<&'static str, String> {
+    let preferences = state.preferences.lock().map_err(|_| "Preferences lock")?;
+    Ok(crate::policy::runtime_for_mode(&preferences.settings.connection_mode))
+}
+
+fn check_policy_before_connect(
+    config: &Value,
+    connection_mode: &str,
+    state: &DesktopState,
+) -> Result<(), String> {
+    let kernel = policy_kernel(state)?;
+    let staging = policy_staging(state)?;
+    let path = staging.path("config.json");
+    let policy_only = json!({ "client": { "policy": config["client"]["policy"] } });
+    fs::write(&path, serde_json::to_vec(&policy_only).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let result = crate::policy::run(
+        &kernel,
+        &[
+            "check".into(),
+            "--config".into(),
+            path.to_string_lossy().into_owned(),
+            "--runtime".into(),
+            crate::policy::runtime_for_mode(connection_mode).into(),
+        ],
+        crate::policy::OFFLINE_TIMEOUT,
+    )?;
+    if result.ok() {
+        Ok(())
+    } else {
+        Err(format!("Policy check failed:\n{}", result.summary()))
+    }
+}
+
+/// Validates a draft with `ppp policy check` without touching the workspace.
+fn check_draft(state: &DesktopState, policy: &Value, rules: &str) -> Result<PolicyReport, String> {
+    let kernel = policy_kernel(state)?;
+    let staging = policy_staging(state)?;
+    let config = staging.write_draft(policy, rules, &state.policy_dir())?;
+    crate::policy::run(
+        &kernel,
+        &[
+            "check".into(),
+            "--config".into(),
+            config.to_string_lossy().into_owned(),
+            "--runtime".into(),
+            policy_runtime(state)?.into(),
+        ],
+        crate::policy::OFFLINE_TIMEOUT,
+    )
+}
+
+#[tauri::command(async)]
+fn policy_load(state: State<'_, DesktopState>) -> Result<PolicyPayload, String> {
+    let enabled = state.preferences.lock().map_err(|_| "Preferences lock")?.policy_enabled;
+    let content = Workspace::new(state.policy_dir()).load()?;
+    let (kernel_supported, kernel_error) = match policy_kernel(&state) {
+        Ok(_) => (Some(true), String::new()),
+        Err(error) => (
+            state
+                .policy_kernel
+                .lock()
+                .ok()
+                .and_then(|cached| cached.as_ref().map(|(_, _, supported)| *supported)),
+            error,
+        ),
+    };
+    Ok(PolicyPayload {
+        enabled,
+        policy_dir: state.policy_dir().to_string_lossy().into_owned(),
+        policy: content.policy,
+        rules: content.rules,
+        kernel_supported,
+        kernel_error,
+    })
+}
+
+#[tauri::command(async)]
+fn policy_set_enabled(enabled: bool, state: State<'_, DesktopState>) -> Result<bool, String> {
+    if enabled && Workspace::new(state.policy_dir()).load()?.policy.is_none() {
+        return Err("Create and save a policy before enabling it".into());
+    }
+    let mut preferences = state.preferences.lock().map_err(|_| "Preferences lock")?;
+    let mut candidate = preferences.clone();
+    candidate.policy_enabled = enabled;
+    state.save_preferences(&candidate)?;
+    *preferences = candidate;
+    Ok(enabled)
+}
+
+/// Saves only a draft that passes `ppp policy check`; otherwise returns the
+/// report so the editor can show the diagnostics.
+#[tauri::command(async)]
+fn policy_save(
+    policy: Value,
+    rules: String,
+    state: State<'_, DesktopState>,
+) -> Result<PolicyDraftPayload, String> {
+    let result = check_draft(&state, &policy, &rules)?;
+    if result.ok() {
+        Workspace::new(state.policy_dir()).save(&policy, &rules)?;
+    }
+    Ok(PolicyDraftPayload { policy: Some(policy), rules, result })
+}
+
+#[tauri::command(async)]
+fn policy_check(
+    policy: Value,
+    rules: String,
+    state: State<'_, DesktopState>,
+) -> Result<PolicyReport, String> {
+    check_draft(&state, &policy, &rules)
+}
+
+#[tauri::command(async)]
+fn policy_explain(
+    policy: Value,
+    rules: String,
+    target: String,
+    network: String,
+    port: Option<u16>,
+    state: State<'_, DesktopState>,
+) -> Result<PolicyReport, String> {
+    let kernel = policy_kernel(&state)?;
+    let staging = policy_staging(&state)?;
+    let config = staging.write_draft(&policy, &rules, &state.policy_dir())?;
+    let args = crate::policy::explain_args(&config, policy_runtime(&state)?, &target, &network, port)?;
+    crate::policy::run(&kernel, &args, crate::policy::OFFLINE_TIMEOUT)
+}
+
+/// Generates a template draft; nothing is saved until the user saves it.
+#[tauri::command(async)]
+fn policy_init(
+    template: String,
+    geoip: Option<String>,
+    geosite: Option<String>,
+    state: State<'_, DesktopState>,
+) -> Result<PolicyDraftPayload, String> {
+    if !crate::policy::TEMPLATES.contains(&template.as_str()) {
+        return Err("Unknown policy template".into());
+    }
+    let kernel = policy_kernel(&state)?;
+    let staging = policy_staging(&state)?;
+    let mut args = vec![
+        "init".into(),
+        "--out".into(),
+        staging.path("out").to_string_lossy().into_owned(),
+        "--template".into(),
+        template.clone(),
+        "--runtime".into(),
+        policy_runtime(&state)?.into(),
+    ];
+    for (flag, value) in [("--geoip", geoip), ("--geosite", geosite)] {
+        if let Some(value) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) {
+            args.extend([flag.to_owned(), value]);
+        }
+    }
+    let result = crate::policy::run(&kernel, &args, crate::policy::OFFLINE_TIMEOUT)?;
+    if !result.ok() {
+        return Ok(PolicyDraftPayload { policy: None, rules: String::new(), result });
+    }
+    let content = staging.read_output("out")?;
+    Ok(PolicyDraftPayload { policy: content.policy, rules: content.rules, result })
+}
+
+/// Drafts a v2 policy from the current v1 settings (base config plus network
+/// overrides). Exit code 5 means the draft differs and needs review.
+#[tauri::command(async)]
+fn policy_migrate(state: State<'_, DesktopState>) -> Result<PolicyDraftPayload, String> {
+    let kernel = policy_kernel(&state)?;
+    let preferences = state.preferences.lock().map_err(|_| "Preferences lock")?.clone();
+    let mut legacy: Value = serde_json::from_str(if preferences.raw_config.trim().is_empty() {
+        default_config_string()
+    } else {
+        &preferences.raw_config
+    })
+    .map_err(|e| e.to_string())?;
+    if preferences.network_overrides.is_object() {
+        apply_network_overrides(&mut legacy, &preferences.network_overrides).map_err(|e| e.to_string())?;
+    }
+    if crate::config::uses_policy_v2(&legacy) {
+        return Err("The base configuration already uses policy v2".into());
+    }
+    let staging = policy_staging(&state)?;
+    let source = staging.path("legacy.json");
+    fs::write(&source, serde_json::to_vec_pretty(&legacy).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let result = crate::policy::run(
+        &kernel,
+        &[
+            "migrate".into(),
+            "--config".into(),
+            source.to_string_lossy().into_owned(),
+            "--out".into(),
+            staging.path("out").to_string_lossy().into_owned(),
+            "--runtime".into(),
+            crate::policy::runtime_for_mode(&preferences.settings.connection_mode).into(),
+        ],
+        crate::policy::OFFLINE_TIMEOUT,
+    )?;
+    if !matches!(result.exit_code, 0 | 5) {
+        return Ok(PolicyDraftPayload { policy: None, rules: String::new(), result });
+    }
+    let content = staging.read_output("out")?;
+    Ok(PolicyDraftPayload { policy: content.policy, rules: content.rules, result })
+}
+
+/// Status and update use the runtime config path: the kernel derives the
+/// policy identity and the `.ppp-policy` store from it.
+fn runtime_policy_config(state: &DesktopState) -> Result<(PathBuf, Value), String> {
+    let path = state.data_dir.join("runtime").join("appsettings.json");
+    let config: Value = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .filter(crate::config::uses_policy_v2)
+        .ok_or("No policy status yet: connect once with policy v2 enabled")?;
+    Ok((path, config))
+}
+
+#[tauri::command(async)]
+fn policy_status(state: State<'_, DesktopState>) -> Result<PolicyReport, String> {
+    let kernel = policy_kernel(&state)?;
+    let (path, _) = runtime_policy_config(&state)?;
+    crate::policy::run(
+        &kernel,
+        &["status".into(), "--config".into(), path.to_string_lossy().into_owned()],
+        crate::policy::OFFLINE_TIMEOUT,
+    )
+}
+
+/// Downloads remote rule sets through the running session's SOCKS listener.
+/// The result is prepared for the next start; the running session keeps its
+/// active policy unless `updates.enabled` publishes into it.
+#[tauri::command(async)]
+fn policy_update(state: State<'_, DesktopState>) -> Result<PolicyReport, String> {
+    let kernel = policy_kernel(&state)?;
+    let (path, config) = runtime_policy_config(&state)?;
+    if config.pointer("/client/policy/updates/via").and_then(Value::as_str) != Some("proxy") {
+        return Err("Manual update runs through the tunnel; set updates.via to proxy".into());
+    }
+    if !state.process.lock().map_err(|_| "Process lock")?.is_running() {
+        return Err("Connect first: manual update uses the session's SOCKS listener".into());
+    }
+    let endpoint = state.network.lock().map_err(|_| "Network lock")?["socksProxy"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    if endpoint.parse::<std::net::SocketAddr>().map_or(true, |address| !address.ip().is_loopback()) {
+        return Err("Manual update needs a loopback SOCKS listener".into());
+    }
+    crate::policy::run(
+        &kernel,
+        &[
+            "update".into(),
+            "--config".into(),
+            path.to_string_lossy().into_owned(),
+            "--proxy-endpoint".into(),
+            endpoint,
+        ],
+        crate::policy::UPDATE_TIMEOUT,
+    )
+}
+
+/// Clears Fake-IP mappings. Only while disconnected, and only inside the app
+/// data directory; clients must also drop cached DNS answers from the pool.
+#[tauri::command(async)]
+fn policy_reset_fake_ip(state: State<'_, DesktopState>) -> Result<String, String> {
+    if state.process.lock().map_err(|_| "Process lock")?.is_running() {
+        return Err("Disconnect before resetting Fake-IP storage".into());
+    }
+    let runtime_dir = state.data_dir.join("runtime");
+    let config = runtime_policy_config(&state).map(|(_, config)| config).unwrap_or(Value::Null);
+    let storage = crate::policy::fake_ip_storage(&config, &runtime_dir);
+    let data_dir = fs::canonicalize(&state.data_dir).map_err(|e| e.to_string())?;
+    match fs::canonicalize(&storage) {
+        Err(_) => return Ok("Fake-IP storage is already empty".into()),
+        Ok(resolved) if !resolved.starts_with(&data_dir) || resolved == data_dir => {
+            return Err(format!("Refusing to delete Fake-IP storage outside app data: {}", storage.display()))
+        }
+        Ok(resolved) if resolved.is_dir() => fs::remove_dir_all(&resolved).map_err(|e| e.to_string())?,
+        Ok(resolved) => fs::remove_file(&resolved).map_err(|e| e.to_string())?,
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("ipconfig")
+            .arg("/flushdns")
+            .creation_flags(0x0800_0000)
+            .status();
+    }
+    Ok("Fake-IP storage cleared".into())
+}
+
 fn resolve_ppp_path(configured: &str) -> Result<PathBuf, String> {
     let path = if configured.trim().is_empty() {
         let name = if cfg!(windows) { "ppp.exe" } else { "ppp" };
@@ -1318,6 +1698,16 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            policy_load,
+            policy_set_enabled,
+            policy_save,
+            policy_check,
+            policy_explain,
+            policy_init,
+            policy_migrate,
+            policy_status,
+            policy_update,
+            policy_reset_fake_ip,
             client_bootstrap,
             subscription_refresh,
             client_probe_latency,

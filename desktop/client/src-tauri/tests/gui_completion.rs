@@ -49,3 +49,12 @@ fn duplicate_subscription_node_ids_are_rejected() {
     let body = json!({"type":"openppp2-subscription","version":1,"nodes":[{"id":"a","config":{}},{"id":"a","config":{}}]});
     assert!(parse_subscription(&serde_json::to_vec(&body).unwrap()).is_err());
 }
+
+#[test]
+fn policy_support_is_derived_from_the_kernel_version_only() {
+    assert_eq!(kernel::policy_supported("Version: 2.1.7.0"), Some(true));
+    assert_eq!(kernel::policy_supported("openppp2 v2.2.0"), Some(true));
+    assert_eq!(kernel::policy_supported("2.1.6.0"), Some(false));
+    assert_eq!(kernel::policy_supported("1.9.9"), Some(false));
+    assert_eq!(kernel::policy_supported("Unknown"), None);
+}

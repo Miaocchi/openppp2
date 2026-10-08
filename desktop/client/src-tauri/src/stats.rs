@@ -21,6 +21,14 @@ struct StatsRecord {
     tx_bytes: u64,
     link: LinkRecord,
     runtime: RuntimeRecord,
+    #[serde(default)]
+    tcp_stack: Option<TcpStackRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct TcpStackRecord {
+    #[serde(default)]
+    active: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -122,6 +130,7 @@ pub struct StatsView {
     pub effective_path: String,
     pub p2p_state: String,
     pub peers: Vec<PeerView>,
+    pub tcp_stack: String,
     pub last_error: RuntimeError,
 }
 
@@ -183,6 +192,7 @@ impl StatsSampler {
             effective_path: record.runtime.effective_path.clone(),
             p2p_state: record.runtime.p2p_state.clone(),
             peers: record.runtime.peers.iter().map(PeerView::from).collect(),
+            tcp_stack: record.tcp_stack.as_ref().map(|stack| stack.active.clone()).unwrap_or_default(),
             last_error: record.runtime.last_error.clone(),
         };
         self.previous = Some(record);

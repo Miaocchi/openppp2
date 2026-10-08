@@ -14,5 +14,6 @@ pub mod windows;
 pub mod storage;
 pub mod kernel;
 pub mod network;
+pub mod policy;
 
 pub use desktop::run;

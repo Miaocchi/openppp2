@@ -63,9 +63,29 @@ pub fn inspect(path: &Path) -> Result<Value, String> {
         .map(|line| line.trim().to_owned())
         .or_else(|| file_version(path))
         .unwrap_or_else(|| "Unknown".into());
-    Ok(
-        json!({ "path": path, "version": version, "helpAvailable": !help.trim().is_empty(), "statsSupported": (!help.trim().is_empty()).then(|| help.contains("--stats-json")), "muxTurboSupported": (!help.trim().is_empty()).then(|| help.contains("--mux-mode-turbo")), "proxySupported": (!help.trim().is_empty()).then(|| help.contains("proxy")) }),
-    )
+    let has_help = !help.trim().is_empty();
+    let flag = |name: &str| has_help.then(|| help.contains(name));
+    Ok(json!({
+        "path": path, "version": version, "helpAvailable": has_help,
+        "statsSupported": flag("--stats-json"),
+        "muxTurboSupported": flag("--mux-mode-turbo"),
+        "proxySupported": flag("proxy"),
+        "tcpStackSupported": flag("--tcp-stack"),
+        "tunIpv6Supported": flag("--tun-ipv6"),
+        "policySupported": policy_supported(&version),
+    }))
+}
+
+/// `ppp policy` ships from 2.1.7 and is absent from `--help`. Never probe it by
+/// running the subcommand: older kernels ignore the unknown word and start a client.
+pub fn policy_supported(version: &str) -> Option<bool> {
+    let numbers = version
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .find(|part| part.matches('.').count() >= 2)?
+        .split('.')
+        .map(|part| part.parse::<u32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    Some(numbers[..3] >= [2, 1, 7][..])
 }
 
 #[cfg(windows)]
