@@ -254,6 +254,8 @@ namespace ppp {
                  * @note Read completion forwards data to transmission.
                  */
                 bool                                                            ReceiveSocketToTransmission(const std::shared_ptr<Byte>& buffer, int buffer_size) noexcept;
+                /** @brief On local socket EOF, shuts down the carrier send direction instead of disposing; false when unsupported. */
+                bool                                                            HalfCloseTransmissionSend() noexcept;
                 /**
                  * @brief Forwards one socket chunk to transmission.
                  * @param buffer Receive buffer.

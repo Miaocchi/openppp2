@@ -911,7 +911,9 @@ namespace ppp {
                                         sz,
                                         disposed_ ? "yes" : "no",
                                         connected_ ? "yes" : "no");
-                                    Dispose();
+                                    if (ec != boost::asio::error::eof || !HalfCloseTransmissionSend()) {
+                                        Dispose();
+                                    }
                                 }
                                 else {
                                     ppp::diagnostics::datapath_perf::RecordTcpipBridgeSocketRead(bytes_transferred);
@@ -932,6 +934,41 @@ namespace ppp {
                                 }
                             });
                     });
+                return true;
+            }
+
+            /**
+             * @brief Propagates a local half-close (socket EOF) to the peer as a carrier FIN.
+             *
+             * Disposing here would close the carrier while echoed download bytes may still
+             * sit unread in its receive buffer; the kernel then sends RST instead of FIN and
+             * the peer discards upload frames it has not read yet, truncating the upload.
+             * Half-closing keeps the transmission->socket direction running until the peer
+             * finishes, and that loop disposes the connection when the carrier reaches EOF.
+             *
+             * @return True when the send direction was shut down and the connection stays open.
+             */
+            bool VirtualEthernetTcpipConnection::HalfCloseTransmissionSend() noexcept {
+                if (disposed_ || !connected_) {
+                    return false;
+                }
+
+                ITransmissionPtr transmission = transmission_;
+                if (NULLPTR == transmission || !transmission->SupportsSendHalfClose()) {
+                    return false;
+                }
+
+                // The read->write->read chain arms this read only after the previous carrier
+                // write completed; anything still queued here would be cut off by the FIN.
+                if (transmission->GetPendingItems() != 0 || transmission->GetPendingBytes() != 0) {
+                    return false;
+                }
+
+                if (!transmission->ShutdownSend()) {
+                    return false;
+                }
+
+                ppp::telemetry::Count("tcpip.bridge.half_close", 1);
                 return true;
             }
 
