@@ -33,6 +33,10 @@
     <RootNamespace>ppp</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
+  <PropertyGroup Label="OpenPPP2Options">
+    <OpenPPP2EnableSimd Condition="'$(OpenPPP2EnableSimd)' == '' and '$(Platform)' == 'ARM64'">false</OpenPPP2EnableSimd>
+    <OpenPPP2EnableSimd Condition="'$(OpenPPP2EnableSimd)' == ''">true</OpenPPP2EnableSimd>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
@@ -224,7 +228,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4244;4819;4309;4334;4267;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/bigobj /DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
       <StringPooling>true</StringPooling>
       <IntelJCCErratum>true</IntelJCCErratum>
@@ -257,6 +261,7 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntelJCCErratum>true</IntelJCCErratum>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
+      <AdditionalOptions>/DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
       <StringPooling>true</StringPooling>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4244;4819;4309;4334;4267;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
@@ -279,7 +284,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4244;4819;4309;4334;4267;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/bigobj /DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
       <StringPooling>true</StringPooling>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -323,7 +328,12 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(OpenPPP2EnableSimd)' != 'true'">
+    <ClCompile>
+      <AdditionalOptions>%(AdditionalOptions) /U__SIMD__</AdditionalOptions>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>

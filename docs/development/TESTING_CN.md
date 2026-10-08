@@ -191,6 +191,12 @@ bash scripts/test-runtime-contract.sh cpp
 | `ENABLE_VMUX_RECEIVE_SEMANTICS_TEST` | 构建并注册 root-linked VMUX receive-semantics 测试。 |
 | `ENABLE_ASAN`、`ENABLE_UBSAN` | 在根项目中启用诊断 sanitizer flags；不是生产构建模式。 |
 
+根生产构建选项另有平台默认值：Linux 构建（包括交叉编译）默认启用
+`ENABLE_XTCP`，配置前需要运行 `bash tools/prepare_xtcp.sh`；Android、macOS
+和 Windows 默认关闭，发布工作流会显式传入对应值。`ENABLE_SIMD` 在 x86/x64 上默认启用，
+ARM/Android 默认关闭；Windows MSBuild 可用 `/p:OpenPPP2EnableSimd=false` 显式移除
+`__SIMD__`。
+
 ## 当前 CI 覆盖
 
 `.github/workflows/test.yml` 是主单元测试 workflow。它运行独立 C++/覆盖率路径、独立的完整套件 ThreadSanitizer job、生命周期 sanitizer、Guardian 和 Go 检查、Flutter 测试以及 iOS 逻辑测试。它**不**运行实验性 Desktop Client 的 npm 或 Cargo 测试命令。

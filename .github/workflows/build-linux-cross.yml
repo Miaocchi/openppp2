@@ -30,6 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prepare XTCP dependency
+        run: bash tools/prepare_xtcp.sh
+
       - name: Clone third-party environment
         run: git clone --depth 1 https://github.com/liulilittle/openppp2-ubuntu-3rd-environment.git "${{ runner.temp }}/3rd"
 
@@ -108,7 +111,8 @@ jobs:
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" \
             -DCMAKE_CXX_FLAGS="$CPP_FLAGS" \
-            -DTHIRD_PARTY_LIBRARY_DIR="$TP"
+            -DTHIRD_PARTY_LIBRARY_DIR="$TP" \
+            -DENABLE_XTCP=ON
           make -j$(nproc)
 
       - name: Package artifact

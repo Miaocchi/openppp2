@@ -2376,7 +2376,14 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                 app::protocol::IcmpPathMtuError control_error;
                 const bool is_control_error = app::protocol::TryParseIcmpPathMtuError(
                     packet, packet_length, control_error);
-                if (ip->proto == ppp::net::native::ip_hdr::IP_PROTO_ICMP && !is_control_error) {
+                // Ordinary ICMP is valid between assigned virtual peers (for example,
+                // ping 10.73.0.2 from 10.73.0.3), but must not turn the server into an
+                // unrestricted ICMP transit. External ICMP remains rejected below by
+                // requiring an owned virtual destination.
+                const bool virtual_peer_destination =
+                    switcher_->FindNatInformation(ip->dest) != NULLPTR;
+                if (ip->proto == ppp::net::native::ip_hdr::IP_PROTO_ICMP &&
+                    !is_control_error && !virtual_peer_destination) {
                     return false;
                 }
 

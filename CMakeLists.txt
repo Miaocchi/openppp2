@@ -30,7 +30,6 @@ IF(MSVC)
     ADD_DEFINITIONS(-D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
     ADD_DEFINITIONS(-D_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS)
     ADD_DEFINITIONS(-D_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS)
-    ADD_DEFINITIONS(-D__SIMD__)
     ADD_DEFINITIONS(-DJEMALLOC)
     ADD_DEFINITIONS(-DFUNCTION)
     ADD_DEFINITIONS(-DBUDDY_ALLOC_IMPLEMENTATION)
@@ -200,6 +199,14 @@ SET(ENABLE_SIMD_DEFAULT OFF)
 IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|X86_64|amd64|AMD64)$")
     SET(ENABLE_SIMD_DEFAULT ON)
 ENDIF()
+IF(MSVC)
+    IF(CMAKE_GENERATOR_PLATFORM MATCHES "^(ARM64|arm64)$"
+        OR CMAKE_VS_PLATFORM_NAME MATCHES "^(ARM64|arm64)$")
+        SET(ENABLE_SIMD_DEFAULT OFF)
+    ELSE()
+        SET(ENABLE_SIMD_DEFAULT ON)
+    ENDIF()
+ENDIF()
 OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" ${ENABLE_SIMD_DEFAULT})
 
 # Enable SSEA SIMD acceleration (SSSE3/SSE4.1/SSE4.2/AVX/AVX2) for the
@@ -210,19 +217,19 @@ OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" ${ENABLE_SIMD_DEF
 # corresponding -m flags are passed.
 OPTION(ENABLE_SSEA_SIMD "Enable SSEA SIMD acceleration (SSSE3+AVX2, requires ENABLE_SIMD)" OFF)
 
-# Optional telemetry/observability facade (default OFF for zero-cost on low-end hardware).
-OPTION(PPP_TELEMETRY "Enable optional telemetry/OTel facade (adds non-zero runtime cost)" OFF)
-IF(PPP_TELEMETRY)
-    ADD_COMPILE_DEFINITIONS(PPP_TELEMETRY=1)
-ENDIF()
-
 OPTION(ENABLE_TESTS "Build unit tests (GTest)" OFF)
 OPTION(ENABLE_P2P_RECOVERY_TESTS "Build isolated actual Exchanger recovery tests (test-only seams)" OFF)
 OPTION(ENABLE_P2P_V2_PRODUCTION "Enable authenticated P2P v2 production capability" ON)
 OPTION(ENABLE_VMUX_CHURN_TEST "Build the root-linked VMUX carrier churn test" OFF)
 OPTION(ENABLE_VMUX_RECEIVE_SEMANTICS_TEST "Build the root-linked VMUX receive-semantics test" OFF)
 OPTION(ENABLE_COVERAGE "Enable LLVM source coverage instrumentation" OFF)
-OPTION(ENABLE_XTCP "Build with the pinned XTCP userspace TCP/IP stack (Linux desktop only)" OFF)
+SET(ENABLE_XTCP_DEFAULT OFF)
+IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+    SET(ENABLE_XTCP_DEFAULT ON)
+ENDIF()
+# Linux builds, including cross-compilation targets, use the pinned XTCP data
+# path by default. Prepare the verified dependency before a fresh configure.
+OPTION(ENABLE_XTCP "Build with the pinned XTCP userspace TCP/IP stack (Linux only)" ${ENABLE_XTCP_DEFAULT})
 SET(XTCP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third-party/xtcp" CACHE PATH "Path to the pinned XTCP source tree")
 IF(ENABLE_COVERAGE AND NOT MSVC)
     INCLUDE(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Coverage.cmake)
@@ -261,13 +268,22 @@ ELSEIF(MSVC AND (CMAKE_SIZEOF_VOID_P EQUAL 8 OR CMAKE_SIZEOF_VOID_P EQUAL 4))
     SET(PLATFORM_ARCH_X86 TRUE)
 ENDIF()
 
+# CMake's MSVC host pointer size describes the compiler host, not the selected
+# target platform. Correct the architecture flags for ARM64 generators so an
+# explicit ENABLE_SIMD=OFF remains effective and ARM64 never receives x86 AES.
+IF(MSVC AND (CMAKE_GENERATOR_PLATFORM MATCHES "^(ARM64|arm64)$"
+    OR CMAKE_VS_PLATFORM_NAME MATCHES "^(ARM64|arm64)$"))
+    SET(PLATFORM_ARCH_X86 FALSE)
+    SET(PLATFORM_ARCH_ARM64 TRUE)
+ENDIF()
+
 # For MSVC ARM64 cross-compilation, detect at compile time
 IF(MSVC AND NOT PLATFORM_ARCH_X86 AND NOT PLATFORM_ARCH_ARM64)
     # This will be handled by _M_ARM64 in source code
 ENDIF()
 
 SET(__SIMD__ FALSE)
-IF(PLATFORM_SYSTEM_WINDOWS AND PLATFORM_ARCH_X86)
+IF(PLATFORM_SYSTEM_WINDOWS AND PLATFORM_ARCH_X86 AND ENABLE_SIMD)
     SET(__SIMD__ TRUE)
 ENDIF()
 
