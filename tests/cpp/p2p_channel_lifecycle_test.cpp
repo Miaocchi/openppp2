@@ -134,7 +134,8 @@ BOOST_AUTO_TEST_CASE(close_is_idempotent_and_cancelled_handlers_stay_on_relay) {
     channel->StartProbing(LoopbackCandidates(), Int128(2), "offer-token");
     BOOST_TEST(static_cast<int>(channel->GetState()) ==
         static_cast<int>(P2PChannelState::Probing));
-    BOOST_TEST(protector->calls == 1);
+    // Native dual-stack transports may protect both the IPv4 and IPv6 sockets.
+    BOOST_TEST(protector->calls >= 1);
 
     channel->Close();
     channel->Close();
