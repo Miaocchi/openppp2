@@ -113,6 +113,32 @@ BOOST_AUTO_TEST_CASE(snapshot_json_derives_effective_path_from_typed_p2p_state) 
     BOOST_TEST(direct.find("\"effective_path\":\"direct\"") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(snapshot_json_round_trips_peer_status) {
+    runtime::RuntimeSnapshot snapshot;
+    snapshot.phase = runtime::RuntimePhase::Connected;
+    runtime::RuntimePeerSnapshot peer;
+    peer.virtual_ip = 0x0300490a;
+    peer.state = ppp::p2p::P2PState::Direct;
+    peer.effective_path = "direct";
+    peer.has_current = true;
+    peer.has_previous = true;
+    peer.key_generation = 7;
+    peer.local_candidate = "10.0.0.2:4000";
+    peer.peer_candidate = "203.0.113.3:5000";
+    snapshot.peers.push_back(peer);
+
+    runtime::RuntimeSnapshot decoded;
+    BOOST_REQUIRE(runtime::ParseRuntimeSnapshot(
+        runtime::SerializeRuntimeSnapshot(snapshot), decoded));
+    BOOST_REQUIRE_EQUAL(decoded.peers.size(), 1u);
+    BOOST_TEST(decoded.peers[0].virtual_ip == peer.virtual_ip);
+    BOOST_TEST(static_cast<int>(decoded.peers[0].state) == static_cast<int>(peer.state));
+    BOOST_TEST(decoded.peers[0].effective_path == peer.effective_path);
+    BOOST_TEST(decoded.peers[0].key_generation == peer.key_generation);
+    BOOST_TEST(decoded.peers[0].local_candidate == peer.local_candidate);
+    BOOST_TEST(decoded.peers[0].peer_candidate == peer.peer_candidate);
+}
+
 BOOST_AUTO_TEST_CASE(unknown_p2p_state_parses_fail_closed_and_ignores_claimed_direct_path) {
     runtime::RuntimeSnapshot snapshot;
     BOOST_REQUIRE(runtime::ParseRuntimeSnapshot(

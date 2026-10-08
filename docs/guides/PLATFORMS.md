@@ -519,6 +519,8 @@ iOS has no desktop-style route mutation path in this repository. The application
 
 `routing.ip.peer-routes` is currently kept in the mobile native RIB/FIB in both modes; the Packet Tunnel provider does not turn each entry into an arbitrary `NEIPv4Route`. Additional per-prefix OS routing therefore requires explicit host integration.
 
+The iOS provider-owned P2P UDP adapter serializes session state on a private dispatch queue and applies per-endpoint admission limits of 32 pending packets and 64 KiB for writes and reads. Close cancels the current `NWUDPSession`s; completion and receive callbacks check that the adapter is still open and that the endpoint still refers to the same session instance, so callbacks arriving late after close or replacement are discarded. These are source-level behavior details for the v2.1.7 code release target; v2.1.6 does not include the capabilities described here. Check the [release page](https://github.com/Miaocchi/openppp2/releases) for package availability. This guide describes implementation structure and does not certify CI, cross-platform builds, or device acceptance.
+
 ### iOS Integration Boundary
 
 | Layer | Current responsibility |
@@ -527,6 +529,8 @@ iOS has no desktop-style route mutation path in this repository. The application
 | `PacketTunnelProvider.swift` | Set included/excluded IPv4 routes, tunnel DNS, and start/stop the extension |
 | `OpenPPP2PacketTunnelAdapter.swift` | Bridge `NEPacketTunnelFlow` packets and provider-owned P2P transport |
 | `OpenPPP2PacketTunnelBridge.cpp` | Create `TapIos`, run the C++ client, and expose the C callbacks |
+
+Policy direct and proxy egress are explicit choices. Direct policy sockets use the direct connector and configured interface/protection behavior; proxy policy sockets use the selected local SOCKS5 or tunnel connector. A connector rejects a request for the other egress class instead of silently changing it. This is an implementation constraint, not proof that every destination or platform path is reachable. In particular, HTTPS and some proxy TCP probes still time out in the published sanitized [Linux live report](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md). DNS upstream UDP/TCP/DoH/DoT describes resolver-to-upstream transport and does not extend client interception beyond UDP/53 or imply TCP/53 / encrypted-DNS interception.
 
 ---
 
@@ -596,6 +600,8 @@ For maximum efficiency, validate one platform at a time:
 ---
 
 ## 12. Runtime effects
+
+The v2 policy and iOS provider behavior described here are part of the v2.1.7 code release target; v2.1.6 does not include these capabilities. Check the [release page](https://github.com/Miaocchi/openppp2/releases) for package availability. The Linux report is limited to its named probes, and HTTPS and some proxy TCP probes still time out. The platform source map describes implementation ownership; it is not CI, cross-platform build, or device acceptance evidence.
 
 Host-layer effects come from TUN/host integration, not from the existence of the native routing policy:
 

@@ -63,6 +63,10 @@ The separate root-linked recovery target below uses the actual Exchanger. These
 checks do not establish Android device behavior, real NAT traversal or Linux
 SO_MARK bypass of TUN. Keep the production gate disabled.
 
+The P2P v2 changes and their 2026-10-05 test results described here are from the local
+implementation relative to the then-published `main` snapshot. Code push is now authorized;
+the v2.1.7 release remains pending until the push completes and CI is green.
+
 On 2026-10-05 the ordinary P2P and existing Noise regression suite passed 30 targets, including
 separate unprivileged loopback runs for socket-restricted tests. Both existing
 Noise handshake/exporter targets also passed. The final focused suite
@@ -201,6 +205,12 @@ All of these options default to `OFF`:
 | `ENABLE_VMUX_CHURN_TEST` | Builds and registers the root-linked VMUX carrier-churn integration test. |
 | `ENABLE_VMUX_RECEIVE_SEMANTICS_TEST` | Builds and registers the root-linked VMUX receive-semantics test. |
 | `ENABLE_ASAN`, `ENABLE_UBSAN` | Enable diagnostic sanitizer flags in the root project; not production build modes. |
+
+Production build options have platform-specific defaults: Linux builds, including cross-compilation,
+enable `ENABLE_XTCP` by default and require `bash tools/prepare_xtcp.sh` before configuration; Android,
+macOS, and Windows default it off and pass an explicit value in their workflows.
+`ENABLE_SIMD` defaults on for x86/x64 and off for ARM/Android. Windows MSBuild accepts
+`/p:OpenPPP2EnableSimd=false` to remove `__SIMD__`.
 
 ## CI coverage today
 

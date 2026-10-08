@@ -4,6 +4,8 @@
  */
 
 #include <ppp/facade/ApplicationBootstrap.h>
+#include <ppp/app/ApplicationPolicyCommand.h>
+#include <iostream>
 
 /**
  * @brief Starts the PPP application and reports startup failures.
@@ -12,5 +14,8 @@
  * @return Exit code returned by the application runtime.
  */
 int main(int argc, char** argv) {
+    if (auto result = ppp::app::ApplicationPolicyCommand::Dispatch(argc, argv, std::cout, std::cerr)) {
+        return *result;
+    }
     return ppp::facade::RunApplication(argc, argv);
 }

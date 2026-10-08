@@ -5,6 +5,7 @@ option(ENABLE_COVERAGE "Enable LLVM coverage instrumentation" OFF)
 option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(ENABLE_TSAN "Enable ThreadSanitizer (cannot be combined with ENABLE_SANITIZERS)" OFF)
 option(ENABLE_XTCP_TESTS "Build the pinned XTCP dependency contract tests" OFF)
+option(ENABLE_POLICY_BENCHMARKS "Build offline policy benchmarks outside CTest" OFF)
 
 get_filename_component(OPENPPP2_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 set(XTCP_SOURCE_DIR "${OPENPPP2_ROOT}/third-party/xtcp" CACHE PATH
@@ -49,6 +50,11 @@ function(openppp2_add_cpp_test target)
     cmake_parse_arguments(ARG "" "" "SOURCES" ${ARGN})
     add_executable(${target} ${ARG_SOURCES})
     target_compile_features(${target} PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+        AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9
+        AND NOT ANDROID)
+        target_link_libraries(${target} PRIVATE stdc++fs)
+    endif()
     target_include_directories(${target} PRIVATE ${OPENPPP2_TEST_INCLUDES})
     target_compile_options(${target} PRIVATE
         -Wno-format
@@ -579,6 +585,8 @@ openppp2_add_cpp_test(p2p_nat_classifier_test SOURCES
 target_link_libraries(p2p_nat_classifier_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 openppp2_add_cpp_test(p2p_capability_gate_test SOURCES
     p2p_capability_gate_test.cpp)
+target_sources(p2p_capability_gate_test PRIVATE
+    "${OPENPPP2_ROOT}/ppp/p2p/P2PSocketProtector.cpp")
 target_link_libraries(p2p_capability_gate_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 openppp2_add_cpp_test(p2p_zero_rtt_cache_test SOURCES
     p2p_zero_rtt_cache_test.cpp)
@@ -759,9 +767,24 @@ openppp2_add_cpp_test(fake_ip_pool_test SOURCES
     support/ppp_test_stubs.cpp
     "${OPENPPP2_ROOT}/ppp/hash/hash_bytes.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/dns/FakeIpPool.cpp")
+openppp2_add_cpp_test(durable_fake_ip_store_test SOURCES
+    durable_fake_ip_store_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/client/dns/DurableFakeIpStore.cpp")
+target_link_libraries(durable_fake_ip_store_test PRIVATE Threads::Threads)
+set_tests_properties(durable_fake_ip_store_test PROPERTIES LABELS "routing-policy;offline")
+openppp2_add_cpp_test(policy_fake_ip_async_test SOURCES
+    policy_fake_ip_async_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/client/dns/PolicyFakeIpAsync.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/dns/DurableFakeIpStore.cpp")
+target_link_libraries(policy_fake_ip_async_test PRIVATE Threads::Threads)
+set_tests_properties(policy_fake_ip_async_test PROPERTIES LABELS "routing-policy;offline")
 openppp2_add_cpp_test(dns_fake_ip_response_test SOURCES
     dns_fake_ip_response_test.cpp
-    "${OPENPPP2_ROOT}/ppp/app/client/dns/DnsFakeIpResponse.cpp")
+    "${OPENPPP2_ROOT}/ppp/app/client/dns/DnsFakeIpResponse.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/buffer.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/message.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/qs.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/rr.cpp")
 openppp2_add_cpp_test(quic_reject_rate_limit_test SOURCES
     quic_reject_rate_limit_test.cpp
     support/ppp_test_stubs.cpp
@@ -906,5 +929,240 @@ openppp2_add_cpp_test(app_configuration_routing_test SOURCES
     app_configuration_routing_test.cpp)
 set_tests_properties(app_configuration_routing_test PROPERTIES
     WORKING_DIRECTORY "${OPENPPP2_ROOT}")
+
+# P0 routing-policy characterization: real parsers and pure decisions, no client
+# startup. Reuse the existing partial AppConfiguration link fixture rather than
+# maintaining a second copy of its dependency/stub list.
+get_target_property(OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES
+    transport_auth_configuration_test SOURCES)
+list(REMOVE_ITEM OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES
+    transport_auth_configuration_test.cpp)
+openppp2_add_cpp_test(routing_policy_baseline_test SOURCES
+    routing_policy_baseline_test.cpp
+    ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES}
+    "${OPENPPP2_ROOT}/ppp/app/client/routing/HumanRoutingRules.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/routing/GeoDataReader.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/routing/TcpRoutingSelector.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/routing/UdpRoutingSelector.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/dns/Rule.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/dns/DnsRedirectPlan.cpp"
+    "${OPENPPP2_ROOT}/ppp/dns/DnsProviderCatalog.cpp"
+    "${OPENPPP2_ROOT}/ppp/dns/DnsResolver.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/Firewall.cpp")
+target_compile_definitions(routing_policy_baseline_test PRIVATE
+    OPENPPP2_POLICY_FIXTURE_DIR="${OPENPPP2_ROOT}/tests/contracts/routing-policy/v1")
+target_compile_options(routing_policy_baseline_test PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(routing_policy_baseline_test PRIVATE -Wl,--gc-sections)
+target_link_libraries(routing_policy_baseline_test PRIVATE
+    boost_regex boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # Same partial allocator/RTTI boundary as transport_auth_configuration_test.
+    target_compile_options(routing_policy_baseline_test PRIVATE -fno-sanitize=vptr)
+endif()
+set_tests_properties(routing_policy_baseline_test PROPERTIES LABELS "routing-policy;offline")
+add_test(NAME routing_policy_baseline_harness_test
+    COMMAND routing_policy_baseline_test --self-test)
+set_tests_properties(routing_policy_baseline_harness_test PROPERTIES
+    TIMEOUT 120 LABELS "routing-policy;offline")
+openppp2_add_cpp_test(policy_runtime_guard_test SOURCES
+    policy_runtime_guard_test.cpp
+    ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES})
+target_compile_options(policy_runtime_guard_test PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(policy_runtime_guard_test PRIVATE -Wl,--gc-sections)
+target_link_libraries(policy_runtime_guard_test PRIVATE
+    Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(policy_runtime_guard_test PRIVATE -fno-sanitize=vptr)
+endif()
+set_tests_properties(policy_runtime_guard_test PROPERTIES LABELS "routing-policy;offline")
+openppp2_add_cpp_test(policy_configuration_test SOURCES
+    policy_configuration_test.cpp
+    "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
+    ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES})
+target_compile_options(policy_configuration_test PRIVATE -ffunction-sections -fdata-sections)
+target_compile_definitions(policy_configuration_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION)
+target_link_options(policy_configuration_test PRIVATE -Wl,--gc-sections)
+target_link_libraries(policy_configuration_test PRIVATE
+    boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(policy_configuration_test PRIVATE -fno-sanitize=vptr)
+endif()
+set_tests_properties(policy_configuration_test PROPERTIES LABELS "routing-policy;offline")
+
+# P1 has an independent offline core; none of the runtime/transport stubs above
+# participate in policy compilation or explanation.
+add_library(openppp2_policy_test_core STATIC
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/PolicySourceLoader.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/PolicyCompiler.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/PolicyRuntime.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/routing/GeoDataReader.cpp"
+    "${OPENPPP2_ROOT}/ppp/dns/DnsProviderCatalog.cpp"
+    "${OPENPPP2_ROOT}/ppp/hash/hash_bytes.cpp"
+    "${OPENPPP2_ROOT}/common/json/src/json_reader.cpp"
+    "${OPENPPP2_ROOT}/common/json/src/json_value.cpp"
+    "${OPENPPP2_ROOT}/common/json/src/json_writer.cpp"
+    support/ppp_test_stubs.cpp)
+target_compile_features(openppp2_policy_test_core PUBLIC cxx_std_17)
+target_include_directories(openppp2_policy_test_core PUBLIC ${OPENPPP2_TEST_INCLUDES})
+target_compile_definitions(openppp2_policy_test_core PRIVATE FUNCTION)
+target_compile_options(openppp2_policy_test_core PRIVATE -Wno-deprecated-declarations -Wno-format)
+target_link_libraries(openppp2_policy_test_core PUBLIC Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+    AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9
+    AND NOT ANDROID)
+    target_link_libraries(openppp2_policy_test_core PUBLIC stdc++fs)
+endif()
+target_sources(client_datagram_port_manager_test PRIVATE support/policy_no_coroutine_stubs.cpp)
+target_link_libraries(client_datagram_port_manager_test PRIVATE openppp2_policy_test_core)
+if(ENABLE_COVERAGE)
+    target_compile_options(openppp2_policy_test_core PRIVATE -fprofile-instr-generate -fcoverage-mapping)
+    target_link_options(openppp2_policy_test_core INTERFACE -fprofile-instr-generate)
+endif()
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(openppp2_policy_test_core PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(openppp2_policy_test_core INTERFACE -fsanitize=address,undefined)
+endif()
+if(ENABLE_TSAN AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_definitions(openppp2_policy_test_core PRIVATE PPP_COROUTINES_TSAN_ENABLED=1)
+    target_compile_options(openppp2_policy_test_core PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+    target_link_options(openppp2_policy_test_core INTERFACE -fsanitize=thread)
+endif()
+add_library(openppp2_policy_update_test_core STATIC
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/DurablePolicyBundle.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/PolicyUpdateFetcher.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/PolicyUpdateService.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/PolicyStatusFile.cpp")
+target_link_libraries(openppp2_policy_update_test_core PUBLIC openppp2_policy_test_core)
+target_compile_definitions(openppp2_policy_update_test_core PRIVATE FUNCTION)
+target_compile_options(openppp2_policy_update_test_core PRIVATE -ffunction-sections -fdata-sections)
+if(ENABLE_COVERAGE)
+    target_compile_options(openppp2_policy_update_test_core PRIVATE -fprofile-instr-generate -fcoverage-mapping)
+endif()
+if(ENABLE_SANITIZERS)
+    target_compile_options(openppp2_policy_update_test_core PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+endif()
+if(ENABLE_TSAN)
+    target_compile_options(openppp2_policy_update_test_core PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+endif()
+add_library(openppp2_policy_cli_test_support STATIC
+    "${OPENPPP2_ROOT}/ppp/app/ApplicationPolicyCommand.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/LegacyPolicyAdapter.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/LegacyPolicyMigration.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/routing/HumanRoutingRules.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/dns/Rule.cpp"
+    "${OPENPPP2_ROOT}/ppp/dns/DnsResolver.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/Firewall.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
+    ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES})
+target_compile_definitions(openppp2_policy_cli_test_support PRIVATE FUNCTION BUDDY_ALLOC_IMPLEMENTATION)
+target_compile_options(openppp2_policy_cli_test_support PRIVATE -ffunction-sections -fdata-sections -Wno-deprecated-declarations -Wno-format)
+target_link_libraries(openppp2_policy_cli_test_support PUBLIC
+    openppp2_policy_update_test_core boost_regex boost_filesystem)
+target_link_options(openppp2_policy_cli_test_support INTERFACE -Wl,--gc-sections)
+if(ENABLE_COVERAGE)
+    target_compile_options(openppp2_policy_cli_test_support PRIVATE -fprofile-instr-generate -fcoverage-mapping)
+endif()
+if(ENABLE_SANITIZERS)
+    target_compile_options(openppp2_policy_cli_test_support PRIVATE -fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer)
+endif()
+if(ENABLE_TSAN)
+    target_compile_options(openppp2_policy_cli_test_support PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+endif()
+foreach(_policy_test policy_source_loader_test policy_compiler_test policy_command_test
+    policy_entrypoint_test policy_semantic_review_test policy_acceptance_test
+    policy_index_property_test policy_cli_contract_test policy_legacy_migration_test policy_parser_robustness_test
+    policy_runtime_test policy_runtime_acceptance_test policy_tcp_flow_test
+    local_proxy_policy_test udp_direct_flow_policy_test udp_direct_flow_test)
+    openppp2_add_cpp_test(${_policy_test} SOURCES ${_policy_test}.cpp)
+    if(_policy_test STREQUAL "policy_command_test" OR _policy_test STREQUAL "policy_entrypoint_test"
+        OR _policy_test STREQUAL "policy_cli_contract_test" OR _policy_test STREQUAL "policy_legacy_migration_test")
+        target_link_libraries(${_policy_test} PRIVATE openppp2_policy_cli_test_support)
+    endif()
+    target_link_libraries(${_policy_test} PRIVATE openppp2_policy_test_core)
+    set_tests_properties(${_policy_test} PROPERTIES LABELS "routing-policy;offline")
+    if(_policy_test STREQUAL "policy_entrypoint_test")
+        target_compile_definitions(${_policy_test} PRIVATE
+            OPENPPP2_POLICY_EXAMPLE_CONFIG="${OPENPPP2_ROOT}/tests/contracts/routing-policy/v2/example.json")
+    endif()
+endforeach()
+openppp2_add_cpp_test(policy_dns_transport_test SOURCES
+    policy_dns_transport_test.cpp
+    ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES}
+    "${OPENPPP2_ROOT}/ppp/app/client/dns/PolicyResolverService.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/dns/DnsSessionContext.cpp"
+    "${OPENPPP2_ROOT}/ppp/dns/DnsResolver.cpp"
+    "${OPENPPP2_ROOT}/ppp/dns/DnsUdpFlowRegistry.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/Socket.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
+    support/policy_network_guard_stubs.cpp
+    "${OPENPPP2_ROOT}/common/dnslib/buffer.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/message.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/qs.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/rr.cpp")
+target_compile_definitions(policy_dns_transport_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION)
+target_compile_options(policy_dns_transport_test PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(policy_dns_transport_test PRIVATE -Wl,--gc-sections)
+target_link_libraries(policy_dns_transport_test PRIVATE
+    openppp2_policy_test_core boost_regex boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(policy_dns_transport_test PRIVATE -fno-sanitize=vptr)
+endif()
+set_tests_properties(policy_dns_transport_test PROPERTIES LABELS "routing-policy;offline")
+add_executable(policy_offline_cli support/policy_offline_main.cpp)
+target_link_libraries(policy_offline_cli PRIVATE openppp2_policy_cli_test_support)
+foreach(_policy_extended_test policy_status_file_test policy_update_connectors_test policy_durable_bundle_test
+    policy_update_service_test)
+    openppp2_add_cpp_test(${_policy_extended_test} SOURCES ${_policy_extended_test}.cpp)
+    target_link_libraries(${_policy_extended_test} PRIVATE openppp2_policy_update_test_core)
+    set_tests_properties(${_policy_extended_test} PROPERTIES LABELS "routing-policy;offline")
+endforeach()
+openppp2_add_cpp_test(policy_tunnel_update_connector_test SOURCES
+    policy_tunnel_update_connector_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/client/policy/PolicyTunnelUpdateConnector.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/buffer.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/message.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/qs.cpp"
+    "${OPENPPP2_ROOT}/common/dnslib/rr.cpp")
+target_compile_options(policy_tunnel_update_connector_test PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(policy_tunnel_update_connector_test PRIVATE -Wl,--gc-sections)
+target_link_libraries(policy_tunnel_update_connector_test PRIVATE openppp2_policy_test_core)
+set_tests_properties(policy_tunnel_update_connector_test PROPERTIES LABELS "routing-policy;offline")
 openppp2_add_cpp_test(mta_handoff_telemetry_test SOURCES
     mta_handoff_telemetry_test.cpp)
+
+if(ENABLE_POLICY_BENCHMARKS)
+    add_executable(policy_offline_benchmark
+        "${OPENPPP2_ROOT}/benchmarks/policy/policy_offline_benchmark.cpp")
+    target_compile_features(policy_offline_benchmark PRIVATE cxx_std_17)
+    target_compile_definitions(policy_offline_benchmark PRIVATE FUNCTION)
+    target_link_libraries(policy_offline_benchmark PRIVATE openppp2_policy_test_core)
+    get_target_property(_policy_dns_benchmark_sources policy_dns_transport_test SOURCES)
+    list(REMOVE_ITEM _policy_dns_benchmark_sources policy_dns_transport_test.cpp)
+    add_executable(policy_dns_cache_benchmark
+        "${OPENPPP2_ROOT}/benchmarks/policy/policy_dns_cache_benchmark.cpp"
+        ${_policy_dns_benchmark_sources})
+    target_compile_features(policy_dns_cache_benchmark PRIVATE cxx_std_17)
+    target_include_directories(policy_dns_cache_benchmark PRIVATE ${OPENPPP2_TEST_INCLUDES})
+    target_compile_definitions(policy_dns_cache_benchmark PRIVATE FUNCTION BUDDY_ALLOC_IMPLEMENTATION)
+    target_compile_options(policy_dns_cache_benchmark PRIVATE -ffunction-sections -fdata-sections -Wno-deprecated-declarations -Wno-format)
+    target_link_options(policy_dns_cache_benchmark PRIVATE -Wl,--gc-sections)
+    target_link_libraries(policy_dns_cache_benchmark PRIVATE openppp2_policy_test_core
+        boost_regex boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+    foreach(_policy_benchmark policy_offline_benchmark policy_dns_cache_benchmark)
+        if(ENABLE_COVERAGE)
+            target_compile_options(${_policy_benchmark} PRIVATE -fprofile-instr-generate -fcoverage-mapping)
+            target_link_options(${_policy_benchmark} PRIVATE -fprofile-instr-generate)
+        endif()
+        if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(${_policy_benchmark} PRIVATE -fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer)
+            target_link_options(${_policy_benchmark} PRIVATE -fsanitize=address,undefined)
+        endif()
+        if(ENABLE_TSAN AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            target_compile_options(${_policy_benchmark} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+            target_link_options(${_policy_benchmark} PRIVATE -fsanitize=thread)
+        endif()
+    endforeach()
+endif()

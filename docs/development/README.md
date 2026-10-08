@@ -1,7 +1,7 @@
 # Development
 > Status: Active
 > Type: Index
-> Last verified: 2026-07-22
+> Last verified: 2026-10-07
 >
 > **Purpose:** Start source-backed native development in this repository.
 > **Audience:** Contributors and maintainers.
@@ -16,6 +16,9 @@
 | Review the dated Boost audit | [Boost compatibility audit (Chinese)](BOOST_187_COMPATIBILITY.md) |
 | Follow repository conventions | [Code style](../governance/CODE_STYLE.md) · [Documentation style](../governance/DOCUMENTATION_STYLE.md) |
 | Build, preview, and publish the bilingual site | [Documentation site](DOCS_SITE.md) |
+| Review local policy implementation scope | [Local change scope](LOCAL_CHANGE_SCOPE_CN.md) |
+| Review policy runtime evidence | [Linux live report (Chinese)](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) |
+| Review policy design and phase records | [Design index](../design/README.md) |
 
 ## Native `ppp` build boundary
 

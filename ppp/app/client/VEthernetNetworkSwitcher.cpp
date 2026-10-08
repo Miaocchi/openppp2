@@ -1,6 +1,17 @@
 #include <ppp/app/client/ClientNetworkInterfaceResolver.h>
 #include <ppp/app/client/VEthernetNetworkTcpipStack.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/policy/PolicyRuntime.h>
+#include <ppp/app/client/policy/PolicySourceLoader.h>
+#include <ppp/app/client/policy/PolicyUpdateService.h>
+#include <ppp/app/client/policy/PolicyUpdateFetcher.h>
+#include <ppp/app/client/policy/PolicyTunnelUpdateConnector.h>
+#include <ppp/app/client/policy/PolicyStatusFile.h>
+#include <ppp/app/client/ClientUnderlyingSocketProtector.h>
+#include <ppp/app/client/udp/UdpFlowPolicy.h>
+#if defined(_ANDROID)
+#include <android/OpenPPP2VpnProtectBridge.h>
+#endif
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 #include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/app/client/AssignedAddressManager.h>
@@ -19,6 +30,7 @@
 #include <ppp/app/client/proxys/VEthernetHttpProxySwitcher.h>
 #include <ppp/app/client/proxys/VEthernetSocksProxySwitcher.h>
 #include <ppp/app/client/dns/DnsInterceptor.h>
+#include <ppp/app/client/dns/DurableFakeIpStore.h>
 #include <ppp/app/client/dns/DnsController.h>
 #include <ppp/transmissions/proxys/IForwarding.h>
 #include <ppp/transmissions/ITransmission.h>
@@ -31,6 +43,7 @@
 #include <ppp/diagnostics/TelemetryFwd.h>
 #include <ppp/diagnostics/Telemetry.h>
 #include <ppp/ipv6/IPv6Packet.h>
+#include <boost/asio/post.hpp>
 
 #include <ppp/threading/Timer.h>
 #include <ppp/threading/Executors.h>
@@ -43,8 +56,44 @@
 
 #include <ppp/net/asio/vdns.h>
 #include <ppp/net/Ipep.h>
+#include <ppp/Filesystem.h>
 
 #include <chrono>
+#include <openssl/sha.h>
+
+namespace {
+std::string FakeIpIdentityDirectory(const std::string& root, const std::string& identity) {
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(identity.data()), identity.size(), digest);
+    const char* hex = "0123456789abcdef";
+    std::string leaf = "identity-";
+    leaf.reserve(leaf.size() + sizeof(digest) * 2);
+    for (const auto byte : digest) {
+        leaf.push_back(hex[byte >> 4]);
+        leaf.push_back(hex[byte & 0x0f]);
+    }
+    return (ppp::filesystem::fs::path(root) / leaf).lexically_normal().string();
+}
+
+bool ParseUpdateBootstrap(const std::vector<std::string>& uris,
+    std::vector<boost::asio::ip::udp::endpoint>& endpoints) {
+    for (const auto& uri : uris) {
+        if (uri.rfind("udp://", 0) != 0) return false;
+        const auto authority = uri.substr(6);
+        const auto separator = authority.rfind(':');
+        if (separator == std::string::npos) return false;
+        boost::system::error_code ec;
+        const auto address = boost::asio::ip::make_address(authority.substr(0, separator), ec);
+        if (ec || !address.is_v4() || address.is_unspecified() || address.is_multicast()) return false;
+        unsigned long port = 0;
+        try { port = std::stoul(authority.substr(separator + 1)); }
+        catch (...) { return false; }
+        if (port == 0 || port > 65535) return false;
+        endpoints.emplace_back(address, static_cast<unsigned short>(port));
+    }
+    return true;
+}
+}
 
 #if defined(_ANDROID)
 #include <android/log.h>
@@ -164,6 +213,8 @@ namespace ppp {
                 , information_extensions_(std::make_unique<VirtualEthernetInformationExtensions>())
                 , icmppackets_aid_(0) {
 
+                policy_runtime_ = std::make_shared<policy::PolicyRuntime>();
+
                 address_manager_->Bind(this);
                 teardown_->Bind(this);
                 connection_opener_->Bind(this);
@@ -216,6 +267,153 @@ namespace ppp {
                 return controller ? controller->GetHumanRoutingRules() : nullptr;
             }
 
+            std::shared_ptr<policy::PolicyRuntime> VEthernetNetworkSwitcher::GetPolicyRuntime() const noexcept {
+                return policy_runtime_;
+            }
+
+            std::shared_ptr<const policy::PolicySnapshot> VEthernetNetworkSwitcher::GetPolicySnapshot() const noexcept {
+                return policy_runtime_ ? policy_runtime_->GetSnapshot() : nullptr;
+            }
+
+            bool VEthernetNetworkSwitcher::IsPolicyBusinessAllowed() const noexcept {
+                return !HasPolicyV2() || (policy_update_service_ && policy_update_service_->Gate().AllowsBusiness());
+            }
+
+            void VEthernetNetworkSwitcher::OnExchangerEstablished() noexcept {
+                if (!policy_update_service_ || !HasPolicyV2()) return;
+                policy_session_generation_.fetch_add(1, std::memory_order_acq_rel);
+                const auto exchanger = exchanger_;
+                if (!exchanger) return;
+                try {
+                    std::shared_ptr<policy::PolicyUpdateSocketConnector> connector;
+                    std::vector<boost::asio::ip::udp::endpoint> bootstrap;
+                    if (!ParseUpdateBootstrap(policy_updates_bootstrap_, bootstrap)) {
+                        policy_update_service_->Gate().Fail();
+                        exchanger->Dispose();
+                        return;
+                    }
+                    std::string interface_name;
+                    std::uint32_t interface_index = 0;
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                    const auto interface = underlying_ni_;
+                    if (interface) {
+                        interface_name.assign(interface->Name.begin(), interface->Name.end());
+                        if (interface->Index > 0) interface_index = static_cast<std::uint32_t>(interface->Index);
+                    }
+#endif
+                    const ppp::string protected_interface(interface_name.data(), interface_name.size());
+                    const std::weak_ptr<VEthernetNetworkSwitcher> weak =
+                        std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
+                    const auto protect_socket = [weak, protected_interface, interface_index](
+                        ClientUnderlyingSocketHandle socket) {
+                        const auto owner = weak.lock();
+                        if (!owner || owner->IsDisposed()) return false;
+#if defined(_ANDROID)
+                        return ppp::android::ProtectSocketFd(static_cast<int>(socket));
+#elif defined(_LINUX)
+                        if (owner->protect_network_) return owner->protect_network_->ProtectSync(socket);
+                        if (protected_interface.empty()) return false;
+                        return ProtectClientUnderlyingSocket(socket, protected_interface, static_cast<int>(interface_index));
+#elif defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
+                        if (protected_interface.empty() || interface_index == 0) return false;
+                        return ProtectClientUnderlyingSocket(socket, protected_interface, static_cast<int>(interface_index));
+#else
+                        (void)socket; (void)protected_interface; (void)interface_index;
+                        return false;
+#endif
+                    };
+                    if (policy_updates_direct_) {
+#if defined(_ANDROID)
+                        bool direct_capable = GetProtectorNetwork() != nullptr &&
+                            ppp::android::IsProtectBridgeReady();
+#elif defined(_IPHONE)
+                        bool direct_capable = false;
+#else
+                        bool direct_capable = interface != nullptr && !interface_name.empty();
+#if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
+                        direct_capable = direct_capable && interface_index > 0;
+#endif
+#endif
+                        if (!direct_capable) {
+                            policy_update_service_->Gate().Fail();
+                            exchanger->Dispose();
+                            return;
+                        }
+                        policy::DirectPolicySocketOptions options;
+                        options.interface_name = interface_name;
+                        options.interface_index = interface_index;
+                        options.bootstrap_nameservers = bootstrap;
+                        options.protect_socket = [protect_socket](boost::asio::ip::tcp::socket::native_handle_type socket) {
+                            return protect_socket(static_cast<ClientUnderlyingSocketHandle>(socket));
+                        };
+                        connector = std::make_shared<policy::DirectPolicySocketConnector>(std::move(options));
+                    } else {
+                        connector = std::make_shared<policy::PolicyTunnelUpdateConnector>(
+                            exchanger, std::move(bootstrap),
+                            [protect_socket](boost::asio::ip::udp::socket::native_handle_type socket) {
+                                return protect_socket(static_cast<ClientUnderlyingSocketHandle>(socket));
+                            });
+                    }
+                    if (policy_updates_allow_http_) {
+                        ppp::telemetry::Log(Level::kInfo, "policy-update",
+                            "Explicitly enabled plain HTTP for remote policy sources; source integrity still depends on configured pins and compiler validation");
+                    }
+                    policy_update_service_->SetFetcher(std::make_shared<policy::HttpsPolicyUpdateFetcher>(connector,
+                        policy_updates_allow_http_));
+                } catch (...) {
+                    policy_update_service_->Gate().Fail();
+                    exchanger->Dispose();
+                    return;
+                }
+
+                if (policy_update_service_->Gate().AllowsBusiness()) {
+                    if (!policy_update_service_->Start()) {
+                        policy_update_service_->Gate().Fail();
+                        exchanger->Dispose();
+                    }
+                    return;
+                }
+                if (policy_bootstrap_started_.exchange(true, std::memory_order_acq_rel)) return;
+                try {
+                    const auto context = GetContext();
+                    std::lock_guard<std::mutex> thread_lock(policy_bootstrap_mutex_);
+                    policy_bootstrap_thread_ = std::thread([this, exchanger, context] {
+                        const auto result = policy_update_service_->BootstrapUpdate();
+                        if (result.Ok()) {
+                            if (policy_update_service_->Start()) return;
+                            policy_update_service_->Gate().Fail();
+                        } else {
+                            policy_update_service_->Gate().Fail();
+                        }
+                        if (context) boost::asio::post(*context, [exchanger] {
+                            if (exchanger) exchanger->Dispose();
+                        });
+                    });
+                } catch (...) {
+                    policy_update_service_->Gate().Fail();
+                    exchanger->Dispose();
+                }
+            }
+
+            bool VEthernetNetworkSwitcher::HasPolicyV2() const noexcept {
+                return configuration_ && configuration_->client.policy != nullptr;
+            }
+
+            bool VEthernetNetworkSwitcher::ResolvePolicyDestination(
+                const std::string& domain, const std::shared_ptr<const policy::PolicySnapshot>& snapshot,
+                ppp::coroutines::YieldContext& yield, boost::asio::ip::address& address) noexcept {
+                return dns_controller_ && dns_controller_->ResolvePolicyDestination(domain, snapshot, yield, address);
+            }
+
+            bool VEthernetNetworkSwitcher::ResolvePolicyDestinationIdentity(
+                const ppp::net::IPEndPoint& endpoint, routing::ResolvedDestination& destination) const noexcept {
+                return ResolveDestination(endpoint, destination);
+            }
+
+            void VEthernetNetworkSwitcher::RecordPolicyDecision(policy::PolicyAction action) noexcept {
+                if (dns_controller_) dns_controller_->RecordPolicyDecision(action);
+            }
+
             std::shared_ptr<VEthernetExchanger> VEthernetNetworkSwitcher::GetExchanger() noexcept {
                 return exchanger_;
             }
@@ -263,6 +461,7 @@ namespace ppp {
                 // INFO is optional for unmanaged compatibility sessions. The
                 // switcher is published only after Open() has applied policy.
                 facts.policy_negotiated = facts.session_established;
+                if (HasPolicyV2()) facts.policy_negotiated = facts.policy_negotiated && IsPolicyBusinessAllowed();
                 ppp::app::runtime::RuntimeReadiness readiness =
                     ppp::app::runtime::BuildClientRuntimeReadiness(facts);
                 if (tcp_stack_mode_ == ppp::app::TcpStackMode::Xtcp) {
@@ -569,6 +768,7 @@ namespace ppp {
 
             /** @brief Handles native IPv4 packet input and forwards eligible NAT traffic. */
             bool VEthernetNetworkSwitcher::OnPacketInput(ppp::net::native::ip_hdr* packet, int packet_length, int header_length, int proto, bool vnet) noexcept {
+                if (!IsPolicyBusinessAllowed()) return true;
                 if (packet_dispatch_->OnPacketInput(
                         packet, packet_length, header_length, proto, vnet)) {
                     return true;
@@ -586,11 +786,13 @@ namespace ppp {
 
             /** @brief Handles raw IPv6 packet input and forwards approved traffic. */
             bool VEthernetNetworkSwitcher::OnPacketInput(Byte* packet, int packet_length, bool vnet) noexcept {
+                if (HasPolicyV2()) return true;
                 return packet_dispatch_->OnPacketInput(packet, packet_length, vnet);
             }
 
             /** @brief Routes parsed IP frame to protocol-specific handlers. */
             bool VEthernetNetworkSwitcher::OnPacketInput(const std::shared_ptr<IPFrame>& packet) noexcept {
+                if (!IsPolicyBusinessAllowed()) return true;
                 return packet_dispatch_->OnPacketInput(packet);
             }
 
@@ -635,6 +837,14 @@ namespace ppp {
 
             /** @brief Releases objects, packets, and timeout handlers. */
             void VEthernetNetworkSwitcher::Finalize() noexcept {
+                policy_status_closing_.store(true, std::memory_order_release);
+                if (policy_update_service_) policy_update_service_->Close();
+                {
+                    std::lock_guard<std::mutex> thread_lock(policy_bootstrap_mutex_);
+                    if (policy_bootstrap_thread_.joinable() && policy_bootstrap_thread_.get_id() != std::this_thread::get_id())
+                        policy_bootstrap_thread_.join();
+                }
+                if (policy_status_lease_) policy_status_lease_->Release();
 #if !defined(_ANDROID) && !defined(_IPHONE)
                 RestoreAssignedIPv4();
 #endif
@@ -847,6 +1057,14 @@ namespace ppp {
 
             /** @brief Updates runtime state from server information and extensions. */
             bool VEthernetNetworkSwitcher::OnInformation(const std::shared_ptr<VirtualEthernetInformation>& info, const VirtualEthernetInformationExtensions& extensions) noexcept {
+                if (HasPolicyV2() && !proxy_only_ && extensions.ClientIPv4Assign.enabled &&
+                    extensions.ClientIPv4Assign.accepted) {
+                    boost::system::error_code error;
+                    const auto address = StringToAddress(extensions.ClientIPv4Assign.address, error);
+                    if (!error && address.is_v4() && udp::UdpRelayIdentity::IsIdentity(address.to_v4().to_uint())) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigPolicyUdpIdentityConflict);
+                    }
+                }
                 std::shared_ptr<VEthernetExchanger> exchanger = exchanger_;
                 if (NULLPTR == exchanger) {
                     return false;
@@ -1083,7 +1301,180 @@ namespace ppp {
             }
 
             /** @brief Initializes switcher runtime components and opens all services. */
+            bool VEthernetNetworkSwitcher::PreparePolicy(uint32_t tun_ipv4_host, bool proxy_only_runtime) noexcept {
+                if (HasPolicyV2()) {
+                    if (policy_prepared_) return true;
+                    policy_update_service_.reset();
+                    policy_status_lease_.reset();
+                    try {
+                        Json::Value source;
+                        source["client"]["policy"] = *configuration_->client.policy;
+                        const std::string config_path(configuration_->client.policy_config_path.data(),
+                            configuration_->client.policy_config_path.size());
+                        const bool config_file_backed = configuration_->client.policy_config_file_backed;
+                        auto loaded = policy::PolicySourceLoader::LoadDeclarations(source, config_path);
+                        bool declaration_ok = true;
+                        for (const auto& diagnostic : loaded.diagnostics) {
+                            if (diagnostic.severity != "error") continue;
+                            bool remote_unavailable = diagnostic.code == "E_POLICY_SOURCE_UNAVAILABLE" &&
+                                diagnostic.path.rfind("client.policy.rule-sets.", 0) == 0;
+                            if (remote_unavailable) {
+                                const auto begin = std::string("client.policy.rule-sets.").size();
+                                const auto end = diagnostic.path.find('.', begin);
+                                const auto name = diagnostic.path.substr(begin,
+                                    end == std::string::npos ? std::string::npos : end - begin);
+                                const auto set = loaded.source.rule_sets.find(name);
+                                remote_unavailable = set != loaded.source.rule_sets.end() && !set->second.url.empty();
+                            }
+                            if (!remote_unavailable) declaration_ok = false;
+                        }
+                        if (!declaration_ok) return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigLoadFailed);
+#if defined(_IPHONE)
+                        if (!configuration_->client.proxy_only && loaded.source.tcp_domain_sniff) {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigPolicyTcpSniffUnsupported);
+                        }
+#endif
+                        policy_tun_ipv4_host_ = tun_ipv4_host;
+                        policy_has_remote_sources_ = false;
+                        for (const auto& entry : loaded.source.rule_sets)
+                            policy_has_remote_sources_ = policy_has_remote_sources_ || !entry.second.url.empty();
+                        policy_updates_direct_ = loaded.source.updates_via == policy::PolicyAction::Direct;
+                        policy_updates_bootstrap_ = loaded.source.updates_bootstrap;
+                        policy_updates_allow_http_ = loaded.source.updates_allow_http;
+
+                        std::shared_ptr<dns::DurableFakeIpStore> prepared_fake_ip_store;
+                        if (loaded.source.dns_mode != "real" && !proxy_only_runtime) {
+                            const auto store = std::make_shared<dns::DurableFakeIpStore>();
+                            const auto identity_directory = FakeIpIdentityDirectory(
+                                loaded.source.fake_ip_storage, loaded.source.fake_ip_identity);
+                            if (!store || identity_directory.empty() || !store->Open(identity_directory,
+                                    loaded.source.fake_ip_identity, loaded.source.fake_ip_range)) {
+                                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigLoadFailed);
+                            }
+                            if (tun_ipv4_host && store->Contains(tun_ipv4_host)) {
+                                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigFieldInvalid);
+                            }
+                            prepared_fake_ip_store = store;
+                        }
+
+                        const ppp::filesystem::fs::path cache_root = policy::PolicyStoreRootForConfig(config_path);
+                        const auto identity = policy::PolicyUpdateService::ImmutableFingerprint(loaded.source);
+                        auto durable_store = std::make_shared<policy::FileDurablePolicyBundleStore>(cache_root.string());
+                        std::function<policy::PolicyLoadResult()> declaration_loader;
+                        if (config_file_backed) {
+                            declaration_loader = [config_path] {
+                                return policy::PolicySourceLoader::LoadDeclarationsFile(config_path);
+                            };
+                        } else {
+                            declaration_loader = [source, config_path] {
+                                return policy::PolicySourceLoader::LoadDeclarations(source, config_path);
+                            };
+                        }
+                        policy_update_service_ = std::make_unique<policy::PolicyUpdateService>(
+                            *policy_runtime_, loaded.source, durable_store, nullptr,
+                            std::make_shared<policy::SystemPolicyUpdateClock>(), std::move(declaration_loader));
+
+                        policy_status_lease_ = std::make_unique<policy::PolicyStatusWriterLease>();
+                        const auto status_path = (cache_root / identity / "STATUS.json").string();
+                        std::string status_error;
+                        bool status_available = policy_status_lease_->TryAcquire(status_path, identity, status_error);
+                        std::uint64_t pid = 0;
+                        std::string process_start;
+                        status_available = status_available && policy::GetCurrentProcessIdentity(pid, process_start, status_error);
+                        if (!status_available) {
+                            policy_status_lease_->Release();
+                            ppp::telemetry::Log(Level::kInfo, "policy-update",
+                                "Policy status reporting is unavailable; policy execution remains enabled");
+                        }
+                        else policy_update_service_->SetStatusSink([this, pid, process_start](const policy::PolicyUpdateStatus& status) {
+                            const auto snapshot = dns_controller_
+                                ? dns_controller_->SnapshotPolicyTelemetry() : dns::PolicyTelemetrySnapshot{};
+                            policy::PolicyStatusCounters counters;
+                            counters.dns_cache_hits = snapshot.dns_cache_hits;
+                            counters.dns_cache_misses = snapshot.dns_cache_misses;
+                            counters.dns_cache_coalesced = snapshot.dns_cache_coalesced;
+                            counters.dns_timeout_attempts = snapshot.dns_timeout_attempts;
+                            counters.dns_timeouts = snapshot.dns_timeouts;
+                            counters.dns_upstream_failures = snapshot.dns_upstream_failures;
+                            counters.dns_cancelled = snapshot.dns_cancelled;
+                            counters.fake_ip_mappings = snapshot.fake_ip_mappings;
+                            counters.fake_ip_exhaustions = snapshot.fake_ip_exhaustions;
+                            counters.fake_ip_persistence_errors = snapshot.fake_ip_persistence_errors;
+                            counters.fake_ip_pending = snapshot.fake_ip_pending;
+                            counters.policy_direct = snapshot.policy_direct;
+                            counters.policy_proxy = snapshot.policy_proxy;
+                            counters.policy_reject = snapshot.policy_reject;
+                            const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch()).count();
+                            auto record = policy::MakePolicyStatusRecord(status, counters, pid, process_start,
+                                policy_session_generation_.load(std::memory_order_acquire), now,
+                                policy_status_closing_.load(std::memory_order_acquire));
+                            std::string ignored;
+                            if (policy_status_lease_ && !policy_status_lease_->Write(record, ignored))
+                                ppp::telemetry::Log(Level::kInfo, "policy-update", "Could not refresh policy status file");
+                        });
+
+                        auto restored = policy_update_service_->RestoreAndPrepare();
+                        if (restored.Ok()) {
+                            const auto refreshed = policy_update_service_->BootstrapUpdate();
+                            if (!refreshed.Ok()) {
+                                if (refreshed.code == policy::PolicyUpdateResultCode::RequiresReconnect ||
+                                    refreshed.diagnostic.rfind("policy declaration validation failed", 0) == 0) {
+                                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigLoadFailed);
+                                }
+                                policy_update_service_->Gate().Open();
+                                ppp::telemetry::Log(Level::kInfo, "policy-update",
+                                    "Local policy refresh failed; continuing with the complete restored durable bundle");
+                            }
+                        } else if (!policy_has_remote_sources_) {
+                            const auto refreshed = policy_update_service_->BootstrapUpdate();
+                            if (!refreshed.Ok())
+                                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigLoadFailed);
+                        } else {
+                            policy_update_service_->Gate().Close();
+                        }
+
+                        if (prepared_fake_ip_store) {
+                            policy_fake_ip_store_ = std::move(prepared_fake_ip_store);
+                            if (dns_controller_) dns_controller_->SetPolicyFakeIpStore(policy_fake_ip_store_);
+                        }
+                        if (dns_controller_) {
+                            dns_controller_->SetPolicyRuntime(policy_runtime_);
+                        }
+                        policy_prepared_ = true;
+                    }
+                    catch (...) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigLoadFailed);
+                    }
+                }
+                return true;
+            }
+
             bool VEthernetNetworkSwitcher::Open(const std::shared_ptr<ITap>& tap) noexcept {
+                if (!PreparePolicy()) return false;
+                if (HasPolicyV2() && dns_controller_) {
+                    const std::weak_ptr<VEthernetNetworkSwitcher> weak =
+                        std::static_pointer_cast<VEthernetNetworkSwitcher>(shared_from_this());
+                    dns_controller_->SetDirectSocketProtector([weak](boost::asio::ip::tcp::socket::native_handle_type socket) noexcept {
+                        const auto owner = weak.lock();
+                        if (!owner || owner->IsDisposed()) return false;
+                        if (owner->proxy_only_) return true;
+#if defined(_ANDROID)
+                        return ppp::android::ProtectSocketFd(socket);
+#elif defined(_LINUX)
+                        if (owner->protect_network_) return owner->protect_network_->ProtectSync(socket);
+                        const auto interface = owner->underlying_ni_;
+                        return interface && ProtectClientUnderlyingSocket(socket, interface->Name, interface->Index);
+#elif defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
+                        const auto interface = owner->underlying_ni_;
+                        return interface && ProtectClientUnderlyingSocket(
+                            static_cast<ClientUnderlyingSocketHandle>(socket), interface->Name, interface->Index);
+#else
+                        (void)socket;
+                        return false;
+#endif
+                    });
+                }
                 return connection_opener_->Open(tap);
             }
 

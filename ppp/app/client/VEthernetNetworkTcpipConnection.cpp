@@ -58,6 +58,14 @@ namespace ppp {
                 Update();
             }
 
+            void VEthernetNetworkTcpipConnection::SetPolicyContext(
+                const std::shared_ptr<const policy::PolicySnapshot>& snapshot,
+                const std::string& hostname, bool resolve_domain) noexcept {
+                policy_snapshot_ = snapshot;
+                policy_hostname_ = hostname;
+                policy_resolve_domain_ = resolve_domain;
+            }
+
             void VEthernetNetworkTcpipConnection::SetExternalFirstLeg(
                 uint64_t runtime_generation,
                 uint64_t flow_generation,
@@ -300,6 +308,52 @@ namespace ppp {
                     auto self = shared_from_this();
                     auto strand = GetStrand();
                     boost::asio::ip::tcp::endpoint remoteEP = GetRemoteEndPoint();
+                    const bool policy_resolution_was_pending = policy_resolve_domain_;
+
+                    if (policy_snapshot_) {
+                        if (policy_resolve_domain_) {
+                            const auto switcher = exchanger->GetSwitcher();
+                            boost::asio::ip::address address;
+                            if (!switcher || !switcher->ResolvePolicyDestination(
+                                    policy_hostname_, policy_snapshot_, y, address) ||
+                                !address.is_v4() || address.is_unspecified() || IsDisposed()) {
+                                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpConnectFailed);
+                                return false;
+                            }
+                            remoteEP.address(address);
+                            policy_resolve_domain_ = false;
+                        }
+                        policy::PolicyTcpFlowInput input;
+                        input.hostname = policy_hostname_;
+                        input.ipv6 = !remoteEP.address().is_v4();
+                        if (!input.ipv6) input.ipv4 = remoteEP.address().to_string();
+#if defined(_IPHONE) || defined(IPHONE)
+                        input.direct_supported = false;
+#endif
+                        const auto decision = policy::EvaluatePolicyTcpFlow(policy_snapshot_, input);
+                        if (policy_resolution_was_pending) {
+                            if (const auto switcher = exchanger->GetSwitcher()) {
+                                switcher->RecordPolicyDecision(
+                                    decision.disposition == policy::PolicyTcpDisposition::Direct ? policy::PolicyAction::Direct :
+                                    decision.disposition == policy::PolicyTcpDisposition::Proxy ? policy::PolicyAction::Proxy :
+                                    policy::PolicyAction::Reject);
+                            }
+                        }
+                        routing_mode_ = decision.disposition == policy::PolicyTcpDisposition::Direct
+                            ? routing::TcpRoutingMode::ForceDirect
+                            : decision.disposition == policy::PolicyTcpDisposition::Proxy
+                                ? routing::TcpRoutingMode::ForceProxy : routing::TcpRoutingMode::Reject;
+                        ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "tcpip_policy",
+                            "version=%llu action=%d reason=%s",
+                            static_cast<unsigned long long>(policy_snapshot_->Version()),
+                            static_cast<int>(routing_mode_), decision.reason.c_str());
+                        // The selected mode is fixed; established flows need no compiled index.
+                        policy_snapshot_.reset();
+                    }
+                    if (routing_mode_ == routing::TcpRoutingMode::Reject) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpConnectFailed);
+                        return false;
+                    }
 
 #if defined(_IPHONE) || defined(IPHONE)
                     if (routing_mode_ == routing::TcpRoutingMode::ForceDirect) {
@@ -420,7 +474,7 @@ namespace ppp {
 
                 std::shared_ptr<boost::asio::ip::tcp::socket> socket = GetSocket();
                 std::shared_ptr<const routing::HumanRoutingRules> rules = routing_rules_;
-                if (NULLPTR == socket || !socket->is_open() || NULLPTR == rules) {
+                if (NULLPTR == socket || !socket->is_open() || (!policy_snapshot_ && NULLPTR == rules)) {
                     return false;
                 }
 
@@ -506,21 +560,27 @@ namespace ppp {
                 else if (result.status == routing::ProtocolSnifferStatus::Complete) {
                     source = result.source == routing::ProtocolSnifferSource::TlsSni
                         ? "tls_sni" : "http_host";
-                    const routing::RoutingMatch match = rules->MatchDomainRule(result.domain);
-                    if (match.matched) {
-                        routing::TcpRoutingSelectorInput selector_input;
-                        selector_input.action = match.action;
-                        const routing::TcpRoutingMode selected_mode =
-                            routing::TcpRoutingSelector::Select(selector_input);
-                        if (selected_mode == routing::TcpRoutingMode::ForceDirect ||
-                            selected_mode == routing::TcpRoutingMode::ForceProxy) {
-                            routing_mode_ = selected_mode;
-                            action = selected_mode == routing::TcpRoutingMode::ForceDirect
-                                ? "direct" : "proxy";
-                        }
+                    if (policy_snapshot_) {
+                        policy_hostname_ = result.domain;
+                        action = "policy_v2";
                     }
                     else {
-                        outcome = "no_match";
+                        const routing::RoutingMatch match = rules->MatchDomainRule(result.domain);
+                        if (match.matched) {
+                            routing::TcpRoutingSelectorInput selector_input;
+                            selector_input.action = match.action;
+                            const routing::TcpRoutingMode selected_mode =
+                                routing::TcpRoutingSelector::Select(selector_input);
+                            if (selected_mode == routing::TcpRoutingMode::ForceDirect ||
+                                selected_mode == routing::TcpRoutingMode::ForceProxy) {
+                                routing_mode_ = selected_mode;
+                                action = selected_mode == routing::TcpRoutingMode::ForceDirect
+                                    ? "direct" : "proxy";
+                            }
+                        }
+                        else {
+                            outcome = "no_match";
+                        }
                     }
                 }
 

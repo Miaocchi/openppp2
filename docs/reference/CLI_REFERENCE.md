@@ -1,12 +1,12 @@
 # CLI Reference
 > Status: Active
 > Type: Reference
-> Last verified: 63fc030
+> Last verified: local workspace, 2026-10-07
 
 > **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
 > **Audience:** OPENPPP2 users, operators, and developers.
 > **Status:** Current.
-> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-18.
+> **Last verified against:** Local workspace implementation, 2026-10-07. Policy v2 is planned for v2.1.7 and is not in v2.1.6; successful publication of v2.1.7 is not confirmed.
 > **Parent index:** [Back to index](README.md) · **Chinese:** [命令行参考](CLI_REFERENCE_CN.md)
 
 
@@ -80,7 +80,23 @@ This choice changes the entire startup branch:
 
 Proxy-only startup forces static transport off and does not initiate `STATIC`/`STATICACK`. If server-side IPv4 allocation is configured, it requests automatic allocation rather than a manual request derived from the local TUN address.
 
-`client.routing` is the canonical policy when present. The legacy `--bypass` and `--dns-rules` inputs are compatibility sources for the same native policy when the canonical object is absent; they are not TUN-only switches.
+The workspace implementation adds the versioned `client.policy` v2 source, planned for v2.1.7 and absent from v2.1.6; successful publication of v2.1.7 is not confirmed. If present, it must be the only policy source; otherwise the legacy adapter reads `client.routing` and compatible legacy configuration/CLI inputs. `client.routing` remains supported for legacy configurations, but it is not the sole current policy entry point. See [Configuration Model](CONFIGURATION.md#client) and the [Policy CLI guide](../guides/POLICY_CLI.md) ([Chinese](../guides/POLICY_CLI_CN.md)). Existing downloads must not be assumed to support v2.
+
+## Policy Commands (Workspace Implementation)
+
+These seven offline/control commands are implemented in the local workspace and planned for v2.1.7; v2.1.6 does not include them, and successful publication of v2.1.7 is not confirmed. See the [Policy CLI guide](../guides/POLICY_CLI.md) ([Chinese](../guides/POLICY_CLI_CN.md)) for full examples and report fields.
+
+| Command | Purpose |
+|---|---|
+| `ppp policy check --config FILE --runtime tun\|http\|socks [--platform linux\|windows\|macos\|android\|ios] [--json]` | Validate v2 sources and compile policy; check applicable capability declarations without starting the runtime or downloading remote sources. |
+| `ppp policy explain --config FILE --runtime RUNTIME [--platform PLATFORM] (--domain HOST\|--ip ADDRESS) [--network tcp\|udp] [--port PORT] [--json]` | Explain route and DNS plans; does not resolve DNS. Target IPv6 is unsupported. |
+| `ppp policy init --out DIR --template proxy-all\|direct-all\|split-cn --runtime RUNTIME [--geoip PATH_OR_URL --geosite PATH_OR_URL] [--json]` | Write a starter v2 policy bundle. `split-cn` requires both inputs; local files must exist and be at most 64 MiB, while explicit HTTP(S) URLs are recorded as remote sources without fetching them. |
+| `ppp policy export --config FILE --out FILE [--store DIR] [--json]` | Export only policy data and metadata after checking/materializing its inputs; does not export the full app config or Fake-IP mappings. |
+| `ppp policy status --config FILE [--store DIR] [--json]` | Read update/bundle status. |
+| `ppp policy update --config FILE [--store DIR] (--interface IFACE [--bootstrap udp://IPv4:PORT] \| --proxy-endpoint 127.0.0.1:PORT) [--json]` | Fetch and validate declared remote sources over the explicitly selected egress. |
+| `ppp policy migrate --config LEGACY_FILE --out DIR [--bypass FILE] [--dns-rules FILE] [--runtime RUNTIME] [--platform PLATFORM] [--json]` | Write a migration draft and report; it does not overwrite the input or claim whole-policy equivalence. |
+
+Policy command exit codes are `0` success, `2` argument/configuration/compilation error, `3` unavailable source or storage failure, `4` unsupported capability, and `5` migration draft requiring review or lacking proven equivalence. Migration exit `5` can still mean the draft files were written. `--json` emits a machine-readable report. These are command exit statuses, not `ErrorCodes.def` numeric enum values.
 
 ```mermaid
 flowchart TD

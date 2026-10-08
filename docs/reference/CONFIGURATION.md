@@ -1,12 +1,12 @@
 # Configuration Model
 > Status: Active
 > Type: Reference
-> Last verified: 63fc030
+> Last verified: local workspace, 2026-10-07
 
 > **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
 > **Audience:** OPENPPP2 users, operators, and developers.
 > **Status:** Current.
-> **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-18.
+> **Last verified against:** Local workspace implementation, 2026-10-07. Policy v2 is planned for v2.1.7 and is not in v2.1.6; successful publication of v2.1.7 is not confirmed.
 > **Parent index:** [Back to index](README.md) · **Chinese:** [配置模型](CONFIGURATION_CN.md)
 
 
@@ -277,18 +277,48 @@ Defines client-side identity, target server, and traffic policy:
 - `client.proxy-only` — Independent top-level proxy-only flag. When `true`, suppress host-side route/DNS takeover (desktop installs no host routes; mobile keeps only its framework interface route); native policy remains active. `--mode=proxy` selects the same runtime behavior.
 - `client.http-proxy.*` — Local HTTP proxy listener settings (bind address and port).
 - `client.socks-proxy.*` — Local SOCKS5 proxy listener settings (bind address, port, username, password). The listener supports TCP `CONNECT` and SOCKS5 `UDP ASSOCIATE`; UDP datagrams are relayed through the client datagram tunnel path.
-- `client.routing` — Canonical client IP/DNS traffic policy. Its `ip.bypass`, `ip.routes`, `ip.peer-routes`, and `dns.rules` sources are consumed by native policy in both `tun` and `proxy-only`; runtime mode is controlled separately by `--mode` and `client.proxy-only`.
+- `client.policy` — Versioned policy v2 source (planned for v2.1.7; not in v2.1.6, and successful publication of v2.1.7 is not confirmed). When present it is selected instead of the legacy policy inputs described below.
+- `client.routing` — Legacy IP/DNS policy source, retained for compatibility. It is not the only or current versioned policy entry point. Its `ip.bypass`, `ip.routes`, `ip.peer-routes`, and `dns.rules` sources are consumed by the legacy adapter when v2 is absent.
 - `client.routing.ip.bypass` — Inline bypass text or `file://` source strings; loaded into native route policy in both modes.
 - `client.routing.ip.routes` — Canonical ordinary route entries; loaded into native route policy, with desktop host-route projection handled separately by the active mode and platform.
 - `client.routing.ip.peer-routes` — Canonical peer-prefix gateway routes; loaded into the native peer-prefix RIB/FIB in both modes and optionally projected to desktop host routes outside proxy-only.
 - `client.routing.dns.rules` — Inline DNS rule text or `file://` source strings; loaded into native DNS policy in both modes. Normal TUN may additionally configure tunnel/system DNS, while proxy-only does not take over system DNS.
 - `client.routing.bypass`, `client.routing.routes`, `client.routing.peer-routes`, `client.routing.dns-rules` — Direct aliases accepted for compatibility.
-- `client.routes`, `client.peer-routes`, and legacy DNS/CLI sources — Legacy input accepted only when `client.routing` is absent; canonical route sources are mirrored back during migration. An old nested mode key is ignored and never serialized.
+- `client.routes`, `client.peer-routes`, and legacy DNS/CLI sources — Legacy input accepted only when `client.routing` is absent; routes from its nested fields are mirrored back during migration. An old nested mode key is ignored and never serialized.
 - `client.mappings` — static port mapping declarations (array of `{local, remote}` endpoint pairs).
 - `client.static.port` — static tunnel port for server-side static mapping.
 - `client.tun.*` — virtual adapter configuration (IP, gateway, mask, name).
 
-The canonical policy is shared by both client modes: bypass and ordinary/peer routes populate native route tables (RIB/FIB), and DNS rules populate the native DNS policy. `tun` may additionally apply supported host routes or DNS settings; `proxy-only` suppresses desktop host-route/system-DNS takeover without disabling native policy. Mobile bridges retain only their minimal framework interface/subnet route in proxy-only mode.
+The legacy `client.routing` policy is shared by both client modes. `tun` may additionally apply supported host routes or DNS settings; `proxy-only` suppresses desktop host-route/system-DNS takeover. Mobile bridges retain their minimal framework interface/subnet route in proxy-only mode. See the v2 policy section below for source selection.
+
+#### `client.policy` v2 (workspace implementation, planned for v2.1.7; absent from v2.1.6)
+
+`client.policy.version` must be integer `2`. v2 replaces the legacy policy source as a whole: it cannot coexist with `client.routing`, legacy `client.bypass`/`client.dns-rules`, top-level `routing`, `geo-rules`, `dns`, `bypass`, `dns-rules`, or `udp.dns`. A conflict is an error, not a precedence merge. With no v2 object, legacy adaptation remains available from `client.routing`, legacy configuration fields, and CLI inputs; see [Policy CLI and migration](../guides/POLICY_CLI.md) ([Chinese](../guides/POLICY_CLI_CN.md)).
+
+The v2 top-level policy fields and defaults are:
+
+| Field | Type | Default | Constraints / behavior |
+|---|---|---|---|
+| `client.policy.version` | integer | required | Exactly `2`. |
+| `client.policy.rules.path` | string | required by policy compilation | File path relative to the configuration file unless absolute; offline source limit 64 MiB. |
+| `client.policy.ipv6` | string | `block` | Only `block` is supported in this phase. |
+| `client.policy.tcp-domain-sniff` | bool | `false` | Applies to TUN; unavailable on iOS TUN, not applicable to local HTTP/SOCKS. |
+| `client.policy.dns.mode` | string | `auto` | `auto`, `real`, or `fake-ip`. `auto` resolves to Fake-IP for TUN and original-domain behavior for local proxy runtime. Explicit Fake-IP requires TUN DNS interception. |
+| `client.policy.dns.resolvers` | object | required | Nonempty map; each resolver has `via` (`direct` or `proxy`) and nonempty ordered `servers`. Servers may be provider names, numeric IPv4 endpoint strings, or structured `{uri, addresses?, bootstrap?}` objects. A hostname endpoint needs explicit numeric addresses or direct UDP bootstrap. |
+| `client.policy.dns.fake-ip.range` | IPv4 CIDR | `198.18.0.0/16` | Must be a valid IPv4 CIDR. |
+| `client.policy.dns.fake-ip.storage` | path | `./dns-fake-ip` | Durable mapping store, relative to the config file. Required for `mode: fake-ip`. |
+| `client.policy.dns.fake-ip.identity` | string | derived from config path | Stable identifier, 1–128 characters from letters, digits, `.`, `_`, `-`, `:`. |
+| `client.policy.rule-sets.<name>.format` | string | required per set | `geoip-text`, `geosite-text`, `geoip-dat`, or `geosite-dat`; binary formats also require `tag`. |
+| `client.policy.rule-sets.<name>.source` | object | required per set | Exactly one of `path` or `url`; path is local, URL must be HTTP(S). Offline check requires materialized local data. |
+| `client.policy.rule-sets.<name>.sha256` | hex string | absent | Optional 64-digit SHA-256 pin, checked against exact source bytes. |
+| `client.policy.rule-sets.<name>.tag` | string | required for `.dat` | Selects the dataset tag in binary rule sets. |
+| `client.policy.updates.enabled` | bool | `false` | Enables periodic fetching of declared remote rule sets. |
+| `client.policy.updates.interval` | duration | `24h` | Positive integer followed by `s`, `m`, `h`, or `d`. |
+| `client.policy.updates.via` | string | `proxy` | `direct` or `proxy`; update transport must match this choice. |
+| `client.policy.updates.bootstrap` | string[] | empty | Explicit numeric IPv4 `udp://IP:PORT` resolvers; no implicit hostname resolution. |
+| `client.policy.updates.allow-http` | bool | `false` | Allows plain HTTP resource URLs when enabled; otherwise use HTTPS. |
+
+Rule syntax, matching order, durable update behavior, and command examples are maintained in the [Policy CLI guide](../guides/POLICY_CLI.md) ([Chinese](../guides/POLICY_CLI_CN.md)), rather than duplicated here. Runtime/platform support is still bounded by the local implementation and the evidence in the [Linux live report](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md); Windows, macOS, Android, and iOS were not built or run for that report.
 
 ### `virr`
 

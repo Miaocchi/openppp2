@@ -58,6 +58,9 @@ sandbox 可能要求开放 socket 的执行权限。禁止为该套件启动 PPP
 使用真实 Exchanger。上述证据不代表 Android 真机、
 真实 NAT 或 Linux SO_MARK 绕过 TUN 已验收，生产 gate 必须保持关闭。
 
+本节描述的 P2P v2 改动及 2026-10-05 测试结果来自相对当时已发布 `main` 的实现。代码推送现已获授权；
+v2.1.7 仍待代码推送完成且 CI 全绿后发布。
+
 2026-10-05 普通 P2P 与原有 Noise 回归套件 30 targets 通过，包括因 socket 权限限制
 单独运行的非特权 loopback 检查；原有 Noise handshake/exporter 两个目标也通过。
 最终 focused 套件 10 targets、80 cases
@@ -187,6 +190,12 @@ bash scripts/test-runtime-contract.sh cpp
 | `ENABLE_VMUX_CHURN_TEST` | 构建并注册 root-linked VMUX carrier-churn 集成测试。 |
 | `ENABLE_VMUX_RECEIVE_SEMANTICS_TEST` | 构建并注册 root-linked VMUX receive-semantics 测试。 |
 | `ENABLE_ASAN`、`ENABLE_UBSAN` | 在根项目中启用诊断 sanitizer flags；不是生产构建模式。 |
+
+根生产构建选项另有平台默认值：Linux 构建（包括交叉编译）默认启用
+`ENABLE_XTCP`，配置前需要运行 `bash tools/prepare_xtcp.sh`；Android、macOS
+和 Windows 默认关闭，发布工作流会显式传入对应值。`ENABLE_SIMD` 在 x86/x64 上默认启用，
+ARM/Android 默认关闭；Windows MSBuild 可用 `/p:OpenPPP2EnableSimd=false` 显式移除
+`__SIMD__`。
 
 ## 当前 CI 覆盖
 

@@ -1,15 +1,17 @@
 # 多代理补齐 P2P v2 持续直连
 
-> Status: Draft
+> Status: Implemented; production entry wired; cross-platform runtime acceptance remains incomplete
 > Type: Design
-> Last verified: 2026-10-05，基线 99892a8；v2 源码与接线已实现，隔离测试通过；生产与设备验收尚未完成。
+> Last verified: 2026-10-07；本地实现提交 `c10eb0f`、`6a6c436` 的隔离测试通过，生产构建 gate 与客户端/server 接线已启用；设备和真实 NAT 验收尚未完成。
 > **Purpose:** 保存 P2P v2 持续直连的实现方案与多代理分工。
 > **Audience:** OPENPPP2 协议、网络、平台及测试维护者。
 > **Parent index:** [Design Documents](../README.md)
 
+本地实现提交 `c10eb0f`、`6a6c436` 已进入生产源码。核心 production gate 在 `ppp/p2p/P2PCapabilityGate.h` 默认开启，并由各平台的 `ENABLE_P2P_V2_PRODUCTION` 构建开关控制；服务端 v2 offer 路径 `ppp/app/server/VirtualEthernetP2PV2.cpp` 仍会检查该 gate。默认配置选择 `p2p.enabled=true` 与 `direct-preferred`，显式 `p2p.enabled=false` 或能力失败时回 relay。
+
 ## 目标
 
-补齐 Linux、Android 的直连实现与隔离自动化验收，支持多候选探测、持续连接和平滑换钥。保留 v1 编码及到期规则，生产开关继续关闭；iOS 继续走 relay。
+补齐 Linux、Android 的直连实现与隔离自动化验收，支持多候选探测、持续连接和平滑换钥。保留 v1 编码及到期规则，生产 v2 开关默认开启；iOS 继续走 relay。
 
 本轮不修改系统路由、DNS，不启动 PPP 或特权 netns 测试。真实 NAT、Android 后台与网络切换、Linux 绕过 TUN 的证据作为后续上线条件。
 
@@ -39,6 +41,8 @@
 
 - **安全迁移与恢复。** 新来源数据先做不提交状态的 AEAD/replay 校验，不交付、不改 endpoint、不刷新 liveness；验证后才允许一个有限迁移挑战。MigrateACK 匹配该挑战的新 endpoint，不套用初始候选成员检查。迁移与换钥串行：Commit 前可取消 pending 刷新，迁移完成后重新 renew；Commit 后地址变化回 relay。取消通过匹配的 `cancel-offer-hash` 协调。心跳按独立发送时钟运行，旧 key 包不维持新 key 的 liveness。超时、socket 错误和停止统一清理 key、replay、端点及计时器，保护基础 relay session；恢复退避为 1、2、4、8、10 秒。
 
+  每个 peer 的控制出站队列最多保留 32 个不同的目标地址/报文组合，重复项合并；队列有效期不超过 2 秒，也受 offer、key 或 setup 截止时间约束。队列溢出或过期会取消探测并清空待发控制包；若刷新尚未 Commit，则保留健康的 current key。transport 发送失败进入共享 socket 恢复流程（`ppp/app/client/VEthernetP2PV2.cpp`）。Linux DNS 实机验证不构成 P2P NAT 直连验收；真实 NAT 与设备行为仍未验收。
+
 - **禁止 nonce 回绕。** sequence 到 `UINT32_MAX-4096` 时请求刷新；耗尽后禁止旧 key 新发送并转 relay，不能重置同 key counter。v2 接收窗口接受已认证的数值更大序号，即使跨度超过半个 uint32 范围，仍拒绝 sequence wrap、重复及窗口外旧包；失败认证不能提交窗口变化。保持 v1 行为不变。
 
 ## 并行分工
@@ -60,7 +64,7 @@
 
 ## 验证与验收
 
-2026-10-05：正式 standalone CMake 已接入 offer、channel、Noise、coordinator、limiter、同 socket STUN/native 和真实 IPv4 parser 集成测试，并加入真实客户端/server/carrier 接线的对象编译目标。普通 P2P 与原有 Noise 回归 30 targets 通过；最终 focused 10 targets、80 cases 在 ASan/UBSan/LSan 和独立 TSan 下均通过，其中 integration 16 cases 包含虚拟时间 180 秒持续换钥及 100 次生命周期循环。真实应用接线五个对象最新编译通过，相关 tooling 46 项通过；具体范围见开发测试说明。统一入口为 `sh scripts/run-p2p-v2-isolation.sh [normal|asan|tsan]`，固定包含 INFO 与服务端生产协调 helper 的十个测试目标。原有工作区改动保留，未提交、未启动 PPP，`ProductionAuthenticatedControlV1Ready = false`。
+2026-10-05 至 2026-10-07：正式 standalone CMake 已接入 offer、channel、Noise、coordinator、limiter、同 socket STUN/native 和真实 IPv4 parser 集成测试，并加入真实客户端/server/carrier 接线的对象编译目标。普通 P2P 与原有 Noise 回归 30 targets 通过；focused 测试在 ASan/UBSan/LSan 和独立 TSan 下通过，其中 integration 16 cases 包含虚拟时间 180 秒持续换钥及 100 次生命周期循环。Linux 生产库已在 `ENABLE_P2P_V2_PRODUCTION=ON` 下完成编译；Android、iOS CMake 和 Windows 工程均明确注入生产宏。隔离 native socket 测试在当前 sandbox 因禁止创建 socket 未运行通过，由 Ubuntu CI 执行。统一入口为 `sh scripts/run-p2p-v2-isolation.sh [normal|asan|tsan]`；构建时可用 `-DENABLE_P2P_V2_PRODUCTION=OFF` 紧急关闭，运行时仍可用 `p2p.enabled=false` 回 relay。
 
 后续并行续验：真实根项目 Linux Release 全量 283 项编译和链接通过，恢复修复后重新增量链接并确认 no work，生产构建无测试宏。独立根链接 `p2p_v2_exchanger_recovery_test` 实例化真实 Exchanger，9 个用例在普通、ASan/UBSan/LSan 和独立 TSan 下全部通过；可重复入口为 `sh scripts/run-p2p-v2-exchanger-recovery.sh [normal|asan|tsan] -DTHIRD_PARTY_LIBRARY_DIR=/path/to/native-deps`，测试开关默认关闭。
 
@@ -71,4 +75,4 @@
 - 覆盖第二候选成功、丢包重试、重复和乱序、候选更新竞态、错误来源/角色/session/epoch、限流边界、不放大、合法及伪造迁移、旧 generation 回调、nonce 耗尽与回绕。
 - 虚拟时间推进至少 180 秒，验证多次换钥持续 Direct、旧 key 接收窗口、CommitACK 丢失恢复、刷新失败及硬过期；完成 100 次连接、刷新、回退和停止循环。
 - 从源码重建相关 C++ 测试，运行 focused ASan/UBSan 与独立 TSan；CI 加入 P2P tooling，修复 Android bounded logcat 检查，完成 Linux 应用接线对象编译和现有源码清单检查；Android 编译与设备行为仍需对应工具链验收。
-- 更新协议、状态机和中英文开发说明，验证双语文档严格构建。验收报告区分隔离测试与真实网络证据，不将本轮通过表述为生产可启用。
+- 更新协议、状态机和中英文开发说明，验证双语文档严格构建。验收报告区分生产接线、隔离测试与真实网络证据，不将源码接线表述为跨平台设备 runtime 验收。

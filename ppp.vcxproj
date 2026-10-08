@@ -33,6 +33,10 @@
     <RootNamespace>ppp</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
+  <PropertyGroup Label="OpenPPP2Options">
+    <OpenPPP2EnableSimd Condition="'$(OpenPPP2EnableSimd)' == '' and '$(Platform)' == 'ARM64'">false</OpenPPP2EnableSimd>
+    <OpenPPP2EnableSimd Condition="'$(OpenPPP2EnableSimd)' == ''">true</OpenPPP2EnableSimd>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
@@ -167,7 +171,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;NOMINMAX;BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT;BOOST_ASIO_NO_DEPRECATED;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;FUNCTION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;NOMINMAX;BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT;BOOST_ASIO_NO_DEPRECATED;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;FUNCTION;OPENPPP2_P2P_V2_PRODUCTION=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <DisableSpecificWarnings>4244;4819;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
@@ -192,7 +196,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;NOMINMAX;BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT;BOOST_ASIO_NO_DEPRECATED;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_NO_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;FUNCTION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;NOMINMAX;BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT;BOOST_ASIO_NO_DEPRECATED;_WIN32_WINNT=0x0601;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_WINSOCK_DEPRECATED_WARNINGS;JEMALLOC;BUDDY_ALLOC_IMPLEMENTATION;_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS;_CRT_NON_CONFORMING_SWPRINTFS;__SIMD__;FUNCTION;OPENPPP2_P2P_V2_PRODUCTION=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <Optimization>Full</Optimization>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
@@ -224,7 +228,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4244;4819;4309;4334;4267;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/bigobj /DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
       <StringPooling>true</StringPooling>
       <IntelJCCErratum>true</IntelJCCErratum>
@@ -257,6 +261,7 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntelJCCErratum>true</IntelJCCErratum>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
+      <AdditionalOptions>/DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
       <StringPooling>true</StringPooling>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4244;4819;4309;4334;4267;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
@@ -279,7 +284,7 @@
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4244;4819;4309;4334;4267;4566;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/bigobj /DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
       <EnableFiberSafeOptimizations>true</EnableFiberSafeOptimizations>
       <StringPooling>true</StringPooling>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -323,7 +328,12 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 /DOPENPPP2_P2P_V2_PRODUCTION=1 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(OpenPPP2EnableSimd)' != 'true'">
+    <ClCompile>
+      <AdditionalOptions>%(AdditionalOptions) /U__SIMD__</AdditionalOptions>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -409,6 +419,12 @@
     <ClCompile Include="ppp\app\client\routing\GeoDataReader.cpp" />
     <ClCompile Include="ppp\app\client\routing\HumanRoutingRouteSpecs.cpp" />
     <ClCompile Include="ppp\app\client\routing\HumanRoutingRules.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicySourceLoader.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyCompiler.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyRuntime.cpp" />
+    <ClCompile Include="ppp\app\client\PolicyTunnelDnsStream.cpp" />
+    <ClCompile Include="ppp\app\client\dns\PolicyResolverService.cpp" />
+    <ClCompile Include="ppp\app\ApplicationPolicyCommand.cpp" />
     <ClCompile Include="ppp\app\client\routing\ProtocolSniffer.cpp" />
     <ClCompile Include="ppp\app\client\routing\TcpRoutingSelector.cpp" />
     <ClCompile Include="ppp\app\client\routing\UdpRoutingSelector.cpp" />
@@ -432,6 +448,15 @@
     <ClCompile Include="ppp\app\client\dns\DnsRouteDispatcher.cpp" />
     <ClCompile Include="ppp\app\client\dns\DnsUdpRelay.cpp" />
     <ClCompile Include="ppp\app\client\dns\FakeIpPool.cpp" />
+    <ClCompile Include="ppp\app\client\dns\DurableFakeIpStore.cpp" />
+    <ClCompile Include="ppp\app\client\dns\PolicyFakeIpAsync.cpp" />
+    <ClCompile Include="ppp\app\client\policy\DurablePolicyBundle.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyUpdateFetcher.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyUpdateService.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyTunnelUpdateConnector.cpp" />
+    <ClCompile Include="ppp\app\client\policy\PolicyStatusFile.cpp" />
+    <ClCompile Include="ppp\app\client\policy\LegacyPolicyAdapter.cpp" />
+    <ClCompile Include="ppp\app\client\policy\LegacyPolicyMigration.cpp" />
     <ClCompile Include="ppp\app\client\GeoRuleGenerator.cpp" />
     <ClCompile Include="ppp\dns\DnsResolver.cpp" />
     <ClCompile Include="ppp\dns\DnsProviderCatalog.cpp" />
@@ -805,10 +830,32 @@
     <ClInclude Include="ppp\app\client\dns\DnsRouteDispatcher.h" />
     <ClInclude Include="ppp\app\client\dns\DnsUdpRelay.h" />
     <ClInclude Include="ppp\app\client\dns\FakeIpPool.h" />
+    <ClInclude Include="ppp\app\client\dns\DurableFakeIpStore.h" />
+    <ClInclude Include="ppp\app\client\dns\PolicyFakeIpAsync.h" />
+    <ClInclude Include="ppp\app\client\dns\PolicyTelemetry.h" />
     <ClInclude Include="ppp\app\client\dns\HumanDnsQueryPolicy.h" />
     <ClInclude Include="ppp\app\client\routing\GeoDataReader.h" />
     <ClInclude Include="ppp\app\client\routing\HumanRoutingRouteSpecs.h" />
     <ClInclude Include="ppp\app\client\routing\HumanRoutingRules.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyModel.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicySourceLoader.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyCompiler.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyEvaluator.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyRuntime.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyTcpFlow.h" />
+    <ClInclude Include="ppp\app\client\policy\DurablePolicyBundle.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyUpdateFetcher.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyUpdateService.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyTunnelUpdateConnector.h" />
+    <ClInclude Include="ppp\app\client\policy\PolicyStatusFile.h" />
+    <ClInclude Include="ppp\app\client\policy\LegacyPolicyAdapter.h" />
+    <ClInclude Include="ppp\app\client\policy\LegacyPolicyMigration.h" />
+    <ClInclude Include="ppp\app\client\proxys\LocalProxyPolicyDestination.h" />
+    <ClInclude Include="ppp\app\client\PolicyTunnelDnsStream.h" />
+    <ClInclude Include="ppp\app\client\dns\PolicyResolverService.h" />
+    <ClInclude Include="ppp\app\client\udp\DirectDatagramFlow.h" />
+    <ClInclude Include="ppp\app\client\udp\UdpFlowPolicy.h" />
+    <ClInclude Include="ppp\app\ApplicationPolicyCommand.h" />
     <ClInclude Include="ppp\app\client\routing\ProtocolSniffer.h" />
     <ClInclude Include="ppp\app\client\routing\ResolvedDestination.h" />
     <ClInclude Include="ppp\app\client\routing\TcpRoutingSelector.h" />

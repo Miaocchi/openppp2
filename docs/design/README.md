@@ -1,7 +1,7 @@
 # Design Documents
 > Status: Active
 > Type: Design
-> Last verified: 82643dc
+> Last verified: 2026-10-07
 
 > **Purpose:** Index active, status-bound design evidence that has not become stable reference material.
 > **Audience:** OPENPPP2 maintainers and reviewers.
@@ -27,4 +27,12 @@ stable-reference claims.
 - [XTCP 接入设计与依赖门禁](XTCP_INTEGRATION_CN.md)
 - [Linux Tap 边缘 GSO 合并设计](PPP-DATAPATH-GSO-CONTRACT_CN.md)
 - [Datapath 网络损伤验收设计](PPP-DATAPATH-NETEM-ACCEPTANCE_CN.md)
+- [DNS 与分流策略 P0 现状基线](DNS_ROUTING_POLICY_BASELINE_CN.md)
+- [DNS 与分流策略 P1 离线编译和诊断](DNS_ROUTING_POLICY_P1_CN.md)
+- [DNS 与分流策略 P2 执行路径接入](DNS_ROUTING_POLICY_P2_CN.md)
+- [DNS 与分流策略 P3 DNS/Fake-IP](DNS_ROUTING_POLICY_P3_CN.md)
+- [DNS 与分流策略 P4 数据包更新](DNS_ROUTING_POLICY_P4_CN.md)
+- [DNS 与分流策略 P5 旧适配与 CLI](DNS_ROUTING_POLICY_P5_CN.md)
+- [DNS、域名/IP 分流与规则集重构总方案](DNS_ROUTING_POLICY_REFACTOR_CN.md)
+- [Linux 实机验证报告](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)
 - [Client UI mockup](mockups/client-connected.html)

@@ -1,12 +1,12 @@
 # Project Interface Map
 > Status: Active
 > Type: Reference
-> Last verified: a7e9b99
+> Last verified: local workspace, 2026-10-07
 
 > **Purpose:** Inventory every discoverable OPENPPP2 interface and identify which surfaces are supported contracts, experiments, internal implementation details, or known gaps.
 > **Audience:** Users, operators, client authors, integrators, and maintainers.
 > **Status:** Current. This is a discovery map, not an ABI compatibility promise.
-> **Last verified against:** Repository source and tests at `a7e9b99`, 2026-07-19.
+> **Last verified against:** Local workspace source, 2026-10-07. Policy v2 is planned for v2.1.7, is absent from v2.1.6, and successful publication of v2.1.7 is not confirmed.
 > **Parent index:** [Reference](README.md) · **Chinese:** [项目接口全景图](PROJECT_INTERFACE_MAP_CN.md)
 
 ## How To Read This Map
@@ -27,8 +27,8 @@ This page is the canonical inventory for the project's callable and serialized b
 
 | Domain | Provider | Primary consumer | Input / output | Stability | Canonical detail |
 |---|---|---|---|---|---|
-| `ppp` process and CLI | C++ executable | Users, service managers, scripts | Arguments and files / exit status, logs, TUI | **Stable** with gaps | [CLI reference](CLI_REFERENCE.md) |
-| `appsettings.json` | C++ configuration loader | Users and platform clients | JSON / normalized runtime policy | **Stable** de facto | [Configuration](CONFIGURATION.md) |
+| `ppp` process and CLI | C++ executable | Users, service managers, scripts | Arguments and files / exit status, logs, TUI | **Stable** with gaps; policy commands planned for v2.1.7, release unconfirmed | [CLI reference](CLI_REFERENCE.md) |
+| `appsettings.json` | C++ configuration loader | Users and platform clients | JSON / normalized runtime policy | **Stable** de facto; `client.policy` v2 planned for v2.1.7, release unconfirmed | [Configuration](CONFIGURATION.md) |
 | Connection URI | C++ client | Users and profile/subscription producers | `ppp://`, `ppp://ws/`, `ppp://wss/` | **Stable** | [Configuration](CONFIGURATION.md) |
 | Tunnel wire protocol | C++ client/server | OPENPPP2 peers | Encrypted frames, handshake, opcodes, INFO JSON | **Stable** de facto | [Packet formats](PACKET_FORMATS.md), [link layer](LINKLAYER_PROTOCOL.md) |
 | Runtime snapshot JSON v1 | C++ runtime | TUI, Android, iOS | Versioned JSON snapshot | **Stable** | [UI runtime contract](UI_RUNTIME_CONTRACT.md) |
@@ -58,6 +58,7 @@ The supported command surface is grouped below. Exact aliases, defaults, parsing
 |---|---|---|
 | Role and configuration | `--mode`, `--config`, `--proxy-http-port`, `--proxy-socks-port` | **Stable** |
 | Runtime policy | `--rt`, `--dns`, `--tun-flash`, `--auto-restart`, `--link-restart`, `--block-quic`, `--firewall-rules`, `--lwip`, `--vbgp` | **Stable** |
+| Policy tools (workspace implementation) | `ppp policy check`, `explain`, `init`, `export`, `status`, `update`, `migrate` | Planned for v2.1.7; absent from v2.1.6; v2.1.7 publication is unconfirmed |
 | Adapter and address | `--nic`, `--ngw`, `--tun`, `--tun-ip`, `--tun-ipv6`, `--tun-gw`, `--tun-mask` | **Stable** |
 | Tunnel behavior | `--tun-vnet`, `--tun-host`, `--tun-static`, `--tun-promisc`, `--tun-ssmt`, `--tun-route`, `--tun-protect`, `--tun-lease-time-in-seconds` | **Stable** |
 | MUX | `--tun-mux`, `--tun-mux-acceleration`, `--mux-mode`, `--mux-mode-turbo` | `compat`, `flow`, and `balance` are **Stable** de facto; `stripe` is **Experimental** |
@@ -79,14 +80,29 @@ The supported command surface is grouped below. Exact aliases, defaults, parsing
 | `tcp`, `udp`, `websocket`, `cdn` | Carrier listeners, connect policy, TLS/WS, and port modes | Transport layer | **Stable** | same |
 | `mux` | Multiplexing mode and limits | Transport/runtime | `compat`/`flow`/`balance` **Stable** de facto; `stripe` and live control **Experimental** | same |
 | `server` | Pools, mappings, backend, policies, IPv6, accounting identity | Server runtime | **Stable** | same |
-| `client` | Server URI, reconnection, bandwidth, proxy, and canonical `client.routing` IP/DNS policy (`ip.bypass`, `ip.routes`, `ip.peer-routes`, `dns.rules`); runtime mode is controlled by top-level `--mode` and `client.proxy-only` | Client runtime | **Stable** | same |
+| `client` | Server URI, reconnection, bandwidth, proxy, legacy `client.routing`, and workspace `client.policy` v2 planned for v2.1.7; runtime mode is controlled by top-level `--mode` and `client.proxy-only` | Client runtime | Legacy fields **Stable** de facto; v2 release unconfirmed | same |
 | `ip`, `virr`, `vbgp` | Address, route/rule, and route propagation inputs | Network switcher | **Stable** de facto | same |
 | `dns` | Resolver, interception, fallback, cache, and policy | Client/server DNS runtime | **Stable** de facto | same |
 | `telemetry` | Exporter, signal, sampling, and resource attributes | Diagnostics/platform bridges | **Experimental** | same |
 | `p2p` | Direct-channel discovery, signaling, transport, and fallback | Client/server P2P runtime | **Experimental** | same |
 | `geo-rules` | Geographical routing/rule sources and behavior | Route/DNS policy | **Experimental** | same |
 
-`client.routing` is the canonical client IP/DNS policy. Its four sources feed native route/DNS policy in both modes, while top-level `--mode=client`/`--mode=proxy` and the independent `client.proxy-only` flag select host integration. `proxy-only` suppresses desktop host-route and system-DNS takeover; mobile bridges keep only the minimal interface/subnet route and do not publish default routes, system DNS, or the local HTTP proxy. An old nested mode key is ignored and not serialized.
+`client.routing` remains a supported legacy client IP/DNS policy source. In the workspace implementation planned for v2.1.7 (absent from v2.1.6; release success unconfirmed), `client.policy` v2 is a separate versioned source and conflicts with legacy policy fields rather than merging with them. Runtime mode remains selected by top-level `--mode` and `client.proxy-only`. `proxy-only` suppresses desktop host-route and system-DNS takeover; mobile bridges keep only the minimal interface/subnet route and do not publish default routes, system DNS, or the local HTTP proxy. See [Configuration](CONFIGURATION.md) and [CLI Reference](CLI_REFERENCE.md) for field and command contracts.
+
+### Policy v2 internal components (workspace implementation planned for v2.1.7)
+
+The following paths describe local source boundaries. They are not SDK interfaces, and their inclusion in a successful v2.1.7 release is not confirmed.
+
+| Boundary | Responsibility | Classification |
+|---|---|---|
+| `ppp/app/ApplicationPolicyCommand.cpp` | Dispatches the seven `ppp policy` commands and emits text/JSON reports and exit statuses. | Internal CLI implementation; planned for v2.1.7 |
+| `ppp/app/client/policy/PolicySourceLoader.cpp`, `PolicyCompiler.cpp`, `PolicyEvaluator.h` | Loads v2 sources, validates/compiles rules, and computes route/DNS decisions. | Internal policy engine; planned for v2.1.7 |
+| `ppp/app/client/policy/PolicyRuntime.cpp` | Publishes immutable policy snapshots and coordinates runtime decisions. | Internal runtime boundary; planned for v2.1.7 |
+| `ppp/app/client/dns/PolicyResolverService.cpp` | Resolves policy-selected DNS through configured upstream transport and cache/coalescing services. | Internal DNS boundary; planned for v2.1.7 |
+| `ppp/app/client/policy/DurablePolicyBundle.cpp`, `PolicyUpdateService.cpp` | Stores validated current/previous bundles and fetches, validates, then prepares or publishes updates. | Internal persistence/update boundary; planned for v2.1.7 |
+| `ppp/app/client/policy/LegacyPolicyAdapter.cpp`, `LegacyPolicyMigration.cpp` | Adapts legacy inputs when v2 is absent and writes reviewable migration drafts. | Internal compatibility boundary; planned for v2.1.7 |
+
+Only Linux HTTP/UDP/DNS upstream, update, and Fake-IP behaviors have the evidence summarized in [the live report](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md). HTTPS and some proxy TCP paths remain unverified, and Windows/macOS/Android/iOS were not built or run. v2.1.7 publication is not confirmed.
 
 Complete fields and a full template are in [Configuration](CONFIGURATION.md). Platform profile stores wrap this JSON but do not replace its contract.
 
@@ -220,7 +236,7 @@ All Android entries below are **Internal** to the bundled Flutter application. C
 
 `PppVpnService` runs in `:vpn`. The EventChannel it previously published to resolved a process-local static sink and delivered nothing, so it has been removed; the service now mirrors every runtime snapshot and error to the files above and the UI process polls them once per second while visible. Native publishes reach the service through the `runtime_snapshot` JNI callback and are ordered by the snapshot's own `generation` and `monotonic_ms`.
 
-For proxy-only profiles, Android still loads the native `client.routing` policy. `VpnService.Builder` keeps only the minimal interface/subnet route; it does not publish default routes, system DNS, or the local HTTP proxy.
+For proxy-only profiles, Android still loads the native client policy. `VpnService.Builder` keeps only the minimal interface/subnet route; it does not publish default routes, system DNS, or the local HTTP proxy.
 
 **Gap:** debug builds strip `android:process` from the service (`app/src/debug/AndroidManifest.xml`), so instrumentation always runs single-process and cannot reproduce cross-process delivery. That override is why the defect above survived. The release layout is currently enforced by source-level checks in `tests/tooling/test_runtime_ui_wiring.py`, not by a device test.
 
@@ -240,7 +256,7 @@ All iOS entries below are **Internal** to the bundled app and Packet Tunnel exte
 
 Profile export v1 is **Stable** for the bundled iOS app. The C ABI and provider-message commands remain **Internal**.
 
-For proxy-only profiles, the Packet Tunnel keeps only the minimal interface/subnet route and does not publish default routes, system DNS, tunnel DNS, or the local HTTP proxy; native `client.routing` policy remains active.
+For proxy-only profiles, the Packet Tunnel keeps only the minimal interface/subnet route and does not publish default routes, system DNS, tunnel DNS, or the local HTTP proxy; native client policy remains active.
 
 **Gaps:** provider messages use unversioned bare strings and `nil` for multiple failures; C structs have no ABI version or `struct_size`; no complete buffer truncation convention; Actions do not build the native iOS static library or execute a real Packet Tunnel integration test.
 
@@ -281,8 +297,8 @@ Creating a supported native SDK would require a deliberately small installed hea
 | Windows | Wintun/TAP, route/DNS/proxy helpers, service/process helpers | Administrator for adapter and network changes | `windows/`, `TapWindows.*` | Helper exit/error behavior lacks one contract table |
 | Linux | TUN, route/rule/DNS operations, optional io_uring/SYSNAT | root/CAP_NET_ADMIN | `linux/`, `TapLinux.*` | Distribution-specific command/rollback behavior needs integration coverage |
 | macOS | utun, route/DNS operations | root for desktop tunnel | `darwin/`, `TapDarwin.*` | macOS build is not iOS extension validation |
-| Android | `VpnService`, protected sockets, JNI callbacks; proxy-only keeps only the minimal interface/subnet route while native `client.routing` policy remains active | user VPN approval; service owns TUN fd | `android/` | Cross-process runtime snapshot defect and sparse device tests |
-| iOS | Packet Tunnel, C callback bridge, App Group; proxy-only keeps only the minimal interface/subnet route while native `client.routing` policy remains active | entitlement and provider-owned packet flow | `ios/` | Native library and provider IPC not built end-to-end in CI |
+| Android | `VpnService`, protected sockets, JNI callbacks; proxy-only keeps only the minimal interface/subnet route while native client policy remains active | user VPN approval; service owns TUN fd | `android/` | Cross-process runtime snapshot defect and sparse device tests |
+| iOS | Packet Tunnel, C callback bridge, App Group; proxy-only keeps only the minimal interface/subnet route while native client policy remains active | entitlement and provider-owned packet flow | `ios/` | Native library and provider IPC not built end-to-end in CI |
 
 ## 15. Errors, Diagnostics, Telemetry, And Persistence
 

@@ -4,6 +4,11 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.0.0)
 SET(NAME openppp2)
 PROJECT(${NAME} C CXX) # CMAKE_CURRENT_SOURCE_DIR
 
+# Production P2P v2 is enabled in Android artifacts by default. Keep this as
+# an explicit build switch so emergency rollback remains reproducible.
+OPTION(ENABLE_P2P_V2_PRODUCTION
+    "Enable authenticated P2P v2 production capability" ON)
+
 # C/CXX compiler configurations.
 SET(CMAKE_C_FLAGS "-fPIC -fvisibility=hidden -Wno-format -Wno-implicit-function-declaration")
 SET(CMAKE_CXX_FLAGS "-fPIC -stdlib=libc++ -fvisibility=hidden -Ulinux -Wno-#pragma-messages -Wno-format -Wno-inconsistent-missing-override -Wno-pointer-bool-conversion -Wno-unsequenced -Wno-null-dereference -Wno-gnu-variable-sized-type-not-at-end -Wno-tautological-undefined-compare -Wno-deprecated-declarations -Wno-shift-count-overflow")
@@ -132,6 +137,11 @@ FILE(GLOB_RECURSE SOURCE_FILES
 
 # Add the compiled output binary files.
 ADD_LIBRARY(${NAME} SHARED ${SOURCE_FILES} ${PLATFORM_SOURCE_FILES} ${AES_NI_SOURCE_FILES})
+IF(ENABLE_P2P_V2_PRODUCTION)
+    TARGET_COMPILE_DEFINITIONS(${NAME} PRIVATE OPENPPP2_P2P_V2_PRODUCTION=1)
+ELSE()
+    TARGET_COMPILE_DEFINITIONS(${NAME} PRIVATE OPENPPP2_P2P_V2_PRODUCTION=0)
+ENDIF()
 
 # Set the compilation output files path.
 SET(LIBRARY_OUTPUT_PATH ${PROJECT_ROOT_DIR}/bin/android/${ANDROID_ABI})

@@ -1,5 +1,6 @@
 #include <ppp/app/client/AssignedAddressManager.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/dns/DnsController.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 #include <ppp/diagnostics/Error.h>
@@ -259,6 +260,16 @@ namespace ppp {
                 boost::asio::ip::address addr = StringToAddress(ipv4.address.data(), ec);
                 if (ec || !addr.is_v4()) {
                     return false;
+                }
+
+                uint32_t fake_network = 0;
+                int fake_prefix = 0;
+                if (owner_->dns_controller_ && owner_->dns_controller_->GetFakeIpRoute(fake_network, fake_prefix) &&
+                    fake_prefix >= 0 && fake_prefix <= 32) {
+                    const uint32_t mask_value = fake_prefix == 0 ? 0u : 0xffffffffu << (32 - fake_prefix);
+                    if ((addr.to_v4().to_uint() & mask_value) == fake_network) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigFieldInvalid);
+                    }
                 }
 
                 ec.clear();
