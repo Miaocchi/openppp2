@@ -97,7 +97,9 @@ namespace ppp {
                         packet_size > P2P_MAX_PACKET_SIZE ||
                         !(endpoint.address().is_v4() || endpoint.address().is_v6()) ||
                         endpoint.address().is_unspecified() ||
-                        endpoint.address().is_multicast() || endpoint.port() == 0) {
+                        endpoint.address().is_multicast() ||
+                        (endpoint.address().is_v6() && endpoint.address().is_loopback()) ||
+                        endpoint.port() == 0) {
                         return false;
                     }
                     boost::system::error_code ec;

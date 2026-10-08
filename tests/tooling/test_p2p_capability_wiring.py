@@ -336,7 +336,7 @@ class P2PCapabilityWiringTests(unittest.TestCase):
             transport.index("boost::asio::ip::udp::endpoint LocalEndpoint")
         ]
         protection = start.index("ProtectP2PSocket")
-        self.assertLess(protection, start.index("StartReceive()"))
+        self.assertLess(protection, start.index("StartReceive("))
         probing = channel[
             channel.index("void P2PChannel::StartProbing") :
             channel.index("bool P2PChannel::SendProbe")
