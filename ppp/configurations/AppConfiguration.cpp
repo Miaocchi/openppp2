@@ -418,11 +418,17 @@ namespace ppp {
             config.telemetry.console_metric = true;
             config.telemetry.console_span = true;
 
-            // P2P v2 is the production-preferred path.  The relay remains the
-            // explicit fallback when a deployment sets enabled=false or when
-            // capability negotiation cannot complete.
+            // P2P v2 is the production-preferred path on Linux and Android.
+            // Windows and desktop macOS default to relay until their socket
+            // protection has been accepted on real NATs; deployments opt in
+            // with p2p.mode=direct-preferred.  The relay also remains the
+            // fallback when capability negotiation cannot complete.
             config.p2p.enabled = true;
+#if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE))
+            config.p2p.mode = "relay";
+#else
             config.p2p.mode = "direct-preferred";
+#endif
             config.p2p.punch_timeout = 5;
             config.p2p.keep_alived = 15;
             config.p2p.stun_servers.clear();

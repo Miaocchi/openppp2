@@ -73,9 +73,30 @@ namespace ppp {
             if (fd < 0 || interface_index_ <= 0) {
                 return false;
             }
+            const SOCKET socket = static_cast<SOCKET>(fd);
+            WSAPROTOCOL_INFOW info{};
+            int info_size = sizeof(info);
+            if (::getsockopt(socket, SOL_SOCKET, SO_PROTOCOL_INFOW,
+                    reinterpret_cast<char*>(&info), &info_size) != 0) {
+                return false;
+            }
+            if (info.iAddressFamily == AF_INET6) {
+                // IPV6_UNICAST_IF takes the index in host byte order, unlike
+                // its IPv4 counterpart.
+                const DWORD host_index = static_cast<DWORD>(interface_index_);
+                return ::setsockopt(
+                    socket,
+                    IPPROTO_IPV6,
+                    IPV6_UNICAST_IF,
+                    reinterpret_cast<const char*>(&host_index),
+                    sizeof(host_index)) == 0;
+            }
+            if (info.iAddressFamily != AF_INET) {
+                return false;
+            }
             const DWORD network_index = htonl(static_cast<DWORD>(interface_index_));
             return ::setsockopt(
-                static_cast<SOCKET>(fd),
+                socket,
                 IPPROTO_IP,
                 IP_UNICAST_IF,
                 reinterpret_cast<const char*>(&network_index),
@@ -88,7 +109,27 @@ namespace ppp {
             if (fd < 0 || interface_index_ <= 0) {
                 return false;
             }
+            struct sockaddr_storage local{};
+            socklen_t local_size = sizeof(local);
+            if (::getsockname(fd, reinterpret_cast<struct sockaddr*>(&local), &local_size) != 0) {
+                return false;
+            }
             const unsigned int native_index = static_cast<unsigned int>(interface_index_);
+            if (local.ss_family == AF_INET6) {
+#if defined(IPV6_BOUND_IF)
+                return ::setsockopt(
+                    fd,
+                    IPPROTO_IPV6,
+                    IPV6_BOUND_IF,
+                    &native_index,
+                    sizeof(native_index)) == 0;
+#else
+                return false;
+#endif
+            }
+            if (local.ss_family != AF_INET) {
+                return false;
+            }
             return ::setsockopt(
                 fd,
                 IPPROTO_IP,

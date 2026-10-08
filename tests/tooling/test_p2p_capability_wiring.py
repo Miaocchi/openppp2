@@ -58,6 +58,13 @@ class P2PCapabilityWiringTests(unittest.TestCase):
         self.assertIn("config.p2p.enabled = true", defaults)
         self.assertIn('config.p2p.mode = "direct-preferred"', defaults)
 
+    def test_desktop_defaults_stay_on_relay_until_accepted(self) -> None:
+        configuration = self.source("ppp/configurations/AppConfiguration.cpp")
+        defaults = configuration[configuration.index("config.p2p.enabled = true") :]
+        defaults = defaults[: defaults.index("#endif")]
+        self.assertIn("#if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE))", defaults)
+        self.assertIn('config.p2p.mode = "relay";\n#else', defaults)
+
     def test_mobile_production_targets_define_v2_gate(self) -> None:
         android = self.source("android/CMakeLists.txt")
         ios = self.source("ios/CMakeLists.txt")

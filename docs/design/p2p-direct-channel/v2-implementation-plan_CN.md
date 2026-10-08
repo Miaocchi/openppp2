@@ -7,7 +7,7 @@
 > **Audience:** OPENPPP2 协议、网络、平台及测试维护者。
 > **Parent index:** [Design Documents](../README.md)
 
-本地实现提交 `c10eb0f`、`6a6c436` 已进入生产源码。核心 production gate 在 `ppp/p2p/P2PCapabilityGate.h` 默认开启，并由各平台的 `ENABLE_P2P_V2_PRODUCTION` 构建开关控制；服务端 v2 offer 路径 `ppp/app/server/VirtualEthernetP2PV2.cpp` 仍会检查该 gate。默认配置选择 `p2p.enabled=true` 与 `direct-preferred`，显式 `p2p.enabled=false` 或能力失败时回 relay。
+本地实现提交 `c10eb0f`、`6a6c436` 已进入生产源码。核心 production gate 在 `ppp/p2p/P2PCapabilityGate.h` 默认开启，并由各平台的 `ENABLE_P2P_V2_PRODUCTION` 构建开关控制；服务端 v2 offer 路径 `ppp/app/server/VirtualEthernetP2PV2.cpp` 仍会检查该 gate。默认配置选择 `p2p.enabled=true`；Linux、Android 默认 `direct-preferred`，Windows 与桌面 macOS 在真实 NAT 验收前默认 `relay`，需显式设置 `p2p.mode=direct-preferred` 才尝试直连。显式 `p2p.enabled=false` 或能力失败时回 relay。
 
 ## 目标
 

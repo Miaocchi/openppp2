@@ -5,15 +5,18 @@
  * @brief Platform-adaptive socket protection for P2P UDP channels.
  *
  * Prevents routing loops on Android (VpnService.protect), Linux
- * (SO_BINDTODEVICE), Windows (IP_UNICAST_IF), and macOS (IP_BOUND_IF).
+ * (SO_BINDTODEVICE), Windows (IP_UNICAST_IF / IPV6_UNICAST_IF), and macOS
+ * (IP_BOUND_IF / IPV6_BOUND_IF).
  * Unsupported platforms fail closed.
  *
  * Implementations:
  * - Android: JNI VpnService.protect(fd) — guarded by _ANDROID macro.
  * - Linux: binds to the physical interface with SO_BINDTODEVICE. The legacy
  *   mark is retained for compatibility but is not used as readiness proof.
- * - Windows: binds IPv4 sockets to the physical interface with IP_UNICAST_IF.
- * - macOS: binds IPv4 sockets to the physical interface with IP_BOUND_IF.
+ * - Windows: binds sockets to the physical interface with IP_UNICAST_IF
+ *   (IPv4) or IPV6_UNICAST_IF (IPv6).
+ * - macOS: binds sockets to the physical interface with IP_BOUND_IF (IPv4)
+ *   or IPV6_BOUND_IF (IPv6).
  *
  * @license GPL-3.0
  */
