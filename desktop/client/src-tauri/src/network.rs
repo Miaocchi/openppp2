@@ -6,7 +6,7 @@ pub fn validate(value: &Value) -> Result<(), String> {
         .ok_or("Network overrides must be an object")?;
     if object
         .keys()
-        .any(|k| !["client", "dns", "udp", "routing", "geo-rules"].contains(&k.as_str()))
+        .any(|k| !["client", "dns", "udp", "routing", "geo-rules", "p2p"].contains(&k.as_str()))
     {
         return Err("Unsupported network override".into());
     }
@@ -34,6 +34,20 @@ pub fn validate(value: &Value) -> Result<(), String> {
     ] {
         if value.pointer(pointer).is_some_and(|v| !v.is_array()) {
             return Err(format!("{pointer} must be an array"));
+        }
+    }
+    if let Some(p2p) = value.get("p2p").and_then(Value::as_object) {
+        if p2p.keys().any(|key| !["enabled", "mode"].contains(&key.as_str())) {
+            return Err("Unsupported P2P override".into());
+        }
+        if p2p.get("enabled").is_some_and(|v| !v.is_boolean()) {
+            return Err("P2P enabled must be a boolean".into());
+        }
+        if p2p
+            .get("mode")
+            .is_some_and(|v| !matches!(v.as_str(), Some("relay" | "direct-preferred")))
+        {
+            return Err("P2P mode must be relay or direct-preferred".into());
         }
     }
     if let Some(ttl) = value.pointer("/udp/dns/ttl") {

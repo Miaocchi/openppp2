@@ -64,6 +64,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - 订阅和手动节点数据会先合并到生成的运行时配置，再建立连接。
 - 进程管理器会丢弃子进程标准输出，只捕获和分类标准错误；UI 不是完整的进程输出控制台。
 - 运行时统计从随 `--stats-json` 提供的生成 NDJSON 路径读取。
+- 策略页管理本地策略 v2（`<应用数据目录>/policy/policy.json` 与 `routing.rules`），通过内核的 `ppp policy` 离线命令完成模板、检查、规则测试、迁移、状态和手动更新；只有内核版本不低于 2.1.7 时才会调用这些命令。启用后，每次连接前都会先运行 `policy check`，不通过则不启动内核。
+- 节点或本地策略使用 `client.policy` 时，生成的运行时配置会去掉 v1 分流/DNS 字段，相对规则路径按 `<应用数据目录>/policy` 解析。
+- 断开时先向内核发送 Ctrl+C 并等待最多 5 秒完成路由和 DNS 回滚，超时才强制结束。
 - 连接会影响原生 client 进程。在真实主机使用非 proxy 网络模式前，请阅读[用户手册](USER_MANUAL_CN.md)以及平台和运维文档。
 
 仓库主单元测试 workflow 当前不运行 Desktop Client 的 `npm test` 或 Cargo 测试命令。修改此界面时，请运行相应本地检查。

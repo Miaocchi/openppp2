@@ -14,6 +14,10 @@ pub enum LaunchOptionsError {
     InvalidMux,
     #[error("启动参数 muxMode 必须是 compat、flow、balance 或 stripe")]
     InvalidMuxMode,
+    #[error("启动参数 tcpStack 必须是 native、lwip 或 xtcp")]
+    InvalidTcpStack,
+    #[error("启动参数 tunIpv6 必须是 IPv6 地址")]
+    InvalidTunIpv6,
 }
 
 pub fn merge_launch_options(
@@ -67,6 +71,19 @@ pub fn append_launch_args(
             return Err(LaunchOptionsError::InvalidMuxMode);
         }
         args.push(format!("--mux-mode={mode}"));
+    }
+    if let Some(stack) = optional_string(options, "tcpStack")? {
+        if !["native", "lwip", "xtcp"].contains(&stack) {
+            return Err(LaunchOptionsError::InvalidTcpStack);
+        }
+        args.push(format!("--tcp-stack={stack}"));
+    }
+    if let Some(address) = optional_string(options, "tunIpv6")? {
+        // A request hint only; the server owns IPv6 allocation.
+        if address.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(LaunchOptionsError::InvalidTunIpv6);
+        }
+        args.push(format!("--tun-ipv6={address}"));
     }
     for (field, flag) in [
         ("vnet", "--tun-vnet"),

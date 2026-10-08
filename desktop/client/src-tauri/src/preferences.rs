@@ -45,6 +45,8 @@ pub struct Preferences {
     pub settings: ClientSettings,
     pub subscriptions: Vec<SubscriptionSource>,
     pub network_overrides: Value,
+    /// Use the GUI-managed policy v2 workspace for every connection.
+    pub policy_enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

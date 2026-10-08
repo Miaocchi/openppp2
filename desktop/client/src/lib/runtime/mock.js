@@ -52,6 +52,7 @@ export function createMockRuntime() {
     async openData() { throw new Error('Opening app data requires the Windows desktop app') },
     async preview() { return {config:state.networkOverrides,args:[]} },
     async probeNodes() { emit() },
+    ...createMockPolicy(),
     subscribe(listener) {
       listeners.add(listener)
       listener(clone(state))
@@ -152,5 +153,29 @@ export function createMockRuntime() {
       if (status === 'error') appendEvent('authentication failed / server rejected', 'error')
       emit()
     },
+  }
+}
+
+// Demo policy commands: shaped like `ppp policy --json` reports, no kernel involved.
+function createMockPolicy() {
+  const report = (command, extra = {}) => ({ exitCode: 0, report: { schema: 1, command, status: 'ok', diagnostics: [], ...extra } })
+  const template = () => ({
+    policy: { version: 2, rules: { path: 'routing.rules' }, ipv6: 'block', dns: { mode: 'fake-ip', 'fake-ip': { range: '198.18.0.0/16', storage: './dns-fake-ip', identity: 'client-default' }, resolvers: { local: { via: 'direct', servers: ['doh.pub'] }, remote: { via: 'proxy', servers: ['cloudflare'] } } } },
+    rules: 'default proxy\ndns direct local\ndns proxy remote\n',
+  })
+  let saved = null, enabled = false
+  return {
+    async policyLoad() { return { enabled, policyDir: 'C:\\Users\\demo\\AppData\\Roaming\\OpenPPP2\\policy', policy: saved?.policy || null, rules: saved?.rules || '', kernelSupported: true, kernelError: '' } },
+    async policySetEnabled(value) { if (value && !saved) throw new Error('Create and save a policy before enabling it'); enabled = value; return value },
+    async policySave(policy, rules) { saved = { policy, rules }; return { policy, rules, result: report('check') } },
+    async policyCheck() { return report('check', { policy_version: 1, rule_count: 1 }) },
+    async policyExplain(policy, rules, target) {
+      return report('explain', { route: { action: 'proxy', matched: false, rule_id: 'default', source: 'default', file: 'routing.rules', line: 1, reason: 'default action' }, dns: { applicable: !/^[\d.]+$/.test(target), resolver: 'remote', via: 'proxy', rejected: false, rule_id: 'dns proxy', file: 'routing.rules', line: 3 } })
+    },
+    async policyInit() { return { ...template(), result: report('init', { template: 'proxy-all' }) } },
+    async policyMigrate() { return { ...template(), result: { exitCode: 5, report: { schema: 1, command: 'migrate', status: 'draft', diagnostics: [], migration: { status: 'draft', routing_equivalence: 'unverified', whole_policy_equivalence: 'draft', diagnostics: [{ code: 'E_MIGRATE_DNS_RUNTIME', message: 'Legacy Fake-IP, cache, or ECS behavior differs from policy-scoped v2 DNS.' }] } } } } },
+    async policyStatus() { throw new Error('No policy status yet: connect once with policy v2 enabled') },
+    async policyUpdate() { throw new Error('Connect first: manual update uses the session\'s SOCKS listener') },
+    async policyResetFakeIp() { return 'Fake-IP storage cleared' },
   }
 }

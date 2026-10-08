@@ -153,3 +153,58 @@ fn stop_then_restart_keeps_the_new_session_authoritative() {
 fn fixture_command() -> CommandSpec {
     CommandSpec::new("sh", ["-c", "echo fixture stderr >&2; sleep 0.2; exit 7"])
 }
+
+#[cfg(unix)]
+#[test]
+fn stop_waits_for_the_kernel_to_finish_its_shutdown_rollback() {
+    let (tx, rx) = mpsc::channel();
+    let mut manager = ProcessManager::new(move |event| { let _ = tx.send(event); });
+    // Rollback that outlasts the old 750 ms deadline must still complete.
+    manager
+        .start(CommandSpec::new(
+            "sh",
+            ["-c", "trap 'sleep 1; echo rollback done >&2; exit 0' TERM; echo ready >&2; while :; do sleep 0.05; done"],
+        ))
+        .unwrap();
+    for _ in 0..40 {
+        let event = rx.recv_timeout(Duration::from_millis(500)).unwrap();
+        if matches!(&event.event, ProcessEvent::Telemetry(t) if t.message.contains("ready")) { break; }
+    }
+    manager.stop().unwrap();
+    let mut rollback = false;
+    let mut exit_code = None;
+    while let Ok(event) = rx.recv_timeout(Duration::from_millis(500)) {
+        match event.event {
+            ProcessEvent::Telemetry(t) => rollback |= t.message.contains("rollback done"),
+            ProcessEvent::Exited(exit) => { exit_code = exit.code; }
+            _ => {}
+        }
+    }
+    assert!(rollback);
+    assert_eq!(exit_code, Some(0));
+}
+
+#[test]
+fn stats_sampler_reports_p2p_state_and_per_peer_paths() {
+    let mut sampler = StatsSampler::default();
+    let mut value: serde_json::Value = serde_json::from_str(&stats_line(1000, 1, 1)).unwrap();
+    value["runtime"]["p2p_state"] = serde_json::json!("probing");
+    // 10.0.0.7 in network byte order, as the kernel stores it.
+    value["runtime"]["peers"] = serde_json::json!([
+        {"virtual_ip": u32::from_le_bytes([10, 0, 0, 7]), "state": "direct", "effective_path": "direct"}
+    ]);
+    let view = sampler.consume_line(&value.to_string()).unwrap();
+    assert_eq!(view.p2p_state, "probing");
+    assert_eq!(view.peers.len(), 1);
+    assert_eq!(view.peers[0].virtual_ip, "10.0.0.7");
+    assert_eq!(view.peers[0].effective_path, "direct");
+    assert_eq!(view.tcp_stack, "");
+
+    value["tcp_stack"] = serde_json::json!({"requested": "lwip", "active": "lwip"});
+    value["monotonic_ms"] = serde_json::json!(1500);
+    assert_eq!(sampler.consume_line(&value.to_string()).unwrap().tcp_stack, "lwip");
+
+    let legacy = sampler.consume_line(&stats_line(2000, 2, 2)).unwrap();
+    assert_eq!(legacy.p2p_state, "");
+    assert!(legacy.peers.is_empty());
+}

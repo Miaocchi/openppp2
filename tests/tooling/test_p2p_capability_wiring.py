@@ -58,6 +58,13 @@ class P2PCapabilityWiringTests(unittest.TestCase):
         self.assertIn("config.p2p.enabled = true", defaults)
         self.assertIn('config.p2p.mode = "direct-preferred"', defaults)
 
+    def test_desktop_defaults_stay_on_relay_until_accepted(self) -> None:
+        configuration = self.source("ppp/configurations/AppConfiguration.cpp")
+        defaults = configuration[configuration.index("config.p2p.enabled = true") :]
+        defaults = defaults[: defaults.index("#endif")]
+        self.assertIn("#if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE))", defaults)
+        self.assertIn('config.p2p.mode = "relay";\n#else', defaults)
+
     def test_mobile_production_targets_define_v2_gate(self) -> None:
         android = self.source("android/CMakeLists.txt")
         ios = self.source("ios/CMakeLists.txt")
@@ -335,8 +342,10 @@ class P2PCapabilityWiringTests(unittest.TestCase):
             transport.index("bool Start(const P2PDatagramReceiveCallback") :
             transport.index("boost::asio::ip::udp::endpoint LocalEndpoint")
         ]
-        protection = start.index("ProtectP2PSocket")
-        self.assertLess(protection, start.index("StartReceive("))
+        # Both the IPv4 and the optional IPv6 socket are protected before
+        # either starts receiving.
+        self.assertEqual(start.count("ProtectP2PSocket"), 2)
+        self.assertLess(start.rindex("ProtectP2PSocket"), start.index("StartReceive("))
         probing = channel[
             channel.index("void P2PChannel::StartProbing") :
             channel.index("bool P2PChannel::SendProbe")
