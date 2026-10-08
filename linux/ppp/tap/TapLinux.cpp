@@ -51,6 +51,7 @@
 
 #include <linux/ppp/tap/TapLinux.h>
 #include <ppp/ipv6/IPv6Packet.h>
+#include <ppp/tap/TunWriteError.h>
 
 #include <common/unix/UnixAfx.h>
 #include <common/libtcpip/netstack.h>
@@ -2108,10 +2109,15 @@ namespace ppp {
         ssize_t TapLinux::WriteTunFrame(int fd, const uint8_t* frame, size_t frame_size) noexcept {
             ppp::diagnostics::datapath_perf::Scope write_scope;
             const bool direct_write_accounting = ppp::diagnostics::datapath_perf::BeginTunDirectWrite();
-            const ssize_t bytes_transferred = ::write(fd, frame, frame_size);
+            ssize_t bytes_transferred;
+            do {
+                bytes_transferred = ::write(fd, frame, frame_size);
+            } while (bytes_transferred < 0 && ppp::tap::ClassifyTunWriteErrno(errno) == ppp::tap::TunWriteErrorKind::Retry);
+            const int write_errno = errno;
             ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
             ppp::diagnostics::datapath_perf::RecordTunDirectWrite(static_cast<int>(frame_size),
                 static_cast<int>(bytes_transferred), write_scope.Elapsed());
+            errno = write_errno;
             return bytes_transferred;
         }
 
@@ -2122,10 +2128,15 @@ namespace ppp {
         ssize_t TapLinux::WriteGsoIovLocked(const iovec* iovecs, int count, size_t frame_size) noexcept {
             ppp::diagnostics::datapath_perf::Scope write_scope;
             const bool direct_write_accounting = ppp::diagnostics::datapath_perf::BeginTunDirectWrite();
-            const ssize_t written = ::writev(gso_write_fd_, iovecs, count);
+            ssize_t written;
+            do {
+                written = ::writev(gso_write_fd_, iovecs, count);
+            } while (written < 0 && ppp::tap::ClassifyTunWriteErrno(errno) == ppp::tap::TunWriteErrorKind::Retry);
+            const int write_errno = errno;
             ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
             ppp::diagnostics::datapath_perf::RecordTunDirectWrite(static_cast<int>(frame_size),
                 static_cast<int>(written), write_scope.Elapsed());
+            errno = write_errno;
             return written;
         }
 
@@ -2406,6 +2417,14 @@ namespace ppp {
                 // Preserve the bare/default path: no GSO state and no feature lock.
                 const ssize_t written = WriteTunFrame(tun, static_cast<const uint8_t*>(packet), static_cast<size_t>(packet_size));
                 if (written != packet_size) {
+                    // A per-packet error (bad frame from the tunnel, momentary buffer
+                    // pressure) drops this packet only; only descriptor errors close the TAP.
+                    if (written < 0 && ppp::tap::ClassifyTunWriteErrno(errno) == ppp::tap::TunWriteErrorKind::DropPacket) {
+                        mergeability.CountTunOutputWriteFailed();
+                        ppp::telemetry::Count("tap.output.dropped", 1);
+                        return false;
+                    }
+
                     FailTunWrite(TunWriteFailureSource::BareWrite);
                     return false;
                 }

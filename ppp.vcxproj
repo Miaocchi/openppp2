@@ -487,6 +487,7 @@
     <ClCompile Include="ppp\net\asio\websocket\websocket_ssl_write_websocket.cpp" />
     <ClCompile Include="ppp\net\asio\websocket\websocket_write_websocket.cpp" />
     <ClCompile Include="ppp\net\http\HttpClient.cpp" />
+    <ClCompile Include="ppp\net\http\HttpHeaderReader.cpp" />
     <ClCompile Include="ppp\net\native\dnsx.cpp" />
     <ClCompile Include="ppp\net\rinetd\RinetdConnection.cpp" />
     <ClCompile Include="ppp\app\client\AssignedAddressManager.cpp" />
@@ -883,6 +884,7 @@
     <ClInclude Include="ppp\net\asio\websocket\websocket_accept_websocket.h" />
     <ClInclude Include="ppp\net\asio\websocket\websocket_async_sslv_websocket.h" />
     <ClInclude Include="ppp\net\http\HttpClient.h" />
+    <ClInclude Include="ppp\net\http\HttpHeaderReader.h" />
     <ClInclude Include="ppp\net\http\httplib.h" />
     <ClInclude Include="ppp\net\rinetd\RinetdConnection.h" />
     <ClInclude Include="ppp\app\client\AssignedAddressManager.h" />
@@ -1012,6 +1014,9 @@
     <ClCompile Include="windows\ppp\tap\TapWindows.cpp" />
     <ClInclude Include="ppp\threading\Timer.h" />
     <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h" />
+    <ClInclude Include="ppp\tap\TunWriteError.h" />
+    <ClInclude Include="ppp\collections\SnapshotMap.h" />
+    <ClInclude Include="ppp\net\asio\SharedBufferReceive.h" />
     <ClInclude Include="ppp\transmissions\IAuthenticatedCarrierBinding.h" />
     <ClInclude Include="ppp\transmissions\ITcpipTransmission.h" />
     <ClInclude Include="ppp\transmissions\ITransmission.h" />

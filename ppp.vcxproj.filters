@@ -737,6 +737,9 @@
     <ClCompile Include="ppp\net\http\HttpClient.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\net\http\HttpHeaderReader.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="common\dnslib\buffer.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -1570,6 +1573,15 @@
     <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\tap\TunWriteError.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\collections\SnapshotMap.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\asio\SharedBufferReceive.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\transmissions\ITcpipTransmission.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -2015,6 +2027,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\net\http\HttpClient.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\net\http\HttpHeaderReader.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="common\dnslib\buffer.h">

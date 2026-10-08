@@ -99,8 +99,13 @@ AppConfiguration::AppConfiguration() noexcept {
 
 namespace extensions {
 
-bool IsHaveCiphertext(const AppConfiguration&) noexcept {
-    return false;
+// Mirrors production; the default test configuration has no keys, so tests that do
+// not set them still run without ciphers.
+bool IsHaveCiphertext(const AppConfiguration& configuration) noexcept {
+    return !configuration.key.protocol.empty() &&
+        !configuration.key.protocol_key.empty() &&
+        !configuration.key.transport.empty() &&
+        !configuration.key.transport_key.empty();
 }
 
 } // namespace extensions

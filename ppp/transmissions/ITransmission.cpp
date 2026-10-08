@@ -859,7 +859,49 @@ namespace ppp {
             int payload_len = 0, header_kf = 0, header_len = 0;
             outlen = 0;
 
-            if (EVP_protocol && EVP_transport) {
+            if (EVP_protocol && EVP_transport && !(safest || APP->key.delta_encode)) {
+                // Same layers and order as the branch below, but the transport cipher
+                // writes straight into the frame after a reserved header slot and the
+                // payload obfuscation runs in place, so no separate payload buffer is
+                // allocated and no header+payload concatenation copy is needed.
+                const int capacity = EVP_HEADER_MSS + datalen + ppp::cryptography::Ciphertext::EncryptToSlack;
+                auto packet = BufferswapAllocator::MakeByteArray(allocator, capacity);
+                if (NULLPTR == packet) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, NULLPTR);
+                }
+
+                // Layer 1: transport cipher.
+                Byte* payload = packet.get() + EVP_HEADER_MSS;
+                ppp::diagnostics::datapath_perf::Scope transport_encrypt_scope;
+                if (!EVP_transport->EncryptTo(payload, capacity - EVP_HEADER_MSS, data, datalen, payload_len) || payload_len != datalen) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed, NULLPTR);
+                }
+                ppp::diagnostics::datapath_perf::RecordFrameTransportEncrypt(datalen,
+                    transport_encrypt_scope.Elapsed());
+
+                // Layer 2: header encryption (protocol cipher).
+                ppp::diagnostics::datapath_perf::Scope header_encrypt_scope;
+                auto header = Transmission_Header_Encrypt(APP, allocator, EVP_protocol,
+                    payload_len, header_len, header_kf);
+                if (NULLPTR == header || header_len != EVP_HEADER_MSS) {
+                    return NULLPTR;
+                }
+                ppp::diagnostics::datapath_perf::RecordFrameHeaderEncrypt(header_len,
+                    header_encrypt_scope.Elapsed());
+
+                // Layer 3: payload obfuscation using header-derived key.
+                ppp::diagnostics::datapath_perf::Scope payload_encrypt_scope;
+                Transmission_Payload_Encrypt_Partial(APP, header_kf, payload, datalen, safest);
+                ppp::diagnostics::datapath_perf::RecordFramePayloadEncrypt(payload_len,
+                    payload_encrypt_scope.Elapsed());
+
+                ppp::diagnostics::datapath_perf::Scope pack_scope;
+                memcpy(packet.get(), header.get(), EVP_HEADER_MSS);
+                outlen = EVP_HEADER_MSS + payload_len;
+                ppp::diagnostics::datapath_perf::RecordFramePack(outlen, pack_scope.Elapsed());
+                return packet;
+            }
+            elif (EVP_protocol && EVP_transport) {
                 // Layer 1: transport cipher.
                 ppp::diagnostics::datapath_perf::Scope transport_encrypt_scope;
                 auto payload = EVP_transport->Encrypt(allocator, data, datalen, payload_len);

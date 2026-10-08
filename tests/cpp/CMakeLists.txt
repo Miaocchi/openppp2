@@ -870,6 +870,37 @@ openppp2_add_cpp_test(asynchronous_write_io_queue_test SOURCES
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
 target_link_libraries(asynchronous_write_io_queue_test PRIVATE boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+openppp2_add_cpp_test(shared_buffer_receive_test SOURCES
+    shared_buffer_receive_test.cpp)
+target_link_libraries(shared_buffer_receive_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(tun_write_error_test SOURCES
+    tun_write_error_test.cpp)
+openppp2_add_cpp_test(snapshot_map_test SOURCES
+    snapshot_map_test.cpp)
+target_link_libraries(snapshot_map_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(ciphertext_encrypt_to_test SOURCES
+    ciphertext_encrypt_to_test.cpp
+    support/yield_context_test_stubs.cpp
+    "${OPENPPP2_ROOT}/ppp/cryptography/Ciphertext.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/EVP.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/rc4.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/digest.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/md5.cpp"
+    "${OPENPPP2_ROOT}/common/aesni/aes.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/Error.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    # Exercise the AES-NI backend the production build enables with __SIMD__.
+    target_sources(ciphertext_encrypt_to_test PRIVATE
+        "${OPENPPP2_ROOT}/common/aesni/impl/simd_aes_128_cfb.cpp"
+        "${OPENPPP2_ROOT}/common/aesni/impl/simd_aes_128_gcm.cpp"
+        "${OPENPPP2_ROOT}/common/aesni/impl/simd_aes_256_cfb.cpp"
+        "${OPENPPP2_ROOT}/common/aesni/impl/simd_aes_256_gcm.cpp")
+    target_compile_definitions(ciphertext_encrypt_to_test PRIVATE __SIMD__)
+    target_compile_options(ciphertext_encrypt_to_test PRIVATE -maes -msse2 -mpclmul -mssse3 -msse4.1)
+endif()
+target_link_libraries(ciphertext_encrypt_to_test PRIVATE Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 openppp2_add_cpp_test(protector_network_request_test SOURCES
     protector_network_request_test.cpp)
 target_link_libraries(protector_network_request_test PRIVATE Threads::Threads)

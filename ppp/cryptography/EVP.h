@@ -40,6 +40,16 @@ namespace ppp {
              */
             std::shared_ptr<Byte>                               Encrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, Byte* data, int datalen, int& outlen) noexcept;
             /**
+             * @brief Encrypts a plaintext buffer into caller-owned memory.
+             * @param output Destination; must not overlap @p data.
+             * @param output_capacity Destination size; at least @p datalen + EncryptToSlack.
+             * @param data Input plaintext bytes.
+             * @param datalen Input length in bytes.
+             * @param outlen Receives output length in bytes.
+             * @return True on success.
+             */
+            bool                                                EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept;
+            /**
              * @brief Decrypts a ciphertext buffer.
              * @param allocator Target buffer allocator.
              * @param data Input ciphertext bytes.
