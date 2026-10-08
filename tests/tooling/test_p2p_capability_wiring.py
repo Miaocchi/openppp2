@@ -342,8 +342,10 @@ class P2PCapabilityWiringTests(unittest.TestCase):
             transport.index("bool Start(const P2PDatagramReceiveCallback") :
             transport.index("boost::asio::ip::udp::endpoint LocalEndpoint")
         ]
-        protection = start.index("ProtectP2PSocket")
-        self.assertLess(protection, start.index("StartReceive()"))
+        # Both the IPv4 and the optional IPv6 socket are protected before
+        # either starts receiving.
+        self.assertEqual(start.count("ProtectP2PSocket"), 2)
+        self.assertLess(start.rindex("ProtectP2PSocket"), start.index("StartReceive("))
         probing = channel[
             channel.index("void P2PChannel::StartProbing") :
             channel.index("bool P2PChannel::SendProbe")
