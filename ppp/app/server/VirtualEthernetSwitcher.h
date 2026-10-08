@@ -33,6 +33,7 @@
 
 #include <ppp/stdafx.h>
 #include <ppp/Int128.h>
+#include <ppp/collections/SnapshotMap.h>
 #include <ppp/net/Firewall.h>
 #include <ppp/net/native/rib.h>
 #include <ppp/threading/Timer.h>
@@ -96,6 +97,19 @@ namespace ppp {
                 typedef std::shared_ptr<NatInformation>                 NatInformationPtr;
                 typedef std::unordered_map<uint32_t, NatInformationPtr> NatInformationTable;
                 typedef std::unordered_map<ppp::string, std::shared_ptr<class VirtualEthernetExchanger>> IPv6ExchangerTable;
+                /** @brief Binary IPv6 address (network-order halves) used for lock-free per-packet lookup. */
+                typedef std::pair<uint64_t, uint64_t>                   IPv6LookupKey;
+                struct IPv6LookupKeyHash final {
+                    std::size_t operator()(const IPv6LookupKey& key) const noexcept {
+                        return std::hash<uint64_t>()(key.first ^ (key.second * 0x9E3779B97F4A7C15ULL));
+                    }
+                };
+                typedef std::unordered_map<IPv6LookupKey, std::shared_ptr<class VirtualEthernetExchanger>, IPv6LookupKeyHash> IPv6ExchangerLookup;
+                /** @brief Builds the binary-keyed lookup snapshot from the string-keyed table. */
+                struct IPv6ExchangerLookupProject final {
+                    IPv6ExchangerLookup operator()(const IPv6ExchangerTable& table) const;
+                };
+                static IPv6LookupKey                                    MakeIPv6LookupKey(const boost::asio::ip::address_v6& ip) noexcept;
 
                 /**
                  * @brief Tracks the IPv6 assignment request/response state for one session.
@@ -858,8 +872,10 @@ namespace ppp {
                 std::atomic<bool>                                       running_{false};
 
                 VirtualEthernetLoggerPtr                                logger_;                        ///< Session activity logger.
-                NatInformationTable                                     nats_;                          ///< IPv4 NAT ownership table (key = IP).
-                IPv6ExchangerTable                                      ipv6s_;                         ///< IPv6 address → exchanger mapping.
+                /** @brief IPv4 NAT ownership table (key = IP). Written under syncobj_; FindNatInformation() reads its snapshot lock-free. */
+                ppp::collections::SnapshotMap<NatInformationTable>      nats_;
+                /** @brief IPv6 address → exchanger mapping. Written under syncobj_; FindIPv6Exchanger() reads its binary-keyed snapshot lock-free. */
+                ppp::collections::SnapshotMap<IPv6ExchangerTable, IPv6ExchangerLookup, IPv6ExchangerLookupProject> ipv6s_;
                 ppp::unordered_set<ppp::string>                          ipv6_transit_neighbor_owned_;   ///< Permanent transit neighbors created by this switcher.
                 IPv6RequestTable                                        ipv6_requests_;                 ///< Per-session IPv6 request state.
                 IPv6LeaseTable                                          ipv6_leases_;                   ///< Active IPv6 lease records.

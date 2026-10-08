@@ -3,12 +3,6 @@
 #include <ppp/threading/Thread.h>
 #include <ppp/diagnostics/Error.h>
 
-#include <ppp/app/mux/vmux.h>
-#include <ppp/app/mux/vmux_net.h>
-
-#include <ppp/net/asio/vdns.h>
-
-#include <common/libtcpip/netstack.h>
 
 #if defined(_WIN32)
 #include <windows/ppp/win32/Win32Native.h>
@@ -21,14 +15,6 @@
 
 namespace ppp
 {
-    namespace net
-    {
-        namespace asio
-        {
-            void InternetControlMessageProtocol_DoEvents() noexcept;
-        }
-    }
-
     namespace threading
     {
         namespace detail
@@ -84,6 +70,10 @@ namespace ppp
             ExecutorThreadTable                                                 Threads;
             ppp::vector<ExecutorThreadPtr>                                      SchedulerThreads;
             ExecutorBufferArrayTable                                            Buffers;
+            /** @brief Guards the installed hook callbacks below. */
+            SynchronizedObject                                                  HooksLock;
+            Executors::SecondTickHandler                                        SecondTick;
+            Executors::WorkersStoppedHandler                                    WorkersStopped;
 
         public:
             /** @brief Initializes runtime callbacks and process priority behavior. */
@@ -124,8 +114,16 @@ namespace ppp
 
                                 if (past)
                                 {
-                                    ppp::net::asio::vdns::UpdateAsync();
-                                    ppp::net::asio::InternetControlMessageProtocol_DoEvents();
+                                    Executors::SecondTickHandler handler;
+                                    {
+                                        SynchronizedObjectScope scope(i->HooksLock);
+                                        handler = i->SecondTick;
+                                    }
+
+                                    if (NULLPTR != handler)
+                                    {
+                                        handler();
+                                    }
                                 }
 
                                 Sleep(kTickThreadSleepMilliseconds);
@@ -284,39 +282,6 @@ namespace ppp
             Internal->Default.reset();
 
             Executors_DeleteCachedBuffer(context.get());
-        }
-
-        /**
-         * @brief Attempts graceful netstack shutdown and waits for completion signal.
-         * @return true when shutdown processing was observed; otherwise false.
-         */
-        bool Executors_NetstackTryExit() noexcept
-        {
-            std::shared_ptr<Executors::Awaitable> awaitable =
-                make_shared_object<Executors::Awaitable>();
-            if (NULLPTR == awaitable)
-            {
-                lwip::netstack::close();
-                return false;
-            }
-
-            /*
-             * Each shutdown owns its completion state. netstack::close() is
-             * required to complete the callback even when its context has
-             * already stopped, so Await() never runs under an external lock.
-             */
-            lwip::netstack::close(
-                [awaitable]() noexcept
-                {
-                    awaitable->Processed();
-                });
-
-            bool processed = awaitable->Await();
-            if (processed)
-            {
-                lwip::netstack::wait_closed();
-            }
-            return processed;
         }
 
         /**
@@ -707,7 +672,7 @@ namespace ppp
         }
 
         /**
-         * @brief Stops all known contexts, joins worker threads, and closes netstack.
+         * @brief Stops all known contexts, joins worker threads, and runs the workers-stopped hook.
          * @return true when any stop action is performed; otherwise false.
          */
         bool Executors::Exit() noexcept
@@ -734,8 +699,8 @@ namespace ppp
                 SchedulerThreads = i->SchedulerThreads;
             }
 
-            /* Signal the tick thread to leave its loop so it stops taking the
-             * executor lock and calling into vdns/ICMP before teardown proceeds. */
+            /* Signal the tick thread to leave its loop so it stops running the
+             * second-tick hook before teardown proceeds. */
             i->TickThreadStop.store(true, std::memory_order_release);
 
             bool any = false;
@@ -757,7 +722,17 @@ namespace ppp
                 }
             }
 
-            Executors_NetstackTryExit();
+            Executors::WorkersStoppedHandler workers_stopped;
+            {
+                SynchronizedObjectScope scope(i->HooksLock);
+                workers_stopped = i->WorkersStopped;
+            }
+
+            if (NULLPTR != workers_stopped)
+            {
+                workers_stopped();
+            }
+
             if (Exit(Scheduler))
             {
                 any |= true;
@@ -779,7 +754,7 @@ namespace ppp
             }
 
             /* Join the tick thread last: after this returns it can no longer
-             * hold the executor lock or call into vdns during process exit. */
+             * run the second-tick hook during process exit. */
             {
                 SynchronizedObjectScope scope(i->TickThreadLock);
                 if (i->TickThread.joinable() && i->TickThread.get_id() != std::this_thread::get_id())
@@ -793,6 +768,26 @@ namespace ppp
             }
 
             return any;
+        }
+
+        void Executors::SetSecondTickHandler(const SecondTickHandler& handler) noexcept
+        {
+            std::shared_ptr<ExecutorsInternal> i = Internal;
+            if (NULLPTR != i)
+            {
+                SynchronizedObjectScope scope(i->HooksLock);
+                i->SecondTick = handler;
+            }
+        }
+
+        void Executors::SetWorkersStoppedHandler(const WorkersStoppedHandler& handler) noexcept
+        {
+            std::shared_ptr<ExecutorsInternal> i = Internal;
+            if (NULLPTR != i)
+            {
+                SynchronizedObjectScope scope(i->HooksLock);
+                i->WorkersStopped = handler;
+            }
         }
 
         /**

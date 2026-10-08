@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace asio = boost::asio;
@@ -441,4 +442,158 @@ BOOST_AUTO_TEST_CASE(tcp_child_send_half_close_preserves_receive) {
     child->Dispose();
     context->restart();
     context->poll();
+}
+
+BOOST_AUTO_TEST_CASE(tcp_read_ahead_preserves_byte_stream) {
+    auto context = std::make_shared<asio::io_context>();
+    auto strand = std::make_shared<FakeTransmission::StrandPtr::element_type>(
+        asio::make_strand(*context));
+    auto configuration = std::make_shared<ppp::configurations::AppConfiguration>();
+    std::vector<std::shared_ptr<tcp::socket>> peers;
+    auto carrier = std::make_shared<transmissions::ITcpipTransmission>(
+        context, strand, ConnectedSocket(context, peers), configuration,
+        transmissions::TcpTransmissionRole::Child);
+    const auto peer = peers.front();
+
+    // Reads that mirror frame decoding: small headers, small and large payloads.
+    const std::vector<int> reads = { 3, 100, 3, 70000, 3, 1, 5, 20000 };
+    std::vector<ppp::Byte> stream;
+    for (int length : reads) {
+        for (int i = 0; i < length; i++) {
+            stream.push_back(static_cast<ppp::Byte>((stream.size() * 131 + 17) & 0xff));
+        }
+    }
+
+    // Deliver everything in uneven chunks so reads both span and split socket reads.
+    std::thread writer([&]() {
+        std::size_t offset = 0;
+        std::size_t chunk = 7;
+        boost::system::error_code ec;
+        while (offset < stream.size() && !ec) {
+            std::size_t n = std::min(chunk, stream.size() - offset);
+            asio::write(*peer, asio::buffer(stream.data() + offset, n), ec);
+            offset += n;
+            chunk = chunk * 3 + 1;
+        }
+    });
+
+    bool matched = true;
+    std::size_t consumed = 0;
+    BOOST_REQUIRE(ppp::coroutines::YieldContext::Spawn(
+        nullptr, *context, strand.get(),
+        [&](ppp::coroutines::YieldContext& y) noexcept {
+            for (int length : reads) {
+                const std::shared_ptr<ppp::Byte> bytes = carrier->ReadBytes(y, length);
+                if (!bytes || !std::equal(stream.begin() + consumed, stream.begin() + consumed + length, bytes.get())) {
+                    matched = false;
+                    return;
+                }
+                consumed += length;
+            }
+        }));
+    context->restart();
+    context->run();
+    writer.join();
+
+    BOOST_TEST(matched);
+    BOOST_TEST(consumed == stream.size());
+
+    carrier->Dispose();
+    context->restart();
+    context->poll();
+}
+
+BOOST_AUTO_TEST_CASE(tcp_encrypted_frames_round_trip_after_handshake) {
+    // Exercises the post-handshake frame encoder (transport cipher written straight into
+    // the frame, gathered carrier writes) against the unchanged decoder and read-ahead.
+    for (int variant = 0; variant < 4; variant++) {
+        const bool delta_encode = (variant & 1) != 0;
+        const bool obfuscate = (variant & 2) != 0;
+        auto context = std::make_shared<asio::io_context>();
+        auto strand = std::make_shared<FakeTransmission::StrandPtr::element_type>(
+            asio::make_strand(*context));
+        auto configuration = std::make_shared<ppp::configurations::AppConfiguration>();
+        configuration->key.protocol = "aes-128-cfb";
+        configuration->key.protocol_key = "frame-test-protocol";
+        configuration->key.transport = "aes-256-cfb";
+        configuration->key.transport_key = "frame-test-transport";
+        configuration->key.plaintext = false;
+        configuration->key.delta_encode = delta_encode;
+        configuration->key.masked = obfuscate;
+        configuration->key.shuffle_data = obfuscate;
+
+        std::vector<std::shared_ptr<tcp::socket>> peers;
+        auto client = std::make_shared<transmissions::ITcpipTransmission>(
+            context, strand, ConnectedSocket(context, peers), configuration,
+            transmissions::TcpTransmissionRole::Main);
+        auto server = std::make_shared<transmissions::ITcpipTransmission>(
+            context, strand, peers.front(), configuration,
+            transmissions::TcpTransmissionRole::Server);
+
+        const std::vector<int> sizes = { 1, 3, 64, 1400, 9000, 65535, 2, 777 };
+        std::vector<std::vector<ppp::Byte>> frames;
+        for (std::size_t f = 0; f < sizes.size(); f++) {
+            std::vector<ppp::Byte> frame(sizes[f]);
+            for (int i = 0; i < sizes[f]; i++) {
+                frame[i] = static_cast<ppp::Byte>(f * 37 + i * 11);
+            }
+            frames.push_back(std::move(frame));
+        }
+
+        ppp::Int128 session_id = 0;
+        bool server_handshaked = false;
+        int written = 0;
+        int received = 0;
+        bool matched = true;
+        BOOST_REQUIRE(ppp::coroutines::YieldContext::Spawn(
+            nullptr, *context, strand.get(),
+            [&](ppp::coroutines::YieldContext& y) noexcept {
+                bool mux = false;
+                session_id = client->HandshakeClient(y, mux);
+                if (session_id == 0) {
+                    return;
+                }
+
+                // Queue every frame without waiting so the write queue builds a backlog.
+                for (const auto& frame : frames) {
+                    if (client->Write(frame.data(), static_cast<int>(frame.size()),
+                        [&written](bool ok) noexcept { written += ok ? 1 : 0; })) {
+                        continue;
+                    }
+                    return;
+                }
+            }));
+        BOOST_REQUIRE(ppp::coroutines::YieldContext::Spawn(
+            nullptr, *context, strand.get(),
+            [&](ppp::coroutines::YieldContext& y) noexcept {
+                server_handshaked = server->HandshakeServer(y, ppp::Int128(0x1234), false);
+                if (!server_handshaked) {
+                    return;
+                }
+
+                for (const auto& frame : frames) {
+                    int length = 0;
+                    std::shared_ptr<ppp::Byte> packet = server->Read(y, length);
+                    if (!packet || length != static_cast<int>(frame.size()) ||
+                        !std::equal(frame.begin(), frame.end(), packet.get())) {
+                        matched = false;
+                        return;
+                    }
+                    received++;
+                }
+            }));
+        context->restart();
+        context->run_for(std::chrono::seconds(20));
+
+        BOOST_TEST((session_id != ppp::Int128(0)));
+        BOOST_TEST(server_handshaked);
+        BOOST_TEST(matched);
+        BOOST_TEST(received == static_cast<int>(frames.size()));
+        BOOST_TEST(written == static_cast<int>(frames.size()));
+
+        client->Dispose();
+        server->Dispose();
+        context->restart();
+        context->poll();
+    }
 }
