@@ -599,8 +599,10 @@ namespace ppp {
 
                 // Perform async write on the TCP socket
                 std::shared_ptr<IAsynchronousWriteIoQueue> self = shared_from_this();
-                boost::asio::async_write(*socket_, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
-                    [self, this, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                // The handler owns the socket: Finalize() moves socket_ out while a
+                // multi-part async_write may still need it.
+                boost::asio::async_write(*socket, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
+                    [self, this, socket, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool ok = ec == boost::system::errc::success;
                         if (cb) {
                             cb(ok);
@@ -1375,8 +1377,10 @@ namespace ppp {
                 }
 
                 std::shared_ptr<IAsynchronousWriteIoQueue> self = shared_from_this();
-                boost::asio::async_write(*socket_, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
-                    [self, this, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                // The handler owns the socket: Finalize() moves socket_ out while a
+                // multi-part async_write may still need it.
+                boost::asio::async_write(*socket, boost::asio::buffer((Byte*)packet.get() + offset, packet_length),
+                    [self, this, socket, packet, packet_length, cb](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool ok = ec == boost::system::errc::success;
                         if (cb) {
                             cb(ok);

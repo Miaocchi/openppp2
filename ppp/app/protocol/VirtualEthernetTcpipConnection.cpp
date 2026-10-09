@@ -1016,11 +1016,17 @@ namespace ppp {
                     Update();
 
                     bool ok = false;
-                    boost::asio::post(socket_->get_executor(),
-                        [this, &y, &ok, packet, packet_length]() noexcept {
+                    // Own the socket for the whole composed write: Clear() resets socket_.
+                    std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_;
+                    if (NULLPTR == socket) {
+                        break;
+                    }
+
+                    boost::asio::post(socket->get_executor(),
+                        [socket, &y, &ok, packet, packet_length]() noexcept {
                             ppp::diagnostics::datapath_perf::Scope socket_write_scope;
-                            boost::asio::async_write(*socket_, boost::asio::buffer(packet.get(), packet_length),
-                                [&y, &ok, packet_length, socket_write_scope](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
+                            boost::asio::async_write(*socket, boost::asio::buffer(packet.get(), packet_length),
+                                [socket, &y, &ok, packet_length, socket_write_scope](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
                                     if (!ec && bytes_transferred == static_cast<std::size_t>(packet_length)) {
                                         ppp::diagnostics::datapath_perf::RecordTcpipBridgeSocketWriteCompleted(packet_length, socket_write_scope.Elapsed());
                                     }

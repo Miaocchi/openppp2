@@ -124,8 +124,10 @@ namespace ppp {
                         continue;
                     }
 
+                    // Dispose() moves ssl_websocket_ out; the handler keeps the stream
+                    // alive until this multi-step websocket/TLS write completes.
                     ssl_websocket->async_write(boost::asio::buffer(payload.get(), message.length),
-                        [self, this, payload, cb](const boost::system::error_code& ec, size_t sz) noexcept {
+                        [self, this, ssl_websocket, payload, cb](const boost::system::error_code& ec, size_t sz) noexcept {
                             bool ok = ec == boost::system::errc::success;
                             if (false == ok &&
                                 boost::asio::error::operation_aborted != ec &&

@@ -14,7 +14,8 @@ cmake --build "$BUILD_DIR" --target \
     runtime_stop_pipeline_test \
     client_lifecycle_stress_test \
     route_coordinator_test \
-    dns_controller_test
+    dns_controller_test \
+    transport_auth_lifecycle_test
 
 for test_binary in \
     runtime_lifecycle_test \
@@ -35,3 +36,17 @@ do
             "$BUILD_DIR/$test_binary"
     fi
 done
+
+# Only the socket-lifetime regression from this binary runs here; it reports a
+# use-after-free solely under AddressSanitizer.
+echo "Running sanitizer target: transport_auth_lifecycle_test (tcp_write_continuation_survives_dispose)"
+if [ "$DISABLE_ASLR" = "1" ]; then
+    setarch "$(uname -m)" -R env \
+        ASAN_OPTIONS="detect_leaks=$DETECT_LEAKS:halt_on_error=1:strict_string_checks=1" \
+        UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
+        "$BUILD_DIR/transport_auth_lifecycle_test" --run_test=tcp_write_continuation_survives_dispose
+else
+    ASAN_OPTIONS="detect_leaks=$DETECT_LEAKS:halt_on_error=1:strict_string_checks=1" \
+    UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
+        "$BUILD_DIR/transport_auth_lifecycle_test" --run_test=tcp_write_continuation_survives_dispose
+fi

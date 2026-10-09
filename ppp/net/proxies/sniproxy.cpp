@@ -340,8 +340,15 @@ namespace ppp {
                     return false;
                 }
 
-                // Read the TLS payload (Client Hello)
-                if (!ppp::coroutines::asio::async_read(*local_socket_,
+                // Read the TLS payload (Client Hello). The local copy keeps the socket
+                // alive across the composed read even if close() resets local_socket_.
+                std::shared_ptr<boost::asio::ip::tcp::socket> local_socket = local_socket_;
+                if (NULLPTR == local_socket) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
+                    return false;
+                }
+
+                if (!ppp::coroutines::asio::async_read(*local_socket,
                     boost::asio::buffer(local_socket_buf_, tls_payload), y)) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketReadFailed);
                     return false;
@@ -388,8 +395,15 @@ namespace ppp {
                 // Read until "\r\n\r\n" (end of HTTP headers)
                 boost::system::error_code ec;
                 std::size_t length = 0;
-                boost::asio::async_read_until(*local_socket_, *response, "\r\n\r\n",
-                    [&y, &ec, &length](const boost::system::error_code& e, std::size_t sz) noexcept {
+                std::shared_ptr<boost::asio::ip::tcp::socket> local_socket = local_socket_;
+                if (NULLPTR == local_socket) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
+                    return false;
+                }
+
+                // The handler owns the socket for the whole composed read.
+                boost::asio::async_read_until(*local_socket, *response, "\r\n\r\n",
+                    [local_socket, &y, &ec, &length](const boost::system::error_code& e, std::size_t sz) noexcept {
                         ec = e;
                         length = sz;
                         y.R();
@@ -880,9 +894,17 @@ namespace ppp {
                         last_ = Executors::GetTickCount(); // update activity timestamp
                         reset_inactivity_timer();          // reset timer on read activity
 
-                        boost::asio::async_write(*local_socket_, boost::asio::buffer(remote_socket_buf_, by),
+                        // close() resets local_socket_; the handler owns the socket until
+                        // every partial write of this async_write has finished.
+                        std::shared_ptr<boost::asio::ip::tcp::socket> local_socket = local_socket_;
+                        if (NULLPTR == local_socket) {
+                            close();
+                            return;
+                        }
+
+                        boost::asio::async_write(*local_socket, boost::asio::buffer(remote_socket_buf_, by),
                             boost::asio::bind_executor(strand_,
-                            [self, this](const boost::system::error_code& ec, uint32_t) noexcept {
+                            [self, this, local_socket](const boost::system::error_code& ec, uint32_t) noexcept {
                                 if (is_disposed()) {
                                     return;
                                 }
@@ -953,7 +975,15 @@ namespace ppp {
              */
             bool sniproxy::do_handshake(ppp::coroutines::YieldContext& y) noexcept {
                 const int hdr_sz = sizeof(tls_hdr); // 5 bytes
-                if (!ppp::coroutines::asio::async_read(*local_socket_,
+                // close() may reset local_socket_ while a composed read is pending;
+                // this copy keeps the socket alive until the coroutine resumes.
+                std::shared_ptr<boost::asio::ip::tcp::socket> local_socket = local_socket_;
+                if (NULLPTR == local_socket) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
+                    return false;
+                }
+
+                if (!ppp::coroutines::asio::async_read(*local_socket,
                     boost::asio::buffer(local_socket_buf_, hdr_sz), y)) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketReadFailed);
                     return false;
@@ -979,7 +1009,7 @@ namespace ppp {
                 }
 
                 static constexpr int http_probe_sz = 8;
-                if (!ppp::coroutines::asio::async_read(*local_socket_,
+                if (!ppp::coroutines::asio::async_read(*local_socket,
                     boost::asio::buffer(local_socket_buf_ + hdr_sz, http_probe_sz - hdr_sz), y)) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketReadFailed);
                     return false;

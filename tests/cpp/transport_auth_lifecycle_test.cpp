@@ -13,8 +13,11 @@
 #include <boost/asio/post.hpp>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
@@ -596,4 +599,76 @@ BOOST_AUTO_TEST_CASE(tcp_encrypted_frames_round_trip_after_handshake) {
         context->restart();
         context->poll();
     }
+}
+
+namespace {
+class WriteProbe final : public transmissions::ITcpipTransmission {
+public:
+    using ITcpipTransmission::ITcpipTransmission;
+    using ITcpipTransmission::DoWriteBytes;
+};
+}
+
+// Regression for an EXC_BAD_ACCESS in async_send: async_write's write_op only
+// references the socket, so a partial-write continuation that runs after
+// Finalize() released the socket must still find it alive.
+BOOST_AUTO_TEST_CASE(tcp_write_continuation_survives_dispose) {
+    auto context = std::make_shared<asio::io_context>();
+    auto strand = std::make_shared<FakeTransmission::StrandPtr::element_type>(
+        asio::make_strand(*context));
+    auto configuration = std::make_shared<ppp::configurations::AppConfiguration>();
+
+    // Production sockets run on the transmission strand.
+    tcp::acceptor acceptor(*context, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    auto client = std::make_shared<tcp::socket>(*strand);
+    auto peer = std::make_shared<tcp::socket>(*context);
+    client->connect(acceptor.local_endpoint());
+    acceptor.accept(*peer);
+    client->set_option(asio::socket_base::send_buffer_size(4096));
+    peer->non_blocking(true); // The drain loop below must never block.
+
+    auto carrier = std::make_shared<WriteProbe>(context, strand, client, configuration,
+        transmissions::TcpTransmissionRole::Child);
+    client.reset(); // The transmission is the socket's only owner, as in production.
+
+    const int length = 8 * 1024 * 1024;
+    std::shared_ptr<ppp::Byte> packet(new ppp::Byte[length](), std::default_delete<ppp::Byte[]>());
+    std::atomic<int> completions{ 0 };
+    std::atomic<bool> succeeded{ true };
+    BOOST_REQUIRE(carrier->DoWriteBytes(packet, 0, length, [&](bool ok) noexcept {
+        succeeded = ok;
+        completions++;
+    }));
+    context->poll(); // First write_some fills the socket buffers; the rest waits.
+    BOOST_REQUIRE(completions.load() == 0);
+
+    // Hold the strand on another thread so Finalize() queues ahead of the next
+    // partial-write completion, which is the order seen in the crash report.
+    std::promise<void> held;
+    std::promise<void> release;
+    auto release_future = release.get_future().share();
+    asio::post(*strand, [&held, release_future]() {
+        held.set_value();
+        release_future.wait();
+    });
+    context->restart();
+    std::thread runner([context]() { context->run(); });
+    held.get_future().wait();
+
+    carrier->Dispose(); // Queues Finalize() on the busy strand.
+    std::vector<ppp::Byte> sink(256 * 1024);
+    for (int i = 0; i < 50; i++) {
+        boost::system::error_code ec;
+        peer->read_some(asio::buffer(sink), ec); // Frees send buffer space.
+        context->poll(); // Reactor completes a partial write; continuation queues on the strand.
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    release.set_value();
+    runner.join();
+    context->restart();
+    context->poll();
+
+    BOOST_TEST(completions.load() == 1);
+    BOOST_TEST(!succeeded.load());
 }
