@@ -152,6 +152,14 @@ struct ConnectPayload {
     session_id: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryPayload {
+    network_recovery_pending: bool,
+    proxy_recovery_pending: bool,
+    message: String,
+}
+
 impl DesktopState {
     fn new(app: &AppHandle) -> Result<Self, String> {
         let mut data_dir = app
@@ -442,6 +450,43 @@ fn client_restore_proxy(force: bool, state: State<'_, DesktopState>) -> Result<(
     crate::windows::restore_proxy(&state.data_dir.join("proxy-recovery.json"), force)?;
     proxy.applied = false;
     Ok(())
+}
+
+/// Retry the recovery paths owned by the desktop process. Core-owned network
+/// state remains pending until a recovery worker verifies it was restored.
+#[tauri::command]
+fn client_retry_recovery(state: State<'_, DesktopState>) -> Result<RecoveryPayload, String> {
+    if state
+        .process
+        .lock()
+        .map_err(|_| "Process lock")?
+        .is_running()
+    {
+        return Err("Disconnect before recovering network state".into());
+    }
+    let network_recovery_pending = state
+        .process
+        .lock()
+        .map_err(|_| "Process lock")?
+        .snapshot()
+        .recovery_pending;
+    let proxy_path = state.data_dir.join("proxy-recovery.json");
+    let proxy_recovery_pending = if proxy_path.exists() {
+        crate::windows::restore_proxy(&proxy_path, false).is_err() || proxy_path.exists()
+    } else {
+        false
+    };
+    Ok(RecoveryPayload {
+        network_recovery_pending,
+        proxy_recovery_pending,
+        message: if network_recovery_pending {
+            "Core network recovery is still pending; retry after the recovery worker completes".into()
+        } else if proxy_recovery_pending {
+            "System proxy recovery is still pending".into()
+        } else {
+            String::new()
+        },
+    })
 }
 
 #[tauri::command]
@@ -1724,6 +1769,7 @@ pub fn run() {
             client_delete_subscription,
             client_update_network,
             client_restore_proxy,
+            client_retry_recovery,
             client_pick_executable,
             client_elevate,
             client_kernel_info,

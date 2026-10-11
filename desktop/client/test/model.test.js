@@ -14,7 +14,7 @@ test('exposes the connection lifecycle states', () => {
     'connecting',
     'disconnected',
     'error',
-    'starting', 'reconnecting', 'stopping',
+    'starting', 'reconnecting', 'stopping', 'recovery_pending',
   ])
 })
 

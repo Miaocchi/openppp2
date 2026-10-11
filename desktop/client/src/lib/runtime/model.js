@@ -6,6 +6,7 @@ export const connectionStates = Object.freeze({
   starting: { label: '启动中', action: '取消', tone: 'warning' },
   reconnecting: { label: '重连中', action: '取消', tone: 'warning' },
   stopping: { label: '停止中', action: '等待', tone: 'muted' },
+  recovery_pending: { label: '网络恢复待处理', action: '恢复网络', tone: 'danger' },
 })
 
 export function latencyTone(latency) {
@@ -91,7 +92,7 @@ export function createEmptyClientState() {
     route: 'connection',
     connection: {
       status: 'disconnected', currentNodeId: null, connectedAt: null,
-      exitCode: null, statsAvailable: false, pid: null, lastError: '', mode: 'client', sessionId: 0, phase: 'idle', statsStale: false,
+      exitCode: null, statsAvailable: false, pid: null, lastError: '', mode: 'client', sessionId: 0, phase: 'idle', statsStale: false, recoveryPending: false,
     },
     stats: {
       rxRateMbps: 0, txRateMbps: 0, rxBytes: 0, txBytes: 0,

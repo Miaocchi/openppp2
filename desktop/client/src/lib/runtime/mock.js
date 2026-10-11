@@ -46,6 +46,14 @@ export function createMockRuntime() {
     async saveSubscription(source) { const saved={...source,id:source.id || `s${Date.now()}`}; state.subscription.sources=[...state.subscription.sources.filter((s) => s.id !== saved.id),saved]; emit() },
     async deleteSubscription(sourceId) { state.subscription.sources=state.subscription.sources.filter((s) => s.id !== sourceId); emit() },
     async restoreProxy() { state.proxyRecoveryPending=false; emit() },
+    async retryRecovery() {
+      state.connection.recoveryPending = false
+      state.connection.status = 'disconnected'
+      state.connection.phase = 'idle'
+      state.connection.lastError = ''
+      emit()
+      return { networkRecoveryPending: false, proxyRecoveryPending: state.proxyRecoveryPending }
+    },
     async inspectKernel() { throw new Error('Kernel inspection requires the Windows desktop app') },
     async pickExecutable() { throw new Error('File selection requires the Windows desktop app') },
     async elevate() { throw new Error('Elevation requires the Windows desktop app') },
