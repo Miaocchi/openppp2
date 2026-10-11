@@ -715,6 +715,7 @@ openppp2_add_cpp_test(route_state_test SOURCES
 openppp2_add_cpp_test(network_ownership_test SOURCES
     network_ownership_test.cpp
     "${OPENPPP2_ROOT}/ppp/app/client/route/NetworkOwnership.cpp")
+set_tests_properties(network_ownership_test PROPERTIES RUN_SERIAL TRUE)
 openppp2_add_cpp_test(client_connection_teardown_state_test SOURCES
     client_connection_teardown_state_test.cpp)
 openppp2_add_cpp_test(route_coordinator_test SOURCES
@@ -732,6 +733,7 @@ openppp2_add_cpp_test(route_coordinator_test SOURCES
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
 target_compile_definitions(route_coordinator_test PRIVATE
     OPENPPP2_ROUTE_TEST_MOBILE)
+set_tests_properties(route_coordinator_test PROPERTIES RUN_SERIAL TRUE)
 openppp2_add_cpp_test(linux_route_platform_contract_test SOURCES
     linux_route_platform_contract_test.cpp
     support/linux_route_platform_stubs.cpp
