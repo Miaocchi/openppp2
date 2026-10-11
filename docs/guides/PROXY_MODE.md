@@ -1,99 +1,89 @@
-# Proxy-only mode
+# Proxy Mode
+
 > Status: Active
 > Type: Guide
-> Last verified: policy source and Linux live evidence, 2026-10-07
+> Last verified: 2026-10-11 (against `ApplicationMode.cpp`, `ApplicationClientBootstrap.cpp`, `VEthernetLocalProxySwitcher.cpp`)
+>
+> **Purpose:** Provide local HTTP / SOCKS5 proxies only, without changing system routes or DNS.
+> **Audience:** Users who want some applications, not the whole machine, to use the tunnel.
+> **Parent index:** [Guides](README.md) · **Chinese:** [代理模式](PROXY_MODE_CN.md)
 
-> **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
-> **Audience:** OPENPPP2 users, operators, and developers.
-> **Status:** Current.
-> **Last verified against:** Policy source and Linux live evidence, 2026-10-07.
-> **Parent index:** [Back to index](README.md) · **Chinese:** [纯代理模式](PROXY_MODE_CN.md)
+## 1. When to use it
 
+| Need | Choose |
+|---|---|
+| All machine traffic follows the tunnel rules | TUN client: `--mode=client` |
+| Only a browser / some programs use the tunnel; system networking unchanged | **Proxy mode**: `--mode=proxy` |
+| Desktop without administrator rights | Proxy mode (no virtual adapter on desktop, usually no admin needed) |
 
-Proxy-only mode connects to an OpenPPP2 server and exposes **local HTTP and SOCKS5 forward proxies** without installing host-system route entries or system DNS settings. It still loads the canonical routing policy into the native client. Desktop startup uses `TapStub`; mobile platforms keep only the minimal tunnel interface needed by the runtime. Not installing a host rule does not disable the corresponding native policy.
+## 2. Quick start
 
-The `client.routing` interface described here remains applicable to v2.1.6. The target v2.1.7 release includes the opt-in `client.policy.version: 2` implementation and `ppp policy` CLI; v2.1.6 does not. Check the release page for v2.1.7 package availability. The two policy generations cannot be combined in one configuration. See [Policy CLI](POLICY_CLI.md) for v2.1.7 setup and limits.
-
-## Quick start
+Use the same client configuration as a TUN client (`key` + `client.guid` + `client.server`):
 
 ```bash
-./ppp --mode=proxy --config=./appsettings.json
+./ppp --mode=proxy --config=./client.json
+```
+
+Verify:
+
+```bash
 curl -x socks5h://127.0.0.1:1080 https://example.com
 curl -x http://127.0.0.1:8080 https://example.com
 ```
 
-## Configuration
+Point the browser or application proxy at `127.0.0.1:1080` (SOCKS5) or `127.0.0.1:8080` (HTTP).
 
-Prefer the canonical `client.routing` object for IP/DNS policy. When present, it is authoritative for those policy sources; runtime mode remains independent:
+## 3. Two ways to enable it
+
+| Way | How |
+|---|---|
+| Command line | `--mode=proxy` |
+| Configuration | `"client": { "proxy-only": true }`, then start with `--mode=client` |
+
+Both behave the same.
+
+## 4. Listen addresses and ports
+
+| Listener | Address | Default port | Change the port |
+|---|---|---|---|
+| HTTP (including HTTPS CONNECT) | `127.0.0.1` (forced) | `8080` | `client.http-proxy.port` or `--proxy-http-port` |
+| SOCKS5 (CONNECT and UDP ASSOCIATE) | `127.0.0.1` (forced) | `1080` | `client.socks-proxy.port` or `--proxy-socks-port` |
+
+- In proxy mode `bind` is **always `127.0.0.1`**; a configured `bind` is ignored, and a bind failure is an error rather than a fallback to all addresses. To serve other LAN devices, use the TUN client with an explicit `bind`.
+- SOCKS5 username/password authentication is enabled with `client.socks-proxy.username` / `password`.
+
+## 5. Split rules still apply
+
+Bypass lists, routes, and DNS rules from `client.routing` (or `client.policy`) load as usual in proxy mode: destinations matched as direct are connected locally, the rest go through the tunnel. The only difference is that the rules are not written into the OS route table or DNS settings.
 
 ```json
-{
-  "client": {
-    "guid": "{...}",
-    "server": "ppp://your-server:20000/",
-    "proxy-only": true,
-    "routing": {
-      "ip": {
-        "bypass": [],
-        "routes": [],
-        "peer-routes": []
-      },
-      "dns": {
-        "rules": []
-      }
-    },
-    "http-proxy": { "bind": "127.0.0.1", "port": 8080 },
-    "socks-proxy": { "bind": "127.0.0.1", "port": 1080 }
+"client": {
+  "guid": "{...}",
+  "server": "ppp://SERVER_IP:20000/",
+  "proxy-only": true,
+  "routing": {
+    "ip":  { "bypass": ["./ip.txt"] },
+    "dns": { "rules": ["./dns-rules.txt"] }
   }
 }
 ```
 
-`client.proxy-only` is an independent top-level runtime flag and is read even when `client.routing` is present. Legacy `client.routes` and `client.peer-routes` are fallback inputs only when the canonical object is absent; an old nested mode key is ignored and never serialized. Use `--mode=client` or `--mode=proxy` to select the command-line runtime mode; `--mode=proxy` is equivalent to enabling proxy-only behavior.
+## 6. Platform differences
 
-When ports or bind addresses are omitted, defaults are applied automatically:
+| Platform | In proxy mode | Privileges |
+|---|---|---|
+| Windows / Linux / macOS | No real virtual adapter (an internal stub is used); routes and DNS untouched | Usually no administrator |
+| Android | A minimal VPN interface is still created (for socket protection) with only its subnet route; no DNS or IPv6 capture; the local proxy is not published as a system proxy | VPN consent |
+| iOS | The Network Extension keeps only the tunnel-subnet route and sets no system DNS | Network Extension entitlement |
 
-| Listener | Default bind | Default port |
-|----------|--------------|--------------|
-| HTTP     | 127.0.0.1    | 8080         |
-| SOCKS5   | 127.0.0.1    | 1080         |
+The Android app labels the switch “仅代理模式” (proxy only).
 
-## Platform behavior
+## 7. Other limits
 
-The platform statements below describe the legacy proxy-only integration. V2 platform capability checks report source-path support and do not prove that each platform has been built or runtime-tested. The validation reported here did not build or run this change on Windows, macOS, Android, or iOS.
+- Proxy mode forces the static UDP tunnel off (`--tun-static` has no effect) and uses automatic IPv4 assignment.
+- System DNS is unchanged, so an application's own DNS lookups do not use the tunnel; use `socks5h://` (proxy-side name resolution) to avoid local lookups.
 
-| Platform | What changes in proxy-only | What stays active |
-|----------|---------------------------|-------------------|
-| Linux / macOS / Windows | No OS routes installed; no system DNS override; `TapStub` used instead of a real TUN | Native bypass, routes, peer-routes, and DNS rules still load. Local HTTP/SOCKS proxies are available. No root required. |
-| Android | `VpnService.Builder` installs only the VPN interface subnet route; no IPv6 capture; no tunnel DNS | Native bypass, routes, peer-routes, and DNS rules still load. Requires VpnService permission. |
-| iOS | `PacketTunnelProvider` installs only the tunnel-subnet included route; no bypass exclusions; no `NEDNSSettings` | Native routing and DNS policy still loads. Requires Network Extension entitlement. |
+## Related documents
 
-Both TUN and proxy-only load `routing.ip.bypass`, `routing.ip.routes`, `routing.ip.peer-routes`, and `routing.dns.rules` into the native policy. The difference is only in what gets projected to the host OS.
-
-**Android:** Enable proxy-only in the app under **仅代理模式** (`vpnOptions.proxyOnly=true`). A minimal TUN is still created for `protect()` calls.
-
-**iOS:** The extension reads `client.proxy-only` from the prepared config JSON and adjusts the `NEPacketTunnelNetworkSettings` accordingly.
-
-## Static transport
-
-Proxy-only mode forces static transport off. This means:
-
-- The `STATIC`/`STATICACK` exchange does not happen.
-- If `--tun-ip` would normally enable static transport, it is overridden.
-- IPv4 address allocation uses automatic mode instead of submitting the local TUN address.
-
-## CLI flags
-
-| Flag | Description |
-|------|-------------|
-| `--mode=proxy` | Select proxy-only runtime |
-| `--proxy-http-port=N` | Override HTTP listen port |
-| `--proxy-socks-port=N` | Override SOCKS listen port |
-
-See [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md) and [CONFIGURATION.md](../reference/CONFIGURATION.md) for full details.
-
-## Related docs
-
-- [Routing And DNS](ROUTING_AND_DNS.md) — normalized routing policy and DNS behavior
-- [Platform Integration](PLATFORMS.md) — desktop, Android, and iOS boundaries
-- [CLI Reference](../reference/CLI_REFERENCE.md) — all command-line flags
-- [Configuration Reference](../reference/CONFIGURATION.md) — all config fields
+- [Configuration reference · client](../reference/CONFIGURATION.md) · [CLI reference](../reference/CLI_REFERENCE.md)
+- [Routing and DNS](ROUTING_AND_DNS.md) · [Platforms](PLATFORMS.md)

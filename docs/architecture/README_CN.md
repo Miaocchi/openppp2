@@ -35,6 +35,7 @@
 - [DNS 模块设计](DNS_MODULE_DESIGN_CN.md) · [English](DNS_MODULE_DESIGN.md)
 - [可观测性](OTEL_DESIGN_CN.md) · [English](OTEL_DESIGN.md)
 - [工程概念](ENGINEERING_CONCEPTS_CN.md) · [English](ENGINEERING_CONCEPTS.md)
+- [平台集成](PLATFORM_INTEGRATION_CN.md) · [English](PLATFORM_INTEGRATION.md)
 
 ## 实验性或设计边界材料
 

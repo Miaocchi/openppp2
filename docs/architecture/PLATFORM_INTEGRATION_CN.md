@@ -1,16 +1,19 @@
 # 平台集成
 > Status: Active
-> Type: Guide
+> Type: Architecture
 > Last verified: 63fc030
 
 > **用途：**说明本主题的当前行为、配置或实现边界。
 > **适用对象：**OPENPPP2 用户、运维人员与开发者。
 > **当前状态：**当前有效。
 > **最后核对依据：**当前仓库结构、实现路径与文档链接，2026-07-31。
-> **上一层索引：**[返回索引](README_CN.md) · **English：**[Platform Integration](PLATFORMS.md)
+> **上一层索引：**[返回索引](README_CN.md) · **English：**[Platform Integration](PLATFORM_INTEGRATION.md)
+>
+> 面向用户的平台差异（权限、驱动、参数）见 [平台说明](../guides/PLATFORMS_CN.md)；本页描述实现结构。
 
 
-[English Version](PLATFORMS.md)
+
+[English Version](PLATFORM_INTEGRATION.md)
 
 ## 1. 范围
 
@@ -672,8 +675,8 @@ graph TD
 
 ## 相关文档
 
-- [`ARCHITECTURE_CN.md`](../architecture/ARCHITECTURE_CN.md) — 系统架构总览
+- [`ARCHITECTURE_CN.md`](ARCHITECTURE_CN.md) — 系统架构总览
 - [`DEPLOYMENT_CN.md`](../operations/DEPLOYMENT_CN.md) — 各平台部署指南
 - [`OPERATIONS_CN.md`](../operations/OPERATIONS_CN.md) — 运维操作指南
-- [`STARTUP_AND_LIFECYCLE_CN.md`](../architecture/STARTUP_AND_LIFECYCLE_CN.md) — 启动与生命周期管理
-- [`IPV6_TRANSIT_PLANE_CN.md`](IPV6_TRANSIT_PLANE_CN.md) — Linux IPv6 数据面详解
+- [`STARTUP_AND_LIFECYCLE_CN.md`](STARTUP_AND_LIFECYCLE_CN.md) — 启动与生命周期管理
+- [`IPV6_CN.md`](../guides/IPV6_CN.md) — Linux IPv6 数据面详解

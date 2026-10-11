@@ -1,16 +1,19 @@
 # Platform Integration
 > Status: Active
-> Type: Guide
+> Type: Architecture
 > Last verified: 63fc030
 
 > **Purpose:** Describe the current behavior, configuration, or implementation boundary for this topic.
 > **Audience:** OPENPPP2 users, operators, and developers.
 > **Status:** Current.
 > **Last verified against:** Current repository structure, implementation paths, and documentation links, 2026-07-31.
-> **Parent index:** [Back to index](README.md) · **Chinese:** [平台集成](PLATFORMS_CN.md)
+> **Parent index:** [Back to index](README.md) · **Chinese:** [平台集成](PLATFORM_INTEGRATION_CN.md)
+>
+> User-facing platform differences (privileges, drivers, flags) are in the [Platforms guide](../guides/PLATFORMS.md); this page describes the implementation.
 
 
-[中文版本](PLATFORMS_CN.md)
+
+[中文版本](PLATFORM_INTEGRATION_CN.md)
 
 ## Scope
 
@@ -622,8 +625,8 @@ Both modes still use the native RIB/FIB, peer-prefix state, DNS policy/rule tabl
 
 ## Related Documents
 
-- [`ARCHITECTURE.md`](../architecture/ARCHITECTURE.md) — System-level architecture overview
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — System-level architecture overview
 - [`DEPLOYMENT.md`](../operations/DEPLOYMENT.md) — Build and deployment guide for each platform
 - [`OPERATIONS.md`](../operations/OPERATIONS.md) — Runtime operations and monitoring
-- [`STARTUP_AND_LIFECYCLE.md`](../architecture/STARTUP_AND_LIFECYCLE.md) — Process startup and platform prep sequence
-- [`CONCURRENCY_MODEL.md`](../architecture/CONCURRENCY_MODEL.md) — Threading and SSMT model
+- [`STARTUP_AND_LIFECYCLE.md`](STARTUP_AND_LIFECYCLE.md) — Process startup and platform prep sequence
+- [`CONCURRENCY_MODEL.md`](CONCURRENCY_MODEL.md) — Threading and SSMT model
