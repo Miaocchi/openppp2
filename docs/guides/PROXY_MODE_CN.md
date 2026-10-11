@@ -80,7 +80,7 @@ Android App 中的开关名为“仅代理模式”。
 
 ## 7. 其他限制
 
-- 代理模式下强制关闭静态 UDP 隧道（`--tun-static` 无效），IPv4 地址使用自动分配。
+- 代理模式下强制关闭静态 UDP 隧道：`--tun-static` 无效，不进行 `STATIC`/`STATICACK` 交换；即使指定了 `--tun-ip`，IPv4 也使用自动分配（automatic）模式。
 - 系统 DNS 不变，所以应用自身的 DNS 查询不经过隧道；用 `socks5h://`（由代理端解析域名）可以避免本地解析。
 
 ## 相关文档

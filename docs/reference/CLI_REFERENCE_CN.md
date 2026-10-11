@@ -56,7 +56,7 @@ ppp policy <子命令> [选项]
 | `--tun-ipv6=<IP>` | 服务端分配 | 请求指定的 IPv6 地址。 |
 | `--tun-vnet=yes\|no` | `yes` | 子网转发（客户端之间互通）。 |
 | `--tun-host=yes\|no` | `yes` | 把默认路由指向隧道（全局）。 |
-| `--tun-static=yes\|no` | `no` | 静态 UDP 隧道模式（使用服务端 `udp.listen.port`）；proxy 模式下无效。 |
+| `--tun-static=yes\|no` | `no` | 静态 UDP 隧道模式（使用服务端 `udp.listen.port`）。proxy 模式下无效：不进行 `STATIC`/`STATICACK` 交换，IPv4 保持自动分配（automatic）。 |
 | `--nic=<网卡>` | 自动 | 指定物理出口网卡。 |
 | `--ngw=<IP>` | 自动 | 指定物理网关。 |
 

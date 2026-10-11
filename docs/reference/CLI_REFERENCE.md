@@ -56,7 +56,7 @@ Server listeners, address pools, IPv6, and the rest live in the configuration fi
 | `--tun-ipv6=<ip>` | server-assigned | Request a specific IPv6 address. |
 | `--tun-vnet=yes\|no` | `yes` | Subnet forwarding (client-to-client). |
 | `--tun-host=yes\|no` | `yes` | Point the default route at the tunnel (full tunnel). |
-| `--tun-static=yes\|no` | `no` | Static UDP tunnel mode (uses the server's `udp.listen.port`); ignored in proxy mode. |
+| `--tun-static=yes\|no` | `no` | Static UDP tunnel mode (uses the server's `udp.listen.port`). Ignored in proxy mode: no `STATIC`/`STATICACK` exchange, and IPv4 assignment stays automatic. |
 | `--nic=<interface>` | auto | Physical egress interface. |
 | `--ngw=<ip>` | auto | Physical gateway. |
 

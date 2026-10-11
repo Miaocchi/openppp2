@@ -80,7 +80,7 @@ The Android app labels the switch “仅代理模式” (proxy only).
 
 ## 7. Other limits
 
-- Proxy mode forces the static UDP tunnel off (`--tun-static` has no effect) and uses automatic IPv4 assignment.
+- Proxy mode forces the static UDP tunnel off: `--tun-static` has no effect, no `STATIC`/`STATICACK` exchange takes place, and IPv4 assignment uses automatic mode even when `--tun-ip` is given.
 - System DNS is unchanged, so an application's own DNS lookups do not use the tunnel; use `socks5h://` (proxy-side name resolution) to avoid local lookups.
 
 ## Related documents
