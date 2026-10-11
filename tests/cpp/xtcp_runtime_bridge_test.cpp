@@ -47,6 +47,8 @@
 #endif
 #include <vector>
 
+namespace ppp::coroutines { class YieldContext; }
+
 namespace {
 
 int failures = 0;
@@ -66,7 +68,9 @@ using ppp::app::client::xtcp::XtcpDirectResult;
 using ppp::app::client::xtcp::XtcpFirstLegHooks;
 using ppp::app::client::xtcp::XtcpRuntime;
 using ppp::app::client::xtcp::XtcpSecondLegHooks;
-using ppp::app::protocol::DirectReadWaiterState;
+// Pointer instantiation: identity checks only; production uses YieldContext::Anchor.
+using PointerDirectReadWaiterState =
+    ppp::app::protocol::BasicDirectReadWaiterState<ppp::coroutines::YieldContext*>;
 using ppp::app::runtime::RuntimeXtcpStats;
 
 constexpr std::uint8_t kFin = 0x01;
@@ -683,42 +687,42 @@ void TestDirectReadWaiterState() {
     const XtcpDirectReadReservation c{11, 22, 3, 128};
 
     {
-        DirectReadWaiterState state;
+        PointerDirectReadWaiterState state;
         CHECK(state.Complete(a, XtcpDirectCompletion::Accepted) == nullptr);
-        CHECK(state.Register(a, waiter) == DirectReadWaiterState::Outcome::Accepted);
-        CHECK(state.Consume(a) == DirectReadWaiterState::Outcome::Accepted);
+        CHECK(state.Register(a, waiter) == PointerDirectReadWaiterState::Outcome::Accepted);
+        CHECK(state.Consume(a) == PointerDirectReadWaiterState::Outcome::Accepted);
     }
     {
-        DirectReadWaiterState state;
-        CHECK(state.Register(b, waiter) == DirectReadWaiterState::Outcome::Pending);
+        PointerDirectReadWaiterState state;
+        CHECK(state.Register(b, waiter) == PointerDirectReadWaiterState::Outcome::Pending);
         CHECK(state.Complete(a, XtcpDirectCompletion::Accepted) == nullptr);
-        CHECK(state.Consume(b) == DirectReadWaiterState::Outcome::Pending);
+        CHECK(state.Consume(b) == PointerDirectReadWaiterState::Outcome::Pending);
         CHECK(state.Complete(b, XtcpDirectCompletion::Accepted) == waiter);
-        CHECK(state.Consume(b) == DirectReadWaiterState::Outcome::Accepted);
+        CHECK(state.Consume(b) == PointerDirectReadWaiterState::Outcome::Accepted);
     }
     {
-        DirectReadWaiterState state;
+        PointerDirectReadWaiterState state;
         CHECK(state.Complete(a, XtcpDirectCompletion::Terminal) == nullptr);
         CHECK(state.Complete(c, XtcpDirectCompletion::Accepted) == nullptr);
-        CHECK(state.Register(b, waiter) == DirectReadWaiterState::Outcome::Rejected);
-        CHECK(state.Register(c, waiter) == DirectReadWaiterState::Outcome::Accepted);
-        CHECK(state.Consume(c) == DirectReadWaiterState::Outcome::Accepted);
+        CHECK(state.Register(b, waiter) == PointerDirectReadWaiterState::Outcome::Rejected);
+        CHECK(state.Register(c, waiter) == PointerDirectReadWaiterState::Outcome::Accepted);
+        CHECK(state.Consume(c) == PointerDirectReadWaiterState::Outcome::Accepted);
     }
     {
-        DirectReadWaiterState state;
+        PointerDirectReadWaiterState state;
         XtcpDirectReadReservation mismatch = b;
         mismatch.length += 1;
-        CHECK(state.Register(b, waiter) == DirectReadWaiterState::Outcome::Pending);
+        CHECK(state.Register(b, waiter) == PointerDirectReadWaiterState::Outcome::Pending);
         CHECK(state.Complete(mismatch, XtcpDirectCompletion::Accepted) == nullptr);
         CHECK(state.Complete(b, XtcpDirectCompletion::Accepted) == waiter);
         CHECK(state.Complete(b, XtcpDirectCompletion::Accepted) == nullptr);
-        CHECK(state.Consume(b) == DirectReadWaiterState::Outcome::Accepted);
+        CHECK(state.Consume(b) == PointerDirectReadWaiterState::Outcome::Accepted);
     }
     {
-        DirectReadWaiterState state;
-        CHECK(state.Register(b, waiter) == DirectReadWaiterState::Outcome::Pending);
+        PointerDirectReadWaiterState state;
+        CHECK(state.Register(b, waiter) == PointerDirectReadWaiterState::Outcome::Pending);
         CHECK(state.Invalidate() == waiter);
-        CHECK(state.Consume(b) == DirectReadWaiterState::Outcome::Terminal);
+        CHECK(state.Consume(b) == PointerDirectReadWaiterState::Outcome::Terminal);
         CHECK(state.Complete(b, XtcpDirectCompletion::Accepted) == nullptr);
     }
 }

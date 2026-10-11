@@ -32,6 +32,9 @@ namespace ppp::app::runtime { class XtcpDirectQueueTelemetry; }
 namespace ppp {
     namespace app {
         namespace protocol {
+            /** @brief Direct-read waiter keyed by anchored wakeups (never a raw coroutine pointer). */
+            typedef BasicDirectReadWaiterState<ppp::coroutines::YieldContext::Anchor> DirectReadWaiterState;
+
             /**
              * @brief Bridges a local TCP socket and a virtual Ethernet transmission channel.
              */

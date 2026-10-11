@@ -412,28 +412,33 @@ namespace ppp {
                 return false;
             }
             
+            const ppp::coroutines::YieldContext::Anchor anchor = y.Arm();
+            if (!anchor) {
+                return false;
+            }
+
             bool ok = false;
             if (1 > milliseconds) {
                 boost::asio::post(deadlineTimer->get_executor(),
-                    [&y, &ok]() noexcept {
+                    [anchor, &ok]() noexcept {
                         ok = true;
-                        y.R();
+                        anchor.R();
                     });
             }
             else {
                 boost::asio::steady_timer::duration durationTime = Timer::DurationTime(milliseconds);
                 deadlineTimer->expires_after(durationTime);
                 deadlineTimer->async_wait(
-                    [&y, &ok](const boost::system::error_code& ec) noexcept {
+                    [anchor, &ok](const boost::system::error_code& ec) noexcept {
                         if (ec == boost::system::errc::success) {
                             ok = true;
                         }
 
-                        y.R();
+                        anchor.R();
                     });
             }
 
-            y.Suspend();
+            y.Suspend(anchor);
             return ok;
         }
 

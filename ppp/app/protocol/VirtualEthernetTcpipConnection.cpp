@@ -650,7 +650,7 @@ namespace ppp {
 
                 std::size_t abandoned_direct_bytes = 0;
                 std::size_t abandoned_direct_items = 0;
-                YieldContext* download_waiter = nullptr;
+                YieldContext::Anchor download_waiter;
                 DirectCloseHandler close_handler;
                 std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
                 {
@@ -679,7 +679,7 @@ namespace ppp {
                     close_handler(XtcpDirectCloseReason::Terminal);
                 }
                 if (download_waiter) {
-                    download_waiter->R();
+                    download_waiter.R();
                 }
                 if (abandoned_direct_bytes != 0 || abandoned_direct_items != 0) {
                     RemoveDirectUploadQueueTelemetry(
@@ -1021,22 +1021,28 @@ namespace ppp {
 
                     // dispatch: start the socket write inline when this coroutine already
                     // runs on the socket's executor. Asio never invokes the completion
-                    // handler from inside async_write, so y.R() cannot precede Suspend()
-                    // on this thread; cross-thread completion was already possible with post.
+                    // handler from inside async_write, and a wakeup that does beat the
+                    // suspend (cross-thread completion) is latched for this anchor.
+                    const YieldContext::Anchor anchor = y.Arm();
+                    if (!anchor) {
+                        stop_logged = true;
+                        break;
+                    }
+
                     bool ok = false;
                     boost::asio::dispatch(socket_->get_executor(),
-                        [this, &y, &ok, packet, packet_length]() noexcept {
+                        [this, anchor, &ok, packet, packet_length]() noexcept {
                             ppp::diagnostics::datapath_perf::Scope socket_write_scope;
                             boost::asio::async_write(*socket_, boost::asio::buffer(packet.get(), packet_length),
-                                [&y, &ok, packet_length, socket_write_scope](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
+                                [anchor, &ok, packet_length, socket_write_scope](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
                                     if (!ec && bytes_transferred == static_cast<std::size_t>(packet_length)) {
                                         ppp::diagnostics::datapath_perf::RecordTcpipBridgeSocketWriteCompleted(packet_length, socket_write_scope.Elapsed());
                                     }
                                     ok = ec == boost::system::errc::success;
-                                    y.R();
+                                    anchor.R();
                                 });
                         });
-                    y.Suspend();
+                    y.Suspend(anchor);
                     if (ok) {
                         packets_to_socket++;
                         bytes_to_socket += packet_length;
@@ -1097,7 +1103,7 @@ namespace ppp {
                         [self, this](YieldContext& y) noexcept {
                             return RunDirectDownload(y);
                         })) {
-                    YieldContext* download_waiter = nullptr;
+                    YieldContext::Anchor download_waiter;
                     {
                         std::lock_guard<std::mutex> lock(direct_sync_);
                         direct_bridge_started_ = false;
@@ -1107,7 +1113,7 @@ namespace ppp {
                         download_waiter = direct_download_waiter_.Invalidate();
                     }
                     if (download_waiter) {
-                        download_waiter->R();
+                        download_waiter.R();
                     }
                     return false;
                 }
@@ -1181,13 +1187,13 @@ namespace ppp {
             void VirtualEthernetTcpipConnection::CompleteDirectDownload(
                 const XtcpDirectReadReservation& reservation,
                 XtcpDirectCompletion completion) noexcept {
-                YieldContext* waiter = nullptr;
+                YieldContext::Anchor waiter;
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
                     waiter = direct_download_waiter_.Complete(reservation, completion);
                 }
                 if (waiter) {
-                    waiter->R();
+                    waiter.R();
                 }
             }
 
@@ -1497,10 +1503,11 @@ namespace ppp {
 
                             DirectReadWaiterState::Outcome registered =
                                 DirectReadWaiterState::Outcome::Terminal;
+                            const YieldContext::Anchor anchor = y.Arm();
                             {
                                 std::lock_guard<std::mutex> lock(direct_sync_);
-                                if (!disposed_ && connected_ && direct_bridge_started_) {
-                                    registered = direct_download_waiter_.Register(reservation, &y);
+                                if (anchor && !disposed_ && connected_ && direct_bridge_started_) {
+                                    registered = direct_download_waiter_.Register(reservation, anchor);
                                 }
                             }
                             DirectReadWaiterState::Outcome completed =
@@ -1508,7 +1515,7 @@ namespace ppp {
                             if (registered == DirectReadWaiterState::Outcome::Pending) {
                                 const std::uint64_t suspend_started_us = timing
                                     ? telemetry->Now() : 0;
-                                y.Suspend();
+                                y.Suspend(anchor);
                                 if (timing) {
                                     const std::uint64_t now = telemetry->Now();
                                     telemetry->RecordSecondLegAcceptedWaitToResume(
@@ -1538,7 +1545,7 @@ namespace ppp {
                     Update();
                 }
                 DirectCloseHandler close_handler;
-                YieldContext* download_waiter = nullptr;
+                YieldContext::Anchor download_waiter;
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
                     close_handler = std::move(direct_close_handler_);
@@ -1551,7 +1558,7 @@ namespace ppp {
                     close_handler(XtcpDirectCloseReason::Terminal);
                 }
                 if (download_waiter) {
-                    download_waiter->R();
+                    download_waiter.R();
                 }
                 Dispose();
                 return true;

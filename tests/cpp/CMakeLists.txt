@@ -241,8 +241,9 @@ file(GENERATE
 #include <ppp/threading/Executors.h>
 
 namespace ppp::coroutines {
-bool YieldContext::R() noexcept { return false; }
-bool YieldContext::Suspend() noexcept { return false; }
+YieldContext::Anchor YieldContext::Arm() noexcept { return Anchor(); }
+bool YieldContext::Suspend(const Anchor&) noexcept { return false; }
+bool YieldContext::Anchor::R() const noexcept { return false; }
 }
 
 namespace ppp::net::asio::vdns {

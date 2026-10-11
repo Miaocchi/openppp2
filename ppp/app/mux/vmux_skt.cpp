@@ -592,21 +592,26 @@ namespace vmux {
         }
 
         auto self = shared_from_this();
+        const ppp::coroutines::YieldContext::Anchor anchor = y.Arm();
+        if (!anchor) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
+            return false;
+        }
 
         // Guard Suspend() behind the post result: if the executor is unavailable the
         // lambda (and every ppp::coroutines::asio::R() inside it) will never run, so
-        // calling Suspend() would park the coroutine with no future Resume() – a
+        // calling Suspend() would park the coroutine with no future resume – a
         // permanent coroutine leak.
         bool posted = vmux_post_exec(mux_->context_, mux_->strand_,
-            [self, this, packet, packet_length, status, &y]() noexcept {
+            [self, this, packet, packet_length, status, anchor]() noexcept {
                 bool forwarding = 
                     send_to_peer(packet, packet_length, 
-                        [status, &y](vmux_skt* skt, bool successed) noexcept {
-                            ppp::coroutines::asio::R(y, *status, successed);
+                        [status, anchor](vmux_skt* skt, bool successed) noexcept {
+                            ppp::coroutines::asio::R(anchor, *status, successed);
                         });
 
                 if (!forwarding) {
-                    ppp::coroutines::asio::R(y, *status, false);
+                    ppp::coroutines::asio::R(anchor, *status, false);
                 }
             });
 
@@ -615,7 +620,7 @@ namespace vmux {
             return false;
         }
 
-        y.Suspend();
+        y.Suspend(anchor);
         return status->load() > 0;
     }
 
@@ -681,13 +686,19 @@ namespace vmux {
                 break;
             }
             else {
+                const ppp::coroutines::YieldContext::Anchor open_anchor = y.Arm();
+                if (!open_anchor) {
+                    err = 'N'; // Open Errors.
+                    break;
+                }
+
                 boost::asio::post(tx_socket->get_executor(),
-                    [&tx_socket, &ec, &remote_endpoint, &y]() noexcept {
+                    [&tx_socket, &ec, &remote_endpoint, open_anchor]() noexcept {
                         tx_socket->open(remote_endpoint.protocol(), ec);
-                        y.R();
+                        open_anchor.R();
                     });
 
-                y.Suspend();
+                y.Suspend(open_anchor);
             }
 
             if (ec) {
@@ -722,16 +733,22 @@ namespace vmux {
             }
 #endif        
 
+            const ppp::coroutines::YieldContext::Anchor connect_anchor = y.Arm();
+            if (!connect_anchor) {
+                err = 'R'; // Unable to remote host.
+                break;
+            }
+
             boost::asio::post(tx_socket->get_executor(), 
-                [&tx_socket, &ec, &remote_endpoint, &y]() noexcept {
+                [&tx_socket, &ec, &remote_endpoint, connect_anchor]() noexcept {
                     tx_socket->async_connect(remote_endpoint,
-                        [&y, &ec](const boost::system::error_code& err) noexcept {
+                        [connect_anchor, &ec](const boost::system::error_code& err) noexcept {
                             ec = err;
-                            y.R();
+                            connect_anchor.R();
                         });
                 });
 
-            y.Suspend(); 
+            y.Suspend(connect_anchor); 
             if (ec) {
                 if (ec == boost::system::errc::operation_canceled) {
                     err = 'T'; // Timeout.

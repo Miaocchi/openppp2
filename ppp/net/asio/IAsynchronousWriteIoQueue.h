@@ -351,20 +351,25 @@ namespace ppp {
                     boost::asio::io_context* context = addressof(y.GetContext());
                     boost::asio::strand<boost::asio::io_context::executor_type>* strand = y.GetStrand();
 
+                    const YieldContext::Anchor anchor = y.Arm();
+                    if (!anchor) {
+                        return false;
+                    }
+
                     // Guard Suspend() behind the post result: if the executor is unavailable
                     // the lambda (and every ppp::coroutines::asio::R() inside it) will never
                     // run, so calling Suspend() would park the coroutine with no future
                     // Resume() – a permanent coroutine leak.
                     bool posted = ppp::threading::Executors::Post(context, strand,
-                        [&y, status, h, packet, packet_length]() noexcept {
+                        [anchor, status, h, packet, packet_length]() noexcept {
                             bool waiting = 
                                 h(packet, packet_length,
-                                    [&y, status](bool b) noexcept {
-                                        ppp::coroutines::asio::R(y, *status, b);
+                                    [anchor, status](bool b) noexcept {
+                                        ppp::coroutines::asio::R(anchor, *status, b);
                                     });
 
                             if (!waiting) {
-                                ppp::coroutines::asio::R(y, *status, false);
+                                ppp::coroutines::asio::R(anchor, *status, false);
                             }
                         });
 
@@ -373,7 +378,7 @@ namespace ppp {
                         return false;
                     }
 
-                    y.Suspend();
+                    y.Suspend(anchor);
                     return status->load() > 0;
                 }
 
