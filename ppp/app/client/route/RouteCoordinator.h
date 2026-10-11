@@ -24,6 +24,9 @@ namespace ppp {
                     ~RouteCoordinator() noexcept;
 
                     bool Apply(const std::vector<RouteSpec>& routes) noexcept;
+                    // Rolls back routes applied by the current attempt while
+                    // keeping the coordinator usable for a reconnect.
+                    bool RollbackApplied() noexcept;
                     bool Stop() noexcept;
                     RouteStateSnapshot Snapshot() const noexcept;
 #if defined(OPENPPP2_ROUTE_TEST_MOBILE)

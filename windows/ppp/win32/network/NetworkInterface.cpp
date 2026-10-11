@@ -1984,13 +1984,59 @@ namespace ppp
                 return any;
             }
 
-            void DeleteAllDefaultGatewayRoutes(boost::asio::ip::address gw) noexcept
+            bool DeleteAllDefaultGatewayRoutes(boost::asio::ip::address gw) noexcept
             {
-                std::string tp = gw.to_string();
-                ppp::string ip = ppp::string(tp.data(), tp.size());
-                ppp::win32::Win32Native::Echo("route delete 0.0.0.0 mask 0.0.0.0 " + ip);
-                ppp::win32::Win32Native::Echo("route delete 128.0.0.0 mask 128.0.0.0 " + ip);
-                ppp::win32::Win32Native::Echo("route delete 128.0.0.0 mask 128.0.0.0 " + ip);
+                if (!gw.is_v4())
+                {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                    return false;
+                }
+
+                auto mib = ppp::win32::network::Router::GetIpForwardTable();
+                if (NULLPTR == mib)
+                {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RouteTableUnavailable);
+                }
+
+                // MIB_IPFORWARDROW stores IPv4 values in network byte order.  The
+                // three entries cover the ordinary default route and the split
+                // 0/1 + 128/1 takeover used by the client.
+                const uint32_t half = inet_addr("128.0.0.0");
+                const uint32_t gateway = htonl(gw.to_v4().to_uint());
+                ppp::vector<MIB_IPFORWARDROW> owned;
+                for (DWORD i = 0; i < mib->dwNumEntries; ++i)
+                {
+                    const MIB_IPFORWARDROW& route = mib->table[i];
+                    const bool is_default =
+                        (route.dwForwardDest == ppp::net::IPEndPoint::AnyAddress &&
+                            (route.dwForwardMask == ppp::net::IPEndPoint::AnyAddress || route.dwForwardMask == half)) ||
+                        (route.dwForwardDest == half && route.dwForwardMask == half);
+                    if (is_default && route.dwForwardNextHop == gateway)
+                    {
+                        owned.emplace_back(route);
+                    }
+                }
+
+                ppp::vector<MIB_IPFORWARDROW> removed;
+                for (MIB_IPFORWARDROW& route : owned)
+                {
+                    if (!ppp::win32::network::Router::Delete(route))
+                    {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                        // Deletion is not transactional at the IP Helper API
+                        // boundary. Best-effort restore rows already removed so a
+                        // partial takeover does not leave the host without its
+                        // original default path.
+                        for (MIB_IPFORWARDROW& previous : removed)
+                        {
+                            ppp::win32::network::Router::Add(previous);
+                        }
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                        return false;
+                    }
+                    removed.emplace_back(route);
+                }
+                return true;
             }
 
             bool DeleteAllDefaultGatewayRoutes(ppp::vector<MIB_IPFORWARDROW>& routes, const ppp::unordered_set<uint32_t>& bypass_gws) noexcept
@@ -2034,7 +2080,12 @@ namespace ppp
             int SetAllNicsDnsAddresses(ppp::vector<boost::asio::ip::address>& servers, ppp::unordered_map<int, ppp::vector<boost::asio::ip::address>>& addresses) noexcept
             {
                 int events = 0;
-                addresses.clear();
+                // A non-empty map represents a pending restore. Never discard
+                // it while preparing another apply operation.
+                if (!addresses.empty())
+                {
+                    return events;
+                }
 
                 ppp::vector<NetworkInterfacePtr> interfaces;
                 if (!GetAllNetworkInterfaces(interfaces))
@@ -2086,9 +2137,14 @@ namespace ppp
                 ppp::vector<ppp::string> servers_string;
                 ppp::net::Ipep::AddressesTransformToStrings(servers, servers_string);
 
-                for (NetworkInterfacePtr& ni : interfaces)
+                // The snapshot map is the authorization set for this operation.
+                // Apply DNS only to interfaces that were captured above.  In
+                // particular, do not write to a down or newly discovered
+                // interface that has no corresponding restore snapshot.
+                for (const auto& [interface_index, ignored] : addresses)
                 {
-                    bool ok = SetDnsAddresses(ni->InterfaceIndex, servers_string);
+                    (void)ignored;
+                    bool ok = SetDnsAddresses(interface_index, servers_string);
                     if (ok)
                     {
                         events++;
@@ -2101,8 +2157,10 @@ namespace ppp
             int SetAllNicsDnsAddresses(ppp::unordered_map<int, ppp::vector<boost::asio::ip::address>>& addresses) noexcept
             {
                 int events = 0;
-                for (auto&& [interface_index, servers] : addresses)
+                for (auto it = addresses.begin(); it != addresses.end();)
                 {
+                    const int interface_index = it->first;
+                    const auto& servers = it->second;
                     ppp::vector<ppp::string> servers_string;
                     for (auto&& ip : servers)
                     {
@@ -2113,10 +2171,17 @@ namespace ppp
                     if (ok)
                     {
                         events++;
+                        it = addresses.erase(it);
+                    }
+                    else
+                    {
+                        // Retain failed snapshots so the caller can report a
+                        // pending restore and retry without losing the
+                        // original DNS state.
+                        ++it;
                     }
                 }
 
-                addresses.clear();
                 return events;
             }
 

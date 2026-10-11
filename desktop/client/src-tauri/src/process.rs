@@ -37,6 +37,17 @@ impl CommandSpec {
 pub struct ExitInfo {
     pub code: Option<i32>,
     pub success: bool,
+    pub reason: ExitReason,
+    pub timed_out: bool,
+    pub recovery_pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ExitReason {
+    Natural,
+    Graceful,
+    ForcedKill,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -61,12 +72,26 @@ pub struct ProcessMessage {
 pub enum ProcessError {
     #[error("ppp 进程已在运行中")]
     AlreadyRunning,
+    #[error("ppp 网络恢复仍待处理")]
+    /// A future recovery worker must clear the persisted network state before
+    /// another session is allowed to start.
+    RecoveryPending,
     #[error("无法启动 ppp: {0}")]
     Spawn(#[from] std::io::Error),
+    #[error("停止 ppp 失败: {0}")]
+    Stop(std::io::Error),
 }
 
 type Emitter = Arc<dyn Fn(ProcessMessage) + Send + Sync + 'static>;
 type EventSink = Arc<dyn Fn(ProcessEvent) + Send + Sync + 'static>;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StopContext {
+    requested: bool,
+    forced: bool,
+    timed_out: bool,
+    recovery_pending: bool,
+}
 
 /// Clones share the same child; `stop` can then run without holding the
 /// caller's lock on the manager.
@@ -75,6 +100,7 @@ pub struct ProcessManager {
     child: Arc<Mutex<Option<Child>>>,
     emit: Emitter,
     snapshot: Arc<Mutex<ConnectionSnapshot>>,
+    stop_context: Arc<Mutex<StopContext>>,
 }
 
 impl ProcessManager {
@@ -86,6 +112,7 @@ impl ProcessManager {
             child: Arc::new(Mutex::new(None)),
             emit: Arc::new(emit),
             snapshot: Arc::new(Mutex::new(ConnectionSnapshot::default())),
+            stop_context: Arc::new(Mutex::new(StopContext::default())),
         }
     }
 
@@ -105,6 +132,14 @@ impl ProcessManager {
         if slot.is_some() {
             return Err(ProcessError::AlreadyRunning);
         }
+        if self
+            .snapshot
+            .lock()
+            .expect("snapshot lock poisoned")
+            .recovery_pending
+        {
+            return Err(ProcessError::RecoveryPending);
+        }
         let mut command = Command::new(&spec.program);
         command
             .args(&spec.args)
@@ -118,6 +153,10 @@ impl ProcessManager {
         }
         let mut child = command.spawn()?;
         let pid = child.id();
+        *self
+            .stop_context
+            .lock()
+            .expect("stop context lock poisoned") = StopContext::default();
         let session_id = {
             let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
             let session_id = snapshot.session_id + 1;
@@ -157,15 +196,29 @@ impl ProcessManager {
         }
         *slot = Some(child);
         drop(slot);
-        monitor_child(Arc::clone(&self.child), send, spec.stats_path, pid);
+        monitor_child(
+            Arc::clone(&self.child),
+            send,
+            spec.stats_path,
+            pid,
+            Arc::clone(&self.stop_context),
+        );
         Ok(pid)
     }
 
     pub fn stop(&mut self) -> Result<(), ProcessError> {
+        self.stop_with_timeout(GRACEFUL_STOP_TIMEOUT)
+    }
+
+    fn stop_with_timeout(&mut self, graceful_timeout: Duration) -> Result<(), ProcessError> {
         let pid = match self.child.lock().expect("process lock poisoned").as_ref() {
             Some(child) => child.id(),
             None => return Ok(()),
         };
+        self.stop_context
+            .lock()
+            .expect("stop context lock poisoned")
+            .requested = true;
         let state = {
             let mut state = self.snapshot.lock().expect("snapshot lock poisoned");
             state.requested_stop = true;
@@ -179,8 +232,9 @@ impl ProcessManager {
         });
         // The kernel rolls back routes, DNS and the adapter on shutdown; give it
         // time to finish before falling back to a hard kill.
-        let grace = if request_graceful_stop(pid) {
-            GRACEFUL_STOP_TIMEOUT
+        let graceful_requested = request_graceful_stop(pid);
+        let grace = if graceful_requested {
+            graceful_timeout
         } else {
             Duration::ZERO
         };
@@ -193,23 +247,63 @@ impl ProcessManager {
             }
             thread::sleep(Duration::from_millis(25));
         }
+        if graceful_requested {
+            self.stop_context
+                .lock()
+                .expect("stop context lock poisoned")
+                .timed_out = true;
+            let timeout = {
+                let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+                snapshot.status = "stop_timeout".into();
+                snapshot.phase = "stop_timeout".into();
+                snapshot.clone()
+            };
+            (self.emit)(ProcessMessage {
+                session_id: timeout.session_id,
+                event: ProcessEvent::State(timeout.clone()),
+                connection: timeout,
+            });
+        }
+        {
+            let mut context = self
+                .stop_context
+                .lock()
+                .expect("stop context lock poisoned");
+            context.forced = true;
+            context.recovery_pending = true;
+        }
+        let pending = {
+            let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+            snapshot.status = "recovery_pending".into();
+            snapshot.phase = "recovery_pending".into();
+            snapshot.recovery_pending = true;
+            snapshot.clone()
+        };
+        (self.emit)(ProcessMessage {
+            session_id: pending.session_id,
+            event: ProcessEvent::State(pending.clone()),
+            connection: pending,
+        });
         let exit = {
             let mut slot = self.child.lock().expect("process lock poisoned");
             match slot.as_mut().filter(|child| child.id() == pid) {
                 Some(child) => {
-                    child.kill()?;
-                    child.wait()?;
+                    child.kill().map_err(ProcessError::Stop)?;
+                    let status = child.wait().map_err(ProcessError::Stop)?;
                     slot.take();
-                    true
+                    Some(ExitInfo {
+                        code: status.code(),
+                        success: false,
+                        reason: ExitReason::ForcedKill,
+                        timed_out: graceful_requested,
+                        recovery_pending: true,
+                    })
                 }
-                None => false,
+                None => None,
             }
         };
-        if exit {
-            let event = ProcessEvent::Exited(ExitInfo {
-                code: None,
-                success: true,
-            });
+        if let Some(exit) = exit {
+            let event = ProcessEvent::Exited(exit);
             let connection = {
                 let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
                 snapshot.apply(&event);
@@ -230,6 +324,7 @@ fn monitor_child(
     emit: EventSink,
     stats_path: Option<PathBuf>,
     pid: u32,
+    stop_context: Arc<Mutex<StopContext>>,
 ) {
     thread::spawn(move || {
         let mut offset = 0;
@@ -259,10 +354,7 @@ fn monitor_child(
                 {
                     Some(status) => {
                         slot.take();
-                        Some(ExitInfo {
-                            code: status.code(),
-                            success: status.success(),
-                        })
+                        Some(exit_info(status, &stop_context))
                     }
                     None => {
                         if slot.is_none() {
@@ -282,6 +374,25 @@ fn monitor_child(
             thread::sleep(Duration::from_millis(50));
         }
     });
+}
+
+fn exit_info(status: std::process::ExitStatus, stop_context: &Arc<Mutex<StopContext>>) -> ExitInfo {
+    let context = *stop_context
+        .lock()
+        .expect("stop context lock poisoned");
+    ExitInfo {
+        code: status.code(),
+        success: status.success() && !context.forced,
+        reason: if context.forced {
+            ExitReason::ForcedKill
+        } else if context.requested {
+            ExitReason::Graceful
+        } else {
+            ExitReason::Natural
+        },
+        timed_out: context.timed_out,
+        recovery_pending: context.recovery_pending,
+    }
 }
 
 fn read_stats(
@@ -351,4 +462,51 @@ fn request_graceful_stop(pid: u32) -> bool {
 #[cfg(unix)]
 fn request_graceful_stop(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_stop_reports_pending_recovery_and_never_success() {
+        let (tx, rx) = mpsc::channel();
+        let mut manager = ProcessManager::new(move |event| {
+            let _ = tx.send(event);
+        });
+        manager
+            .start(CommandSpec::new(
+                "sh",
+                ["-c", "trap '' TERM; while :; do sleep 0.05; done"],
+            ))
+            .unwrap();
+
+        manager.stop_with_timeout(Duration::from_millis(100)).unwrap();
+
+        let mut saw_pending = false;
+        let mut forced_exit = None;
+        while let Ok(event) = rx.recv_timeout(Duration::from_millis(500)) {
+            match event.event {
+                ProcessEvent::State(snapshot) if snapshot.status == "recovery_pending" => {
+                    saw_pending = true;
+                }
+                ProcessEvent::Exited(exit) => {
+                    forced_exit = Some(exit);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_pending);
+        let exit = forced_exit.expect("forced stop must emit an exit event");
+        assert_eq!(exit.reason, ExitReason::ForcedKill);
+        assert!(exit.timed_out);
+        assert!(!exit.success);
+        assert!(exit.recovery_pending);
+        assert_eq!(manager.snapshot().status, "recovery_pending");
+        assert!(manager.snapshot().recovery_pending);
+    }
 }

@@ -1,4 +1,4 @@
-use openppp2_client_desktop::process::{CommandSpec, ProcessEvent, ProcessManager};
+use openppp2_client_desktop::process::{CommandSpec, ExitReason, ProcessEvent, ProcessManager};
 use openppp2_client_desktop::stats::StatsSampler;
 use openppp2_client_desktop::telemetry::{classify_line, ConnectionSignal, Severity};
 use std::sync::mpsc;
@@ -104,6 +104,8 @@ fn process_manager_enforces_single_child_and_reports_stderr_and_exit_code() {
                 }
                 ProcessEvent::Exited(exit) => {
                     exit_code = exit.code;
+                    assert_eq!(exit.reason, ExitReason::Natural);
+                    assert!(!exit.recovery_pending);
                     break;
                 }
                 ProcessEvent::Stats(_) => {}
@@ -176,7 +178,12 @@ fn stop_waits_for_the_kernel_to_finish_its_shutdown_rollback() {
     while let Ok(event) = rx.recv_timeout(Duration::from_millis(500)) {
         match event.event {
             ProcessEvent::Telemetry(t) => rollback |= t.message.contains("rollback done"),
-            ProcessEvent::Exited(exit) => { exit_code = exit.code; }
+            ProcessEvent::Exited(exit) => {
+                exit_code = exit.code;
+                assert_eq!(exit.reason, ExitReason::Graceful);
+                assert!(!exit.timed_out);
+                assert!(!exit.recovery_pending);
+            }
             _ => {}
         }
     }

@@ -29,6 +29,10 @@ namespace ppp
             // Used by EmergencyRestoreSystemProxy() so the crash-path restore is a strict
             // no-op when we never touched the system proxy (don't clobber a user's own proxy).
             static std::atomic<bool> s_system_proxy_engaged{ false };
+            static constexpr const wchar_t* SYSTEM_PROXY_PATH =
+                L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
+            static constexpr const wchar_t* SYSTEM_PROXY_OVERRIDE =
+                L"localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;172.32.*;192.168.*;<local>";
 
             static bool STATIC_IsSupportExperimentalQuicProtocol(LPCWSTR path) noexcept
             {
@@ -103,27 +107,45 @@ namespace ppp
 
             bool HttpProxy::SetSystemProxy(const std::wstring& server, const std::wstring& pac, bool enable) noexcept
             {
-                LPCWSTR PATH = L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
-                // Record engaged/cleared state for the crash-path emergency restore.
-                s_system_proxy_engaged.store(enable, std::memory_order_release);
-                ppp::win32::SetRegistryValueString(HKEY_CURRENT_USER, PATH, L"ProxyServer", server);
-                ppp::win32::SetRegistryValueDword(HKEY_CURRENT_USER, PATH, L"ProxyEnable", enable ? 1 : 0);
-                ppp::win32::SetRegistryValueString(HKEY_CURRENT_USER, PATH, L"AutoConfigURL", pac);
+                // Mark the operation before the first write so a partial update is
+                // still eligible for the crash-path emergency restore. Clear it only
+                // after every write, refresh and read-back has succeeded.
+                s_system_proxy_engaged.store(true, std::memory_order_release);
 
-                RefreshSystemProxy();
-                ppp::win32::SetRegistryValueString(HKEY_CURRENT_USER, PATH, L"ProxyOverride", L"localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;172.32.*;192.168.*;<local>");
-                RefreshSystemProxy();
+                bool ok = true;
+                ok = ppp::win32::SetRegistryValueString(HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"ProxyServer", server) && ok;
+                ok = ppp::win32::SetRegistryValueDword(HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"ProxyEnable", enable ? 1 : 0) && ok;
+                ok = ppp::win32::SetRegistryValueString(HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"AutoConfigURL", pac) && ok;
+                ok = RefreshSystemProxy() && ok;
+                ok = ppp::win32::SetRegistryValueString(HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"ProxyOverride", SYSTEM_PROXY_OVERRIDE) && ok;
+                ok = RefreshSystemProxy() && ok;
 
-                if (!std::regex_match(ppp::win32::GetRegistryValueString(HKEY_CURRENT_USER, PATH, L"ProxyServer"), std::wregex(server)))
+                bool server_read = false;
+                bool enable_read = false;
+                bool pac_read = false;
+                bool override_read = false;
+                const std::wstring observed_server = ppp::win32::GetRegistryValueString(
+                    HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"ProxyServer", &server_read);
+                const DWORD observed_enable = ppp::win32::GetRegistryValueDword(
+                    HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"ProxyEnable", &enable_read);
+                const std::wstring observed_pac = ppp::win32::GetRegistryValueString(
+                    HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"AutoConfigURL", &pac_read);
+                const std::wstring observed_override = ppp::win32::GetRegistryValueString(
+                    HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"ProxyOverride", &override_read);
+                ok = server_read && observed_server == server && ok;
+                ok = enable_read && observed_enable == (enable ? 1u : 0u) && ok;
+                ok = pac_read && observed_pac == pac && ok;
+                ok = override_read && observed_override == SYSTEM_PROXY_OVERRIDE && ok;
+
+                if (!ok)
                 {
-                    ppp::win32::SetRegistryValueString(HKEY_CURRENT_USER, PATH, L"ProxyServer", server);
-                    ppp::win32::SetRegistryValueDword(HKEY_CURRENT_USER, PATH, L"ProxyEnable", enable ? 1 : 0);
-                    ppp::win32::SetRegistryValueString(HKEY_CURRENT_USER, PATH, L"AutoConfigURL", pac);
-
-                    RefreshSystemProxy();
-                    ppp::win32::SetRegistryValueString(HKEY_CURRENT_USER, PATH, L"ProxyOverride", L"localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;172.32.*;192.168.*;<local>");
-                    RefreshSystemProxy();
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::HttpProxyApplyFailed);
+                    // Keep the marker set on failure. The next stop/crash path must
+                    // still attempt cleanup instead of reporting success.
+                    return false;
                 }
+
+                s_system_proxy_engaged.store(enable, std::memory_order_release);
                 return true;
             }
 
@@ -140,7 +162,7 @@ namespace ppp
                 // from an SEH unhandled-exception filter where the CRT heap may be unusable.
                 HKEY hKey = NULLPTR;
                 if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                    L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+                    SYSTEM_PROXY_PATH,
                     0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS)
                 {
                     DWORD dwZero = 0;

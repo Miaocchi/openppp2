@@ -7,7 +7,7 @@
                 bool                                                                DeleteTimeout(void* k) noexcept;
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                bool                                                                TryApplyHostedNetworkRoutes() noexcept;
+                bool                                                                TryApplyHostedNetworkRoutes(bool allow_pre_established = false) noexcept;
 #else
                 bool                                                                TryApplyHostedNetworkRoutes() noexcept { return true; }
 #endif

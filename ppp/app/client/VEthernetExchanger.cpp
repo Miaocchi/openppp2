@@ -2272,6 +2272,19 @@ namespace ppp {
                             ppp::diagnostics::SetLastErrorCode(
                                 ppp::diagnostics::ErrorCode::RouteAddFailed);
                         }
+                        if (established) {
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                            if (std::shared_ptr<VEthernetNetworkSwitcher> switcher = switcher_; NULLPTR != switcher) {
+                                // Apply host routes and DNS before publishing
+                                // Established. A failed system-state apply must
+                                // follow the normal reconnect/failure path.
+                                if (!switcher->TryApplyHostedNetworkRoutes(true)) {
+                                    established = false;
+                                    ppp::telemetry::Count("client_exchanger.route_setup.fail", 1);
+                                }
+                            }
+#endif
+                        }
                         if (!established) {
                             switcher_->RollbackWindowsIPv6Egress();
                         }
@@ -2293,14 +2306,6 @@ namespace ppp {
                             ExchangeToEstablishState();
                             ppp::telemetry::Count("client_exchanger.connect", 1);
                             ppp::telemetry::Log(Level::kInfo, "client_exchanger", "exchanger connected");
-#if !defined(_ANDROID) && !defined(_IPHONE)
-                            if (std::shared_ptr<VEthernetNetworkSwitcher> switcher = switcher_; NULLPTR != switcher) {
-                                if (!switcher->TryApplyHostedNetworkRoutes()) {
-                                    ppp::telemetry::Log(Level::kInfo, "client_exchanger", "route setup failed after exchanger connected");
-                                    ppp::telemetry::Count("client_exchanger.route_setup.fail", 1);
-                                }
-                            }
-#endif
                             bool main_run_ok = false;
                             if (SendRequestedIPv6Configuration(transmission, y)) {
                                 RegisterAllMappingPorts();

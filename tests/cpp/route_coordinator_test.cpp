@@ -429,6 +429,28 @@ BOOST_AUTO_TEST_CASE(partial_apply_failure_rolls_back_in_reverse_order) {
     BOOST_TEST(snapshot.default_routes.empty());
 }
 
+BOOST_AUTO_TEST_CASE(attempt_rollback_keeps_coordinator_reusable) {
+    auto platform = std::make_unique<FakeRoutePlatform>();
+    FakeRoutePlatform* view = platform.get();
+    view->defaults.reset();
+    route::RouteCoordinator coordinator(std::move(platform));
+
+    BOOST_REQUIRE(coordinator.Apply({ MakeRoute(30) }));
+    BOOST_REQUIRE(coordinator.RollbackApplied());
+    BOOST_TEST(!coordinator.Snapshot().applied);
+
+    // A failed connect attempt must not permanently stop the coordinator;
+    // a later reconnect can apply its own route set.
+    BOOST_REQUIRE(coordinator.Apply({ MakeRoute(31) }));
+    BOOST_REQUIRE(coordinator.RollbackApplied());
+    BOOST_TEST(!coordinator.Snapshot().applied);
+
+    const ppp::vector<ppp::string> expected = {
+        "capture", "add:30", "delete:30", "capture", "add:31", "delete:31"
+    };
+    BOOST_TEST(view->calls == expected, boost::test_tools::per_element());
+}
+
 BOOST_AUTO_TEST_CASE(rollback_failure_preserves_only_the_pending_undo_state) {
     auto platform = std::make_unique<FakeRoutePlatform>();
     FakeRoutePlatform* view = platform.get();

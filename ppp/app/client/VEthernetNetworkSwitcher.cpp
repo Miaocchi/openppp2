@@ -664,21 +664,60 @@ namespace ppp {
                 return address_manager_->LastAssignedIPv6();
             }
 
-            bool VEthernetNetworkSwitcher::TryApplyHostedNetworkRoutes() noexcept {
+            bool VEthernetNetworkSwitcher::TryApplyHostedNetworkRoutes(bool allow_pre_established) noexcept {
                 route::RoutePlanInput input = BuildRoutePlanInput();
                 if (!input.tap_hosted) return true;
                 const route::RouteStateSnapshot snapshot = route_coordinator_->Snapshot();
+                if (hosted_routes_apply_failed_) return false;
                 if (snapshot.applied) return true;
                 const bool established = exchanger_ &&
                     exchanger_->GetNetworkState() == VEthernetExchanger::NetworkState_Established;
-                if (route::RouteCoordinator::ShouldDeferHostedRouteApply(snapshot.apply_ready, established)) {
+                if (route::RouteCoordinator::ShouldDeferHostedRouteApply(
+                        snapshot.apply_ready, established || allow_pre_established)) {
                     ppp::telemetry::Count("client.route.defer", 1);
                     return true;
                 }
-                if (!route_coordinator_->AddRoute(input)) return false;
+
+                bool dns_attempted = false;
+                bool dns_applied = false;
+                auto rollback = [this, &dns_attempted]() noexcept {
+#if defined(_WIN32)
+                    if (dns_attempted) {
+                        // Keep the original snapshot available for teardown if
+                        // the best-effort rollback itself fails.
+                        const AllNicDnsServerAddresses backup = ni_dns_servers_;
+                        AllNicDnsServerAddresses restore = backup;
+                        const int restored = ppp::win32::network::SetAllNicsDnsAddresses(restore);
+                        ni_dns_servers_ = backup;
+                        ppp::tap::TapWindows::DnsFlushResolverCache();
+                        if (restored != static_cast<int>(backup.size())) {
+                            ppp::telemetry::Count("client.dns.rollback.fail", 1);
+                        }
+                    }
+                    if (paper_airplane_ctrl_) {
+                        paper_airplane_ctrl_->Dispose();
+                        paper_airplane_ctrl_.reset();
+                    }
+#elif !defined(_ANDROID) && !defined(_IPHONE)
+                    if (dns_attempted) {
+                        if (!ClientNetworkInterfaceResolver::SetDnsResolveConfiguration(underlying_ni_)) {
+                            ppp::telemetry::Count("client.dns.rollback.fail", 1);
+                        }
+                    }
+#endif
+                    const bool rollback_complete = route_coordinator_->RollbackApplied();
+                    hosted_routes_apply_failed_ = !rollback_complete;
+                    return rollback_complete;
+                };
+
+                if (!route_coordinator_->AddRoute(input)) {
+                    const bool rollback_complete = route_coordinator_->RollbackApplied();
+                    hosted_routes_apply_failed_ = !rollback_complete;
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RouteAddFailed);
+                }
 #if defined(_WIN32)
                 if (!UsePaperAirplaneController()) {
-                    route_coordinator_->DeleteRoute();
+                    rollback();
                     return false;
                 }
 #endif
@@ -686,18 +725,37 @@ namespace ppp {
                     ppp::telemetry::SpanScope span("client.dns.apply");
 #if defined(_WIN32)
                     if (tun_ni_) {
-                        ppp::win32::network::SetAllNicsDnsAddresses(tun_ni_->DnsAddresses, ni_dns_servers_);
+                        dns_attempted = true;
+                        const int events = ppp::win32::network::SetAllNicsDnsAddresses(
+                            tun_ni_->DnsAddresses, ni_dns_servers_);
+                        dns_applied = events == static_cast<int>(ni_dns_servers_.size());
                     }
-                    ppp::tap::TapWindows::DnsFlushResolverCache();
-                    if (underlying_ni_) {
-                        ppp::win32::network::DeleteAllDefaultGatewayRoutes(underlying_ni_->GatewayServer);
+                    if (dns_applied) {
+                        ppp::tap::TapWindows::DnsFlushResolverCache();
+                    }
+                    if (dns_applied && underlying_ni_) {
+                        if (!ppp::win32::network::DeleteAllDefaultGatewayRoutes(underlying_ni_->GatewayServer)) {
+                            rollback();
+                            return false;
+                        }
                     }
 #else
-                    if (tun_ni_) ppp::unix__::UnixAfx::SetDnsAddresses(tun_ni_->DnsAddresses);
+                    dns_attempted = tun_ni_ != nullptr;
+                    dns_applied = !tun_ni_ || ppp::unix__::UnixAfx::SetDnsAddresses(tun_ni_->DnsAddresses);
 #endif
                 }
+                if (!dns_applied) {
+                    rollback();
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                }
                 ppp::telemetry::Count("client.dns.setup", 1);
-                route_coordinator_->ProtectDefaultRoute(input);
+                if (!route_coordinator_->ProtectDefaultRoute(input)) {
+                    rollback();
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::RouteAddFailed);
+                }
+                hosted_routes_apply_failed_ = false;
                 return true;
             }
 #endif
@@ -1273,7 +1331,10 @@ namespace ppp {
                     ppp::net::proxies::HttpProxy::SetSystemProxy(server) &&
                     ppp::net::proxies::HttpProxy::RefreshSystemProxy();
                 if (!bok) {
-                    return ClearHttpProxyToSystemEnv();
+                    // Clearing a partially applied proxy is best effort, but it
+                    // must not turn a failed setup into a successful result.
+                    ClearHttpProxyToSystemEnv();
+                    return false;
                 }
 
                 return bok;

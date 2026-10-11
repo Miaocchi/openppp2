@@ -75,6 +75,8 @@ jobs:
           python3 -m unittest tests.tooling.test_vmux_receive_semantics_ci -v
           python3 -m unittest tests.tooling.test_proxy_only_static_wiring -v
           python3 -m unittest tests.tooling.test_p2p_capability_wiring -v
+          python3 -m unittest tests.tooling.test_windows_dns_snapshot_contract -v
+          python3 -m unittest tests.tooling.test_windows_network_resource_contract -v
           PYTHONDONTWRITEBYTECODE=1 python3 tests/tooling/test_datapath_acceptance.py
           python3 tools/check_repository_layout.py
 

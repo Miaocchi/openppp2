@@ -57,6 +57,9 @@
 #endif
 #endif
                 std::unique_ptr<route::RouteCoordinator>                            route_coordinator_;
+                // A failed hosted-network apply that could not be fully
+                // rolled back must not be followed by an Established state.
+                bool                                                                hosted_routes_apply_failed_ = false;
                 std::unique_ptr<AssignedAddressManager>                             address_manager_;
                 std::unique_ptr<ClientConnectionTeardown>                           teardown_;
                 std::atomic<bool>                                                   last_teardown_success_{true};

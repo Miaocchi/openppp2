@@ -84,6 +84,16 @@ namespace ppp {
                     return ApplyLocked(routes);
                 }
 
+                bool RouteCoordinator::RollbackApplied() noexcept {
+                    std::lock_guard<std::mutex> operation_lock(operation_mutex_);
+                    StopProtection(protection_);
+                    const bool rollback_complete = Rollback(applied_);
+                    if (rollback_complete) {
+                        protection_.reset();
+                    }
+                    return rollback_complete;
+                }
+
                 bool RouteCoordinator::ApplyLocked(
                     const std::vector<RouteSpec>& routes) noexcept {
                     if (stopped_.load(std::memory_order_acquire) || NULLPTR == platform_) {
