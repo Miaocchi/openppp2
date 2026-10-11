@@ -94,6 +94,10 @@ endfunction()
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
 
+openppp2_add_cpp_test(network_recovery_journal_test
+    SOURCES network_recovery_journal_test.cpp
+            "${OPENPPP2_ROOT}/ppp/app/client/NetworkRecoveryJournal.cpp")
+
 if(ENABLE_XTCP_TESTS)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         message(FATAL_ERROR "ENABLE_XTCP_TESTS is supported only for Linux desktop builds")
@@ -715,6 +719,7 @@ openppp2_add_cpp_test(route_coordinator_test SOURCES
     support/ppp_test_stubs.cpp
     "${OPENPPP2_ROOT}/ppp/hash/hash_bytes.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteCoordinator.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/route/NetworkOwnership.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteCoordinator_mobile.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/MobileRoutePlatform.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRoutePlatform.cpp"
