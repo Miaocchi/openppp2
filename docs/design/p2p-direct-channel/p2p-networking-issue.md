@@ -1,5 +1,12 @@
 # Add server-coordinated P2P virtual-subnet networking
 
+> **Purpose:** Preserve the original feature request for server-coordinated P2P virtual-subnet networking.
+> **Audience:** P2P and networking maintainers.
+> Status: Historical issue draft; superseded by the protocol and v2 implementation plan in this directory.
+> Type: Issue draft
+> Last verified: 2026-10-11 (moved from `.github/issues/`; content unchanged)
+> **Parent index:** [Design Documents](../README.md)
+
 ## Summary
 
 OpenPPP2 already supports server-relayed virtual-subnet traffic via `LAN`/`NAT` and `server.subnet`. Add a direct-preferred P2P path on top of that baseline: clients keep using server relay by default, register P2P capability with the server, try UDP hole punching when both peers are eligible, and fall back to relay on any failure.

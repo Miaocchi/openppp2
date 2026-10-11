@@ -73,6 +73,11 @@ ios/App/build/
 
 debug.md
 **/debug.md
+# English halves of tracked debug_CN.md docs
+!android/debug.md
+!go/debug.md
+!go/io/debug.md
+!go/ppp/debug.md
 
 .vscode/*
 !.vscode/settings.json
@@ -97,7 +102,6 @@ ppp.log
 build-*/
 build_*/
 builds/cmake-check/
-AGENTS.md
 CLAUDE.md
 .claude/
 .gitnexusignore
