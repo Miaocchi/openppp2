@@ -430,6 +430,7 @@
     <ClCompile Include="ppp\app\client\routing\UdpRoutingSelector.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator.cpp" />
     <ClCompile Include="ppp\app\client\route\NetworkOwnership.cpp" />
+    <ClCompile Include="ppp\app\client\NetworkRecoveryJournal.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator_mobile.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator_win32.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator_darwin.cpp" />

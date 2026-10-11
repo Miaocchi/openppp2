@@ -174,8 +174,12 @@ jobs:
           retention-days: 7
 
   desktop-rust:
-    name: Desktop frontend and Rust tests
-    runs-on: ubuntu-latest
+    name: Desktop frontend and Rust tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
     defaults:
       run:
         working-directory: desktop/client
@@ -194,6 +198,7 @@ jobs:
           cache: true
 
       - name: Install Tauri Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \

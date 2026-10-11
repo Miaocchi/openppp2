@@ -108,6 +108,44 @@ namespace ppp
                 return std::to_string(static_cast<unsigned long long>(luid.Value));
             }
 
+            static bool GetDnsAutomaticByGuid(const ppp::string& guid, bool& automatic) noexcept
+            {
+                automatic = false;
+                if (guid.empty())
+                {
+                    return false;
+                }
+
+                const std::string path =
+                    "SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\" + guid;
+                HKEY key = NULL;
+                if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, path.c_str(), 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+                {
+                    return false;
+                }
+
+                char value[4096] = {};
+                DWORD type = 0;
+                DWORD size = sizeof(value);
+                const LONG result = RegQueryValueExA(
+                    key, "NameServer", NULL, &type, reinterpret_cast<LPBYTE>(value), &size);
+                RegCloseKey(key);
+                if (result == ERROR_FILE_NOT_FOUND)
+                {
+                    // No static NameServer value means the adapter uses the
+                    // DHCP supplied DNS servers.
+                    automatic = true;
+                    return true;
+                }
+                if (result != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ))
+                {
+                    return false;
+                }
+
+                automatic = size <= sizeof(char) || value[0] == '\0';
+                return true;
+            }
+
             static bool RegistryEditGetValue(HKEY hSubKey, const TCHAR* key, ppp::string& value) noexcept
             {
                 TCHAR szBuffer[MAX_PATH];
@@ -915,7 +953,10 @@ namespace ppp
                 snapshot.InterfaceIndex = current->InterfaceIndex;
                 snapshot.InterfaceLuid = current->InterfaceLuid;
                 snapshot.Guid = current->Guid;
-                snapshot.DhcpEnabled = current->DhcpEnabled;
+                if (!GetDnsAutomaticByGuid(snapshot.Guid, snapshot.DnsAutomatic))
+                {
+                    return false;
+                }
                 for (const ppp::string& value : current->DnsAddresses)
                 {
                     boost::system::error_code ec;
@@ -951,11 +992,6 @@ namespace ppp
                     return false;
                 }
 
-                if (snapshot.DhcpEnabled)
-                {
-                    return DhcpEnabled(snapshot.InterfaceIndex);
-                }
-
                 ppp::vector<ppp::string> servers;
                 servers.reserve(snapshot.DnsAddresses.size());
                 for (const boost::asio::ip::address& address : snapshot.DnsAddresses)
@@ -965,6 +1001,13 @@ namespace ppp
                     {
                         servers.emplace_back(address.to_string());
                     }
+                }
+                // Passing an empty list clears NameServer and returns DNS
+                // ownership to the automatic/DHCP source. Static snapshots
+                // restore the exact captured server list.
+                if (snapshot.DnsAutomatic)
+                {
+                    servers.clear();
                 }
                 return SetDnsAddresses(snapshot.InterfaceIndex, servers);
             }

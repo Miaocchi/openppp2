@@ -59,7 +59,10 @@ namespace ppp
                 ppp::string                                     InterfaceLuid;
                 ppp::string                                     Guid;
                 ppp::vector<boost::asio::ip::address>           DnsAddresses;
-                bool                                            DhcpEnabled = false;
+                // True when DNS is supplied automatically (NameServer is
+                // empty); this is deliberately separate from WMI's
+                // IP-address DhcpEnabled property.
+                bool                                            DnsAutomatic = false;
             } NetworkDnsSnapshot;
 
             typedef struct

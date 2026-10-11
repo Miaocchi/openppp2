@@ -29,6 +29,7 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn("npm test", workflow)
         self.assertIn("npm run build", workflow)
         self.assertIn("cargo test --locked --manifest-path src-tauri/Cargo.toml", workflow)
+        self.assertIn("os: [ubuntu-latest, windows-2022]", workflow)
 
     def test_windows_x64_build_reports_missing_artifacts(self) -> None:
         workflow = self.read("build-windows-x64.yml")

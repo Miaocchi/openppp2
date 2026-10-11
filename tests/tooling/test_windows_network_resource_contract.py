@@ -76,7 +76,7 @@ class WindowsNetworkResourceContractTests(unittest.TestCase):
         self.assertIn('STATIC_CaptureSystemProxySnapshot()', source)
         self.assertIn('STATIC_RestoreSystemProxy(false)', source)
         emergency = function_body(source, "void HttpProxy::EmergencyRestoreSystemProxy()")
-        self.assertIn('STATIC_RestoreSystemProxy(true)', emergency)
+        self.assertIn('STATIC_RestoreSystemProxy(false)', emergency)
         self.assertNotIn('ProxyEnable", 0', emergency)
         self.assertNotIn('ProxyServer", 0', emergency)
 

@@ -361,7 +361,7 @@ namespace ppp
 
                 // Restore the persisted original values and keep the marker if any
                 // registry or WinINet operation fails, so a later retry remains possible.
-                if (STATIC_RestoreSystemProxy(true))
+                if (STATIC_RestoreSystemProxy(false))
                     s_system_proxy_engaged.store(false, std::memory_order_release);
             }
 
