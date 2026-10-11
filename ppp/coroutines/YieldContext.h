@@ -159,7 +159,12 @@ namespace ppp
             class Anchor final
             {
             public:
-                Anchor() noexcept = default;
+                /**
+                 * @brief Empty anchor. Spelled out (no default member initializers):
+                 *        clang rejects a defaulted constructor of a nested class that
+                 *        the enclosing class needs before its definition completes.
+                 */
+                Anchor() noexcept : value_(0) {}
 
             public:
                 /**
@@ -182,7 +187,7 @@ namespace ppp
 
             private:
                 std::shared_ptr<AnchorCell>                                     cell_;
-                uint64_t                                                        value_ = 0;
+                uint64_t                                                        value_;
             };
 
         public:
