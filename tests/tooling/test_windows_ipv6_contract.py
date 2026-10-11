@@ -99,6 +99,35 @@ class WindowsIPv6ContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
+    def test_restore_keeps_ipv6_route_and_dns_pending_until_success(self) -> None:
+        source = (ROOT / "windows/ppp/ipv6/WIN32_IPv6Auxiliary.cpp").read_text(
+            encoding="utf-8"
+        )
+        restore = function_body(source, "void RestoreClientConfiguration")
+        self.assertIn("if (ppp::win32::network::DeleteIPv6Route(", restore)
+        self.assertIn("state.SubnetRouteApplied = false", restore)
+        self.assertIn("if (ppp::win32::network::SetDnsAddressesV6(", restore)
+        self.assertIn("state.DnsApplied = false", restore)
+        state = (ROOT / "ppp/ipv6/IPv6Auxiliary.h").read_text(encoding="utf-8")
+        pending = function_body(state, "inline bool                                                   HasPendingOwnedMutations")
+        self.assertIn("SubnetRouteApplied", pending)
+        self.assertIn("DnsApplied", pending)
+
+    def test_partial_ipv6_apply_records_cleanup_targets_before_os_call(self) -> None:
+        source = (ROOT / "windows/ppp/ipv6/WIN32_IPv6Auxiliary.cpp").read_text(
+            encoding="utf-8"
+        )
+        subnet = function_body(source, "bool ApplyClientSubnetRoute")
+        dns = function_body(source, "bool ApplyClientDns")
+        self.assertLess(
+            subnet.index("state.SubnetRouteApplied = true"),
+            subnet.index("ppp::win32::network::AddIPv6Route"),
+        )
+        self.assertLess(
+            dns.index("state.DnsApplied = true"),
+            dns.index("SetDnsAddressesV6(context.InterfaceIndex, dns_servers)"),
+        )
+
     def test_route_owner_uses_constrained_pin_and_split_takeover(self) -> None:
         source = (ROOT / "windows/ppp/ipv6/WindowsIPv6RouteOwner.cpp").read_text(
             encoding="utf-8"

@@ -378,15 +378,17 @@ namespace ppp {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IPv6GatewayMissing);
                     }
 
+                    // Record the exact target before the OS call. netsh can report an
+                    // error after partially applying a route, so cleanup must remain
+                    // retryable even when AddIPv6Route returns false.
+                    state.SubnetRoutePrefix = prefix_str;
+                    state.SubnetRoutePrefixLength = prefix_length;
+                    state.SubnetRouteGateway = gateway_str;
+                    state.SubnetRouteApplied = true;
                     if (!ppp::win32::network::AddIPv6Route(context.InterfaceIndex, prefix_str, prefix_length, gateway_str, 0)) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
                         return false;
                     }
-
-                    state.SubnetRouteApplied = true;
-                    state.SubnetRoutePrefix = prefix_str;
-                    state.SubnetRoutePrefixLength = prefix_length;
-                    state.SubnetRouteGateway = gateway_str;
                     return true;
                 }
 
@@ -395,13 +397,19 @@ namespace ppp {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IPv6ClientDnsApplyFailed);
                     }
 
+                    // Keep the snapshot live across both an apply failure and a later
+                    // teardown retry. A failed netsh invocation may have changed part of
+                    // the resolver list before returning an error.
+                    state.DnsApplied = true;
+                    state.DnsServers = dns_servers;
                     if (!ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, dns_servers)) {
-                        ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, state.OriginalDnsServers);
+                        if (ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, state.OriginalDnsServers)) {
+                            state.DnsApplied = false;
+                            state.DnsServers.clear();
+                        }
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IPv6ClientDnsApplyFailed);
                     }
 
-                    state.DnsApplied = true;
-                    state.DnsServers = dns_servers;
                     ppp::tap::TapWindows::DnsFlushResolverCache();
                     return true;
                 }
@@ -415,11 +423,19 @@ namespace ppp {
                     }
 
                     if (state.SubnetRouteApplied && !state.SubnetRoutePrefix.empty()) {
-                        ppp::win32::network::DeleteIPv6Route(
+                        if (ppp::win32::network::DeleteIPv6Route(
                             context.InterfaceIndex,
                             state.SubnetRoutePrefix,
                             state.SubnetRoutePrefixLength,
-                            state.SubnetRouteGateway);
+                            state.SubnetRouteGateway)) {
+                            state.SubnetRouteApplied = false;
+                            state.SubnetRoutePrefix.clear();
+                            state.SubnetRoutePrefixLength = 0;
+                            state.SubnetRouteGateway.clear();
+                        }
+                        else {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
+                        }
                     }
 
                     if (state.GatewayNeighborOwned && !state.DefaultRouteGateway.empty()) {
@@ -457,8 +473,14 @@ namespace ppp {
                     }
 
                     if (state.DnsApplied) {
-                        ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, state.OriginalDnsServers);
-                        ppp::tap::TapWindows::DnsFlushResolverCache();
+                        if (ppp::win32::network::SetDnsAddressesV6(context.InterfaceIndex, state.OriginalDnsServers)) {
+                            state.DnsApplied = false;
+                            state.DnsServers.clear();
+                            ppp::tap::TapWindows::DnsFlushResolverCache();
+                        }
+                        else {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientDnsApplyFailed);
+                        }
                     }
                 }
             }

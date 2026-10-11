@@ -83,7 +83,11 @@ namespace ppp {
 
                 /** @brief Returns whether exact-owned Windows mutations still require cleanup. */
                 inline bool                                                   HasPendingOwnedMutations() const noexcept {
-                    return AddressOwned || GatewayNeighborOwned;
+                    // Address and neighbor ownership are exact-match resources. DNS and
+                    // subnet routes also need to remain live until their restore operation
+                    // has been confirmed, otherwise a failed teardown loses its retry path.
+                    return AddressOwned || GatewayNeighborOwned ||
+                        SubnetRouteApplied || DnsApplied;
                 }
             };
 

@@ -867,15 +867,14 @@ namespace ppp {
                     std::string prefix_std = prefix.to_string();
                     ppp::string prefix_string(prefix_std.data(), prefix_std.size());
                     prefix_length = std::max<int>(ppp::ipv6::IPv6_MIN_PREFIX_LENGTH, std::min<int>(ppp::ipv6::IPv6_MAX_PREFIX_LENGTH, prefix_length));
-                    if (!ppp::tap::TapLinux::AddRoute6(context.InterfaceName, prefix_string, prefix_length, gateway_string)) {
-                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
-                        return false;
-                    }
-
                     state.SubnetRouteApplied = true;
                     state.SubnetRoutePrefix = prefix_string;
                     state.SubnetRoutePrefixLength = prefix_length;
                     state.SubnetRouteGateway = gateway_string;
+                    if (!ppp::tap::TapLinux::AddRoute6(context.InterfaceName, prefix_string, prefix_length, gateway_string)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::IPv6ClientRouteApplyFailed);
+                        return false;
+                    }
                     return true;
                 }
 
@@ -895,12 +894,11 @@ namespace ppp {
                         }
                     }
 
+                    state.DnsApplied = true;
+                    state.DnsServers = dns_servers;
                     if (dns_addrs.empty() || !ppp::unix__::UnixAfx::MergeDnsAddresses(dns_addrs, current_addrs)) {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::IPv6ClientDnsApplyFailed);
                     }
-
-                    state.DnsApplied = true;
-                    state.DnsServers = dns_servers;
                     return true;
                 }
 
@@ -915,7 +913,12 @@ namespace ppp {
                     }
 
                     if (state.SubnetRouteApplied && !state.SubnetRoutePrefix.empty()) {
-                        ppp::tap::TapLinux::DeleteRoute6(context.InterfaceName, state.SubnetRoutePrefix, state.SubnetRoutePrefixLength, state.SubnetRouteGateway);
+                        if (ppp::tap::TapLinux::DeleteRoute6(context.InterfaceName, state.SubnetRoutePrefix, state.SubnetRoutePrefixLength, state.SubnetRouteGateway)) {
+                            state.SubnetRouteApplied = false;
+                            state.SubnetRoutePrefix.clear();
+                            state.SubnetRoutePrefixLength = 0;
+                            state.SubnetRouteGateway.clear();
+                        }
                     }
 
                     if (state.DefaultRouteApplied && nat_mode && state.DefaultRouteGateway.empty()) {
@@ -949,7 +952,10 @@ namespace ppp {
                     }
 
                     if (state.DnsApplied) {
-                        ppp::unix__::UnixAfx::SetDnsResolveConfiguration(state.OriginalDnsConfiguration);
+                        if (ppp::unix__::UnixAfx::SetDnsResolveConfiguration(state.OriginalDnsConfiguration)) {
+                            state.DnsApplied = false;
+                            state.DnsServers.clear();
+                        }
                     }
 
                     if (state.DefaultRouteApplied && state.DefaultRouteWasPresent) {

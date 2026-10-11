@@ -49,6 +49,13 @@ namespace ppp {
                     ppp::string gateway = neighbor_owned ? std::move(state.DefaultRouteGateway) : ppp::string();
                     const std::uint64_t interface_luid = state.GatewayNeighborInterfaceLuid;
                     const int interface_index = state.GatewayNeighborInterfaceIndex;
+                    const bool subnet_route_pending = state.SubnetRouteApplied;
+                    const ppp::string subnet_prefix = subnet_route_pending ? state.SubnetRoutePrefix : ppp::string();
+                    const int subnet_prefix_length = state.SubnetRoutePrefixLength;
+                    const ppp::string subnet_gateway = subnet_route_pending ? state.SubnetRouteGateway : ppp::string();
+                    const bool dns_pending = state.DnsApplied;
+                    const auto dns_servers = dns_pending ? state.DnsServers : ppp::vector<ppp::string>();
+                    const auto original_dns_servers = dns_pending ? state.OriginalDnsServers : ppp::vector<ppp::string>();
 
                     state.Clear();
                     if (address_owned) {
@@ -61,6 +68,17 @@ namespace ppp {
                         state.GatewayNeighborInterfaceLuid = interface_luid;
                         state.GatewayNeighborInterfaceIndex = interface_index;
                         state.DefaultRouteGateway = std::move(gateway);
+                    }
+                    if (subnet_route_pending) {
+                        state.SubnetRouteApplied = true;
+                        state.SubnetRoutePrefix = subnet_prefix;
+                        state.SubnetRoutePrefixLength = subnet_prefix_length;
+                        state.SubnetRouteGateway = subnet_gateway;
+                    }
+                    if (dns_pending) {
+                        state.DnsApplied = true;
+                        state.DnsServers = dns_servers;
+                        state.OriginalDnsServers = original_dns_servers;
                     }
                 }
             }
