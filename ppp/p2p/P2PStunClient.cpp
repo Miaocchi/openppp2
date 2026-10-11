@@ -434,9 +434,12 @@ namespace ppp {
 
             // Create a dedicated temporary socket (#13).
             boost::system::error_code ec;
-            boost::asio::ip::udp::socket tmp_socket(io_ctx,
-                stun_server.address().is_v6() ? boost::asio::ip::udp::v6() : boost::asio::ip::udp::v4());
-            if (!tmp_socket.is_open()) {
+            // open(protocol, ec) instead of the opening constructor: that overload
+            // throws on failure (no IPv6 stack, descriptor exhaustion), which would
+            // terminate the process from this noexcept function.
+            boost::asio::ip::udp::socket tmp_socket(io_ctx);
+            tmp_socket.open(stun_server.address().is_v6() ? boost::asio::ip::udp::v6() : boost::asio::ip::udp::v4(), ec);
+            if (ec || !tmp_socket.is_open()) {
                 return result;
             }
             tmp_socket.bind(stun_server.address().is_v6()

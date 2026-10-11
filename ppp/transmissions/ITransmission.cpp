@@ -819,6 +819,30 @@ namespace ppp {
         }
 
         /**
+         * @brief Reverses the transport cipher layer on an exclusively owned payload buffer.
+         * @details Decrypts in place when the backend supports it, avoiding one
+         *          allocation and copy per received frame; otherwise allocates.
+         */
+        static std::shared_ptr<Byte> Transmission_Transport_Decrypt(
+            const std::shared_ptr<BufferswapAllocator>& allocator,
+            const CiphertextPtr&                        EVP_transport,
+            const std::shared_ptr<Byte>&                payload,
+            int                                         payload_len,
+            int&                                        outlen) noexcept {
+
+            if (EVP_transport->CanDecryptInPlace()) {
+                if (!EVP_transport->DecryptInPlace(payload.get(), payload_len)) {
+                    return NULLPTR;
+                }
+
+                outlen = payload_len;
+                return payload;
+            }
+
+            return EVP_transport->Decrypt(allocator, payload.get(), payload_len, outlen);
+        }
+
+        /**
          * @brief Concatenates encrypted header and payload into one packet buffer.
          */
         static std::shared_ptr<Byte> Transmission_Packet_Pack(
@@ -1016,7 +1040,7 @@ namespace ppp {
             }
 
             if (EVP_protocol && EVP_transport) {
-                payload = EVP_transport->Decrypt(allocator, payload.get(), payload_len, outlen);
+                payload = Transmission_Transport_Decrypt(allocator, EVP_transport, payload, payload_len, outlen);
                 if (NULLPTR == payload || payload_len != outlen) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed, NULLPTR);
                 }
@@ -1082,7 +1106,7 @@ namespace ppp {
             uint64_t transport_decode_us = 0;
             if (EVP_protocol && EVP_transport) {
                 ppp::diagnostics::datapath_perf::Scope transport_decode_scope;
-                payload = EVP_transport->Decrypt(allocator, payload.get(), payload_len, outlen);
+                payload = Transmission_Transport_Decrypt(allocator, EVP_transport, payload, payload_len, outlen);
                 if (NULLPTR == payload || payload_len != outlen) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed, NULLPTR);
                 }

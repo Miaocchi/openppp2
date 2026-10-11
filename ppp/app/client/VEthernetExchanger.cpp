@@ -2780,7 +2780,9 @@ namespace ppp {
                         event(ec == boost::system::errc::success);
                     });
 
-                auto r = deadline_timers_.emplace(deadline_timer, std::move(t));
+                // Copy rather than move: on a failed emplace the node (and a moved-in
+                // pointer) is discarded, and t must stay valid for the cancel below.
+                auto r = deadline_timers_.emplace(deadline_timer, t);
                 if (r.second) {
                     return true;
                 }
@@ -4433,20 +4435,25 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                 }
 
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
+                }
+
                 auto self = shared_from_this();
                 boost::asio::post(*context,
-                    [self, this, context, timeout, status, &y]() noexcept {
+                    [self, this, context, timeout, status, anchor]() noexcept {
                         bool ok = NewDeadlineTimer(context, timeout,
-                            [status, &y](bool b) noexcept {
-                                ppp::coroutines::asio::R(y, *status, b);
+                            [status, anchor](bool b) noexcept {
+                                ppp::coroutines::asio::R(anchor, *status, b);
                             });
 
                         if (!ok) {
-                            ppp::coroutines::asio::R(y, *status, false);
+                            ppp::coroutines::asio::R(anchor, *status, false);
                         }
                     });
 
-                y.Suspend();
+                y.Suspend(anchor);
                 return status->load() > 0;
             }
 

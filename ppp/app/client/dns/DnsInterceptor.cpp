@@ -366,20 +366,22 @@ namespace ppp {
                     if (!service || !snapshot || !session || !session->IsActive() || &yield == nullof<ppp::coroutines::YieldContext>()) return false;
                     struct Await { std::mutex mutex; bool waiting = true; boost::asio::ip::address result; };
                     const auto pending = std::make_shared<Await>();
-                    auto resolve = [service, snapshot, session, domain, pending, &yield] {
+                    const ppp::coroutines::YieldContext::Anchor anchor = yield.Arm();
+                    if (!anchor) return false;
+                    auto resolve = [service, snapshot, session, domain, pending, anchor] {
                     service->Resolve(snapshot, session, PolicyResolverService::BuildQuery(domain),
-                        [pending, &yield](ppp::vector<Byte> response) {
+                        [pending, anchor](ppp::vector<Byte> response) {
                             {
                                 std::lock_guard<std::mutex> lock(pending->mutex);
                                 if (!pending->waiting) return;
                                 pending->result = PolicyResolverService::FirstAddress(response);
                             }
-                            yield.R();
+                            anchor.R();
                         });
                     };
                     if (yield.GetStrand()) boost::asio::post(*yield.GetStrand(), resolve);
                     else boost::asio::post(yield.GetContext(), resolve);
-                    yield.Suspend();
+                    yield.Suspend(anchor);
                     std::lock_guard<std::mutex> lock(pending->mutex);
                     pending->waiting = false;
                     address = pending->result;

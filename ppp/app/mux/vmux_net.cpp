@@ -798,8 +798,7 @@ namespace vmux {
             }
 
             out = std::move(fx.queue.front());
-            fx.queue.pop_front();
-            fx.visit_count++;
+            fx.queue.pop_front();            fx.visit_count++;
             const size_t nbytes = out.length > 0 ? (size_t)out.length : 0;
             if (nbytes <= fx.bytes) {
                 fx.bytes -= nbytes;
@@ -4035,12 +4034,18 @@ namespace vmux {
         // this would dangle after the last shared_ptr is released.
         std::shared_ptr<vmux_net> self = shared_from_this();
 
-        bool posted = vmux_post_exec(context_, strand_,
-            [self, sk, host, port, status, context, strand, return_connection, &y]() noexcept {
-                bool ok = self->connect(context, strand, sk, host, port,
-                    [status, return_connection, &y](vmux_skt* sender, bool success) noexcept {
+        const ppp::coroutines::YieldContext::Anchor anchor = y.Arm();
+        if (!anchor) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
+            return false;
+        }
 
-                        ppp::coroutines::asio::R(y, *status, success, 
+        bool posted = vmux_post_exec(context_, strand_,
+            [self, sk, host, port, status, context, strand, return_connection, anchor]() noexcept {
+                bool ok = self->connect(context, strand, sk, host, port,
+                    [status, return_connection, anchor](vmux_skt* sender, bool success) noexcept {
+
+                        ppp::coroutines::asio::R(anchor, *status, success, 
                             [return_connection, sender]() noexcept {
                                 /* The socket may already be inside its destructor when
                                  * this failure callback fires (session teardown while a
@@ -4058,7 +4063,7 @@ namespace vmux {
                     });
 
                 if (!ok) {
-                    ppp::coroutines::asio::R(y, *status, false);
+                    ppp::coroutines::asio::R(anchor, *status, false);
                 }
             });
 
@@ -4067,7 +4072,7 @@ namespace vmux {
             return false;
         }
 
-        y.Suspend();
+        y.Suspend(anchor);
         return status->load() > 0;
     }
 

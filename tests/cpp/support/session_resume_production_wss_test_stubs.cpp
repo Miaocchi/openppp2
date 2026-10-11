@@ -91,6 +91,10 @@ AppConfiguration::AppConfiguration() noexcept {
     key.delta_encode = false;
     key.shuffle_data = false;
     key.simd_auto = true;
+    // Production Clear() defaults these; the handshake reads them (UBSan flagged the
+    // uninitialised bools when this stub left them unset).
+    server.transport_auth.enabled = false;
+    client.transport_auth.enabled = false;
     _lcgmods[LCGMOD_TYPE_TRANSMISSION] =
         ppp::cryptography::ssea::lcgmod(key.kf, 64 * 64 * 64, 94 * 94 * 94);
     _lcgmods[LCGMOD_TYPE_STATIC] =

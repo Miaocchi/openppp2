@@ -102,7 +102,7 @@ struct P2PExchangerRecoveryTestAccess {
     uint64_t now = ppp::threading::Executors::GetTickCount();
     unsigned registrations = 0, renews = 0;
     bool registration_ok = true, install_socket = true;
-    ppp::coroutines::YieldContext* suspended = nullptr;
+    ppp::coroutines::YieldContext::Anchor suspended;
     bool suspend_registration = false;
     std::map<uint32_t, std::shared_ptr<p2p_v2_test::Pair>> peers;
     std::size_t sent_cursor = 0;
@@ -125,7 +125,7 @@ struct P2PExchangerRecoveryTestAccess {
         e.recovery_test_hooks_.register_candidates = [this](const Exchanger::ITransmissionPtr&, Exchanger::YieldContext& y) {
             ++registrations;
             if (install_socket) Install();
-            if (suspend_registration) { suspended = &y; y.Suspend(); }
+            if (suspend_registration) { suspended = y.Arm(); y.Suspend(suspended); }
             return registration_ok;
         };
         Install();
@@ -507,7 +507,7 @@ BOOST_AUTO_TEST_CASE(same_generation_old_coroutine_completion_cannot_overwrite_n
     const auto current = f.socket;
     const auto registration = f.Registration();
     const auto renews = f.renews;
-    f.suspended->R(); f.Pump();
+    BOOST_REQUIRE(f.suspended.R()); f.Pump();
     BOOST_TEST(f.socket == current); BOOST_TEST(f.Registration() == registration);
     BOOST_TEST(f.renews == renews); BOOST_TEST(old->closes == 1u); f.CheckRelay();
 }

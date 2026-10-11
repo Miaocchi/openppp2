@@ -71,31 +71,15 @@ namespace ppp {
                     return false;
                 }
 
-                std::shared_ptr<boost::asio::io_context> context = transmission->GetContext();
-                ITransmission::StrandPtr strand = transmission->GetStrand();
-                if (NULLPTR == context || NULLPTR == strand) {
-                    return false;
-                }
-
-                auto payload = std::make_shared<std::vector<Byte>>();
-                if (packet_length > 0) {
-                    payload->assign(packet, packet + packet_length);
-                }
-
-                udp::ServerUdpRelayHostPorts ports = ports_;
-                VirtualEthernetExchangerPtr exchanger = exchanger_;
-                boost::asio::ip::udp::endpoint sourceEP = sourceEP_;
-                return YieldContext::Spawn(NULLPTR, *context, strand.get(),
-                    [ports = std::move(ports), exchanger = std::move(exchanger),
-                     transmission, sourceEP, destinationEP, payload, packet_length](
-                        YieldContext& y) noexcept {
-                        (void)exchanger;
-                        Byte* data = packet_length > 0 ? payload->data() : NULLPTR;
-                        if (!ports.do_send_to(transmission, sourceEP, destinationEP,
-                                data, packet_length, y)) {
-                            transmission->Dispose();
-                        }
-                    });
+                // Use the callback write path (no YieldContext), as the client's
+                // VEthernetDatagramPort does. The SENDTO frame is built and encrypted
+                // into its own buffer before do_send_to returns and the write queue is
+                // thread-safe, so the shared receive buffer can be passed straight
+                // through. Spawning a coroutine per datagram cost a 128 KiB stack
+                // allocation, a payload copy and two context switches per packet.
+                // A failed asynchronous write disposes the transmission in its callback.
+                return ports_.do_send_to(transmission, sourceEP_, destinationEP,
+                    const_cast<Byte*>(packet), packet_length, nullof<YieldContext>());
             }
 
             /**

@@ -388,13 +388,18 @@ namespace ppp {
                 // Read until "\r\n\r\n" (end of HTTP headers)
                 boost::system::error_code ec;
                 std::size_t length = 0;
+                const ppp::coroutines::YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+
                 boost::asio::async_read_until(*local_socket_, *response, "\r\n\r\n",
-                    [&y, &ec, &length](const boost::system::error_code& e, std::size_t sz) noexcept {
+                    [anchor, &ec, &length](const boost::system::error_code& e, std::size_t sz) noexcept {
                         ec = e;
                         length = sz;
-                        y.R();
+                        anchor.R();
                     });
-                y.Suspend();
+                y.Suspend(anchor);
                 
                 if (ec || (0 == length)) {
                     if ((boost::asio::error::operation_aborted == ec) || (boost::asio::error::eof == ec)) {

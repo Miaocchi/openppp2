@@ -43,12 +43,12 @@ namespace ppp {
             /**
              * @brief Atomically sets completion state, runs callback, and resumes coroutine.
              * @tparam Handler Optional callback type.
-             * @param y Yield context to resume.
+             * @param anchor Wakeup credential armed for the suspension being completed.
              * @param status Shared atomic state initialized to `-1`.
              * @param b Result value written as `1` or `0`.
              * @param handler Optional completion callback.
              */
-            static void                                                         R(YieldContext& y, std::atomic<int>& status, bool b, const Handler& handler = NULLPTR) noexcept {
+            static void                                                         R(const YieldContext::Anchor& anchor, std::atomic<int>& status, bool b, const Handler& handler = NULLPTR) noexcept {
                 int k = -1;
                 int v = b ? 1 : 0;
 
@@ -57,7 +57,7 @@ namespace ppp {
                         handler();
                     }
 
-                    y.R();
+                    anchor.R();
                 }
             }
 
@@ -71,17 +71,22 @@ namespace ppp {
                     return false;
                 }
 
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+
                 int len = -1;
                 boost::asio::post(stream.get_executor(),
-                    [&stream, &buffers, &y, &len]() noexcept {
+                    [&stream, &buffers, anchor, &len]() noexcept {
                         boost::asio::async_read(stream, constantof(buffers),
-                            [&y, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                            [anchor, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
                                 len = std::max<int>(ec ? -1 : sz, -1);
-                                y.R();
+                                anchor.R();
                             });
                     });
 
-                y.Suspend();
+                y.Suspend(anchor);
                 return len == buffers.size();
             }
 
@@ -95,17 +100,22 @@ namespace ppp {
                     return false;
                 }
 
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+
                 bool ok = false;
                 boost::asio::post(stream.get_executor(),
-                    [&stream, &buffers, &y, &ok]() noexcept {
+                    [&stream, &buffers, anchor, &ok]() noexcept {
                         boost::asio::async_write(stream, constantof(buffers),
-                            [&y, &ok](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                            [anchor, &ok](const boost::system::error_code& ec, std::size_t sz) noexcept {
                                 ok = ec == boost::system::errc::success; /* b is boost::system::errc::success. */
-                                y.R();
+                                anchor.R();
                             });
                     });
 
-                y.Suspend();
+                y.Suspend(anchor);
                 return ok;
             }
 
@@ -120,16 +130,21 @@ namespace ppp {
                     return len;
                 }
 
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return len;
+                }
+
                 boost::asio::post(stream.get_executor(),
-                    [&stream, &buffers, &y, &len]() noexcept {
+                    [&stream, &buffers, anchor, &len]() noexcept {
                         stream.async_read_some(constantof(buffers),
-                            [&y, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                            [anchor, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
                                 len = std::max<int>(ec ? -1 : sz, -1);
-                                y.R();
+                                anchor.R();
                             });
                     });
 
-                y.Suspend();
+                y.Suspend(anchor);
                 return len;
             }
 
@@ -161,17 +176,22 @@ namespace ppp {
                     return false;
                 }
 
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+
                 bool ok = false;
                 boost::asio::post(socket.get_executor(), 
-                    [&socket, &remoteEP, &y, &ok]() noexcept {
+                    [&socket, &remoteEP, anchor, &ok]() noexcept {
                         socket.async_connect(remoteEP,
-                            [&y, &ok](const boost::system::error_code& ec) noexcept {
+                            [anchor, &ok](const boost::system::error_code& ec) noexcept {
                                 ok = ec == boost::system::errc::success; /* b is boost::system::errc::success. */
-                                y.R();
+                                anchor.R();
                             });
                         });
 
-                y.Suspend();
+                y.Suspend(anchor);
                 return ok;
             }
 
@@ -189,9 +209,14 @@ namespace ppp {
                  * open is delegated to the framework-driven executor thread.
                  */
 #if defined(_ANDROID)
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+
                 bool ok = false;
                 boost::asio::post(socket.get_executor(),
-                    [&socket, &protocol, &ok, &y]() noexcept {
+                    [&socket, &protocol, &ok, anchor]() noexcept {
                         boost::system::error_code ec;
                         socket.open(protocol, ec);
 
@@ -199,10 +224,10 @@ namespace ppp {
                             ok = true;
                         }
 
-                        y.R();
+                        anchor.R();
                     });
 
-                y.Suspend();
+                y.Suspend(anchor);
                 return ok;
 #else
                 boost::system::error_code ec;
@@ -239,15 +264,20 @@ namespace ppp {
                     return IPEndPoint::AnyAddressV4<TProtocol>(IPEndPoint::MinPort);
                 }
 
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return IPEndPoint::AnyAddressV4<TProtocol>(IPEndPoint::MinPort);
+                }
+
                 boost::asio::ip::basic_endpoint<TProtocol> results = IPEndPoint::AnyAddressV4<TProtocol>(IPEndPoint::MinPort);
                 auto processing =
-                    [status, &results, &y](const std::shared_ptr<IPEndPoint>& ep) noexcept {
+                    [status, &results, anchor](const std::shared_ptr<IPEndPoint>& ep) noexcept {
                         if (!status->exchange(true)) {
                             if (NULLPTR != ep) {
                                 results = IPEndPoint::ToEndPoint<TProtocol>(*ep);
                             }
 
-                            y.R();
+                            anchor.R();
                         }
                     };
 
@@ -255,15 +285,15 @@ namespace ppp {
                 boost::asio::strand<boost::asio::io_context::executor_type>* strand = y.GetStrand();
 
                 ppp::threading::Executors::Post(addressof(context), strand, 
-                    [&y, &context, hostname, port, &processing, status]() noexcept {
+                    [anchor, &context, hostname, port, &processing, status]() noexcept {
                         if (!Ipep::GetAddressByHostName(context, hostname, port, processing)) {
                             if (!status->exchange(true)) {
-                                y.R();
+                                anchor.R();
                             }
                         }
                     });
 
-                y.Suspend();
+                y.Suspend(anchor);
                 return results;
             }
 #if defined(_WIN32)

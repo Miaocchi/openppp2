@@ -238,20 +238,26 @@ namespace ppp {
             auto destination = boost::asio::buffer(buffer, capacity);
             // Lab-only JSONL: carrier receive post-to-completion duration.
             ppp::diagnostics::datapath_perf::Scope receive_scope;
+            const YieldContext::Anchor anchor = y.Arm();
+            if (!anchor) {
+                read_ec = boost::asio::error::operation_aborted;
+                return;
+            }
+
             boost::asio::post(socket->get_executor(),
-                [socket, destination, minimum, &y, &read_ec, &transferred, receive_scope]() noexcept {
+                [socket, destination, minimum, anchor, &read_ec, &transferred, receive_scope]() noexcept {
                     boost::asio::async_read(*socket, destination, boost::asio::transfer_at_least(minimum),
-                        [&y, &read_ec, &transferred, minimum, receive_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                        [anchor, &read_ec, &transferred, minimum, receive_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
                             read_ec = ec;
                             transferred = sz;
                             if (!ec && sz >= minimum) {
                                 ppp::diagnostics::datapath_perf::RecordCarrierReceive((int)sz, receive_scope.Elapsed());
                             }
-                            y.R();
+                            anchor.R();
                         });
                 });
 
-            y.Suspend();
+            y.Suspend(anchor);
             if (!read_ec && transferred < minimum) {
                 read_ec = boost::asio::error::eof;
             }

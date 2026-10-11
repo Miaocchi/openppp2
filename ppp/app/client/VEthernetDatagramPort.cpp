@@ -309,8 +309,13 @@ namespace ppp {
                 bool opened = false;
                 boost::asio::io_context& context = y.GetContext();
 
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
+                }
+
                 boost::asio::post(context, 
-                    [this, &y, &opened]() noexcept {
+                    [this, anchor, &opened]() noexcept {
                         // Open the udp port and listen on any address 0.0.0.0.
                         for (;;) {
                             SynchronizedObjectScope scope(syncobj_);
@@ -320,11 +325,11 @@ namespace ppp {
                         }
 
                         // Wake up the coroutine currently waiting to open the udp socket.
-                        y.R();
+                        anchor.R();
                     });
 
                 // Suspend and wait for the udp socket to open.
-                y.Suspend();
+                y.Suspend(anchor);
                 if (!opened) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::UdpOpenFailed);
                     return false;

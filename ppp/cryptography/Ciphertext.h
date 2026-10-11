@@ -56,6 +56,16 @@ namespace ppp {
 
             /** @brief Extra destination bytes EncryptTo() may need beyond the input length (one cipher block). */
             static constexpr int                                EncryptToSlack = 32;
+            /**
+             * @brief Whether DecryptInPlace() is available for the active backend.
+             * @details True for RC4, the AES-NI path and length-preserving OpenSSL ciphers.
+             */
+            virtual bool                                        CanDecryptInPlace() const noexcept;
+            /**
+             * @brief Decrypts @p datalen bytes of @p data in place, yielding the bytes Decrypt() would return.
+             * @return True on success; only valid when CanDecryptInPlace() is true.
+             */
+            virtual bool                                        DecryptInPlace(Byte* data, int datalen) noexcept;
 
         public:
             /**

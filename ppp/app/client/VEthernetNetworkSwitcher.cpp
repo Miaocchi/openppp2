@@ -957,6 +957,25 @@ namespace ppp {
                 boost::asio::ip::udp::endpoint remoteEP = Ipep::V6ToV4(destinationEP);
                 boost::asio::ip::address address = remoteEP.address();
                 if (address.is_v4()) {
+                    if (caching && configuration_->udp.dns.cache) {
+                        int destinationPort = destinationEP.port();
+                        if (destinationPort == PPP_DNS_SYS_PORT) {
+                            ppp::net::asio::vdns::AddCache((Byte*)packet, packet_size);
+                        }
+                    }
+
+                    // Fast path: build the IPv4/UDP datagram in one buffer (byte-identical
+                    // to UdpFrame::ToIp + IPFrame::ToArray). Only datagrams that need IPv4
+                    // fragmentation take the frame-object path below.
+                    std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = GetBufferAllocator();
+                    int datagram_length = 0;
+                    std::shared_ptr<Byte> datagram = UdpFrame::ToIPv4Packet(allocator,
+                        IPEndPoint::ToEndPoint(remoteEP), IPEndPoint::ToEndPoint(sourceEP), IPFrame::DefaultTtl,
+                        packet, packet_size, datagram_length);
+                    if (NULLPTR != datagram) {
+                        return Output(datagram, datagram_length);
+                    }
+
                     std::shared_ptr<BufferSegment> messages = make_shared_object<BufferSegment>();
                     if (NULLPTR == messages) {
                         return false;
@@ -968,7 +987,6 @@ namespace ppp {
                     }
 
                     if (NULLPTR == messages->Buffer) {
-                        std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = GetBufferAllocator();
                         messages->Buffer = ppp::threading::BufferswapAllocator::MakeByteArray(allocator, packet_size);
                         if (NULLPTR == messages->Buffer) {
                             return false;
@@ -987,14 +1005,6 @@ namespace ppp {
                     frame->Destination = IPEndPoint::ToEndPoint(sourceEP);
                     frame->Payload = messages;
 
-                    if (caching && configuration_->udp.dns.cache) {
-                        int destinationPort = destinationEP.port();
-                        if (destinationPort == PPP_DNS_SYS_PORT) {
-                            ppp::net::asio::vdns::AddCache((Byte*)packet, packet_size);
-                        }
-                    }
-
-                    std::shared_ptr<ppp::threading::BufferswapAllocator> allocator = GetBufferAllocator();
                     std::shared_ptr<IPFrame> ip = UdpFrame::ToIp(allocator, frame.get());
                     return Output(ip.get());
                 }
