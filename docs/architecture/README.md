@@ -35,6 +35,7 @@ Start with [System Architecture](ARCHITECTURE.md) for the process and component 
 - [DNS Module Design](DNS_MODULE_DESIGN.md) · [中文](DNS_MODULE_DESIGN_CN.md)
 - [Telemetry and Observability](OTEL_DESIGN.md) · [中文](OTEL_DESIGN_CN.md)
 - [Engineering Concepts](ENGINEERING_CONCEPTS.md) · [中文](ENGINEERING_CONCEPTS_CN.md)
+- [Platform Integration](PLATFORM_INTEGRATION.md) · [中文](PLATFORM_INTEGRATION_CN.md)
 
 ## Experimental or design-bound material
 
