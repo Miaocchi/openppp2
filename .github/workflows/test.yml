@@ -77,6 +77,9 @@ jobs:
           python3 -m unittest tests.tooling.test_p2p_capability_wiring -v
           python3 -m unittest tests.tooling.test_windows_dns_snapshot_contract -v
           python3 -m unittest tests.tooling.test_windows_network_resource_contract -v
+          python3 -m unittest tests.tooling.test_windows_ipv6_contract -v
+          python3 -m unittest tests.tooling.test_lifecycle_wiring -v
+          python3 -m unittest tests.tooling.test_ci_workflow_contract -v
           PYTHONDONTWRITEBYTECODE=1 python3 tests/tooling/test_datapath_acceptance.py
           python3 tools/check_repository_layout.py
 
@@ -169,6 +172,46 @@ jobs:
           name: coverage-go
           path: go/build/coverage/go-summary.txt
           retention-days: 7
+
+  desktop-rust:
+    name: Desktop frontend and Rust tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop/client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/client/package-lock.json
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl file libayatana-appindicator3-dev \
+            libgtk-3-dev libssl-dev libwebkit2gtk-4.1-dev \
+            librsvg2-dev libxdo-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Build frontend assets
+        run: npm run build
+
+      - name: Rust unit and integration tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
   flutter:
     name: Flutter unit tests
