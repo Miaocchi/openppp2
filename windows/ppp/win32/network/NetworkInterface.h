@@ -26,7 +26,7 @@ namespace ppp
                 OperationalStatus_Down,
             } OperationalStatus;
 
-            typedef struct
+            struct NetworkDnsSnapshot
             {
                 ppp::string                                     Driver;
                 ppp::string                                     Guid;
@@ -63,7 +63,7 @@ namespace ppp
                 // empty); this is deliberately separate from WMI's
                 // IP-address DhcpEnabled property.
                 bool                                            DnsAutomatic = false;
-            } NetworkDnsSnapshot;
+            };
 
             typedef struct
             {

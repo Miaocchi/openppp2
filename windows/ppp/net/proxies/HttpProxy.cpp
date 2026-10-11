@@ -197,7 +197,7 @@ namespace ppp
                 }
                 ok = restore_string(L"AutoConfigURL", pac_present, pac) && ok;
                 ok = restore_string(L"ProxyOverride", override_present, override) && ok;
-                ok = RefreshSystemProxy() && ok;
+                ok = HttpProxy::RefreshSystemProxy() && ok;
                 if (!ok)
                     return false;
                 return STATIC_DeleteSnapshot();

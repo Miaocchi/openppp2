@@ -116,8 +116,9 @@ namespace ppp
                     return false;
                 }
 
-                const std::string path =
-                    "SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\" + guid;
+                ppp::string path(
+                    "SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\");
+                path.append(guid);
                 HKEY key = NULL;
                 if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, path.c_str(), 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
                 {
