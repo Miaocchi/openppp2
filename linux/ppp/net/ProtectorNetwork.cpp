@@ -378,8 +378,14 @@ namespace ppp
                 return false;
             }
 
+            const YieldContext::Anchor anchor = y.Arm();
+            if (!anchor)
+            {
+                return false;
+            }
+
             std::shared_ptr<ProtectorNetworkRequest> request =
-                session->requests.Create([yield = &y]() noexcept { yield->R(); });
+                session->requests.Create([anchor]() noexcept { anchor.R(); });
             if (!request)
             {
                 return false;
@@ -423,7 +429,7 @@ namespace ppp
                 session->requests.Cancel(request);
             }
 
-            y.Suspend();
+            y.Suspend(anchor);
             return request->Result();
         }
 #endif
