@@ -88,6 +88,30 @@ namespace ppp {
             return NULLPTR;
         }
 
+        bool Ciphertext::CanDecryptInPlace() const noexcept {
+            if (NULLPTR != evp_) {
+                return evp_->CanDecryptInPlace();
+            }
+
+            return NULLPTR != rc4_;
+        }
+
+        /**
+         * @brief Decrypts data in place through the initialized backend.
+         */
+        bool Ciphertext::DecryptInPlace(Byte* data, int datalen) noexcept {
+            if (NULLPTR != evp_) {
+                return evp_->DecryptInPlace(data, datalen);
+            }
+
+            if (NULLPTR != rc4_) {
+                return rc4_->DecryptInPlace(data, datalen);
+            }
+
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::CryptoAlgorithmUnsupported);
+            return false;
+        }
+
         /**
          * @brief Reports whether a method can be handled by EVP or RC4.
          * @param method Cipher method name.

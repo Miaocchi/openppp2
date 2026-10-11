@@ -883,8 +883,12 @@ namespace ppp {
                     return false;
                 }
 
+                // dispatch, not post: when already on the socket's executor (the usual
+                // case, since the previous write completion runs there) the next read
+                // is armed inline instead of costing a handler allocation and an extra
+                // event-loop turn per chunk. Off-executor callers are still queued.
                 auto self = shared_from_this();
-                boost::asio::post(socket_->get_executor(),
+                boost::asio::dispatch(socket_->get_executor(),
                     [self, this, buffer, buffer_size]() noexcept {
                         if (disposed_) {                // Never arm new reads after finalization.
                             return;
@@ -1015,8 +1019,12 @@ namespace ppp {
                     any = true;
                     Update();
 
+                    // dispatch: start the socket write inline when this coroutine already
+                    // runs on the socket's executor. Asio never invokes the completion
+                    // handler from inside async_write, so y.R() cannot precede Suspend()
+                    // on this thread; cross-thread completion was already possible with post.
                     bool ok = false;
-                    boost::asio::post(socket_->get_executor(),
+                    boost::asio::dispatch(socket_->get_executor(),
                         [this, &y, &ok, packet, packet_length]() noexcept {
                             ppp::diagnostics::datapath_perf::Scope socket_write_scope;
                             boost::asio::async_write(*socket_, boost::asio::buffer(packet.get(), packet_length),

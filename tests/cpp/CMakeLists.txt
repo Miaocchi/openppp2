@@ -833,6 +833,21 @@ openppp2_add_cpp_test(icmp_path_mtu_test SOURCES
     "${OPENPPP2_ROOT}/ppp/diagnostics/Error.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
+# The client's downstream UDP fast path must emit the same bytes as the frame-object path.
+openppp2_add_cpp_test(udp_frame_ipv4_packet_test SOURCES
+    udp_frame_ipv4_packet_test.cpp
+    support/socket_default_ttl_stub.cpp
+    "${OPENPPP2_ROOT}/ppp/net/packet/UdpFrame.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/packet/IPFrame.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/native/checksum.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/Error.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
+target_link_libraries(udp_frame_ipv4_packet_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # BufferswapAllocator is stubbed in the test, so its typeinfo is not linked.
+    target_compile_options(udp_frame_ipv4_packet_test PRIVATE -fno-sanitize=vptr)
+endif()
 openppp2_add_cpp_test(yield_context_test SOURCES
     yield_context_test.cpp
     support/yield_context_test_stubs.cpp

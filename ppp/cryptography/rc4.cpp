@@ -353,6 +353,11 @@ namespace ppp {
             return Encrypt(allocator, data, datalen, outlen);
         }
 
+        bool RC4::DecryptInPlace(Byte* data, int datalen) noexcept {
+            int outlen = 0;
+            return EncryptTo(data, datalen, data, datalen, outlen);
+        }
+
         /**
          * @brief Checks whether an RC4 method string is supported.
          * @param method Method name.
