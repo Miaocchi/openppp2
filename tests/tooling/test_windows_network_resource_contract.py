@@ -64,6 +64,32 @@ class WindowsNetworkResourceContractTests(unittest.TestCase):
         self.assertIn("HttpProxyApplyFailed", body)
         self.assertNotIn("std::regex_match", body)
 
+    def test_core_proxy_persists_complete_snapshot_before_writes(self) -> None:
+        source = (ROOT / "windows/ppp/net/proxies/HttpProxy.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('SYSTEM_PROXY_RECOVERY_PATH', source)
+        self.assertIn('OriginalServerPresent', source)
+        self.assertIn('OriginalEnablePresent', source)
+        self.assertIn('OriginalPacPresent', source)
+        self.assertIn('OriginalOverridePresent', source)
+        self.assertIn('STATIC_CaptureSystemProxySnapshot()', source)
+        self.assertIn('STATIC_RestoreSystemProxy(false)', source)
+        emergency = function_body(source, "void HttpProxy::EmergencyRestoreSystemProxy()")
+        self.assertIn('STATIC_RestoreSystemProxy(true)', emergency)
+        self.assertNotIn('ProxyEnable", 0', emergency)
+        self.assertNotIn('ProxyServer", 0', emergency)
+
+    def test_desktop_proxy_record_is_versioned_and_verified(self) -> None:
+        source = (ROOT / "desktop/client/src-tauri/src/windows.rs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('PROXY_BACKUP_SCHEMA', source)
+        self.assertIn('proxy_backup_owner()', source)
+        self.assertIn('System proxy apply was not confirmed', source)
+        self.assertIn('System proxy restore was not confirmed', source)
+        self.assertIn('Unsupported or foreign system proxy recovery record', source)
+
     def test_proxy_setup_failure_is_not_reported_as_success(self) -> None:
         source = (ROOT / "ppp/app/client/VEthernetNetworkSwitcher.cpp").read_text(
             encoding="utf-8"

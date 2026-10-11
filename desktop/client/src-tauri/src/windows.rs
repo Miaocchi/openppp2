@@ -11,8 +11,22 @@ pub struct ProxySettings {
 
 #[derive(Serialize, Deserialize)]
 struct ProxyBackup {
+    #[serde(default = "proxy_backup_version")]
+    version: u32,
+    #[serde(default = "proxy_backup_owner")]
+    owner: String,
     original: ProxySettings,
     applied: ProxySettings,
+}
+
+const PROXY_BACKUP_SCHEMA: u32 = 1;
+
+fn proxy_backup_version() -> u32 {
+    PROXY_BACKUP_SCHEMA
+}
+
+fn proxy_backup_owner() -> String {
+    "openppp2-desktop".into()
 }
 
 pub fn apply_proxy(path: &Path, address: &str) -> Result<(), String> {
@@ -43,12 +57,18 @@ fn apply_proxy_with(
     crate::storage::write(
         path,
         &serde_json::to_vec(&ProxyBackup {
+            version: PROXY_BACKUP_SCHEMA,
+            owner: proxy_backup_owner(),
             original,
             applied: applied.clone(),
         })
         .map_err(|e| e.to_string())?,
     )?;
-    set(&applied)
+    set(&applied)?;
+    if query()? != applied {
+        return Err("System proxy apply was not confirmed; recovery backup retained".into());
+    }
+    Ok(())
 }
 
 pub fn restore_proxy(path: &Path, force: bool) -> Result<(), String> {
@@ -67,6 +87,9 @@ fn restore_proxy_with(
     let backup: ProxyBackup =
         serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
+    if backup.version != PROXY_BACKUP_SCHEMA || backup.owner != proxy_backup_owner() {
+        return Err("Unsupported or foreign system proxy recovery record".into());
+    }
     let current = query()?;
     if current == backup.original {
         return std::fs::remove_file(path).map_err(|e| e.to_string());
@@ -75,6 +98,9 @@ fn restore_proxy_with(
         return Err("System proxy changed outside OpenPPP2; recovery backup retained".into());
     }
     set(&backup.original)?;
+    if query()? != backup.original {
+        return Err("System proxy restore was not confirmed; recovery backup retained".into());
+    }
     std::fs::remove_file(path).map_err(|e| e.to_string())
 }
 
@@ -111,6 +137,54 @@ mod tests {
         restore_proxy_with(&path, false, query, set).unwrap();
         assert_eq!(*current.borrow(), original);
         assert!(apply_proxy_with(&path, "0.0.0.0:8080", query, set).is_err());
+    }
+
+    #[test]
+    fn proxy_apply_requires_readback_and_keeps_snapshot_on_mismatch() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("proxy.json");
+        let original = ProxySettings {
+            flags: 1,
+            server: "direct:80".into(),
+            bypass: "<local>".into(),
+            pac: "https://example.test/original.pac".into(),
+        };
+        let current = RefCell::new(original.clone());
+        let query = || Ok(current.borrow().clone());
+        let set = |_value: &ProxySettings| Ok(());
+
+        let result = apply_proxy_with(&path, "127.0.0.1:8080", query, set);
+        assert!(result.is_err());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn proxy_restore_keeps_snapshot_when_readback_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("proxy.json");
+        let original = ProxySettings {
+            flags: 0,
+            server: String::new(),
+            bypass: String::new(),
+            pac: String::new(),
+        };
+        let current = RefCell::new(original.clone());
+        let query = || Ok(current.borrow().clone());
+        let set = |value: &ProxySettings| {
+            *current.borrow_mut() = value.clone();
+            Ok(())
+        };
+        apply_proxy_with(&path, "127.0.0.1:8080", query, set).unwrap();
+        *current.borrow_mut() = ProxySettings {
+            flags: 3,
+            server: "http=127.0.0.1:8080;https=127.0.0.1:8080".into(),
+            bypass: "<local>".into(),
+            pac: String::new(),
+        };
+        let set_without_restore = |_value: &ProxySettings| Ok(());
+        let result = restore_proxy_with(&path, false, query, set_without_restore);
+        assert!(result.is_err());
+        assert!(path.exists());
     }
     #[cfg(windows)]
     #[test]
