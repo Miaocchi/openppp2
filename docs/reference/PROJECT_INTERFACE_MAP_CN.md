@@ -29,7 +29,7 @@ C++ 类中的 `public` 只表示仓库代码可以访问，并不等于稳定的
 |---|---|---|---|---|---|
 | `ppp` 进程和 CLI | C++ 可执行文件 | 用户、服务管理器、脚本 | 参数和文件 / 退出状态、日志、TUI | **稳定**，但有缺口；策略命令计划纳入 v2.1.7，尚未确认成功发布 | [CLI 参考](CLI_REFERENCE_CN.md) |
 | `appsettings.json` | C++ 配置加载器 | 用户和平台客户端 | JSON / 归一化运行策略 | 事实上的**稳定**；`client.policy` v2 计划纳入 v2.1.7，尚未确认成功发布 | [配置模型](CONFIGURATION_CN.md) |
-| 连接 URI | C++ 客户端 | 用户、配置档和订阅生成器 | `ppp://`、`ppp://ws/`、`ppp://wss/` | **稳定** | [配置模型](CONFIGURATION_CN.md) |
+| 连接 URI | C++ 客户端 | 用户、配置档和订阅生成器 | `ppp://` / `tcp://`、`ws://`、`wss://` | **稳定** | [配置模型](CONFIGURATION_CN.md) |
 | 隧道线上协议 | C++ 客户端/服务端 | OPENPPP2 对端 | 加密帧、握手、操作码、INFO JSON | 事实上的**稳定** | [包格式](PACKET_FORMATS_CN.md)、[链路层](LINKLAYER_PROTOCOL_CN.md) |
 | Runtime Snapshot JSON v1 | C++ 运行时 | TUI、Android、iOS | 版本化 JSON 快照 | **稳定** | [UI Runtime 契约](UI_RUNTIME_CONTRACT_CN.md) |
 | Go 管理器后台 API | `go/ppp` | 内嵌 `/admin/`、运维人员 | HTTP JSON 和订阅 JSON | `/api/v1` **稳定**；旧路由为内部兼容面 | [管理后端](../guides/MANAGEMENT_BACKEND_CN.md) |
@@ -119,9 +119,10 @@ bridge 只保留最小 interface/subnet 路由，不发布默认路由、系统 
 
 | 形式 | 含义 | 鉴权 / 安全 | 稳定性 |
 |---|---|---|---|
-| `ppp://host:port/` | 原生 TCP 隧道 | 隧道密钥配置；载体无 TLS | **稳定** |
-| `ppp://ws/host:port/` | WebSocket 隧道 | 隧道密钥配置；载体无 TLS | **稳定** |
-| `ppp://wss/host:port/` | TLS WebSocket 隧道 | TLS 加隧道密钥配置 | **稳定** |
+| `ppp://host:port/` 或 `tcp://host:port/` | 原生 TCP 隧道 | 隧道密钥配置；载体无 TLS | **稳定** |
+| `ws://host[:port]/path` | WebSocket 隧道（默认端口 80） | 隧道密钥配置；载体无 TLS | **稳定** |
+| `wss://host[:port]/path` | TLS WebSocket 隧道（默认端口 443） | TLS 加隧道密钥配置 | **稳定** |
+| `ppp://ws/host:port/`、`ppp://wss/host:port/` | 旧的显示格式，Android App 的地址解析器会转换为 `ws://` / `wss://` | 原生 `client.server` 解析器不接受 | **旧格式（仅 UI）** |
 | `ws://.../ppp/webhook`、`wss://...` | C++ 服务端到 Go 管理器控制链路 | 共享 backend key | **内部** |
 | `http(s)://.../sub/{token}` | 移动端公开订阅文档 | 路径中的 capability token | **稳定** |
 | 本地配置档导入/导出文件 | iOS 配置档 bundle JSON | 用户选择文件；包含敏感信息 | 内置 iOS App 的**稳定**接口 |

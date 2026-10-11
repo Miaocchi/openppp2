@@ -36,6 +36,20 @@ SECTIONS = (
     ("design", "Designs and decisions", "设计与决策"),
     ("archive", "History", "历史归档"),
 )
+# Reader-facing order inside a section; unlisted pages follow alphabetically.
+ORDER = {name: rank for rank, name in enumerate((
+    "getting-started/USER_MANUAL.md",
+    "getting-started/CONFIGURE.md",
+    "getting-started/DESKTOP_CLIENT.md",
+    "guides/ROUTING_AND_DNS.md",
+    "guides/POLICY_CLI.md",
+    "guides/PROXY_MODE.md",
+    "guides/IPV6.md",
+    "guides/PEER_PREFIX_ROUTING.md",
+    "guides/MANAGEMENT_BACKEND.md",
+    "guides/REMOTE_SUBSCRIPTION.md",
+    "guides/PLATFORMS.md",
+))}
 # Match inline code before links, so examples remain byte-for-byte intact.
 PROSE = re.compile(
     r"(?P<code>`+[^`\n]*`+)"
@@ -226,7 +240,7 @@ class DocsSite:
     def navigation(self, language: str) -> list:
         def pages_under(prefix: str) -> list:
             pages = sorted(p for p in self.sources if p.as_posix().startswith(prefix + "/"))
-            pages.sort(key=lambda p: (p.name != "index.md", p.as_posix()))
+            pages.sort(key=lambda p: (p.name != "index.md", ORDER.get(p.as_posix(), len(ORDER)), p.as_posix()))
             return [{title(self.texts[self.selected(p, language)]) or p.stem: p.as_posix()} for p in pages]
         nav = [{"Home" if language == "en" else "首页": "index.md"}]
         for directory, english, zh in SECTIONS:

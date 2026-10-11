@@ -12,8 +12,9 @@ Use this page to choose the current documentation for the native `ppp` tree. Fol
 ## First-use path
 
 1. [Build and first run](getting-started/USER_MANUAL.md)
-2. [Configuration reference](reference/CONFIGURATION.md) and [CLI reference](reference/CLI_REFERENCE.md)
-3. [Operational checklist and troubleshooting](operations/OPERATIONS.md)
+2. [Write the configuration file](getting-started/CONFIGURE.md) — minimal server/client pair, fields that must match, what to add next
+3. [Configuration reference](reference/CONFIGURATION.md) and [CLI reference](reference/CLI_REFERENCE.md)
+4. [Operational checklist and troubleshooting](operations/OPERATIONS.md)
 
 ## Browse by task
 

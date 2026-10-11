@@ -29,7 +29,7 @@ This page is the canonical inventory for the project's callable and serialized b
 |---|---|---|---|---|---|
 | `ppp` process and CLI | C++ executable | Users, service managers, scripts | Arguments and files / exit status, logs, TUI | **Stable** with gaps; policy commands planned for v2.1.7, release unconfirmed | [CLI reference](CLI_REFERENCE.md) |
 | `appsettings.json` | C++ configuration loader | Users and platform clients | JSON / normalized runtime policy | **Stable** de facto; `client.policy` v2 planned for v2.1.7, release unconfirmed | [Configuration](CONFIGURATION.md) |
-| Connection URI | C++ client | Users and profile/subscription producers | `ppp://`, `ppp://ws/`, `ppp://wss/` | **Stable** | [Configuration](CONFIGURATION.md) |
+| Connection URI | C++ client | Users and profile/subscription producers | `ppp://` / `tcp://`, `ws://`, `wss://` | **Stable** | [Configuration](CONFIGURATION.md) |
 | Tunnel wire protocol | C++ client/server | OPENPPP2 peers | Encrypted frames, handshake, opcodes, INFO JSON | **Stable** de facto | [Packet formats](PACKET_FORMATS.md), [link layer](LINKLAYER_PROTOCOL.md) |
 | Runtime snapshot JSON v1 | C++ runtime | TUI, Android, iOS | Versioned JSON snapshot | **Stable** | [UI runtime contract](UI_RUNTIME_CONTRACT.md) |
 | Go manager admin API | `go/ppp` | Embedded `/admin/`, operators | HTTP JSON and subscription JSON | **Stable** for `/api/v1`; legacy routes are internal compatibility surfaces | [Management backend](../guides/MANAGEMENT_BACKEND.md) |
@@ -112,9 +112,10 @@ Complete fields and a full template are in [Configuration](CONFIGURATION.md). Pl
 
 | Form | Meaning | Authentication / security | Stability |
 |---|---|---|---|
-| `ppp://host:port/` | Native tunnel over TCP | Tunnel key configuration; no carrier TLS | **Stable** |
-| `ppp://ws/host:port/` | Tunnel over WebSocket | Tunnel key configuration; no carrier TLS | **Stable** |
-| `ppp://wss/host:port/` | Tunnel over TLS WebSocket | TLS plus tunnel key configuration | **Stable** |
+| `ppp://host:port/` or `tcp://host:port/` | Native tunnel over TCP | Tunnel key configuration; no carrier TLS | **Stable** |
+| `ws://host[:port]/path` | Tunnel over WebSocket (default port 80) | Tunnel key configuration; no carrier TLS | **Stable** |
+| `wss://host[:port]/path` | Tunnel over TLS WebSocket (default port 443) | TLS plus tunnel key configuration | **Stable** |
+| `ppp://ws/host:port/`, `ppp://wss/host:port/` | Legacy display form converted to `ws://` / `wss://` by the Android app's endpoint parser | Not accepted by the native `client.server` parser | **Legacy (UI only)** |
 | `ws://.../ppp/webhook`, `wss://...` | C++ server to Go manager control link | Shared backend key | **Internal** |
 | `http(s)://.../sub/{token}` | Public mobile subscription document | Capability-bearing token in path | **Stable** |
 | Local profile import/export file | iOS profile bundle JSON | User-selected file; contains secrets | **Stable** for bundled iOS app |
