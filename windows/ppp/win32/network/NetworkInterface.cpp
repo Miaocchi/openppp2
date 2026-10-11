@@ -92,6 +92,22 @@ namespace ppp
                 return index;
             }
 
+            static ppp::string GetInterfaceLuidString(int interface_index) noexcept
+            {
+                if (interface_index < 0)
+                {
+                    return ppp::string();
+                }
+
+                NET_LUID luid{};
+                if (ConvertInterfaceIndexToLuid(static_cast<NET_IFINDEX>(interface_index), &luid) != NO_ERROR)
+                {
+                    return ppp::string();
+                }
+
+                return std::to_string(static_cast<unsigned long long>(luid.Value));
+            }
+
             static bool RegistryEditGetValue(HKEY hSubKey, const TCHAR* key, ppp::string& value) noexcept
             {
                 TCHAR szBuffer[MAX_PATH];
@@ -399,6 +415,7 @@ namespace ppp
                             networkInterface->Guid = VARIANT_string(pclsObj, L"SettingID");
                             networkInterface->Index = VARIANT_value(pclsObj, L"Index", -1);
                             networkInterface->InterfaceIndex = VARIANT_value(pclsObj, L"InterfaceIndex", -1);
+                            networkInterface->InterfaceLuid = GetInterfaceLuidString(networkInterface->InterfaceIndex);
                             networkInterface->Metric = VARIANT_value(pclsObj, L"IPConnectionMetric", -1);
                             networkInterface->MacAddress = VARIANT_string(pclsObj, L"MacAddress");
                             networkInterface->IPEnabled = VARIANT_value(pclsObj, L"IPEnabled", false);
@@ -884,6 +901,72 @@ namespace ppp
                     {
                         return DhcpEnabledInternal(pSvc, pclsObj);
                     });
+            }
+
+            bool CaptureDnsSnapshot(int interface_index, NetworkDnsSnapshot& snapshot) noexcept
+            {
+                snapshot = NetworkDnsSnapshot();
+                NetworkInterfacePtr current = GetNetworkInterfaceByInterfaceIndex(interface_index);
+                if (!current || current->InterfaceIndex < 0 || current->Guid.empty())
+                {
+                    return false;
+                }
+
+                snapshot.InterfaceIndex = current->InterfaceIndex;
+                snapshot.InterfaceLuid = current->InterfaceLuid;
+                snapshot.Guid = current->Guid;
+                snapshot.DhcpEnabled = current->DhcpEnabled;
+                for (const ppp::string& value : current->DnsAddresses)
+                {
+                    boost::system::error_code ec;
+                    const boost::asio::ip::address address = StringToAddress(value.data(), ec);
+                    if (!ec && !address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        snapshot.DnsAddresses.emplace_back(address);
+                    }
+                }
+                return true;
+            }
+
+            bool RestoreDnsSnapshot(const NetworkDnsSnapshot& snapshot) noexcept
+            {
+                if (snapshot.InterfaceIndex < 0 || snapshot.Guid.empty())
+                {
+                    return false;
+                }
+
+                // Interface indexes are reusable. Require the stable WMI GUID
+                // and, when available, the kernel LUID to still match before
+                // changing any adapter state.
+                NetworkInterfacePtr current = GetNetworkInterfaceByInterfaceIndex(snapshot.InterfaceIndex);
+                if (!current || current->Guid.empty() ||
+                    _stricmp(current->Guid.data(), snapshot.Guid.data()) != 0)
+                {
+                    return false;
+                }
+                if (!snapshot.InterfaceLuid.empty() &&
+                    (current->InterfaceLuid.empty() || current->InterfaceLuid != snapshot.InterfaceLuid))
+                {
+                    return false;
+                }
+
+                if (snapshot.DhcpEnabled)
+                {
+                    return DhcpEnabled(snapshot.InterfaceIndex);
+                }
+
+                ppp::vector<ppp::string> servers;
+                servers.reserve(snapshot.DnsAddresses.size());
+                for (const boost::asio::ip::address& address : snapshot.DnsAddresses)
+                {
+                    if (!address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        servers.emplace_back(address.to_string());
+                    }
+                }
+                return SetDnsAddresses(snapshot.InterfaceIndex, servers);
             }
 
             bool GetAllComponentIds(ppp::unordered_set<ppp::string>& componentIds) noexcept

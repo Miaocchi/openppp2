@@ -44,6 +44,26 @@ class WindowsDnsSnapshotContractTests(unittest.TestCase):
         self.assertIn("Retain failed snapshots", restore_body)
         self.assertNotIn("addresses.clear()", restore_body)
 
+    def test_snapshot_records_stable_identity_and_dns_mode(self) -> None:
+        header = (ROOT / "windows/ppp/win32/network/NetworkInterface.h").read_text(
+            encoding="utf-8"
+        )
+        source = self.source
+        self.assertIn("NetworkDnsSnapshot", header)
+        self.assertIn("InterfaceLuid", header)
+        self.assertIn("bool                                            DhcpEnabled", header)
+        self.assertIn("CaptureDnsSnapshot", header)
+        self.assertIn("RestoreDnsSnapshot", header)
+        self.assertIn("ConvertInterfaceIndexToLuid", source)
+        self.assertIn("current->Guid.data(), snapshot.Guid.data()", source)
+        self.assertIn("current->InterfaceLuid != snapshot.InterfaceLuid", source)
+
+    def test_restore_preserves_dhcp_mode_instead_of_faking_empty_dns(self) -> None:
+        body = function_body(self.source, "bool RestoreDnsSnapshot(")
+        self.assertIn("if (snapshot.DhcpEnabled)", body)
+        self.assertIn("return DhcpEnabled(snapshot.InterfaceIndex)", body)
+        self.assertIn("return SetDnsAddresses(snapshot.InterfaceIndex, servers)", body)
+
 
 if __name__ == "__main__":
     unittest.main()

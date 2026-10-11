@@ -11,6 +11,7 @@
 /* MAX_DEVICE_ID_LEN */
 #include <devguid.h> /* DDK/Inc/api/devguid.h */
 #include <Iphlpapi.h>
+#include <netioapi.h>
 
 namespace ppp
 {
@@ -29,6 +30,9 @@ namespace ppp
             {
                 ppp::string                                     Driver;
                 ppp::string                                     Guid;
+                // Stable kernel identity. InterfaceIndex can be reused after
+                // an adapter is removed, so lifecycle snapshots retain both.
+                ppp::string                                     InterfaceLuid;
                 ppp::string                                     MacAddress;
                 int                                             Index;
                 int                                             InterfaceIndex;
@@ -45,6 +49,18 @@ namespace ppp
                 ppp::string                                     Description;
                 OperationalStatus                               Status;
             } NetworkInterface;
+
+            // A DNS snapshot carries the identity and mode needed to restore
+            // one adapter without writing a stale snapshot to a replacement
+            // adapter that happens to reuse its interface index.
+            typedef struct
+            {
+                int                                             InterfaceIndex = -1;
+                ppp::string                                     InterfaceLuid;
+                ppp::string                                     Guid;
+                ppp::vector<boost::asio::ip::address>           DnsAddresses;
+                bool                                            DhcpEnabled = false;
+            } NetworkDnsSnapshot;
 
             typedef struct
             {
@@ -79,6 +95,8 @@ namespace ppp
             bool                                                DeleteIPv6Route(int interface_index, const ppp::string& prefix, int prefix_length, const ppp::string& gateway) noexcept;
             bool                                                SetIPAddresses(int interface_index, const ppp::vector<ppp::string>& ips, const ppp::vector<ppp::string>& masks) noexcept;
             bool                                                DhcpEnabled(int interface_index) noexcept;
+            bool                                                CaptureDnsSnapshot(int interface_index, NetworkDnsSnapshot& snapshot) noexcept;
+            bool                                                RestoreDnsSnapshot(const NetworkDnsSnapshot& snapshot) noexcept;
             bool                                                ResetNetworkEnvironment() noexcept;
             ppp::string                                         GetInterfaceName(int interface_index) noexcept;
             bool                                                SetInterfaceName(int interface_index, const ppp::string& interface_name) noexcept;
