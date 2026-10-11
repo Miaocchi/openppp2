@@ -197,6 +197,9 @@ bool NetworkRecoveryJournal::Open(const std::string& directory, const std::strin
 #endif
     }
     if (ec || !fs::is_directory(path, ec) || ec) { Error(error, "journal directory unavailable"); Close(); return false; }
+#if !defined(_WIN32)
+    ::chmod(path.c_str(), 0700);
+#endif
     const fs::path lock = path / "network-recovery.lock";
 #if defined(_WIN32)
     if (!StageAllowed(Stage::Lock)) { Error(error, "journal lock failed"); Close(); return false; }
@@ -247,9 +250,15 @@ bool NetworkRecoveryJournal::RecordIntent(const std::string& resource, const std
     if (resource.empty() || target.empty() || before.size() > kMaxFieldBytes || after.size() > kMaxFieldBytes) { Error(error, "invalid journal entry"); return false; }
     auto it = std::find_if(entries_.begin(), entries_.end(), [&](const auto& item) { return item.resource == resource && item.target == target; });
     const bool inserted = it == entries_.end();
+    Entry previous;
+    if (!inserted) previous = *it;
     if (inserted) entries_.push_back({resource, target, before, after, false});
     else { it->before = before; it->after = after; it->confirmed = false; }
-    if (!Rewrite(error)) { if (inserted) entries_.pop_back(); return false; }
+    if (!Rewrite(error)) {
+        if (inserted) entries_.pop_back();
+        else *it = std::move(previous);
+        return false;
+    }
     return true;
 }
 

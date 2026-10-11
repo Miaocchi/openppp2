@@ -41,6 +41,16 @@ int main() {
     assert(!faulted.HasPending());
     faulted.Close();
 
+    NetworkRecoveryJournal rewrite_fault;
+    assert(rewrite_fault.Open(root.string(), "test-owner"));
+    assert(rewrite_fault.RecordIntent("route", "if:7", "old", "new"));
+    rewrite_fault.Close();
+    NetworkRecoveryJournal rewrite_retry;
+    assert(rewrite_retry.Open(root.string(), "test-owner", options));
+    assert(!rewrite_retry.RecordIntent("route", "if:7", "mutated", "value"));
+    assert(rewrite_retry.Pending().front().before == "old");
+    rewrite_retry.Close();
+
     NetworkRecoveryJournal wrong_owner;
     assert(!wrong_owner.Open(root.string(), "other-owner"));
     std::filesystem::remove_all(root, ec);
