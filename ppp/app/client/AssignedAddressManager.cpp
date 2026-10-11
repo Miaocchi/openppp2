@@ -56,6 +56,8 @@ namespace ppp {
                     const bool dns_pending = state.DnsApplied;
                     const auto dns_servers = dns_pending ? state.DnsServers : ppp::vector<ppp::string>();
                     const auto original_dns_servers = dns_pending ? state.OriginalDnsServers : ppp::vector<ppp::string>();
+                    const ppp::string original_dns_configuration =
+                        dns_pending ? state.OriginalDnsConfiguration : ppp::string();
 
                     state.Clear();
                     if (address_owned) {
@@ -79,6 +81,7 @@ namespace ppp {
                         state.DnsApplied = true;
                         state.DnsServers = dns_servers;
                         state.OriginalDnsServers = original_dns_servers;
+                        state.OriginalDnsConfiguration = original_dns_configuration;
                     }
                 }
             }
