@@ -979,17 +979,22 @@ namespace lwip {
 
     void netstack::close(const LIBTCPIP_CLOSED_EVENT& event) noexcept {
         boost::asio::io_context& context = *netstack::Executor;
+        bool already_posted = false;
         {
             SynchronizedObjectScope scope_(closepost_lock_);
-            if (close_posted_) {
-                /* Teardown is already in flight or done; complete this
-                 * caller's callback inline so it can never be stranded. */
-                if (event) {
-                    event();
-                }
-                return;
-            }
+            already_posted = close_posted_;
             close_posted_ = true;
+        }
+
+        if (already_posted) {
+            /* Teardown is already in flight or done; complete this caller's
+             * callback inline so it can never be stranded. It runs after
+             * closepost_lock_ is released: the callback is caller code and
+             * may re-enter close()/open(), which take that lock again. */
+            if (event) {
+                event();
+            }
+            return;
         }
 
         if (context.stopped()) {

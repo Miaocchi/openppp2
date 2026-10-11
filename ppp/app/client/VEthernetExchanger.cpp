@@ -2780,7 +2780,9 @@ namespace ppp {
                         event(ec == boost::system::errc::success);
                     });
 
-                auto r = deadline_timers_.emplace(deadline_timer, std::move(t));
+                // Copy rather than move: on a failed emplace the node (and a moved-in
+                // pointer) is discarded, and t must stay valid for the cancel below.
+                auto r = deadline_timers_.emplace(deadline_timer, t);
                 if (r.second) {
                     return true;
                 }
