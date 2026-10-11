@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <ppp/app/client/route/IRoutePlatform.h>
+#include <ppp/app/client/route/NetworkOwnership.h>
 #include <ppp/app/client/route/RoutePlanInput.h>
 #include <ppp/app/client/route/RouteState.h>
 
@@ -42,6 +43,13 @@ namespace ppp {
                     void AddNic(uint32_t gateway, std::string interface_name) noexcept;
                     void MarkApplyReady(bool value) noexcept;
                     void Clear() noexcept;
+
+                    // Identifies the process that owns the network control
+                    // plane lease. Empty means another VPN process owns it.
+                    const std::string& NetworkOwnershipToken() const noexcept {
+                        return ownership_.has_value()
+                            ? ownership_->Token() : empty_ownership_token_;
+                    }
 
 #if defined(_ANDROID) || defined(_IPHONE) || defined(OPENPPP2_ROUTE_TEST_MOBILE)
                     bool AddAllRoute(const RoutePlanInput& input) noexcept;
@@ -99,6 +107,8 @@ namespace ppp {
                     std::function<void()> stop_waiter_observer_;
 #endif
                     std::atomic_bool stopped_{false};
+                    std::optional<NetworkOwnershipLease> ownership_;
+                    static const std::string empty_ownership_token_;
                 };
 
             }

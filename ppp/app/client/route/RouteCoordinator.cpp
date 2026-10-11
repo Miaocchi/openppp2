@@ -17,8 +17,11 @@ namespace ppp {
 
                 RouteCoordinator::RouteCoordinator(
                     std::unique_ptr<IRoutePlatform> platform) noexcept
-                    : platform_(std::move(platform)) {
+                    : platform_(std::move(platform)),
+                      ownership_(NetworkOwnershipLease::Acquire("route-coordinator")) {
                 }
+
+                const std::string RouteCoordinator::empty_ownership_token_;
 
                 RouteCoordinator::~RouteCoordinator() noexcept {
                     Stop();
@@ -96,7 +99,8 @@ namespace ppp {
 
                 bool RouteCoordinator::ApplyLocked(
                     const std::vector<RouteSpec>& routes) noexcept {
-                    if (stopped_.load(std::memory_order_acquire) || NULLPTR == platform_) {
+                    if (!ownership_ || !ownership_->IsHeld() ||
+                        stopped_.load(std::memory_order_acquire) || NULLPTR == platform_) {
                         return false;
                     }
 
@@ -312,7 +316,8 @@ namespace ppp {
                     uint32_t gw,
                     int prefix) noexcept {
                     std::lock_guard<std::mutex> operation_lock(operation_mutex_);
-                    if (stopped_.load(std::memory_order_acquire) || !platform_ ||
+                    if (!ownership_ || !ownership_->IsHeld() ||
+                        stopped_.load(std::memory_order_acquire) || !platform_ ||
                         !state_.Snapshot().applied) {
                         return false;
                     }
