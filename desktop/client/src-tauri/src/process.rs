@@ -551,7 +551,7 @@ mod tests {
         manager
             .start(CommandSpec::new(
                 "sh",
-                ["-c", "trap '' TERM; while :; do sleep 0.05; done"],
+                ["-c", "trap '' TERM; while :; do true; done"],
             ))
             .unwrap();
 

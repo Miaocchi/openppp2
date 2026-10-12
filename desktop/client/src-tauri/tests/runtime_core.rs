@@ -138,6 +138,12 @@ fn stop_then_restart_keeps_the_new_session_authoritative() {
     let first = manager.snapshot().session_id;
     manager.stop().unwrap();
     assert!(!manager.is_running());
+    // Windows may need the independent recovery worker when CTRL+C cannot be
+    // delivered to a detached console. Simulate its verified completion before
+    // starting the next session.
+    if manager.snapshot().recovery_pending {
+        manager.mark_recovery_complete();
+    }
     assert_eq!(manager.snapshot().status, "disconnected");
     manager.start(fixture_command()).unwrap();
     let second = manager.snapshot().session_id;
