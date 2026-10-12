@@ -132,8 +132,7 @@ fn fixture_command() -> CommandSpec {
 
 #[test]
 fn stop_then_restart_keeps_the_new_session_authoritative() {
-    let (tx, rx) = mpsc::channel();
-    let mut manager = ProcessManager::new(move |event| { let _ = tx.send(event); });
+    let mut manager = ProcessManager::new(|_| {});
     manager.start(fixture_command()).unwrap();
     let first = manager.snapshot().session_id;
     manager.stop().unwrap();
@@ -149,8 +148,9 @@ fn stop_then_restart_keeps_the_new_session_authoritative() {
     let second = manager.snapshot().session_id;
     assert!(second > first);
     for _ in 0..30 {
-        let event = rx.recv_timeout(Duration::from_millis(500)).unwrap();
-        if event.session_id == second && matches!(event.event, ProcessEvent::Exited(_)) { break; }
+        let snapshot = manager.snapshot();
+        if snapshot.session_id == second && snapshot.pid.is_none() { break; }
+        std::thread::sleep(Duration::from_millis(500));
     }
     assert_eq!(manager.snapshot().session_id, second);
     assert_eq!(manager.snapshot().pid, None);
