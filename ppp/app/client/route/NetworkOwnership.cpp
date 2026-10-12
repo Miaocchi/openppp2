@@ -19,12 +19,12 @@
 namespace ppp::app::client::route {
 namespace {
 
-std::string MakeToken(const std::string& owner_id) noexcept {
+std::string MakeToken(const std::string& lease_id) noexcept {
     static std::atomic<uint64_t> sequence{0};
     const uint64_t n = sequence.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
     std::ostringstream out;
-    out << owner_id << '-' << static_cast<unsigned long long>(now) << '-'
+    out << lease_id << '-' << static_cast<unsigned long long>(now) << '-'
         << static_cast<unsigned long long>(n) << '-'
         << static_cast<unsigned long long>(
             std::hash<std::thread::id>{}(std::this_thread::get_id()));
@@ -83,10 +83,10 @@ void ReleaseNativeHandle(int fd) noexcept {
 } // namespace
 
 NetworkOwnershipLease::NetworkOwnershipLease(
-    std::string owner_id,
+    std::string lease_id,
     std::string token,
     uintptr_t native_handle) noexcept
-    : owner_id_(std::move(owner_id)),
+    : lease_id_(std::move(lease_id)),
       token_(std::move(token)),
       native_handle_(native_handle) {
 }
@@ -97,7 +97,7 @@ NetworkOwnershipLease::~NetworkOwnershipLease() noexcept {
 
 NetworkOwnershipLease::NetworkOwnershipLease(
     NetworkOwnershipLease&& other) noexcept
-    : owner_id_(std::move(other.owner_id_)),
+    : lease_id_(std::move(other.lease_id_)),
       token_(std::move(other.token_)),
       native_handle_(other.native_handle_) {
     other.native_handle_ = 0;
@@ -107,7 +107,7 @@ NetworkOwnershipLease& NetworkOwnershipLease::operator=(
     NetworkOwnershipLease&& other) noexcept {
     if (this != &other) {
         Release();
-        owner_id_ = std::move(other.owner_id_);
+        lease_id_ = std::move(other.lease_id_);
         token_ = std::move(other.token_);
         native_handle_ = other.native_handle_;
         other.native_handle_ = 0;
@@ -116,8 +116,8 @@ NetworkOwnershipLease& NetworkOwnershipLease::operator=(
 }
 
 std::optional<NetworkOwnershipLease> NetworkOwnershipLease::Acquire(
-    std::string owner_id) noexcept {
-    if (owner_id.empty()) {
+    std::string lease_id) noexcept {
+    if (lease_id.empty()) {
         return std::nullopt;
     }
 #if defined(_WIN32)
@@ -133,9 +133,9 @@ std::optional<NetworkOwnershipLease> NetworkOwnershipLease::Acquire(
     }
     const uintptr_t native_handle = static_cast<uintptr_t>(fd + 1);
 #endif
-    const std::string token = MakeToken(owner_id);
+    const std::string token = MakeToken(lease_id);
     NetworkOwnershipLease lease(
-        std::move(owner_id), token, native_handle);
+        std::move(lease_id), token, native_handle);
     return std::optional<NetworkOwnershipLease>(std::move(lease));
 }
 

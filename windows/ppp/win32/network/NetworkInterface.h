@@ -26,7 +26,7 @@ namespace ppp
                 OperationalStatus_Down,
             } OperationalStatus;
 
-            struct NetworkDnsSnapshot
+            typedef struct
             {
                 ppp::string                                     Driver;
                 ppp::string                                     Guid;
@@ -53,12 +53,21 @@ namespace ppp
             // A DNS snapshot carries the identity and mode needed to restore
             // one adapter without writing a stale snapshot to a replacement
             // adapter that happens to reuse its interface index.
-            typedef struct
+            struct NetworkDnsSnapshot
             {
                 int                                             InterfaceIndex = -1;
                 ppp::string                                     InterfaceLuid;
                 ppp::string                                     Guid;
                 ppp::vector<boost::asio::ip::address>           DnsAddresses;
+                // DNS values written by OpenPPP2.  Restore uses this as an
+                // ownership check so a later user or service change is not
+                // overwritten blindly.
+                ppp::vector<boost::asio::ip::address>           AppliedDnsAddresses;
+                // The WMI call may fail after the operating system has
+                // applied the value. Keep that ambiguity explicit so retry
+                // can distinguish an unchanged adapter from a conflict.
+                bool                                            DnsApplyAttempted = false;
+                bool                                            DnsApplied = false;
                 // True when DNS is supplied automatically (NameServer is
                 // empty); this is deliberately separate from WMI's
                 // IP-address DhcpEnabled property.
@@ -99,6 +108,10 @@ namespace ppp
             bool                                                SetIPAddresses(int interface_index, const ppp::vector<ppp::string>& ips, const ppp::vector<ppp::string>& masks) noexcept;
             bool                                                DhcpEnabled(int interface_index) noexcept;
             bool                                                CaptureDnsSnapshot(int interface_index, NetworkDnsSnapshot& snapshot) noexcept;
+            // Captures the original state before writing one explicitly
+            // authorized adapter.  The snapshot remains usable for rollback
+            // when the write itself fails.
+            bool                                                SetDnsAddressesWithSnapshot(int interface_index, const ppp::vector<ppp::string>& servers, NetworkDnsSnapshot& snapshot) noexcept;
             bool                                                RestoreDnsSnapshot(const NetworkDnsSnapshot& snapshot) noexcept;
             bool                                                ResetNetworkEnvironment() noexcept;
             ppp::string                                         GetInterfaceName(int interface_index) noexcept;

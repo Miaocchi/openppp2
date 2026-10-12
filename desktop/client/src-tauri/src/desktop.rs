@@ -160,6 +160,94 @@ struct RecoveryPayload {
     message: String,
 }
 
+const NETWORK_RECOVERY_MARKER: &str = "network-recovery.pending";
+
+fn network_recovery_marker(data_dir: &Path) -> PathBuf {
+    data_dir.join(NETWORK_RECOVERY_MARKER)
+}
+
+fn persist_network_recovery_marker(data_dir: &Path) -> Result<(), String> {
+    let marker = network_recovery_marker(data_dir);
+    if marker.exists() {
+        return Ok(());
+    }
+    let temporary = data_dir.join(format!("{NETWORK_RECOVERY_MARKER}.tmp"));
+    let mut file = fs::File::create(&temporary).map_err(|error| error.to_string())?;
+    use std::io::Write;
+    file.write_all(b"version=1\nreason=forced-stop\n")
+        .and_then(|_| file.sync_all())
+        .map_err(|error| error.to_string())?;
+    fs::rename(&temporary, &marker).map_err(|error| error.to_string())
+}
+
+fn clear_network_recovery_marker(data_dir: &Path) -> Result<(), String> {
+    let marker = network_recovery_marker(data_dir);
+    match fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Runs Core's journal-only recovery entry point. The command receives the
+/// same directory derived from the Core executable path, so it can open the
+/// journal without loading a VPN configuration or creating a TAP session.
+fn recover_pending_network(
+    process: &mut ProcessManager,
+    executable: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let marker = network_recovery_marker(data_dir);
+    let directory = executable
+        .parent()
+        .ok_or_else(|| "Core executable has no recovery directory".to_string())?
+        .join("network-recovery");
+    let journal = directory.join("network-recovery.journal");
+    let network_required = marker.exists() || journal.exists();
+    let mut errors = Vec::new();
+
+    if network_required {
+        let spec = CommandSpec::new(
+            executable.to_path_buf(),
+            [
+                "--network-recovery".to_string(),
+                format!("--network-recovery-dir={}", directory.display()),
+            ],
+        );
+        match process.run_recovery_worker(spec, Duration::from_secs(5)) {
+            Ok(true) => {
+                // The marker is a second durable gate. Keep the visible pending
+                // state when it cannot be removed, even if the worker succeeded.
+                if let Err(error) = clear_network_recovery_marker(data_dir) {
+                    errors.push(error);
+                }
+            }
+            Ok(false) => errors.push("Core network recovery is still pending".into()),
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+
+    // Proxy recovery is an independent resource. A failed proxy restore must
+    // not prevent us from attempting (or reporting) Core network recovery.
+    let proxy_path = data_dir.join("proxy-recovery.json");
+    if let Err(error) = crate::windows::restore_proxy(&proxy_path, false) {
+        errors.push(error);
+    }
+
+    let network_pending = marker.exists() || journal.exists();
+    let proxy_pending = proxy_path.exists();
+    if !network_pending && !proxy_pending {
+        process.mark_recovery_complete();
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    if network_pending || proxy_pending {
+        return Err("Network recovery is still pending".into());
+    }
+    Ok(())
+}
+
 impl DesktopState {
     fn new(app: &AppHandle) -> Result<Self, String> {
         let mut data_dir = app
@@ -203,13 +291,48 @@ impl DesktopState {
             }
         }
         let subscription = load_sources(&data_dir, &preferences);
-        let _ = crate::windows::restore_proxy(&data_dir.join("proxy-recovery.json"), false);
+        let proxy_recovery_path = data_dir.join("proxy-recovery.json");
+        // Startup proxy cleanup is best effort, but its failure is a durable
+        // recovery gate just like the Core network marker.
+        let proxy_recovery_pending = crate::windows::restore_proxy(&proxy_recovery_path, false)
+            .is_err()
+            || proxy_recovery_path.exists();
+        let recovery_marker = network_recovery_marker(&data_dir);
+        let recovery_marker_for_events = recovery_marker.clone();
         let emitter = app.clone();
         let process = ProcessManager::new(move |event| {
             let exited = matches!(&event.event, ProcessEvent::Exited(_));
+            if exited {
+                let needs_recovery = match &event.event {
+                    ProcessEvent::Exited(exit) => {
+                        exit.recovery_pending
+                            || (!exit.success
+                                && matches!(exit.reason, crate::process::ExitReason::Natural))
+                    }
+                    _ => false,
+                };
+                // A process exit is not proof that Core's network journal is
+                // empty.  Keep the durable gate until the independent worker
+                // has opened the journal and verified every resource.  This
+                // also covers a natural exit after a partial apply.
+                let marker_result = if needs_recovery {
+                    persist_network_recovery_marker(
+                        recovery_marker_for_events
+                            .parent()
+                            .unwrap_or_else(|| Path::new(".")),
+                    )
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = marker_result {
+                    let _ = emitter.emit("client://tray-error", error);
+                }
+            }
             let state = emitter.try_state::<DesktopState>();
             if let Some(state) = state.as_ref() {
                 update_tray_phase(state, &event.connection.status);
+                let mut proxy_restore_error = None;
+                let mut proxy_apply_error = None;
                 if let Ok(mut proxy) = state.proxy.lock() {
                     if exited
                         || event.connection.status == "reconnecting"
@@ -220,7 +343,7 @@ impl DesktopState {
                                 &state.data_dir.join("proxy-recovery.json"),
                                 false,
                             ) {
-                                let _ = emitter.emit("client://tray-error", error);
+                                proxy_restore_error = Some(error);
                             }
                             proxy.applied = false;
                         }
@@ -240,12 +363,28 @@ impl DesktopState {
                                     Ok(()) => proxy.applied = true,
                                     Err(error) => {
                                         proxy.auto = false;
-                                        let _ = emitter.emit("client://tray-error", error);
+                                        proxy_apply_error = Some(error);
                                     }
                                 }
                             }
                         }
                     }
+                }
+                // Release the proxy lock before taking the process lock. The
+                // connect path takes these locks in the opposite order.
+                if let Some(error) = proxy_restore_error {
+                    if let Ok(mut manager) = state.process.lock() {
+                        manager.mark_recovery_pending();
+                    }
+                    let _ = emitter.emit("client://tray-error", error);
+                }
+                if let Some(error) = proxy_apply_error {
+                    if state.data_dir.join("proxy-recovery.json").exists() {
+                        if let Ok(mut manager) = state.process.lock() {
+                            manager.mark_recovery_pending();
+                        }
+                    }
+                    let _ = emitter.emit("client://tray-error", error);
                 }
             }
             let _ = emitter.emit("client://process", event);
@@ -255,6 +394,27 @@ impl DesktopState {
                 }
             }
         });
+        let mut process = process;
+        // The journal is authoritative if the GUI was terminated between a
+        // Core write and marker persistence.  An empty journal is harmless:
+        // the worker verifies it and clears the marker gate.
+        let journal_exists = resolve_ppp_path(&preferences.ppp_path)
+            .ok()
+            .and_then(|executable| {
+                executable
+                    .parent()
+                    .map(|parent| parent.join("network-recovery/network-recovery.journal"))
+            })
+            .is_some_and(|journal| journal.exists());
+        if recovery_marker.exists() || journal_exists || proxy_recovery_pending {
+            process.mark_recovery_pending();
+            // Startup recovery is best effort: an unavailable executable or a
+            // still-conflicted resource must leave the gate pending while the
+            // UI remains usable for an explicit retry.
+            if let Ok(executable) = resolve_ppp_path(&preferences.ppp_path) {
+                let _ = recover_pending_network(&mut process, &executable, &data_dir);
+            }
+        }
         Ok(Self {
             data_dir,
             preferences: Mutex::new(preferences),
@@ -445,10 +605,17 @@ fn client_update_network(
 
 #[tauri::command]
 fn client_restore_proxy(force: bool, state: State<'_, DesktopState>) -> Result<(), String> {
-    let mut proxy = state.proxy.lock().map_err(|_| "Proxy lock")?;
-    proxy.auto = false;
-    crate::windows::restore_proxy(&state.data_dir.join("proxy-recovery.json"), force)?;
-    proxy.applied = false;
+    state.proxy.lock().map_err(|_| "Proxy lock")?.auto = false;
+    if let Err(error) = crate::windows::restore_proxy(
+        &state.data_dir.join("proxy-recovery.json"),
+        force,
+    ) {
+        if let Ok(mut manager) = state.process.lock() {
+            manager.mark_recovery_pending();
+        }
+        return Err(error);
+    }
+    state.proxy.lock().map_err(|_| "Proxy lock")?.applied = false;
     Ok(())
 }
 
@@ -456,21 +623,53 @@ fn client_restore_proxy(force: bool, state: State<'_, DesktopState>) -> Result<(
 /// state remains pending until a recovery worker verifies it was restored.
 #[tauri::command]
 fn client_retry_recovery(state: State<'_, DesktopState>) -> Result<RecoveryPayload, String> {
-    if state
-        .process
-        .lock()
-        .map_err(|_| "Process lock")?
-        .is_running()
-    {
+    let mut process = state.process.lock().map_err(|_| "Process lock")?;
+    if process.is_running() {
         return Err("Disconnect before recovering network state".into());
     }
-    let network_recovery_pending = state
-        .process
-        .lock()
-        .map_err(|_| "Process lock")?
-        .snapshot()
-        .recovery_pending;
+    let mut recovery_error = None;
     let proxy_path = state.data_dir.join("proxy-recovery.json");
+    if process.snapshot().recovery_pending || proxy_path.exists() {
+        // Retry the desktop-owned proxy record even when the configured Core
+        // executable is unavailable. Proxy recovery must not depend on Core.
+        if let Err(error) = crate::windows::restore_proxy(&proxy_path, false) {
+            recovery_error = Some(error);
+        }
+        let preferences = state
+            .preferences
+            .lock()
+            .map_err(|_| "Preferences lock")?
+            .clone();
+        let journal_exists = resolve_ppp_path(&preferences.ppp_path)
+            .ok()
+            .and_then(|executable| {
+                executable
+                    .parent()
+                    .map(|parent| parent.join("network-recovery/network-recovery.journal"))
+            })
+            .is_some_and(|journal| journal.exists());
+        if network_recovery_marker(&state.data_dir).exists() || journal_exists {
+            match resolve_ppp_path(&preferences.ppp_path) {
+                Ok(executable) => {
+                    if let Err(error) = recover_pending_network(
+                        &mut process,
+                        &executable,
+                        &state.data_dir,
+                    ) {
+                        recovery_error = Some(error);
+                    }
+                }
+                Err(error) => recovery_error = Some(error),
+            }
+        }
+        if !network_recovery_marker(&state.data_dir).exists()
+            && !journal_exists
+            && !proxy_path.exists()
+        {
+            process.mark_recovery_complete();
+        }
+    }
+    let network_recovery_pending = process.snapshot().recovery_pending;
     let proxy_recovery_pending = if proxy_path.exists() {
         crate::windows::restore_proxy(&proxy_path, false).is_err() || proxy_path.exists()
     } else {
@@ -479,8 +678,10 @@ fn client_retry_recovery(state: State<'_, DesktopState>) -> Result<RecoveryPaylo
     Ok(RecoveryPayload {
         network_recovery_pending,
         proxy_recovery_pending,
-        message: if network_recovery_pending {
-            "Core network recovery is still pending; retry after the recovery worker completes".into()
+        message: if let Some(error) = recovery_error {
+            error
+        } else if network_recovery_pending {
+            "Core network recovery is still pending".into()
         } else if proxy_recovery_pending {
             "System proxy recovery is still pending".into()
         } else {
@@ -816,6 +1017,13 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
     if process.is_running() {
         return Err("Disconnect before connecting another node".into());
     }
+    let proxy_recovery_path = state.data_dir.join("proxy-recovery.json");
+    if process.snapshot().recovery_pending
+        || network_recovery_marker(&state.data_dir).exists()
+        || proxy_recovery_path.exists()
+    {
+        return Err("Network recovery is still pending; recover it before connecting".into());
+    }
     let runtime_dir = state.data_dir.join("runtime");
     fs::create_dir_all(&runtime_dir).map_err(|error| error.to_string())?;
     let config_path = runtime_dir.join("appsettings.json");
@@ -830,6 +1038,14 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
         "client"
     };
     let executable = resolve_ppp_path(&preferences.ppp_path)?;
+    let journal = executable
+        .parent()
+        .ok_or_else(|| "Core executable has no recovery directory".to_string())?
+        .join("network-recovery/network-recovery.journal");
+    if journal.exists() {
+        return Err("Network recovery is still pending; recover it before connecting".into());
+    }
+    recover_pending_network(&mut process, &executable, &state.data_dir)?;
     let mut spec = CommandSpec::new(
         executable,
         [
@@ -878,12 +1094,21 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
 /// updates that wait for the main thread, which may itself be waiting on
 /// that lock.
 fn stop_process(state: &DesktopState) -> Result<ProcessManager, String> {
+    let preferences = state
+        .preferences
+        .lock()
+        .map_err(|_| "设置状态锁已损坏".to_string())?
+        .clone();
     let mut process = state
         .process
         .lock()
         .map_err(|_| "进程状态锁已损坏".to_string())?
         .clone();
     process.stop().map_err(|error| error.to_string())?;
+    if process.snapshot().recovery_pending {
+        let executable = resolve_ppp_path(&preferences.ppp_path)?;
+        recover_pending_network(&mut process, &executable, &state.data_dir)?;
+    }
     Ok(process)
 }
 
@@ -891,7 +1116,15 @@ fn stop_process(state: &DesktopState) -> Result<ProcessManager, String> {
 #[tauri::command(async)]
 fn client_disconnect(state: State<'_, DesktopState>) -> Result<ConnectionSnapshot, String> {
     let process = stop_process(&state)?;
-    crate::windows::restore_proxy(&state.data_dir.join("proxy-recovery.json"), false)?;
+    if let Err(error) = crate::windows::restore_proxy(
+        &state.data_dir.join("proxy-recovery.json"),
+        false,
+    ) {
+        if let Ok(mut manager) = state.process.lock() {
+            manager.mark_recovery_pending();
+        }
+        return Err(error);
+    }
     Ok(process.snapshot())
 }
 
@@ -1651,6 +1884,9 @@ fn prepare_exit(app: &AppHandle) {
         if let Err(error) =
             crate::windows::restore_proxy(&state.data_dir.join("proxy-recovery.json"), false)
         {
+            if let Ok(mut manager) = state.process.lock() {
+                manager.mark_recovery_pending();
+            }
             let _ = app.emit("client://tray-error", error);
         }
     }

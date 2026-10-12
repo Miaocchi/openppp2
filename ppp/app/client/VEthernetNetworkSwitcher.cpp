@@ -17,6 +17,7 @@
 #include <ppp/app/client/AssignedAddressManager.h>
 #include <ppp/app/client/ClientConnectionTeardown.h>
 #include <ppp/app/client/ClientConnectionOpener.h>
+#include <ppp/app/client/NetworkRecoveryJournal.h>
 #include <ppp/app/client/ClientPacketDispatchHandler.h>
 #include <ppp/app/client/xtcp/XtcpRuntime.h>
 #include <ppp/app/client/ClientBypassRouteLoader.h>
@@ -60,6 +61,7 @@
 
 #include <chrono>
 #include <openssl/sha.h>
+#include <sstream>
 
 namespace {
 std::string FakeIpIdentityDirectory(const std::string& root, const std::string& identity) {
@@ -168,6 +170,30 @@ static bool SameManagedIPv6Configuration(
         left.AssignedIPv6RoutePrefixLength == right.AssignedIPv6RoutePrefixLength &&
         left.AssignedIPv6Dns1 == right.AssignedIPv6Dns1 &&
         left.AssignedIPv6Dns2 == right.AssignedIPv6Dns2;
+}
+
+namespace {
+#if defined(_WIN32)
+using NetworkDnsSnapshot = ppp::win32::network::NetworkDnsSnapshot;
+
+std::string SerializeDnsSnapshot(const NetworkDnsSnapshot& snapshot) {
+    std::ostringstream out;
+    out << "dns-v1|" << snapshot.InterfaceIndex << '|'
+        << snapshot.InterfaceLuid << '|' << snapshot.Guid << '|'
+        << (snapshot.DnsAutomatic ? '1' : '0') << '|';
+    for (std::size_t i = 0; i < snapshot.DnsAddresses.size(); ++i) {
+        if (i) out << ',';
+        out << snapshot.DnsAddresses[i].to_string();
+    }
+    out << '|';
+    for (std::size_t i = 0; i < snapshot.AppliedDnsAddresses.size(); ++i) {
+        if (i) out << ',';
+        out << snapshot.AppliedDnsAddresses[i].to_string();
+    }
+    return out.str();
+}
+
+#endif
 }
 
 using ppp::auxiliary::StringAuxiliary;
@@ -667,6 +693,22 @@ namespace ppp {
             bool VEthernetNetworkSwitcher::TryApplyHostedNetworkRoutes(bool allow_pre_established) noexcept {
                 route::RoutePlanInput input = BuildRoutePlanInput();
                 if (!input.tap_hosted) return true;
+#if defined(_WIN32)
+                // Recover durable DNS intents before permitting a new network
+                // mutation. A failed recovery is fail-closed.
+                if (!EnsureNetworkRecoveryJournal()) {
+                    ppp::diagnostics::SetLastErrorCode(
+                        ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                    return false;
+                }
+                // A prior session may still own a DNS snapshot. Do not apply
+                // a new session over it until recovery has completed.
+                if (!ni_dns_snapshots_.empty()) {
+                    ppp::diagnostics::SetLastErrorCode(
+                        ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                    return false;
+                }
+#endif
                 const route::RouteStateSnapshot snapshot = route_coordinator_->Snapshot();
                 if (hosted_routes_apply_failed_) return false;
                 if (snapshot.applied) return true;
@@ -683,14 +725,29 @@ namespace ppp {
                 auto rollback = [this, &dns_attempted]() noexcept {
 #if defined(_WIN32)
                     if (dns_attempted) {
-                        // Keep the original snapshot available for teardown if
-                        // the best-effort rollback itself fails.
-                        const AllNicDnsServerAddresses backup = ni_dns_servers_;
-                        AllNicDnsServerAddresses restore = backup;
-                        const int restored = ppp::win32::network::SetAllNicsDnsAddresses(restore);
-                        ni_dns_servers_ = backup;
-                        ppp::tap::TapWindows::DnsFlushResolverCache();
-                        if (restored != static_cast<int>(backup.size())) {
+                        // Restore only the explicitly authorized TAP adapter.
+                        // Failed or ownership-conflicted snapshots stay in the
+                        // table for teardown/recovery retry.
+                        for (auto it = ni_dns_snapshots_.begin(); it != ni_dns_snapshots_.end();) {
+                            if (ppp::win32::network::RestoreDnsSnapshot(it->second)) {
+                                const bool journal_removed =
+                                    !network_recovery_journal_ ||
+                                    network_recovery_journal_->Remove(
+                                        "windows-dns", it->second.Guid, nullptr);
+                                if (journal_removed) {
+                                    it = ni_dns_snapshots_.erase(it);
+                                } else {
+                                    // Keep ownership durable when journal
+                                    // deletion is not confirmed.
+                                    ++it;
+                                }
+                            } else {
+                                ++it;
+                            }
+                        }
+                        if (ni_dns_snapshots_.empty()) {
+                            ppp::tap::TapWindows::DnsFlushResolverCache();
+                        } else {
                             ppp::telemetry::Count("client.dns.rollback.fail", 1);
                         }
                     }
@@ -725,10 +782,56 @@ namespace ppp {
                     ppp::telemetry::SpanScope span("client.dns.apply");
 #if defined(_WIN32)
                     if (tun_ni_) {
-                        dns_attempted = true;
-                        const int events = ppp::win32::network::SetAllNicsDnsAddresses(
-                            tun_ni_->DnsAddresses, ni_dns_servers_);
-                        dns_applied = events == static_cast<int>(ni_dns_servers_.size());
+                        ppp::win32::network::NetworkDnsSnapshot snapshot;
+                        ppp::vector<ppp::string> servers;
+                        ppp::net::Ipep::AddressesTransformToStrings(tun_ni_->DnsAddresses, servers);
+                        dns_applied = ppp::win32::network::CaptureDnsSnapshot(
+                            tun_ni_->Index, snapshot);
+                        if (dns_applied) {
+                            // Freeze the original state before adding the
+                            // target values that will be written. The journal
+                            // must retain both sides of the transaction.
+                            const std::string before_dns = SerializeDnsSnapshot(snapshot);
+                            snapshot.AppliedDnsAddresses.clear();
+                            for (const ppp::string& value : servers) {
+                                boost::system::error_code ec;
+                                const auto address = boost::asio::ip::make_address(value.data(), ec);
+                                if (!ec && !address.is_unspecified() && !address.is_multicast()) {
+                                    snapshot.AppliedDnsAddresses.emplace_back(address);
+                                }
+                            }
+                            const bool journal_intent = network_recovery_journal_ &&
+                                network_recovery_journal_->RecordIntent(
+                                    "windows-dns", snapshot.Guid,
+                                    before_dns,
+                                    SerializeDnsSnapshot(snapshot), nullptr);
+                            if (journal_intent) {
+                                // The durable intent itself means a write may
+                                // have happened before a crash. Mark the
+                                // snapshot as owned before invoking the OS so
+                                // any failure path still uses compare-and-
+                                // restore rather than an unconditional write.
+                                snapshot.DnsApplyAttempted = true;
+                                dns_attempted = true;
+                                dns_applied = ppp::win32::network::SetDnsAddressesWithSnapshot(
+                                    tun_ni_->Index, servers, snapshot);
+                                if (dns_applied) {
+                                    dns_applied = network_recovery_journal_->Confirm(
+                                        "windows-dns", snapshot.Guid, nullptr);
+                                }
+                            } else {
+                                dns_applied = false;
+                            }
+                        }
+                        // Preserve the snapshot even when the WMI write fails.
+                        // This is the only DNS ownership record for teardown.
+                        // Do not let an unrelated pending resource make an
+                        // unjournaled DNS snapshot appear owned: restoring
+                        // such a snapshot would bypass the CAS guard.
+                        if (snapshot.InterfaceIndex >= 0 &&
+                            snapshot.DnsApplyAttempted) {
+                            ni_dns_snapshots_[snapshot.InterfaceIndex] = std::move(snapshot);
+                        }
                     }
                     if (dns_applied) {
                         ppp::tap::TapWindows::DnsFlushResolverCache();
@@ -1104,6 +1207,10 @@ namespace ppp {
 
             void VEthernetNetworkSwitcher::RestoreAssignedIPv4() noexcept {
                 address_manager_->RestoreAssignedIPv4();
+            }
+
+            bool VEthernetNetworkSwitcher::HasPendingAssignedIPv4Cleanup() const noexcept {
+                return address_manager_ && address_manager_->HasPendingIPv4Cleanup();
             }
 
 #endif
@@ -1550,6 +1657,70 @@ namespace ppp {
             }
 
 #if defined(_WIN32)
+            bool VEthernetNetworkSwitcher::EnsureNetworkRecoveryJournal() noexcept {
+                if (network_recovery_checked_) {
+                    if (network_recovery_ready_ && network_recovery_journal_ &&
+                        network_recovery_journal_->IsOpen()) {
+                        // Entries created by this live session are expected
+                        // after startup recovery. They are owned by teardown
+                        // and must not be replayed as stale state.
+                        return true;
+                    }
+                    // A failed worker must be retryable. Release the old
+                    // process-local lock before opening the journal again.
+                    if (network_recovery_journal_) {
+                        network_recovery_journal_->Close();
+                        network_recovery_journal_.reset();
+                    }
+                    network_recovery_checked_ = false;
+                }
+                network_recovery_checked_ = true;
+                const ppp::string startup = ppp::GetApplicationStartupPath();
+                if (startup.empty()) return false;
+                const std::string directory =
+                    (ppp::filesystem::fs::path(startup.data()) / "network-recovery").string();
+                auto journal = std::make_unique<NetworkRecoveryJournal>();
+                std::string error;
+                if (!journal->Open(directory, "openppp2-core-network-v1", {}, &error)) {
+                    ppp::telemetry::Count("client.network_journal.open_fail", 1);
+                    return false;
+                }
+
+                // Use the same complete, independent recovery path as the
+                // desktop worker.  The previous in-process implementation
+                // replayed DNS only and then treated durable IPv4/IPv6
+                // records as unsupported, even though the recovery command
+                // can verify routes, assigned addresses, and the system
+                // proxy.  Close this process-local lock before invoking the
+                // worker, then reopen it so any unresolved resource remains a
+                // durable fail-closed gate for the next mutation.
+                journal->Close();
+                const std::string recovery_directory_arg =
+                    "--network-recovery-dir=" + directory;
+                const char* recovery_argv[] = {
+                    "openppp2-core",
+                    "--network-recovery",
+                    recovery_directory_arg.c_str(),
+                };
+                const int recovery_status =
+                    NetworkRecoveryJournal::RunRecoveryCommand(
+                        3, recovery_argv);
+                if (!journal->Open(directory, "openppp2-core-network-v1", {}, &error)) {
+                    ppp::telemetry::Count("client.network_journal.reopen_fail", 1);
+                    return false;
+                }
+                network_recovery_journal_ = std::move(journal);
+                route_coordinator_->SetRecoveryJournal(
+                    network_recovery_journal_.get());
+                if (recovery_status != 0 || network_recovery_journal_->HasPending()) {
+                    network_recovery_ready_ = false;
+                    ppp::telemetry::Count("client.network_journal.recovery_pending", 1);
+                    return false;
+                }
+                network_recovery_ready_ = true;
+                return true;
+            }
+
             /** @brief Starts optional PaperAirplane helper service on Windows. */
             bool VEthernetNetworkSwitcher::UsePaperAirplaneController() noexcept {
                 // Open the [PaperAirplane NSP/LSP] paper airplane server controller,

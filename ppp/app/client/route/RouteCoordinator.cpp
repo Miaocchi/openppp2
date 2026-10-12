@@ -1,5 +1,7 @@
 #include <ppp/stdafx.h>
 #include <ppp/app/client/route/RouteCoordinator.h>
+#include <ppp/app/client/NetworkRecoveryJournal.h>
+#include <ppp/app/client/route/RouteJournalCodec.h>
 #include <ppp/app/client/route/RouteSpecs.h>
 #include <ppp/app/client/routing/HumanRoutingRouteSpecs.h>
 #include <ppp/diagnostics/Telemetry.h>
@@ -29,6 +31,220 @@ namespace ppp {
 
                 RouteStateSnapshot RouteCoordinator::Snapshot() const noexcept {
                     return state_.Snapshot();
+                }
+
+                void RouteCoordinator::SetRecoveryJournal(
+                    NetworkRecoveryJournal* journal) noexcept {
+                    std::lock_guard<std::mutex> lock(operation_mutex_);
+                    recovery_journal_ = journal;
+                }
+
+                bool RouteCoordinator::RecordRouteIntent(
+                    const std::string& target,
+                    const std::string& before,
+                    const std::string& after) noexcept {
+                    return !recovery_journal_ || recovery_journal_->RecordIntent(
+                        "route", target, before, after, nullptr);
+                }
+
+                bool RouteCoordinator::ConfirmRouteIntent(
+                    const std::string& target) noexcept {
+                    return !recovery_journal_ || recovery_journal_->Confirm(
+                        "route", target, nullptr);
+                }
+
+                bool RouteCoordinator::RemoveRouteIntent(
+                    const std::string& target) noexcept {
+                    return !recovery_journal_ || recovery_journal_->Remove(
+                        "route", target, nullptr);
+                }
+
+                bool RouteCoordinator::RemoveCreatedRouteIntent(
+                    const RouteSpec& route) noexcept {
+                    if (!recovery_journal_) {
+                        return true;
+                    }
+                    std::string encoded;
+                    if (!SerializeRouteSpecForJournal(route, encoded)) {
+                        return false;
+                    }
+                    std::string stable;
+                    const bool have_stable = platform_ &&
+                        platform_->PrepareRouteRecoverySnapshot(route, stable) &&
+                        !stable.empty();
+                    bool complete = true;
+                    for (const auto& entry : recovery_journal_->PendingFor("route")) {
+                        const bool legacy_match =
+                            entry.target.rfind("created:", 0) == 0 &&
+                            (entry.before == encoded || entry.after == encoded);
+                        const bool stable_match = have_stable &&
+                            entry.target == "created-v2:" + stable;
+                        if (!legacy_match && !stable_match) {
+                            continue;
+                        }
+                        if (!recovery_journal_->Remove(
+                                entry.resource, entry.target, nullptr)) {
+                            complete = false;
+                        }
+                    }
+                    return complete;
+                }
+
+                bool RouteCoordinator::DeleteCreatedRouteForRollback(
+                    const RouteSpec& route) noexcept {
+                    std::string key;
+                    if (!SerializeRouteSpecForJournal(route, key)) {
+                        return false;
+                    }
+                    // This covers the exact failure window where the host
+                    // delete succeeded but durable journal removal did not.
+                    // Do not touch the host again; only retry journal cleanup.
+                    if (deleted_routes_.find(key) != deleted_routes_.end()) {
+                        return true;
+                    }
+
+                    bool deleted = false;
+                    bool attempted_recovery = false;
+                    if (recovery_journal_ && platform_) {
+                        std::string stable;
+                        if (platform_->PrepareRouteRecoverySnapshot(route, stable) &&
+                            !stable.empty()) {
+                            const std::string target = "created-v2:" + stable;
+                            for (const auto& entry :
+                                    recovery_journal_->PendingFor("route")) {
+                                if (entry.target == target) {
+                                    // The platform method must be idempotent:
+                                    // missing means already restored, while a
+                                    // conflicting row remains pending.
+                                    attempted_recovery = true;
+                                    deleted = platform_->DeleteRouteRecovery(stable);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!deleted && !attempted_recovery && platform_) {
+                        // Legacy records and journal-less operation retain the
+                        // existing in-process behavior. Once this succeeds,
+                        // deleted_routes_ prevents a second destructive call.
+                        deleted = platform_->Delete(route);
+                    }
+                    if (deleted) {
+                        deleted_routes_.insert(std::move(key));
+                    }
+                    return deleted;
+                }
+
+                bool RouteCoordinator::JournalDefaultTarget(
+                    const RouteSnapshotPtr& route,
+                    std::string& target,
+                    std::string& serialized) noexcept {
+                    if (!recovery_journal_) {
+                        return true;
+                    }
+                    if (!platform_ || !platform_->SerializeRecoverySnapshot(
+                            route, serialized) || serialized.empty()) {
+                        return false;
+                    }
+                    target = "default:" + serialized;
+                    return true;
+                }
+
+                bool RouteCoordinator::JournalCreatedTarget(
+                    const RouteSpec& route,
+                    std::string& target,
+                    std::string& serialized) noexcept {
+                    target.clear();
+                    serialized.clear();
+                    if (!recovery_journal_) {
+                        return true;
+                    }
+                    // The pre-write record must not contain a deletion-capable
+                    // snapshot.  A process may exit before Add(), and a
+                    // snapshot of an already-existing route would otherwise
+                    // authorize deleting a route OpenPPP2 never created.
+                    // PromoteCreatedTarget captures the platform row only
+                    // after Add() reports Created.
+                    std::string legacy;
+                    if (!SerializeRouteSpecForJournal(route, legacy)) {
+                        return false;
+                    }
+                    target = "created:" + legacy;
+                    serialized = std::move(legacy);
+                    return true;
+                }
+
+                bool RouteCoordinator::PromoteCreatedTarget(
+                    const RouteSpec& route,
+                    std::string& target,
+                    std::string& serialized) noexcept {
+                    if (!recovery_journal_ || !platform_) {
+                        return true;
+                    }
+                    std::string stable;
+                    if (!platform_->PrepareRouteRecoverySnapshot(route, stable) ||
+                        stable.empty()) {
+                        // Test doubles and platforms without a complete row
+                        // codec retain the legacy intent, which remains
+                        // fail-closed on a later process restart.
+                        return true;
+                    }
+                    const std::string upgraded = "created-v2:" + stable;
+                    if (upgraded == target) {
+                        serialized = std::move(stable);
+                        return true;
+                    }
+                    if (!recovery_journal_->ReplaceTarget(
+                            "route", target, upgraded, stable, nullptr)) {
+                        return false;
+                    }
+                    target = upgraded;
+                    serialized = std::move(stable);
+                    return true;
+                }
+
+                bool RouteCoordinator::RecoverPendingRoutes() noexcept {
+                    std::lock_guard<std::mutex> lock(operation_mutex_);
+                    return RecoverPendingRoutesLocked();
+                }
+
+                bool RouteCoordinator::RecoverPendingRoutesLocked() noexcept {
+                    if (!recovery_journal_) {
+                        return true;
+                    }
+                    if (!platform_) {
+                        // A restart has no adapter context until the current
+                        // connection supplies it. Do not apply new routes
+                        // over an unresolved durable route record.
+                        return !recovery_journal_->HasPendingFor("route");
+                    }
+                    return recovery_journal_->RecoverPendingFor(
+                        "route",
+                        [this](const NetworkRecoveryJournal::Entry& entry) noexcept {
+                            if (entry.target.rfind("default:", 0) == 0) {
+                                RouteSnapshotPtr snapshot;
+                                const std::string_view bytes(
+                                    entry.target.data() + 8,
+                                    entry.target.size() - 8);
+                                return platform_->DeserializeRecoverySnapshot(
+                                    bytes, snapshot) && snapshot &&
+                                    platform_->RestoreDefault(snapshot);
+                            }
+                            if (entry.target.rfind("created-v2:", 0) == 0) {
+                                return platform_->DeleteRouteRecovery(
+                                    std::string_view(entry.target).substr(11));
+                            }
+                            // A RouteSpec does not carry enough ownership
+                            // information to replay a created route after a
+                            // restart.  In particular, the platform Delete
+                            // operations cannot prove the current interface
+                            // identity or the complete route row.  Keep this
+                            // record pending until a platform-specific
+                            // compare-and-delete codec is available; deleting
+                            // by network/gateway alone could remove a route
+                            // recreated by the user or another VPN.
+                            return false;
+                        }, nullptr);
                 }
 
 #if defined(OPENPPP2_ROUTE_TEST_MOBILE)
@@ -109,6 +325,16 @@ namespace ppp {
                         return false;
                     }
 
+                    // A previous process may have died after a route intent
+                    // was persisted. Recover it before accepting new state.
+                    // EnsureUnderlyingDefault may have already established a
+                    // route for this same transaction. Its durable intent is
+                    // owned by this coordinator and must not be replayed as
+                    // stale state before the hosted route set is applied.
+                    if (applied_.empty() && !RecoverPendingRoutesLocked()) {
+                        return false;
+                    }
+
                     const DefaultRouteCapture defaults = platform_->CaptureDefaults();
                     if (!defaults) {
                         return false;
@@ -117,14 +343,42 @@ namespace ppp {
                         if (!route) {
                             continue;
                         }
+                        std::string journal_target;
+                        std::string journal_snapshot;
+                        if (!JournalDefaultTarget(
+                                route, journal_target, journal_snapshot) ||
+                            !RecordRouteIntent(
+                                journal_target, journal_snapshot, {})) {
+                            // A previous default may already have been
+                            // removed in this transaction. Restore it before
+                            // reporting the journal failure.
+                            Rollback(applied_);
+                            return false;
+                        }
                         if (!platform_->RemoveDefault(route)) {
                             Rollback(applied_);
                             return false;
                         }
+                        // Publish ownership before confirming the durable
+                        // intent.  If the confirm write fails, rollback can
+                        // still remove the route and restore this default.
                         RememberDefault(platform_, route);
+                        if (!ConfirmRouteIntent(journal_target)) {
+                            Rollback(applied_);
+                            return false;
+                        }
                     }
 
                     for (const RouteSpec& route : routes) {
+                        std::string encoded;
+                        std::string journal_target;
+                        if (!JournalCreatedTarget(
+                                route, journal_target, encoded) ||
+                            (recovery_journal_ && !RecordRouteIntent(
+                                journal_target, encoded, {}))) {
+                            Rollback(applied_);
+                            return false;
+                        }
                         const RouteAddResult result = platform_->Add(route);
                         if (result == RouteAddResult::Failed) {
                             Rollback(applied_);
@@ -132,6 +386,18 @@ namespace ppp {
                         }
                         if (result == RouteAddResult::Created) {
                             applied_.emplace_back(route);
+                            if (!PromoteCreatedTarget(
+                                    route, journal_target, encoded) ||
+                                !ConfirmRouteIntent(journal_target)) {
+                                Rollback(applied_);
+                                return false;
+                            }
+                        }
+                        else if (recovery_journal_) {
+                            // The platform reported that no mutation took
+                            // place, so its pre-write intent is no longer
+                            // needed.
+                            RemoveRouteIntent(journal_target);
                         }
                     }
 
@@ -226,8 +492,20 @@ namespace ppp {
                     size_t index = applied.size();
                     while (index > 0) {
                         --index;
-                        if (platform_ && platform_->Delete(applied[index])) {
-                            applied.erase(applied.begin() + index);
+                    if (platform_ && DeleteCreatedRouteForRollback(applied[index])) {
+                            const bool journal_removed =
+                            RemoveCreatedRouteIntent(applied[index]);
+                            if (journal_removed) {
+                                std::string key;
+                                if (SerializeRouteSpecForJournal(
+                                        applied[index], key)) {
+                                    deleted_routes_.erase(key);
+                                }
+                                applied.erase(applied.begin() + index);
+                            }
+                            else {
+                                rollback_complete = false;
+                            }
                         }
                         else {
                             rollback_complete = false;
@@ -242,7 +520,18 @@ namespace ppp {
                         const RouteSnapshotPtr& route =
                             snapshot.default_routes[default_index];
                         if (platform_ && platform_->RestoreDefault(route)) {
-                            if (!state_.RemoveDefaultRoute(route)) {
+                            bool journal_removed = true;
+                            if (recovery_journal_) {
+                                std::string target;
+                                std::string serialized;
+                                journal_removed = JournalDefaultTarget(
+                                    route, target, serialized) &&
+                                    RemoveRouteIntent(target);
+                            }
+                            if (journal_removed && !state_.RemoveDefaultRoute(route)) {
+                                rollback_complete = false;
+                            }
+                            else if (!journal_removed) {
                                 rollback_complete = false;
                             }
                         }
@@ -323,12 +612,28 @@ namespace ppp {
                     }
                     RouteSpec route = ResolveRouteSpec(
                         input, RouteSpec{ ip, gw, prefix, {} });
+                    std::string encoded;
+                    std::string journal_target;
+                    if (!JournalCreatedTarget(
+                            route, journal_target, encoded) ||
+                        (recovery_journal_ && !RecordRouteIntent(
+                            journal_target, encoded, {}))) {
+                        return false;
+                    }
                     const RouteAddResult result = platform_->Add(route);
                     if (result == RouteAddResult::Failed) {
                         return false;
                     }
                     if (result == RouteAddResult::Created) {
                         applied_.emplace_back(std::move(route));
+                        if (!PromoteCreatedTarget(
+                                applied_.back(), journal_target, encoded) ||
+                            !ConfirmRouteIntent(journal_target)) {
+                            return false;
+                        }
+                    }
+                    else if (recovery_journal_) {
+                        RemoveRouteIntent(journal_target);
                     }
                     return true;
                 }
@@ -357,6 +662,9 @@ namespace ppp {
                     if (!platform_->Delete(route)) {
                         return false;
                     }
+                    if (!RemoveCreatedRouteIntent(route)) {
+                        return false;
+                    }
                     applied_.erase(std::prev(tail.base()));
                     return true;
                 }
@@ -372,16 +680,68 @@ namespace ppp {
                     }
 
                     std::lock_guard<std::mutex> operation_lock(operation_mutex_);
-                    if (stopped_.load(std::memory_order_acquire)) {
+                    if (!ownership_ || !ownership_->IsHeld() ||
+                        stopped_.load(std::memory_order_acquire)) {
                         return false;
                     }
-                    std::unique_ptr<IRoutePlatform> platform = NewPlatform(input);
-                    return platform && platform->Add(RouteSpec{
+                    const RouteSpec route{
                         0,
                         htonl(gateway.to_v4().to_uint()),
                         0,
                         {},
-                    }) != RouteAddResult::Failed;
+                    };
+                    const RouteStateSnapshot snapshot = state_.Snapshot();
+                    if (snapshot.applied || !snapshot.default_routes.empty()) {
+                        return false;
+                    }
+                    if (!platform_) {
+                        std::unique_ptr<IRoutePlatform> platform = NewPlatform(input);
+                        if (!SetPlatformLocked(std::move(platform))) {
+                            return false;
+                        }
+                    }
+                    if (!platform_) {
+                        return false;
+                    }
+                    // The platform is created from the current interface
+                    // context, so durable route intents can now be replayed
+                    // before this connection adds another route.
+                    if (!RecoverPendingRoutesLocked()) {
+                        return false;
+                    }
+                    const RouteStateSnapshot recovered = state_.Snapshot();
+                    if (recovered.applied || !recovered.default_routes.empty()) {
+                        return false;
+                    }
+                    std::string encoded;
+                    std::string journal_target;
+                    if (!JournalCreatedTarget(
+                            route, journal_target, encoded) ||
+                        (recovery_journal_ && !RecordRouteIntent(
+                            journal_target, encoded, {}))) {
+                        return false;
+                    }
+                    const RouteAddResult result = platform_->Add(route);
+                    if (result == RouteAddResult::Failed) {
+                        return false;
+                    }
+                    // A route that already existed is not owned by OpenPPP2.
+                    // Only remember routes created here so teardown cannot
+                    // remove another program's default route.
+                    if (result == RouteAddResult::Created) {
+                        applied_.emplace_back(route);
+                        if (!PromoteCreatedTarget(
+                                route, journal_target, encoded) ||
+                            !ConfirmRouteIntent(journal_target)) {
+                            return false;
+                        }
+                    }
+                    else if (recovery_journal_) {
+                        // No OS mutation occurred, so the write-ahead intent
+                        // is no longer needed.
+                        RemoveRouteIntent(journal_target);
+                    }
+                    return true;
                 }
 
                 bool RouteCoordinator::ProtectDefaultRoute(
@@ -420,12 +780,27 @@ namespace ppp {
                                     if (!route) {
                                         continue;
                                     }
+                                    std::string journal_target;
+                                    std::string journal_snapshot;
+                                    if (!JournalDefaultTarget(
+                                            route, journal_target, journal_snapshot) ||
+                                        !RecordRouteIntent(
+                                            journal_target, journal_snapshot, {})) {
+                                        current->active.store(
+                                            false, std::memory_order_release);
+                                        break;
+                                    }
                                     if (!current->platform->RemoveDefault(route)) {
                                         current->active.store(
                                             false, std::memory_order_release);
                                         break;
                                     }
                                     RememberDefault(current->platform, route);
+                                    if (!ConfirmRouteIntent(journal_target)) {
+                                        current->active.store(
+                                            false, std::memory_order_release);
+                                        break;
+                                    }
                                 }
                             }
 

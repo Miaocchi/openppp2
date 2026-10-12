@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include <ppp/app/client/route/IRoutePlatform.h>
@@ -16,6 +17,7 @@
 namespace ppp {
     namespace app {
         namespace client {
+                class NetworkRecoveryJournal;
             namespace route {
 
                 class RouteCoordinator final {
@@ -30,6 +32,12 @@ namespace ppp {
                     bool RollbackApplied() noexcept;
                     bool Stop() noexcept;
                     RouteStateSnapshot Snapshot() const noexcept;
+                    // Installs the durable journal used by subsequent route
+                    // mutations. The journal is owned by the caller.
+                    void SetRecoveryJournal(NetworkRecoveryJournal* journal) noexcept;
+                    // Replays route entries against the currently configured
+                    // platform. Failed or unverifiable entries remain pending.
+                    bool RecoverPendingRoutes() noexcept;
 #if defined(OPENPPP2_ROUTE_TEST_MOBILE)
                     void SetStopWaiterObserverForTesting(
                         std::function<void()> observer) noexcept;
@@ -92,12 +100,40 @@ namespace ppp {
                         const std::shared_ptr<IRoutePlatform>& platform,
                         const RouteSnapshotPtr& route) noexcept;
                     bool Rollback(std::vector<RouteSpec>& applied) noexcept;
+                    bool RecordRouteIntent(
+                        const std::string& target,
+                        const std::string& before,
+                        const std::string& after) noexcept;
+                    bool ConfirmRouteIntent(const std::string& target) noexcept;
+                    bool RemoveRouteIntent(const std::string& target) noexcept;
+                    bool RemoveCreatedRouteIntent(
+                        const RouteSpec& route) noexcept;
+                    bool DeleteCreatedRouteForRollback(
+                        const RouteSpec& route) noexcept;
+                    bool RecoverPendingRoutesLocked() noexcept;
+                    bool JournalDefaultTarget(
+                        const RouteSnapshotPtr& route,
+                        std::string& target,
+                        std::string& serialized) noexcept;
+                    bool JournalCreatedTarget(
+                        const RouteSpec& route,
+                        std::string& target,
+                        std::string& serialized) noexcept;
+                    bool PromoteCreatedTarget(
+                        const RouteSpec& route,
+                        std::string& target,
+                        std::string& serialized) noexcept;
                     static void StopProtection(
                         const std::shared_ptr<ProtectionState>& state) noexcept;
 
                     RouteState state_;
                     std::shared_ptr<IRoutePlatform> platform_;
                     std::vector<RouteSpec> applied_;
+                    // A successful OS delete followed by a transient journal
+                    // I/O failure must never issue a second spec-only delete.
+                    // The durable created-v2 record remains available for a
+                    // compare-and-delete retry after a process restart.
+                    std::unordered_set<std::string> deleted_routes_;
                     std::shared_ptr<ProtectionState> protection_;
                     mutable std::mutex operation_mutex_;
                     std::mutex stop_mutex_;
@@ -108,6 +144,7 @@ namespace ppp {
 #endif
                     std::atomic_bool stopped_{false};
                     std::optional<NetworkOwnershipLease> ownership_;
+                    NetworkRecoveryJournal* recovery_journal_ = nullptr;
                     static const std::string empty_ownership_token_;
                 };
 

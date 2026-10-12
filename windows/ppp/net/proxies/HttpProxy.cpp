@@ -365,6 +365,17 @@ namespace ppp
                     s_system_proxy_engaged.store(false, std::memory_order_release);
             }
 
+            bool HttpProxy::RecoverSystemProxy() noexcept
+            {
+                // STATIC_RestoreSystemProxy is a no-op when no durable
+                // snapshot exists.  It also performs compare-and-restore and
+                // removes the record only after a verified restore.
+                const bool restored = STATIC_RestoreSystemProxy(false);
+                if (restored)
+                    s_system_proxy_engaged.store(false, std::memory_order_release);
+                return restored;
+            }
+
             bool HttpProxy::OpenProxySettingsWindow() noexcept
             {
                 ULONG dwMajor;

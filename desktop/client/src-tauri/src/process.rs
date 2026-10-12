@@ -78,6 +78,10 @@ pub enum ProcessError {
     RecoveryPending,
     #[error("无法启动 ppp: {0}")]
     Spawn(#[from] std::io::Error),
+    #[error("网络恢复执行器启动失败: {0}")]
+    RecoverySpawn(std::io::Error),
+    #[error("网络恢复执行器超时")]
+    RecoveryTimeout,
     #[error("停止 ppp 失败: {0}")]
     Stop(std::io::Error),
 }
@@ -127,19 +131,86 @@ impl ProcessManager {
             .clone()
     }
 
+    /// Restores the durable desktop-side gate after a previous forced stop.
+    /// This does not claim that the OS network state is clean; only a verified
+    /// recovery path may clear the flag.
+    pub fn mark_recovery_pending(&mut self) {
+        let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+        snapshot.status = "recovery_pending".into();
+        snapshot.phase = "recovery_pending".into();
+        snapshot.recovery_pending = true;
+        snapshot.pid = None;
+        snapshot.requested_stop = false;
+    }
+
+    /// Marks the desktop-side state clean only after an independent recovery
+    /// process has returned success and its journal has been verified.
+    pub fn mark_recovery_complete(&mut self) {
+        let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+        if !snapshot.recovery_pending {
+            return;
+        }
+        snapshot.recovery_pending = false;
+        snapshot.status = "disconnected".into();
+        snapshot.phase = "idle".into();
+        snapshot.pid = None;
+        snapshot.requested_stop = false;
+        snapshot.last_error.clear();
+        let connection = snapshot.clone();
+        drop(snapshot);
+        (self.emit)(ProcessMessage {
+            session_id: connection.session_id,
+            event: ProcessEvent::State(connection.clone()),
+            connection,
+        });
+    }
+
+    /// Runs a fresh Core process in recovery-only mode. The worker is never
+    /// stored in the normal child slot and cannot be mistaken for a VPN
+    /// session. A non-zero exit or timeout leaves the journal retryable.
+    pub fn run_recovery_worker(
+        &mut self,
+        spec: CommandSpec,
+        timeout: Duration,
+    ) -> Result<bool, ProcessError> {
+        if self.is_running() {
+            return Err(ProcessError::AlreadyRunning);
+        }
+        let mut command = Command::new(&spec.program);
+        command
+            .args(&spec.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut worker = command.spawn().map_err(ProcessError::RecoverySpawn)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match worker.try_wait().map_err(ProcessError::RecoverySpawn)? {
+                Some(status) => return Ok(status.success()),
+                None if Instant::now() >= deadline => {
+                    let _ = worker.kill();
+                    let _ = worker.wait();
+                    return Err(ProcessError::RecoveryTimeout);
+                }
+                None => thread::sleep(Duration::from_millis(25)),
+            }
+        }
+    }
+
     pub fn start(&mut self, spec: CommandSpec) -> Result<u32, ProcessError> {
         let mut slot = self.child.lock().expect("process lock poisoned");
         if slot.is_some() {
             return Err(ProcessError::AlreadyRunning);
         }
-        if self
-            .snapshot
-            .lock()
-            .expect("snapshot lock poisoned")
-            .recovery_pending
-        {
-            return Err(ProcessError::RecoveryPending);
-        }
+        // A pending marker is a recovery gate, not a permanent deadlock.  The
+        // next Core invocation must be allowed to consume its journal before
+        // applying new network state; Core remains fail-closed if recovery
+        // cannot be verified.
         let mut command = Command::new(&spec.program);
         command
             .args(&spec.args)
@@ -507,6 +578,52 @@ mod tests {
         assert!(!exit.success);
         assert!(exit.recovery_pending);
         assert_eq!(manager.snapshot().status, "recovery_pending");
+        assert!(manager.snapshot().recovery_pending);
+    }
+
+    #[test]
+    fn persisted_recovery_gate_allows_core_recovery_attempt() {
+        let mut manager = ProcessManager::new(|_| {});
+        manager.mark_recovery_pending();
+        assert_eq!(manager.snapshot().status, "recovery_pending");
+        assert!(manager.snapshot().recovery_pending);
+        assert!(manager.start(CommandSpec::new("sh", ["-c", "exit 0"])).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_worker_is_separate_and_clears_state_only_after_success() {
+        let mut manager = ProcessManager::new(|_| {});
+        manager.mark_recovery_pending();
+        let worker = CommandSpec::new("sh", ["-c", "exit 0", "--network-recovery"]);
+        assert!(manager
+            .run_recovery_worker(worker, Duration::from_secs(1))
+            .unwrap());
+        manager.mark_recovery_complete();
+        assert!(!manager.snapshot().recovery_pending);
+        assert_eq!(manager.snapshot().status, "disconnected");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_worker_failure_does_not_clear_pending_state() {
+        let mut manager = ProcessManager::new(|_| {});
+        manager.mark_recovery_pending();
+        let worker = CommandSpec::new("sh", ["-c", "exit 7", "--network-recovery"]);
+        assert!(!manager
+            .run_recovery_worker(worker, Duration::from_secs(1))
+            .unwrap());
+        assert!(manager.snapshot().recovery_pending);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_worker_timeout_preserves_pending_state() {
+        let mut manager = ProcessManager::new(|_| {});
+        manager.mark_recovery_pending();
+        let worker = CommandSpec::new("sh", ["-c", "sleep 2", "--network-recovery"]);
+        let result = manager.run_recovery_worker(worker, Duration::from_millis(25));
+        assert!(matches!(result, Err(ProcessError::RecoveryTimeout)));
         assert!(manager.snapshot().recovery_pending);
     }
 }

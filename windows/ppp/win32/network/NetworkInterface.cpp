@@ -971,6 +971,51 @@ namespace ppp
                 return true;
             }
 
+            bool SetDnsAddressesWithSnapshot(int interface_index, const ppp::vector<ppp::string>& servers, NetworkDnsSnapshot& snapshot) noexcept
+            {
+                // Capture before the write.  This deliberately leaves a
+                // populated snapshot behind when WMI rejects the write, so
+                // teardown can still retry the original state.
+                if (snapshot.InterfaceIndex < 0 || snapshot.Guid.empty()) {
+                    if (!CaptureDnsSnapshot(interface_index, snapshot)) {
+                        return false;
+                    }
+                } else if (snapshot.InterfaceIndex != interface_index) {
+                    return false;
+                }
+
+                // Revalidate the stable adapter identity immediately before
+                // the WMI mutation.  InterfaceIndex values can be reused
+                // between capture and apply; writing by index alone could
+                // otherwise alter an unrelated replacement adapter.
+                NetworkInterfacePtr current =
+                    GetNetworkInterfaceByInterfaceIndex(interface_index);
+                if (!current || current->Guid.empty() ||
+                    _stricmp(current->Guid.data(), snapshot.Guid.data()) != 0 ||
+                    (!snapshot.InterfaceLuid.empty() &&
+                     (current->InterfaceLuid.empty() ||
+                      current->InterfaceLuid != snapshot.InterfaceLuid)))
+                {
+                    return false;
+                }
+
+                snapshot.AppliedDnsAddresses.clear();
+                snapshot.AppliedDnsAddresses.reserve(servers.size());
+                for (const ppp::string& value : servers)
+                {
+                    boost::system::error_code ec;
+                    const boost::asio::ip::address address = StringToAddress(value.data(), ec);
+                    if (!ec && !address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        snapshot.AppliedDnsAddresses.emplace_back(address);
+                    }
+                }
+                snapshot.DnsApplyAttempted = true;
+                snapshot.DnsApplied = SetDnsAddresses(interface_index, servers);
+                return snapshot.DnsApplied;
+            }
+
             bool RestoreDnsSnapshot(const NetworkDnsSnapshot& snapshot) noexcept
             {
                 if (snapshot.InterfaceIndex < 0 || snapshot.Guid.empty())
@@ -993,6 +1038,62 @@ namespace ppp
                     return false;
                 }
 
+                ppp::vector<boost::asio::ip::address> current_dns;
+                for (const ppp::string& value : current->DnsAddresses)
+                {
+                    boost::system::error_code ec;
+                    const boost::asio::ip::address address = StringToAddress(value.data(), ec);
+                    if (!ec && !address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        current_dns.emplace_back(address);
+                    }
+                }
+
+                // The resolver list alone does not identify the Windows DNS
+                // mode.  A static NameServer value and an automatic/DHCP
+                // configuration can expose the same servers, so keep the
+                // registry mode in the ownership comparison as well.
+                bool current_automatic = false;
+                if (!GetDnsAutomaticByGuid(current->Guid, current_automatic))
+                {
+                    return false;
+                }
+
+                // Compare-and-restore: after OpenPPP2 has written DNS, only
+                // restore if the current values still match what it wrote.
+                // If WMI reported failure, accept an unchanged original value
+                // or a value that was applied despite the error; any other
+                // value belongs to another actor and must remain untouched.
+                if (snapshot.DnsApplyAttempted)
+                {
+                    // DHCP can refresh resolver addresses while the VPN is
+                    // active.  When the captured state was automatic and the
+                    // adapter is automatic again, there is no OpenPPP2
+                    // static ownership left to restore, even if the server
+                    // list changed naturally.
+                    if (snapshot.DnsAutomatic && current_automatic)
+                    {
+                        return true;
+                    }
+                    if (current_dns == snapshot.DnsAddresses &&
+                        current_automatic == snapshot.DnsAutomatic)
+                    {
+                        return true;
+                    }
+                    if (current_dns != snapshot.AppliedDnsAddresses)
+                    {
+                        return false;
+                    }
+                    // SetDnsAddresses writes a static resolver list.  An
+                    // automatic mode with the same values belongs to a
+                    // different actor and must not be overwritten.
+                    if (current_automatic && !snapshot.AppliedDnsAddresses.empty())
+                    {
+                        return false;
+                    }
+                }
+
                 ppp::vector<ppp::string> servers;
                 servers.reserve(snapshot.DnsAddresses.size());
                 for (const boost::asio::ip::address& address : snapshot.DnsAddresses)
@@ -1010,7 +1111,53 @@ namespace ppp
                 {
                     servers.clear();
                 }
-                return SetDnsAddresses(snapshot.InterfaceIndex, servers);
+                if (!SetDnsAddresses(snapshot.InterfaceIndex, servers))
+                {
+                    return false;
+                }
+
+                // WMI can report success before a provider has committed the
+                // requested values, and it can also partially apply a write.
+                // Re-read both the adapter and registry mode before allowing
+                // callers to remove the durable recovery record.
+                NetworkInterfacePtr restored =
+                    GetNetworkInterfaceByInterfaceIndex(snapshot.InterfaceIndex);
+                if (!restored || restored->Guid.empty() ||
+                    _stricmp(restored->Guid.data(), snapshot.Guid.data()) != 0 ||
+                    (!snapshot.InterfaceLuid.empty() &&
+                     (restored->InterfaceLuid.empty() ||
+                      restored->InterfaceLuid != snapshot.InterfaceLuid)))
+                {
+                    return false;
+                }
+
+                bool restored_automatic = false;
+                if (!GetDnsAutomaticByGuid(restored->Guid, restored_automatic) ||
+                    restored_automatic != snapshot.DnsAutomatic)
+                {
+                    return false;
+                }
+
+                if (snapshot.DnsAutomatic)
+                {
+                    // DHCP-provided resolver addresses may legitimately
+                    // change while the VPN is down; mode restoration is the
+                    // stable invariant for an automatic snapshot.
+                    return true;
+                }
+
+                ppp::vector<boost::asio::ip::address> restored_dns;
+                for (const ppp::string& value : restored->DnsAddresses)
+                {
+                    boost::system::error_code ec;
+                    const boost::asio::ip::address address = StringToAddress(value.data(), ec);
+                    if (!ec && !address.is_unspecified() && !address.is_multicast() &&
+                        !ppp::net::IPEndPoint::IsInvalid(address))
+                    {
+                        restored_dns.emplace_back(address);
+                    }
+                }
+                return restored_dns == snapshot.DnsAddresses;
             }
 
             bool GetAllComponentIds(ppp::unordered_set<ppp::string>& componentIds) noexcept

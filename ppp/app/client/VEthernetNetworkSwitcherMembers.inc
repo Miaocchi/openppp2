@@ -50,7 +50,9 @@
 
 #if defined(_WIN32)
                 PaperAirplaneControllerPtr                                          paper_airplane_ctrl_;
-                AllNicDnsServerAddresses                                            ni_dns_servers_;
+                // One explicitly authorized TAP adapter per session.  Values
+                // remain until compare-and-restore succeeds.
+                NetworkDnsSnapshots                                                ni_dns_snapshots_;
                 std::unique_ptr<ppp::win32::ipv6::WindowsIPv6RouteOwner>            windows_ipv6_route_owner_;
 #elif defined(_LINUX)
                 ppp::string                                                         ni_dns_servers_;
@@ -60,6 +62,15 @@
                 // A failed hosted-network apply that could not be fully
                 // rolled back must not be followed by an Established state.
                 bool                                                                hosted_routes_apply_failed_ = false;
+                // Opened before the first hosted-network mutation so pending
+                // state is replayed before a new DNS write is attempted.
+                std::unique_ptr<NetworkRecoveryJournal>                             network_recovery_journal_;
+                bool                                                                network_recovery_checked_ = false;
+                // Set only after the complete startup worker has verified all
+                // pre-existing records.  Current-session journal entries are
+                // expected after this point and must not trigger a second
+                // replay while the connection is applying its resources.
+                bool                                                                network_recovery_ready_ = false;
                 std::unique_ptr<AssignedAddressManager>                             address_manager_;
                 std::unique_ptr<ClientConnectionTeardown>                           teardown_;
                 std::atomic<bool>                                                   last_teardown_success_{true};

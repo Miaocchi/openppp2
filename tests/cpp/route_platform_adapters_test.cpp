@@ -208,6 +208,101 @@ BOOST_AUTO_TEST_CASE(darwin_restore_returns_immediately_when_exact_route_exists)
     BOOST_TEST(mutations == 0);
 }
 
+#if defined(_MACOS)
+BOOST_AUTO_TEST_CASE(darwin_restore_empty_table_requires_live_interface_identity) {
+    route::RouteSnapshotRecord record;
+    record.platform = route::RouteSnapshotPlatform::Darwin;
+    record.route = route::RouteSpec{ 0u, 0x0a000001u, 0, "en0" };
+    record.identity.interface_index = 7;
+    record.identity.interface_name = "en0";
+    record.identity.link_identity = "00:11:22:33:44:55";
+    std::string encoded;
+    BOOST_REQUIRE(route::SerializeRouteSnapshot(record, encoded));
+    route::RouteSnapshotPtr target;
+    BOOST_REQUIRE(route::DarwinRoutePlatform::DeserializeSnapshot(encoded, target));
+
+    int identity_checks = 0;
+    int mutations = 0;
+    bool route_created = false;
+    route::DarwinRouteOperations operations;
+    operations.exact_default_exists = [&route_created](
+        const route::RouteSnapshotPtr&, bool& exists) noexcept {
+        exists = route_created;
+        return true;
+    };
+    operations.interface_identity_matches = [&identity_checks](
+        const route::RouteSnapshotIdentity&) noexcept {
+        ++identity_checks;
+        return false;
+    };
+    operations.remove_conflicting_default = [&mutations](
+        const route::RouteSnapshotPtr&, route::RouteSnapshotPtr&) noexcept {
+        ++mutations;
+        return true;
+    };
+    operations.restore_default = [&mutations, &route_created](
+        const route::RouteSnapshotPtr&) noexcept {
+        ++mutations;
+        route_created = true;
+        return true;
+    };
+
+    route::DarwinRoutePlatform platform(std::move(operations));
+    BOOST_TEST(!platform.RestoreDefault(target));
+    BOOST_TEST(identity_checks == 1);
+    BOOST_TEST(mutations == 0);
+}
+
+BOOST_AUTO_TEST_CASE(darwin_restore_empty_table_writes_only_after_identity_match) {
+    route::RouteSnapshotRecord record;
+    record.platform = route::RouteSnapshotPlatform::Darwin;
+    record.route = route::RouteSpec{ 0u, 0x0a000001u, 0, "en0" };
+    record.identity.interface_index = 7;
+    record.identity.interface_name = "en0";
+    record.identity.link_identity = "00:11:22:33:44:55";
+    std::string encoded;
+    BOOST_REQUIRE(route::SerializeRouteSnapshot(record, encoded));
+    route::RouteSnapshotPtr target;
+    BOOST_REQUIRE(route::DarwinRoutePlatform::DeserializeSnapshot(encoded, target));
+
+    int identity_checks = 0;
+    int mutations = 0;
+    bool route_created = false;
+    route::DarwinRouteOperations operations;
+    operations.exact_default_exists = [&route_created](
+        const route::RouteSnapshotPtr&, bool& exists) noexcept {
+        exists = route_created;
+        return true;
+    };
+    operations.interface_identity_matches = [&identity_checks](
+        const route::RouteSnapshotIdentity& identity) noexcept {
+        ++identity_checks;
+        return identity.interface_index == 7 &&
+            identity.interface_name == "en0" &&
+            identity.link_identity == "00:11:22:33:44:55";
+    };
+    operations.remove_conflicting_default = [&mutations](
+        const route::RouteSnapshotPtr&, route::RouteSnapshotPtr&) noexcept {
+        ++mutations;
+        return true;
+    };
+    operations.restore_default = [&mutations, &route_created](
+        const route::RouteSnapshotPtr&) noexcept {
+        ++mutations;
+        route_created = true;
+        return true;
+    };
+
+    route::DarwinRoutePlatform platform(std::move(operations));
+    BOOST_TEST(platform.RestoreDefault(target));
+    BOOST_TEST(identity_checks == 1);
+    BOOST_TEST(mutations == 1);
+    BOOST_TEST(platform.RestoreDefault(target));
+    BOOST_TEST(identity_checks == 1);
+    BOOST_TEST(mutations == 1);
+}
+#endif
+
 BOOST_AUTO_TEST_CASE(darwin_restore_replaces_conflict_and_confirms_exact_target) {
     std::vector<std::string> calls;
     int query_count = 0;

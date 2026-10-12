@@ -68,7 +68,13 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
                 }
 
-                owner_->FixUnderlyingNgw();
+                // The underlying gateway route is a host-network mutation.
+                // Do not continue toward Established when it could not be
+                // acquired and registered for teardown.
+                if (!owner_->FixUnderlyingNgw()) {
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::RouteAddFailed);
+                }
                 }
 #endif
                 // Construction of VEtherent virtual Ethernet switcher processing framework.

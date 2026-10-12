@@ -2,10 +2,24 @@
 
 #include <functional>
 #include <string>
+#include <string_view>
 
 #include <ppp/app/client/route/IRoutePlatform.h>
+#include <ppp/app/client/route/WindowsRouteSnapshot.h>
+#if defined(_WIN32)
+#include <windows/ppp/win32/network/WindowsRouteSnapshotWin32.h>
+#endif
 
 namespace ppp::app::client::route {
+
+#if defined(_WIN32)
+bool SerializeWindowsRoutePlatformSnapshot(
+    const RouteSnapshotPtr& snapshot,
+    std::string& serialized) noexcept;
+bool DeserializeWindowsRoutePlatformSnapshot(
+    std::string_view serialized,
+    RouteSnapshotPtr& snapshot) noexcept;
+#endif
 
 struct WindowsRouteIdentity final {
     uint32_t destination;
@@ -24,6 +38,7 @@ struct WindowsRouteOperations final {
     std::function<bool(const RouteSnapshotPtr&)> remove_default;
     std::function<RouteAddResult(const RouteSpec&)> add;
     std::function<bool(const RouteSpec&)> remove;
+    std::function<bool(const RouteSpec&, bool&)> route_exists;
     std::function<bool(const RouteSnapshotPtr&, bool&)> exact_default_exists;
     std::function<bool(const RouteSnapshotPtr&, RouteSnapshotPtr&)>
         remove_conflicting_default;
@@ -47,6 +62,19 @@ public:
     bool SameDefault(
         const RouteSnapshotPtr& left,
         const RouteSnapshotPtr& right) noexcept override;
+    bool SerializeRecoverySnapshot(
+        const RouteSnapshotPtr& snapshot,
+        std::string& serialized) noexcept override;
+    bool DeserializeRecoverySnapshot(
+        std::string_view serialized,
+        RouteSnapshotPtr& snapshot) noexcept override;
+    bool PrepareRouteRecoverySnapshot(
+        const RouteSpec& route,
+        std::string& serialized) noexcept override;
+    bool DeleteRouteRecovery(std::string_view serialized) noexcept override;
+    bool VerifyRouteForRecovery(const RouteSpec& route) noexcept override;
+    // Replays a durable route journal target without a live connection.
+    static bool RecoverRouteJournalEntry(std::string_view target) noexcept;
 
 private:
     struct PendingCompensation final {

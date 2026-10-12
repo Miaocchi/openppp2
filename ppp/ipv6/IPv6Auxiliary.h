@@ -48,6 +48,10 @@ namespace ppp {
                 ppp::string                                                   OriginalDefaultRouteInterface;
                 ppp::vector<ppp::string>                                      DnsServers;
                 ppp::vector<ppp::string>                                      OriginalDnsServers;
+                // Whether the original IPv6 resolver list came from the
+                // automatic/DHCP source.  This is distinct from the IP
+                // address DHCP flag and is needed to restore resolver mode.
+                bool                                                          OriginalDnsAutomatic = false;
                 ppp::vector<ppp::string>                                      OriginalDefaultRoutes;
                 ppp::string                                                   OriginalDnsConfiguration;
                 ppp::string                                                   OriginalDefaultRoute;
@@ -76,6 +80,7 @@ namespace ppp {
                     OriginalDefaultRouteInterface.clear();
                     DnsServers.clear();
                     OriginalDnsServers.clear();
+                    OriginalDnsAutomatic = false;
                     OriginalDefaultRoutes.clear();
                     OriginalDnsConfiguration.clear();
                     OriginalDefaultRoute.clear();

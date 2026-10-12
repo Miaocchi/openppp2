@@ -83,7 +83,7 @@ function(openppp2_add_cpp_test target)
             -fno-omit-frame-pointer)
         target_link_options(${target} PRIVATE -fsanitize=thread)
     endif()
-    if(target STREQUAL "runtime_snapshot_test" OR target STREQUAL "runtime_stats_json_test" OR target STREQUAL "p2p_replay_window_test" OR target STREQUAL "base64_test" OR target STREQUAL "dns_server_validation_test" OR target STREQUAL "dns_wire_validation_test" OR target STREQUAL "sysctl_validation_test" OR target STREQUAL "dns_redirect_plan_test" OR target STREQUAL "dns_reachability_test" OR target STREQUAL "dns_response_handler_test" OR target STREQUAL "dns_route_dispatcher_test" OR target STREQUAL "dns_udp_relay_test" OR target STREQUAL "dns_host_ports_test" OR target STREQUAL "dns_host_interface_test" OR target STREQUAL "dns_host_wiring_test" OR target STREQUAL "dns_session_context_test" OR target STREQUAL "dns_controller_test" OR target STREQUAL "route_host_ports_test" OR target STREQUAL "route_host_interface_test" OR target STREQUAL "route_state_test" OR target STREQUAL "route_coordinator_test" OR target STREQUAL "network_ownership_test" OR target STREQUAL "linux_route_platform_contract_test" OR target STREQUAL "route_platform_adapters_test" OR target STREQUAL "aggregator_loader_test" OR target STREQUAL "fake_ip_pool_test" OR target STREQUAL "dns_fake_ip_response_test" OR target STREQUAL "quic_reject_rate_limit_test" OR target STREQUAL "client_bypass_route_loader_test" OR target STREQUAL "exchanger_static_echo_channel_test" OR target STREQUAL "switcher_timeout_registry_test" OR target STREQUAL "peer_prefix_route_entry_test" OR target STREQUAL "peer_prefix_route_from_json_test" OR target STREQUAL "client_datagram_port_manager_test" OR target STREQUAL "server_datagram_port_manager_test" OR target STREQUAL "static_datagram_port_manager_test" OR target STREQUAL "peer_route_announce_policy_test" OR target STREQUAL "tcp_mss_clamp_test" OR target STREQUAL "icmp_path_mtu_test" OR target STREQUAL "client_bootstrap_policy_test")
+    if(target STREQUAL "runtime_snapshot_test" OR target STREQUAL "runtime_stats_json_test" OR target STREQUAL "p2p_replay_window_test" OR target STREQUAL "base64_test" OR target STREQUAL "dns_server_validation_test" OR target STREQUAL "dns_wire_validation_test" OR target STREQUAL "sysctl_validation_test" OR target STREQUAL "dns_redirect_plan_test" OR target STREQUAL "dns_reachability_test" OR target STREQUAL "dns_response_handler_test" OR target STREQUAL "dns_route_dispatcher_test" OR target STREQUAL "dns_udp_relay_test" OR target STREQUAL "dns_host_ports_test" OR target STREQUAL "dns_host_interface_test" OR target STREQUAL "dns_host_wiring_test" OR target STREQUAL "dns_session_context_test" OR target STREQUAL "dns_controller_test" OR target STREQUAL "route_host_ports_test" OR target STREQUAL "route_host_interface_test" OR target STREQUAL "route_state_test" OR target STREQUAL "route_coordinator_test" OR target STREQUAL "network_ownership_test" OR target STREQUAL "network_recovery_journal_test" OR target STREQUAL "linux_route_platform_contract_test" OR target STREQUAL "route_platform_adapters_test" OR target STREQUAL "windows_route_snapshot_test" OR target STREQUAL "windows_ipv6_snapshot_test" OR target STREQUAL "aggregator_loader_test" OR target STREQUAL "fake_ip_pool_test" OR target STREQUAL "dns_fake_ip_response_test" OR target STREQUAL "quic_reject_rate_limit_test" OR target STREQUAL "client_bypass_route_loader_test" OR target STREQUAL "exchanger_static_echo_channel_test" OR target STREQUAL "switcher_timeout_registry_test" OR target STREQUAL "peer_prefix_route_entry_test" OR target STREQUAL "peer_prefix_route_from_json_test" OR target STREQUAL "client_datagram_port_manager_test" OR target STREQUAL "server_datagram_port_manager_test" OR target STREQUAL "static_datagram_port_manager_test" OR target STREQUAL "peer_route_announce_policy_test" OR target STREQUAL "tcp_mss_clamp_test" OR target STREQUAL "icmp_path_mtu_test" OR target STREQUAL "client_bootstrap_policy_test")
         target_link_libraries(${target} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     endif()
     add_test(NAME ${target} COMMAND ${target})
@@ -97,7 +97,13 @@ target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
 
 openppp2_add_cpp_test(network_recovery_journal_test
     SOURCES network_recovery_journal_test.cpp
+            support/network_recovery_route_stub.cpp
             "${OPENPPP2_ROOT}/ppp/app/client/NetworkRecoveryJournal.cpp")
+openppp2_add_cpp_test(route_snapshot_contract_test SOURCES
+    route_snapshot_contract_test.cpp)
+openppp2_add_cpp_test(windows_ipv6_snapshot_test SOURCES
+    windows_ipv6_snapshot_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/client/WindowsIPv6Snapshot.cpp")
 
 if(ENABLE_XTCP_TESTS)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
@@ -721,9 +727,11 @@ openppp2_add_cpp_test(client_connection_teardown_state_test SOURCES
     client_connection_teardown_state_test.cpp)
 openppp2_add_cpp_test(route_coordinator_test SOURCES
     route_coordinator_test.cpp
+    support/network_recovery_route_stub.cpp
     support/ppp_test_stubs.cpp
     "${OPENPPP2_ROOT}/ppp/hash/hash_bytes.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteCoordinator.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/NetworkRecoveryJournal.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/NetworkOwnership.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteCoordinator_mobile.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/MobileRoutePlatform.cpp"
@@ -749,15 +757,22 @@ openppp2_add_cpp_test(windows_ipv6_route_transaction_test SOURCES
 openppp2_add_cpp_test(route_platform_adapters_test SOURCES
     route_platform_adapters_test.cpp
     "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRoutePlatform.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRouteSnapshot.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRouteSnapshotWin32.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/DarwinRoutePlatform.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/MobileRoutePlatform.cpp")
+openppp2_add_cpp_test(windows_route_snapshot_test SOURCES
+    windows_route_snapshot_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRouteSnapshot.cpp")
 add_test(
     NAME client_packet_dispatch_compile_test
     COMMAND bash "${OPENPPP2_ROOT}/tools/check_dispatch_handler_compiles.sh"
         "${CMAKE_CURRENT_BINARY_DIR}/client_packet_dispatch_compile.o")
 openppp2_add_cpp_test(aggregator_loader_test SOURCES
     aggregator_loader_test.cpp
-    ${OPENPPP2_AGGREGATOR_LOADER_TEST_SUPPORT})
+    support/network_recovery_route_stub.cpp
+    ${OPENPPP2_AGGREGATOR_LOADER_TEST_SUPPORT}
+    "${OPENPPP2_ROOT}/ppp/app/client/NetworkRecoveryJournal.cpp")
 target_include_directories(aggregator_loader_test BEFORE PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/support/fake_aggligator")
 openppp2_add_cpp_test(peer_prefix_route_entry_test SOURCES
@@ -1141,6 +1156,11 @@ foreach(_policy_test policy_source_loader_test policy_compiler_test policy_comma
     target_link_libraries(${_policy_test} PRIVATE openppp2_policy_test_core)
     set_tests_properties(${_policy_test} PROPERTIES LABELS "routing-policy;offline")
     if(_policy_test STREQUAL "policy_entrypoint_test")
+        # main.cpp dispatches the recovery worker before normal bootstrap.  The
+        # offline entrypoint fixture must link that implementation as well.
+        target_sources(${_policy_test} PRIVATE
+            "${CMAKE_CURRENT_LIST_DIR}/support/network_recovery_route_stub.cpp"
+            "${OPENPPP2_ROOT}/ppp/app/client/NetworkRecoveryJournal.cpp")
         target_compile_definitions(${_policy_test} PRIVATE
             OPENPPP2_POLICY_EXAMPLE_CONFIG="${OPENPPP2_ROOT}/tests/contracts/routing-policy/v2/example.json")
     endif()

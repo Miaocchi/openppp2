@@ -2,6 +2,7 @@
 #include <ppp/app/client/AssignedAddressManager.h>
 #include <ppp/app/client/ClientNetworkInterfaceResolver.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#include <ppp/app/client/NetworkRecoveryJournal.h>
 #include <ppp/app/client/xtcp/XtcpRuntime.h>
 #include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/app/client/VEthernetExchanger.h>
@@ -103,7 +104,8 @@ namespace ppp {
 #if !defined(_ANDROID) && !defined(_IPHONE)
                     owner_->RestoreAssignedIPv6();
                     route_cleanup_complete =
-                        !owner_->address_manager_->HasPendingIPv6Cleanup();
+                        !owner_->address_manager_->HasPendingIPv6Cleanup() &&
+                        !owner_->HasPendingAssignedIPv4Cleanup();
 #if defined(_WIN32)
                     const bool windows_ipv6_stopped = owner_->StopWindowsIPv6Routes();
                     route_cleanup_complete = windows_ipv6_stopped &&
@@ -120,14 +122,31 @@ namespace ppp {
                     // must be attempted before route rollback and retain its
                     // pending state when the platform reports a failure.
                     const ClientTeardownRouteActions dns_actions =
-                        route_state_.CompleteAttempt(routes_applied, false);
+                        route_state_.CompleteAttempt(
+                            routes_applied || !owner_->ni_dns_snapshots_.empty(), false);
                     if (dns_actions.restore_dns) {
 #if defined(_WIN32)
-                        const int restored =
-                            ppp::win32::network::SetAllNicsDnsAddresses(
-                                owner_->ni_dns_servers_);
-                        dns_restore_complete =
-                            restored > 0 && owner_->ni_dns_servers_.empty();
+                        for (auto it = owner_->ni_dns_snapshots_.begin();
+                             it != owner_->ni_dns_snapshots_.end();) {
+                            if (ppp::win32::network::RestoreDnsSnapshot(it->second)) {
+                                const bool journal_removed =
+                                    !owner_->network_recovery_journal_ ||
+                                    owner_->network_recovery_journal_->Remove(
+                                        "windows-dns", it->second.Guid, nullptr);
+                                if (journal_removed) {
+                                    it = owner_->ni_dns_snapshots_.erase(it);
+                                } else {
+                                    // The OS is clean, but durable ownership is
+                                    // still pending. Keep the snapshot so the
+                                    // next teardown/startup can retry removal.
+                                    dns_restore_complete = false;
+                                    ++it;
+                                }
+                            } else {
+                                ++it;
+                            }
+                        }
+                        dns_restore_complete = owner_->ni_dns_snapshots_.empty();
                         if (dns_restore_complete) {
                             ppp::tap::TapWindows::DnsFlushResolverCache();
                         }

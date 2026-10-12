@@ -80,6 +80,8 @@ jobs:
           python3 -m unittest tests.tooling.test_windows_ipv6_contract -v
           python3 -m unittest tests.tooling.test_lifecycle_wiring -v
           python3 -m unittest tests.tooling.test_ci_workflow_contract -v
+          python3 -m unittest tests.tooling.test_network_lifecycle_issue_pack -v
+          python3 -m unittest tests.tooling.test_network_lifecycle_publish_boundary -v
           PYTHONDONTWRITEBYTECODE=1 python3 tests/tooling/test_datapath_acceptance.py
           python3 tools/check_repository_layout.py
 
@@ -94,6 +96,7 @@ jobs:
           sudo OPENPPP2_NAMESPACE_ARTIFACT_DIR="$PWD/build/route-dns-rollback" bash tests/integration/linux/route_dns_rollback.sh
 
       - name: Upload Route/DNS rollback snapshots
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: route-dns-rollback-snapshots
@@ -143,6 +146,26 @@ jobs:
         with:
           name: coverage-cpp-summary
           path: build/coverage/summary.txt
+          retention-days: 7
+
+      - name: Write lifecycle acceptance summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tools/write_network_lifecycle_summary.py \
+            --job-status "$JOB_STATUS" \
+            --output build/lifecycle-acceptance/summary.json
+          python3 tools/verify_network_lifecycle_summary.py \
+            build/lifecycle-acceptance/summary.json
+
+      - name: Upload lifecycle acceptance summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifecycle-acceptance-summary
+          path: build/lifecycle-acceptance/summary.json
+          if-no-files-found: error
           retention-days: 7
 
   go:

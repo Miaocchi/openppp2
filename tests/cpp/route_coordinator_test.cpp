@@ -4,11 +4,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <future>
 #include <limits>
 #include <mutex>
 #include <thread>
 
+#include <ppp/app/client/NetworkRecoveryJournal.h>
 #include <ppp/app/client/route/IRoutePlatform.h>
 #include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/app/client/route/RouteSpecs.h>
@@ -159,6 +161,7 @@ public:
     std::vector<route::RouteSnapshotPtr> restored_snapshots;
     std::vector<route::RouteSpec> added_specs;
     std::vector<route::RouteSpec> deleted_specs;
+    std::vector<std::string> recovery_deleted_targets;
     std::vector<route::RouteAddResult> add_results;
     route::RouteSnapshotPtr remove_failure_snapshot;
     int remove_snapshot_failures_remaining = 0;
@@ -292,6 +295,40 @@ public:
         const route::RouteSnapshotPtr& right) noexcept override {
         return SnapshotId(left) == SnapshotId(right);
     }
+
+    bool SerializeRecoverySnapshot(
+        const route::RouteSnapshotPtr& snapshot, std::string& output) noexcept override {
+        const int id = SnapshotId(snapshot);
+        if (id < 0) return false;
+        output = "fake-default:" + std::to_string(id);
+        return true;
+    }
+
+    bool DeserializeRecoverySnapshot(
+        std::string_view input, route::RouteSnapshotPtr& output) noexcept override {
+        constexpr std::string_view prefix = "fake-default:";
+        if (input.substr(0, prefix.size()) != prefix) return false;
+        try {
+            const int id = std::stoi(std::string(input.substr(prefix.size())));
+            output = std::make_shared<FakeRouteSnapshot>(id);
+            return true;
+        }
+        catch (...) {
+            return false;
+        }
+    }
+
+    bool PrepareRouteRecoverySnapshot(
+        const route::RouteSpec& route, std::string& output) noexcept override {
+        output = "fake-route:" + std::to_string(route.network);
+        return true;
+    }
+
+    bool DeleteRouteRecovery(std::string_view input) noexcept override {
+        if (input.rfind("fake-route:", 0) != 0) return false;
+        recovery_deleted_targets.emplace_back(input);
+        return true;
+    }
 };
 
 route::RouteSpec MakeRoute(uint32_t network) {
@@ -301,6 +338,32 @@ route::RouteSpec MakeRoute(uint32_t network) {
     spec.prefix = 32;
     spec.interface_name = "eth0";
     return spec;
+}
+
+BOOST_AUTO_TEST_CASE(created_route_recovery_fails_closed_without_identity) {
+    const auto root = std::filesystem::temp_directory_path() /
+        "openppp2-created-route-recovery-test";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    ppp::app::client::NetworkRecoveryJournal journal;
+    BOOST_REQUIRE(journal.Open(root.string(), "route-coordinator-test"));
+    BOOST_REQUIRE(journal.RecordIntent(
+        "route", "created:legacy-route-spec", {}, "OPP2RT1"));
+
+    auto platform = std::make_unique<FakeRoutePlatform>();
+    FakeRoutePlatform* observed = platform.get();
+    route::RouteCoordinator coordinator(std::move(platform));
+    coordinator.SetRecoveryJournal(&journal);
+
+    // A legacy created-route payload has no stable interface identity.  The
+    // recovery path must retain it and must not call platform Delete().
+    BOOST_TEST(!coordinator.RecoverPendingRoutes());
+    BOOST_TEST(journal.HasPendingFor("route"));
+    BOOST_TEST(observed->deleted_specs.empty());
+
+    journal.Close();
+    std::filesystem::remove_all(root, ec);
 }
 
 routing::Ipv4CidrRule HumanRule(
@@ -474,6 +537,127 @@ BOOST_AUTO_TEST_CASE(stop_before_apply_has_no_platform_side_effects) {
     BOOST_TEST(view->calls.empty());
 }
 
+BOOST_AUTO_TEST_CASE(underlying_default_created_before_apply_is_owned_by_teardown) {
+    auto platform = std::make_unique<FakeRoutePlatform>();
+    FakeRoutePlatform* view = platform.get();
+    view->defaults.reset();
+    route::RouteCoordinator coordinator(std::move(platform));
+
+    route::RoutePlanInput input;
+    input.underlying_interface.gateway =
+        boost::asio::ip::make_address("192.0.2.1");
+    BOOST_REQUIRE(coordinator.EnsureUnderlyingDefault(input));
+    BOOST_REQUIRE(coordinator.Stop());
+
+    // EnsureUnderlyingDefault runs before the hosted route transaction.  The
+    // created route must still be in the same ownership queue and be removed
+    // when opening the connection later fails.
+    BOOST_REQUIRE_EQUAL(view->calls.size(), 2u);
+    BOOST_TEST(view->calls[0] == "add:0");
+    BOOST_TEST(view->calls[1] == "delete:0");
+}
+
+BOOST_AUTO_TEST_CASE(underlying_default_journal_intent_is_confirmed_and_removed) {
+    const auto root = std::filesystem::temp_directory_path() /
+        "openppp2-route-coordinator-ensure-journal";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    ppp::app::client::NetworkRecoveryJournal journal;
+    BOOST_REQUIRE(journal.Open(root.string(), "route-coordinator-test"));
+
+    auto platform = std::make_unique<FakeRoutePlatform>();
+    FakeRoutePlatform* view = platform.get();
+    view->defaults.reset();
+    route::RouteCoordinator coordinator(std::move(platform));
+    coordinator.SetRecoveryJournal(&journal);
+    route::RoutePlanInput input;
+    input.underlying_interface.gateway =
+        boost::asio::ip::make_address("192.0.2.1");
+
+    BOOST_REQUIRE(coordinator.EnsureUnderlyingDefault(input));
+    const auto pending = journal.PendingFor("route");
+    BOOST_REQUIRE_EQUAL(pending.size(), 1u);
+    BOOST_TEST(pending.front().confirmed);
+    BOOST_REQUIRE(coordinator.Stop());
+    BOOST_TEST(!journal.HasPendingFor("route"));
+    journal.Close();
+    std::filesystem::remove_all(root, ec);
+}
+
+BOOST_AUTO_TEST_CASE(route_journal_confirm_failure_keeps_retryable_intent) {
+    const auto root = std::filesystem::temp_directory_path() /
+        "openppp2-route-coordinator-confirm-failure";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    ppp::app::client::NetworkRecoveryJournal::Options options;
+    int writes = 0;
+    options.allow_stage = [&writes](
+        ppp::app::client::NetworkRecoveryJournal::Stage stage) {
+        return stage != ppp::app::client::NetworkRecoveryJournal::Stage::Write ||
+            ++writes != 2;
+    };
+    ppp::app::client::NetworkRecoveryJournal journal;
+    BOOST_REQUIRE(journal.Open(root.string(), "route-coordinator-test", options));
+
+    auto platform = std::make_unique<FakeRoutePlatform>();
+    FakeRoutePlatform* view = platform.get();
+    view->defaults.reset();
+    route::RouteCoordinator coordinator(std::move(platform));
+    coordinator.SetRecoveryJournal(&journal);
+    route::RoutePlanInput input;
+    input.underlying_interface.gateway =
+        boost::asio::ip::make_address("192.0.2.2");
+
+    BOOST_TEST(!coordinator.EnsureUnderlyingDefault(input));
+    const auto pending = journal.PendingFor("route");
+    BOOST_REQUIRE_EQUAL(pending.size(), 1u);
+    BOOST_TEST(!pending.front().confirmed);
+    BOOST_REQUIRE(coordinator.Stop());
+    BOOST_TEST(!journal.HasPendingFor("route"));
+    journal.Close();
+    std::filesystem::remove_all(root, ec);
+}
+
+BOOST_AUTO_TEST_CASE(protector_recapture_is_written_to_route_journal) {
+    const auto root = std::filesystem::temp_directory_path() /
+        "openppp2-route-coordinator-protector-journal";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    ppp::app::client::NetworkRecoveryJournal journal;
+    BOOST_REQUIRE(journal.Open(root.string(), "route-coordinator-test"));
+
+    auto platform = std::make_unique<FakeRoutePlatform>();
+    FakeRoutePlatform* view = platform.get();
+    route::RouteSnapshotPtr initial = std::make_shared<FakeRouteSnapshot>(81);
+    route::RouteSnapshotPtr recaptured = std::make_shared<FakeRouteSnapshot>(82);
+    view->defaults = initial;
+    route::RouteCoordinator coordinator(std::move(platform));
+    coordinator.SetRecoveryJournal(&journal);
+    BOOST_REQUIRE(coordinator.Apply({MakeRoute(81)}));
+    view->capture_results = {{recaptured}};
+
+    std::promise<void> entered;
+    std::promise<void> release;
+    view->remove_defaults_entered = &entered;
+    view->remove_defaults_release = release.get_future().share();
+    route::RoutePlanInput input;
+    BOOST_REQUIRE(coordinator.ProtectDefaultRoute(input));
+    BOOST_REQUIRE(entered.get_future().wait_for(std::chrono::seconds(2)) ==
+        std::future_status::ready);
+    const auto pending = journal.PendingFor("route");
+    const auto recaptured_entry = std::find_if(
+        pending.begin(), pending.end(), [](const auto& entry) {
+            return entry.target == "default:fake-default:82";
+        });
+    BOOST_REQUIRE(recaptured_entry != pending.end());
+    BOOST_TEST(recaptured_entry->confirmed == false);
+    release.set_value();
+    BOOST_REQUIRE(coordinator.Stop());
+    BOOST_TEST(!journal.HasPendingFor("route"));
+    journal.Close();
+    std::filesystem::remove_all(root, ec);
+}
+
 BOOST_AUTO_TEST_CASE(mobile_add_all_route_rejects_after_stop_without_publishing_rib) {
     route::RouteCoordinator coordinator(nullptr);
     BOOST_REQUIRE(coordinator.Stop());
@@ -584,6 +768,46 @@ BOOST_AUTO_TEST_CASE(successful_route_delete_is_not_repeated_when_default_restor
 
     BOOST_TEST(std::count(view->calls.begin(), view->calls.end(), "delete:12") == 1);
     BOOST_TEST(std::count(view->calls.begin(), view->calls.end(), "restore:1") == 2);
+}
+
+BOOST_AUTO_TEST_CASE(journal_remove_retry_does_not_repeat_host_delete) {
+    const auto root = std::filesystem::temp_directory_path() /
+        "openppp2-route-coordinator-remove-retry";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    ppp::app::client::NetworkRecoveryJournal::Options options;
+    bool fail_teardown_remove = false;
+    options.allow_stage = [&fail_teardown_remove](
+        ppp::app::client::NetworkRecoveryJournal::Stage stage) {
+        // Fail only after Apply has completed; the next explicit Stop retry
+        // is allowed to rewrite and remove the durable entry.
+        if (fail_teardown_remove &&
+            stage == ppp::app::client::NetworkRecoveryJournal::Stage::Write) {
+            fail_teardown_remove = false;
+            return false;
+        }
+        return true;
+    };
+    ppp::app::client::NetworkRecoveryJournal journal;
+    BOOST_REQUIRE(journal.Open(root.string(), "route-coordinator-test", options));
+
+    auto platform = std::make_unique<FakeRoutePlatform>();
+    FakeRoutePlatform* view = platform.get();
+    view->defaults.reset();
+    route::RouteCoordinator coordinator(std::move(platform));
+    coordinator.SetRecoveryJournal(&journal);
+    BOOST_REQUIRE(coordinator.Apply({ MakeRoute(14) }));
+
+    fail_teardown_remove = true;
+    BOOST_TEST(!coordinator.Stop());
+    BOOST_TEST(view->recovery_deleted_targets.size() == 1u);
+    BOOST_TEST(journal.HasPendingFor("route"));
+
+    BOOST_REQUIRE(coordinator.Stop());
+    BOOST_TEST(view->recovery_deleted_targets.size() == 1u);
+    BOOST_TEST(!journal.HasPendingFor("route"));
+    journal.Close();
+    std::filesystem::remove_all(root, ec);
 }
 
 BOOST_AUTO_TEST_CASE(successful_default_restore_is_not_repeated_when_route_delete_retries) {

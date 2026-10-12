@@ -22,22 +22,22 @@ public:
     NetworkOwnershipLease& operator=(NetworkOwnershipLease&& other) noexcept;
 
     static std::optional<NetworkOwnershipLease> Acquire(
-        std::string owner_id) noexcept;
+        std::string lease_id) noexcept;
 
     bool IsHeld() const noexcept;
-    const std::string& OwnerId() const noexcept { return owner_id_; }
+    const std::string& OwnerId() const noexcept { return lease_id_; }
     const std::string& Token() const noexcept { return token_; }
 
 private:
     friend class NetworkOwnershipLeaseFactory;
 
     NetworkOwnershipLease(
-        std::string owner_id,
+        std::string lease_id,
         std::string token,
         uintptr_t native_handle) noexcept;
     void Release() noexcept;
 
-    std::string owner_id_;
+    std::string lease_id_;
     std::string token_;
     uintptr_t native_handle_ = 0;
 };
