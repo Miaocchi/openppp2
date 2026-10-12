@@ -555,7 +555,9 @@ mod tests {
             ))
             .unwrap();
 
-        manager.stop_with_timeout(Duration::from_millis(100)).unwrap();
+        // Force the fallback path immediately; the command intentionally
+        // ignores SIGTERM, so this exercises the durable recovery marker.
+        manager.stop_with_timeout(Duration::ZERO).unwrap();
 
         let mut saw_pending = false;
         let mut forced_exit = None;
