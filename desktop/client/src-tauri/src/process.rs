@@ -538,6 +538,7 @@ fn request_graceful_stop(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::sync::mpsc;
 
     #[cfg(unix)]
