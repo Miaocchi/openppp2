@@ -11,6 +11,9 @@
 #include <ppp/app/client/route/RouteCoordinator.h>
 #include <ppp/app/client/SwitcherTimeoutRegistry.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
+#if defined(_WIN32)
+#include <windows/ppp/ipv6/WindowsIPv6RouteOwner.h>
+#endif
 #include <ppp/app/client/policy/PolicyUpdateService.h>
 #include <ppp/app/client/policy/PolicyStatusFile.h>
 #include <ppp/configurations/AppConfiguration.h>

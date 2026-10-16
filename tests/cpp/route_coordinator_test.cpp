@@ -1466,3 +1466,77 @@ bool File::Exists(const char*) noexcept {
     return false;
 }
 }
+
+BOOST_AUTO_TEST_CASE(known_nonmutating_add_failure_does_not_poison_reconnect) {
+    const auto root = std::filesystem::temp_directory_path() /
+        "openppp2-route-nonmutating-failure";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    ppp::app::client::NetworkRecoveryJournal journal;
+    BOOST_REQUIRE(journal.Open(root.string(), "route-coordinator-test"));
+    {
+        auto platform = std::make_unique<FakeRoutePlatform>();
+        FakeRoutePlatform* view = platform.get();
+        view->add_results = { route::RouteAddResult::FailedUnchanged };
+        route::RouteCoordinator coordinator(std::move(platform));
+        coordinator.SetRecoveryJournal(&journal);
+        BOOST_TEST(!coordinator.Apply({ MakeRoute(100) }));
+        BOOST_TEST(!journal.HasPendingFor("route"));
+        BOOST_TEST(view->deleted_specs.empty());
+        BOOST_REQUIRE(coordinator.Apply({ MakeRoute(100) }));
+        BOOST_REQUIRE(coordinator.Stop());
+        BOOST_TEST(!journal.HasPendingFor("route"));
+    }
+    journal.Close();
+    std::filesystem::remove_all(root, ec);
+}
+
+BOOST_AUTO_TEST_CASE(uncertain_add_failure_retains_intent_and_blocks_reconnect) {
+    const auto root = std::filesystem::temp_directory_path() /
+        "openppp2-route-uncertain-failure";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    ppp::app::client::NetworkRecoveryJournal journal;
+    BOOST_REQUIRE(journal.Open(root.string(), "route-coordinator-test"));
+    {
+        auto platform = std::make_unique<FakeRoutePlatform>();
+        FakeRoutePlatform* view = platform.get();
+        view->defaults.reset();
+        view->add_results = { route::RouteAddResult::Failed };
+        route::RouteCoordinator coordinator(std::move(platform));
+        coordinator.SetRecoveryJournal(&journal);
+        BOOST_TEST(!coordinator.Apply({ MakeRoute(100) }));
+        BOOST_TEST(journal.HasPendingFor("route"));
+        BOOST_TEST(!coordinator.Apply({ MakeRoute(100) }));
+        BOOST_TEST(view->add_count == 1);
+        BOOST_TEST(view->deleted_specs.empty());
+    }
+    journal.Close();
+    std::filesystem::remove_all(root, ec);
+}
+
+BOOST_AUTO_TEST_CASE(known_nonmutating_underlying_default_failure_is_retryable) {
+    const auto root = std::filesystem::temp_directory_path() /
+        "openppp2-underlying-nonmutating-failure";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    ppp::app::client::NetworkRecoveryJournal journal;
+    BOOST_REQUIRE(journal.Open(root.string(), "route-coordinator-test"));
+    {
+        auto platform = std::make_unique<FakeRoutePlatform>();
+        FakeRoutePlatform* view = platform.get();
+        view->defaults.reset();
+        view->add_results = { route::RouteAddResult::FailedUnchanged };
+        route::RouteCoordinator coordinator(std::move(platform));
+        coordinator.SetRecoveryJournal(&journal);
+        route::RoutePlanInput input;
+        input.underlying_interface.gateway = boost::asio::ip::make_address("192.0.2.1");
+        BOOST_TEST(!coordinator.EnsureUnderlyingDefault(input));
+        BOOST_TEST(!journal.HasPendingFor("route"));
+        BOOST_REQUIRE(coordinator.EnsureUnderlyingDefault(input));
+        BOOST_REQUIRE(coordinator.Stop());
+        BOOST_TEST(!journal.HasPendingFor("route"));
+    }
+    journal.Close();
+    std::filesystem::remove_all(root, ec);
+}

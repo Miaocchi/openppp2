@@ -630,7 +630,7 @@ namespace ppp {
                         static_cast<int>(snapshot.interface_index));
                     if (!current || current->Guid.empty() || current->InterfaceLuid.empty() ||
                         _stricmp(current->Guid.data(), snapshot.interface_guid.data()) != 0 ||
-                        current->InterfaceLuid != snapshot.interface_luid) return false;
+                        stl::transform<std::string>(current->InterfaceLuid) != snapshot.interface_luid) return false;
 
                     boost::system::error_code ec;
                     const auto address = boost::asio::ip::make_address_v6(snapshot.address, ec);

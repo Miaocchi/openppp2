@@ -764,3 +764,36 @@ BOOST_AUTO_TEST_CASE(mobile_adapter_builds_deduplicated_all_route_plan) {
     BOOST_TEST(platform.ApplyAll(specs));
     BOOST_TEST(applied.size() == specs.size());
 }
+
+BOOST_AUTO_TEST_CASE(windows_session_gateways_resolve_after_default_routes_are_removed) {
+    int queries = 0;
+    const auto unreachable = [&queries](uint32_t) noexcept {
+        ++queries;
+        return -1; // GetBestInterface: ERROR_NETWORK_UNREACHABLE
+    };
+    const uint32_t tap_gateway = htonl(0x0a490001u);
+    const uint32_t physical_gateway = htonl(0xc0000201u);
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(
+        tap_gateway, tap_gateway, 17, physical_gateway, 3, unreachable) == 17);
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(
+        physical_gateway, tap_gateway, 17, physical_gateway, 3, unreachable) == 3);
+    BOOST_TEST(queries == 0);
+}
+
+BOOST_AUTO_TEST_CASE(windows_invalid_session_interface_does_not_fall_back_to_another_adapter) {
+    int queries = 0;
+    const auto wrong_adapter = [&queries](uint32_t) noexcept { ++queries; return 99; };
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(
+        10, 10, -1, 20, 3, wrong_adapter) == -1);
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(
+        20, 10, 17, 20, 0, wrong_adapter) == -1);
+    BOOST_TEST(queries == 0);
+}
+
+BOOST_AUTO_TEST_CASE(windows_other_gateways_use_the_system_lookup) {
+    uint32_t queried = 0;
+    const auto lookup = [&queried](uint32_t gateway) noexcept { queried = gateway; return 8; };
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(30, 10, 17, 20, 3, lookup) == 8);
+    BOOST_TEST(queried == 30u);
+    BOOST_TEST(route::ResolveWindowsRouteInterfaceIndex(30, 10, 17, 20, 3, {}) == -1);
+}

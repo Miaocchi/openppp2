@@ -132,7 +132,7 @@ namespace ppp {
                                 const bool journal_removed =
                                     !owner_->network_recovery_journal_ ||
                                     owner_->network_recovery_journal_->Remove(
-                                        "windows-dns", it->second.Guid, nullptr);
+                                        "windows-dns", stl::transform<std::string>(it->second.Guid), nullptr);
                                 if (journal_removed) {
                                     it = owner_->ni_dns_snapshots_.erase(it);
                                 } else {

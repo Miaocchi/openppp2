@@ -9,6 +9,12 @@
 #include <stddef.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#endif
+
 #if defined(__APPLE__) && defined(__MACH__)
 #include <TargetConditionals.h>
 #endif
@@ -1076,7 +1082,7 @@ inline int                                                                  strc
         return xlen > ylen ? 1 : -1;
     }
 
-    return strncasecmp(x, y, xlen);
+    return strncasecmp(px, py, xlen);
 }
 
 namespace ppp {

@@ -237,27 +237,27 @@ namespace ppp {
                 // lifetimes; the durable record still prevents a new session
                 // from overwriting unresolved IPv6 state.
                 if (!owner_->EnsureNetworkRecoveryJournal() ||
-                    !owner_->network_recovery_journal_ || tun_ni_->Id.empty() ||
-                    tun_ni_->Index < 0) {
+                    !owner_->network_recovery_journal_ || tun_ni->Id.empty() ||
+                    tun_ni->Index < 0) {
                     ppp::diagnostics::SetLastErrorCode(
                         ppp::diagnostics::ErrorCode::IPv6ClientAddressApplyFailed);
                     return false;
                 }
                 const auto durable_ipv6_interface =
-                    ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(tun_ni_->Index);
+                    ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(tun_ni->Index);
                 if (!durable_ipv6_interface || durable_ipv6_interface->Guid.empty() ||
-                    _stricmp(durable_ipv6_interface->Guid.data(), tun_ni_->Id.data()) != 0 ||
+                    _stricmp(durable_ipv6_interface->Guid.data(), tun_ni->Id.data()) != 0 ||
                     durable_ipv6_interface->InterfaceLuid.empty()) {
                     ppp::diagnostics::SetLastErrorCode(
                         ppp::diagnostics::ErrorCode::IPv6ClientAddressApplyFailed);
                     return false;
                 }
-                ipv6_journal_target_ = tun_ni_->Id;
+                ipv6_journal_target_ = tun_ni->Id;
                 const std::string ipv6_snapshot = SerializeAssignedIPv6Snapshot(
-                    tun_ni_->Id, tun_ni_->Index, extensions, ipv6_state_, dns_servers,
+                    tun_ni->Id, tun_ni->Index, extensions, ipv6_state_, dns_servers,
                     durable_ipv6_interface->InterfaceLuid);
                 if (!owner_->network_recovery_journal_->RecordIntent(
-                        "assigned-ipv6", ipv6_journal_target_, ipv6_snapshot,
+                        "assigned-ipv6", stl::transform<std::string>(ipv6_journal_target_), ipv6_snapshot,
                         ipv6_snapshot, nullptr)) {
                     ipv6_journal_target_.clear();
                     ppp::diagnostics::SetLastErrorCode(
@@ -305,7 +305,7 @@ namespace ppp {
                 if (applied) {
 #if defined(_WIN32)
                     if (!owner_->network_recovery_journal_->Confirm(
-                            "assigned-ipv6", ipv6_journal_target_, nullptr)) {
+                            "assigned-ipv6", stl::transform<std::string>(ipv6_journal_target_), nullptr)) {
                         // The OS may already have changed state; leave the
                         // intent pending and force the rollback path.
                         applied = false;
@@ -329,7 +329,7 @@ namespace ppp {
                         !ipv6_state_.HasPendingOwnedMutations() &&
                         owner_->network_recovery_journal_ &&
                         owner_->network_recovery_journal_->Remove(
-                            "assigned-ipv6", ipv6_journal_target_, nullptr)) {
+                            "assigned-ipv6", stl::transform<std::string>(ipv6_journal_target_), nullptr)) {
                         ipv6_journal_pending_ = false;
                         ipv6_journal_target_.clear();
                     }
@@ -384,7 +384,7 @@ namespace ppp {
                     !ipv6_state_.HasPendingOwnedMutations() &&
                     owner_->network_recovery_journal_ &&
                     owner_->network_recovery_journal_->Remove(
-                        "assigned-ipv6", ipv6_journal_target_, nullptr)) {
+                        "assigned-ipv6", stl::transform<std::string>(ipv6_journal_target_), nullptr)) {
                     ipv6_journal_pending_ = false;
                     ipv6_journal_target_.clear();
                 }
@@ -456,15 +456,15 @@ namespace ppp {
                 // retained as an operational hint and is never used alone.
                 if (!owner_->EnsureNetworkRecoveryJournal() ||
                     !owner_->network_recovery_journal_ ||
-                    tun_ni_->Id.empty() || tun_ni_->Index < 0) {
+                    tun_ni->Id.empty() || tun_ni->Index < 0) {
                     ppp::diagnostics::SetLastErrorCode(
                         ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
                     return false;
                 }
                 const auto durable_ipv4_interface =
-                    ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(tun_ni_->Index);
+                    ppp::win32::network::GetNetworkInterfaceByInterfaceIndex(tun_ni->Index);
                 if (!durable_ipv4_interface || durable_ipv4_interface->Guid.empty() ||
-                    _stricmp(durable_ipv4_interface->Guid.data(), tun_ni_->Id.data()) != 0 ||
+                    _stricmp(durable_ipv4_interface->Guid.data(), tun_ni->Id.data()) != 0 ||
                     durable_ipv4_interface->InterfaceLuid.empty()) {
                     ppp::diagnostics::SetLastErrorCode(
                         ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
@@ -478,7 +478,7 @@ namespace ppp {
                 }
                 const std::string journal_before = SerializeAssignedIPv4Snapshot(
                     durable_ipv4_interface->Guid, durable_ipv4_interface->InterfaceLuid,
-                    tun_ni_->Index, static_ipv4_address_,
+                    tun_ni->Index, static_ipv4_address_,
                     static_ipv4_mask_, static_ipv4_gateway_);
                 ec.clear();
                 boost::asio::ip::address journal_gateway = StringToAddress(ipv4.gateway.data(), ec);
@@ -487,10 +487,10 @@ namespace ppp {
                 }
                 const std::string journal_after = SerializeAssignedIPv4Snapshot(
                     durable_ipv4_interface->Guid, durable_ipv4_interface->InterfaceLuid,
-                    tun_ni_->Index, addr, mask,
+                    tun_ni->Index, addr, mask,
                     journal_gateway);
                 if (!owner_->network_recovery_journal_->RecordIntent(
-                        "assigned-ipv4", tun_ni_->Id, journal_before,
+                        "assigned-ipv4", stl::transform<std::string>(tun_ni->Id), journal_before,
                         journal_after, nullptr)) {
                     ppp::diagnostics::SetLastErrorCode(
                         ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
@@ -498,7 +498,7 @@ namespace ppp {
                 }
                 ipv4_journal_pending_ = true;
                 ipv4_restore_verified_ = false;
-                ipv4_journal_target_ = tun_ni_->Id;
+                ipv4_journal_target_ = tun_ni->Id;
                 // Treat an intent as owned even when the subsequent platform
                 // call fails: WMI/adapter APIs can report failure after a
                 // partial mutation and the record must remain retryable.
@@ -588,7 +588,7 @@ namespace ppp {
 #if defined(_WIN32)
                 if (applied) {
                     if (!owner_->network_recovery_journal_->Confirm(
-                            "assigned-ipv4", ipv4_journal_target_, nullptr)) {
+                            "assigned-ipv4", stl::transform<std::string>(ipv4_journal_target_), nullptr)) {
                         // The OS mutation may have succeeded even when the
                         // durable confirmation failed. Keep ownership pending
                         // and force the caller down the rollback path.
@@ -614,7 +614,7 @@ namespace ppp {
                 if (ipv4_restore_verified_) {
                     if (!owner_->network_recovery_journal_ ||
                         !owner_->network_recovery_journal_->Remove(
-                            "assigned-ipv4", ipv4_journal_target_, nullptr)) {
+                            "assigned-ipv4", stl::transform<std::string>(ipv4_journal_target_), nullptr)) {
                         ppp::diagnostics::SetLastErrorCode(
                             ppp::diagnostics::ErrorCode::TunnelAddressConfigureFailed);
                         return;
@@ -705,7 +705,7 @@ namespace ppp {
                     ipv4_restore_verified_ = true;
                     if (!owner_->network_recovery_journal_ ||
                         !owner_->network_recovery_journal_->Remove(
-                            "assigned-ipv4", ipv4_journal_target_, nullptr)) {
+                            "assigned-ipv4", stl::transform<std::string>(ipv4_journal_target_), nullptr)) {
                         // The adapter is restored, but ownership cannot be
                         // durably committed. Retain the marker for retry.
                         ppp::diagnostics::SetLastErrorCode(

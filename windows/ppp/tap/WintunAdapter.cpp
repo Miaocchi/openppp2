@@ -47,6 +47,11 @@ static WintunAllocateSendPacketFunc WintunAllocateSendPacket = NULL;
 static WintunSendPacketFunc WintunSendPacket = NULL;
 
 namespace {
+    // WintunAllocateSendPacket accepts IP packets up to 0xFFFF bytes.
+    // Windows can deliver coalesced TCP packets larger than the interface
+    // MTU; rejecting those here drops payload while small handshakes pass.
+    constexpr uint32_t kWintunMaxIpPacketSize = 0xFFFFu;
+
     // Wintun's adapter object is persistent and the bundled DLL does not
     // export an adapter-removal entry point. The marker represents the process-owned
     // session lifecycle, not a request to remove the installed adapter.
@@ -621,7 +626,7 @@ void WintunAdapter::Stop() noexcept {
 }
 
 bool WintunAdapter::SendPacket(const uint8_t* data, uint32_t len) noexcept {
-    if (!data || len < 1 || len > static_cast<uint32_t>(ppp::tap::ITap::Mtu)) {
+    if (!data || len < 1 || len > kWintunMaxIpPacketSize) {
         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkPacketTooLarge);
         return false;
     }

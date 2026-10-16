@@ -161,7 +161,7 @@ bool AssignedIPv4IdentityMatches(
     const AssignedIPv4Snapshot& snapshot) noexcept {
     return current && current->InterfaceIndex == snapshot.interface_index &&
         _stricmp(current->Guid.data(), snapshot.guid.data()) == 0 &&
-        !current->InterfaceLuid.empty() && current->InterfaceLuid == snapshot.luid;
+        !current->InterfaceLuid.empty() && _stricmp(current->InterfaceLuid.data(), snapshot.luid.data()) == 0;
 }
 
 bool AssignedIPv4StateMatches(
@@ -321,10 +321,19 @@ bool WriteAtomic(const fs::path& directory, const fs::path& target, const std::s
     bool flushed = wrote;
     if (options.allow_stage && !options.allow_stage(NetworkRecoveryJournal::Stage::Flush)) flushed = false;
     if (flushed) flushed = FlushFileBuffers(handle) != 0;
-    CloseHandle(handle);
+    ::CloseHandle(handle);
     if (!flushed) { Error(error, "journal flush failed"); return false; }
     if (options.allow_stage && !options.allow_stage(NetworkRecoveryJournal::Stage::Rename)) { Error(error, "journal rename failed"); return false; }
-    if (!MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { Error(error, "journal rename failed"); return false; }
+    if (!MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        // GetLastError=32 (sharing violation) means the journal file is held
+        // by an unreleased handle; report the code so retry can distinguish
+        // a transient lock from an unrecoverable path error.
+        char buf[96];
+        snprintf(buf, sizeof(buf), "journal rename failed (GetLastError=%lu)",
+            static_cast<unsigned long>(GetLastError()));
+        Error(error, buf);
+        return false;
+    }
 #else
     const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) { Error(error, "journal open failed"); return false; }
@@ -394,7 +403,7 @@ bool NetworkRecoveryJournal::Open(const std::string& directory, const std::strin
 
 void NetworkRecoveryJournal::CloseWithLock() noexcept {
 #if defined(_WIN32)
-    if (lock_handle_ != -1) CloseHandle(reinterpret_cast<HANDLE>(lock_handle_));
+    if (lock_handle_ != -1) ::CloseHandle(reinterpret_cast<HANDLE>(lock_handle_));
 #else
     if (lock_handle_ != -1) { flock(static_cast<int>(lock_handle_), LOCK_UN); ::close(static_cast<int>(lock_handle_)); }
 #endif

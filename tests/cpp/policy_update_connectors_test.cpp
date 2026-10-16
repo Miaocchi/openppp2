@@ -64,6 +64,8 @@ std::shared_ptr<PolicyUpdateSocketConnector> MakeLoopbackDirectConnector() {
     DirectPolicySocketOptions options;
 #if defined(__linux__)
     options.interface_name = "lo";
+#elif defined(_WIN32)
+    options.interface_index = 1; // loopback interface index on Windows
 #endif
     return std::make_shared<DirectPolicySocketConnector>(std::move(options));
 }

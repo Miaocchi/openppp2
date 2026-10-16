@@ -101,6 +101,10 @@ void ConcurrentReaders() {
         }
     });
     for (unsigned i = 0; i < 64; ++i) {
+        // Yield between publications so reader threads are guaranteed to observe
+        // at least one snapshot on Windows, where the main thread may otherwise
+        // finish all 64 commits before a reader is first scheduled.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         if (!runtime.Commit(runtime.Prepare(Source(i % 2 ? "direct" : "proxy")))) failed = true;
     }
     done.store(true, std::memory_order_release);

@@ -33,6 +33,13 @@ bool SameWindowsRouteIdentity(
     const WindowsRouteIdentity& left,
     const WindowsRouteIdentity& right) noexcept;
 
+// Known session gateways must not depend on a live best-route query after
+// the default-route transaction has removed the routes used by that query.
+int ResolveWindowsRouteInterfaceIndex(
+    uint32_t gateway, uint32_t tap_gateway, int tap_interface_index,
+    uint32_t underlying_gateway, int underlying_interface_index,
+    const std::function<int(uint32_t)>& lookup) noexcept;
+
 struct WindowsRouteOperations final {
     std::function<DefaultRouteCapture()> capture_defaults;
     std::function<bool(const RouteSnapshotPtr&)> remove_default;
@@ -51,7 +58,8 @@ public:
     WindowsRoutePlatform(
         uint32_t tap_gateway,
         int underlying_interface_index,
-        std::string underlying_gateway) noexcept;
+        std::string underlying_gateway,
+        int tap_interface_index = -1) noexcept;
     explicit WindowsRoutePlatform(WindowsRouteOperations operations) noexcept;
 
     DefaultRouteCapture CaptureDefaults() noexcept override;
@@ -85,7 +93,8 @@ private:
     static WindowsRouteOperations CreateSystemOperations(
         uint32_t tap_gateway,
         int underlying_interface_index,
-        std::string underlying_gateway) noexcept;
+        std::string underlying_gateway,
+        int tap_interface_index) noexcept;
     bool Compensate(
         const RouteSnapshotPtr& target,
         const RouteSnapshotPtr& conflict) noexcept;

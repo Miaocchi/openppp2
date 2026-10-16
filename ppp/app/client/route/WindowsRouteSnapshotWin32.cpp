@@ -116,7 +116,7 @@ WindowsRouteSnapshotLiveStatus VerifyWindowsGatewaySnapshotLive(
     // The gateway snapshot identifies one gateway.  Report Match when that
     // exact value is still present and Conflict when the adapter changed.
     for (const ppp::string& gateway : adapter->DefaultIPGateway) {
-        if (gateway == expected.gateway) {
+        if (_stricmp(gateway.data(), expected.gateway.data()) == 0) {
             actual.gateway = gateway;
             if (VerifyWindowsGatewaySnapshot(expected, actual)) {
                 return WindowsRouteSnapshotLiveStatus::Match;

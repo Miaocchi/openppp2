@@ -4,6 +4,7 @@
  */
 
 #include <ppp/configurations/AppConfiguration.h>
+#include <ppp/Filesystem.h>
 #include <ppp/app/ApplicationClientBootstrap.h>
 #include <ppp/app/ApplicationServerBootstrap.h>
 #include <ppp/app/PppApplicationInternal.h>

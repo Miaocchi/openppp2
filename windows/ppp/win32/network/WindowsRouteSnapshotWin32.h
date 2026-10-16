@@ -2,8 +2,9 @@
 
 #include <ppp/app/client/route/WindowsRouteSnapshot.h>
 
-#if defined(_WIN32)
-#include <Iphlpapi.h>
+ #if defined(_WIN32)
+ #include <Windows.h>
+ #include <Iphlpapi.h>
 
 namespace ppp::app::client::route {
 

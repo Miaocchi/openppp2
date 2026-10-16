@@ -32,6 +32,10 @@ namespace ppp {
                     Failed,
                     Unchanged,
                     Created,
+                    // Failure with proof that this invocation left no route
+                    // mutation. The coordinator may discard its write-ahead
+                    // intent; Failed retains the intent when state is unknown.
+                    FailedUnchanged,
                 };
 
                 class IRoutePlatform {

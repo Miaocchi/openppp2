@@ -33,28 +33,27 @@ std::string MakeToken(const std::string& lease_id) noexcept {
 
 #if defined(_WIN32)
 HANDLE AcquireNativeHandle() noexcept {
-    // Global scope covers desktop and service sessions.  A failed create is a
-    // hard failure: silently falling back to a per-process mutex would allow
-    // two VPN instances to mutate the same route table.
-    HANDLE handle = CreateMutexW(nullptr, FALSE,
+    // The presence of the named object is the lease. Creation and the
+    // ERROR_ALREADY_EXISTS check are atomic across threads and processes.
+    // Do not use wait/reset: those are separate operations for manual-reset
+    // events, and mutex ownership cannot safely move between worker threads.
+    // An unsignaled event also prevents older wait-based clients from entering.
+    SetLastError(ERROR_SUCCESS);
+    HANDLE handle = CreateEventW(nullptr, TRUE, FALSE,
         L"Global\\OpenPPP2.NetworkControlPlane.v1");
-    if (!handle) {
-        return nullptr;
-    }
-    const DWORD result = WaitForSingleObject(handle, 0);
-    if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED) {
-        CloseHandle(handle);
+    const DWORD error = GetLastError();
+    if (!handle) return nullptr;
+    if (error == ERROR_ALREADY_EXISTS) {
+        ::CloseHandle(handle);
         return nullptr;
     }
     return handle;
 }
 
 void ReleaseNativeHandle(HANDLE handle) noexcept {
-    if (!handle) {
-        return;
-    }
-    ReleaseMutex(handle);
-    CloseHandle(handle);
+    // Closing the last handle removes the kernel object, including on process
+    // death. No thread-affine release or separately signaled state is needed.
+    if (handle) ::CloseHandle(handle);
 }
 #else
 int AcquireNativeHandle() noexcept {

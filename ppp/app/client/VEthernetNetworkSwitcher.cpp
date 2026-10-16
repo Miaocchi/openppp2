@@ -321,10 +321,10 @@ namespace ppp {
                     std::string interface_name;
                     std::uint32_t interface_index = 0;
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                    const auto interface = underlying_ni_;
-                    if (interface) {
-                        interface_name.assign(interface->Name.begin(), interface->Name.end());
-                        if (interface->Index > 0) interface_index = static_cast<std::uint32_t>(interface->Index);
+                    const auto network_interface = underlying_ni_;
+                    if (network_interface) {
+                        interface_name.assign(network_interface->Name.begin(), network_interface->Name.end());
+                        if (network_interface->Index > 0) interface_index = static_cast<std::uint32_t>(network_interface->Index);
                     }
 #endif
                     const ppp::string protected_interface(interface_name.data(), interface_name.size());
@@ -355,7 +355,7 @@ namespace ppp {
 #elif defined(_IPHONE)
                         bool direct_capable = false;
 #else
-                        bool direct_capable = interface != nullptr && !interface_name.empty();
+                        bool direct_capable = network_interface != nullptr && !interface_name.empty();
 #if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
                         direct_capable = direct_capable && interface_index > 0;
 #endif
@@ -701,17 +701,22 @@ namespace ppp {
                         ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
                     return false;
                 }
-                // A prior session may still own a DNS snapshot. Do not apply
-                // a new session over it until recovery has completed.
+#endif
+                const route::RouteStateSnapshot snapshot = route_coordinator_->Snapshot();
+                if (hosted_routes_apply_failed_) return false;
+                // Routes and DNS belong to the switcher, not an individual
+                // transport attempt. Reconnect reuses a successfully applied
+                // host transaction and its teardown-owned DNS snapshots.
+                if (snapshot.applied) return true;
+#if defined(_WIN32)
+                // Only an unapplied transaction with residual DNS ownership
+                // needs recovery before a new host mutation is permitted.
                 if (!ni_dns_snapshots_.empty()) {
                     ppp::diagnostics::SetLastErrorCode(
                         ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
                     return false;
                 }
 #endif
-                const route::RouteStateSnapshot snapshot = route_coordinator_->Snapshot();
-                if (hosted_routes_apply_failed_) return false;
-                if (snapshot.applied) return true;
                 const bool established = exchanger_ &&
                     exchanger_->GetNetworkState() == VEthernetExchanger::NetworkState_Established;
                 if (route::RouteCoordinator::ShouldDeferHostedRouteApply(
@@ -733,7 +738,7 @@ namespace ppp {
                                 const bool journal_removed =
                                     !network_recovery_journal_ ||
                                     network_recovery_journal_->Remove(
-                                        "windows-dns", it->second.Guid, nullptr);
+                                        "windows-dns", stl::transform<std::string>(it->second.Guid), nullptr);
                                 if (journal_removed) {
                                     it = ni_dns_snapshots_.erase(it);
                                 } else {
@@ -802,7 +807,7 @@ namespace ppp {
                             }
                             const bool journal_intent = network_recovery_journal_ &&
                                 network_recovery_journal_->RecordIntent(
-                                    "windows-dns", snapshot.Guid,
+                                    "windows-dns", stl::transform<std::string>(snapshot.Guid),
                                     before_dns,
                                     SerializeDnsSnapshot(snapshot), nullptr);
                             if (journal_intent) {
@@ -817,7 +822,7 @@ namespace ppp {
                                     tun_ni_->Index, servers, snapshot);
                                 if (dns_applied) {
                                     dns_applied = network_recovery_journal_->Confirm(
-                                        "windows-dns", snapshot.Guid, nullptr);
+                                        "windows-dns", stl::transform<std::string>(snapshot.Guid), nullptr);
                                 }
                             } else {
                                 dns_applied = false;
@@ -1641,12 +1646,12 @@ namespace ppp {
                         return ppp::android::ProtectSocketFd(socket);
 #elif defined(_LINUX)
                         if (owner->protect_network_) return owner->protect_network_->ProtectSync(socket);
-                        const auto interface = owner->underlying_ni_;
-                        return interface && ProtectClientUnderlyingSocket(socket, interface->Name, interface->Index);
+                        const auto network_interface = owner->underlying_ni_;
+                        return network_interface && ProtectClientUnderlyingSocket(socket, network_interface->Name, network_interface->Index);
 #elif defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
-                        const auto interface = owner->underlying_ni_;
-                        return interface && ProtectClientUnderlyingSocket(
-                            static_cast<ClientUnderlyingSocketHandle>(socket), interface->Name, interface->Index);
+                        const auto network_interface = owner->underlying_ni_;
+                        return network_interface && ProtectClientUnderlyingSocket(
+                            static_cast<ClientUnderlyingSocketHandle>(socket), network_interface->Name, network_interface->Index);
 #else
                         (void)socket;
                         return false;

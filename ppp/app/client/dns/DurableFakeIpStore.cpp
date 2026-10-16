@@ -269,7 +269,7 @@ bool CreateDurableEmptyFile(const fs::path& path) {
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
     const bool ok = FlushFileBuffers(file) != 0;
-    CloseHandle(file);
+    ::CloseHandle(file);
     return ok;
 #else
     int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
@@ -300,7 +300,7 @@ bool AtomicWrite(const fs::path& directory, const fs::path& target, const std::s
     }
     if (options.allow_stage && !options.allow_stage(DurableFakeIpStore::Stage::SnapshotFlush)) wrote = false;
     if (wrote && !FlushFileBuffers(handle)) wrote = false;
-    CloseHandle(handle);
+    ::CloseHandle(handle);
     if (!wrote) { SetError(error, "snapshot flush failed"); return false; }
     if (options.allow_stage && !options.allow_stage(DurableFakeIpStore::Stage::SnapshotRename)) {
         SetError(error, "snapshot rename failed"); return false;
@@ -541,7 +541,7 @@ bool DurableFakeIpStore::Open(const std::string& directory, const std::string& i
             SetEndOfFile(handle);
         if (repaired && StageAllowed(Stage::JournalRepairFlush)) repaired = FlushFileBuffers(handle) != 0;
         else repaired = false;
-        if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+        if (handle != INVALID_HANDLE_VALUE) ::CloseHandle(handle);
 #else
         int fd = ::open(journal_path.c_str(), O_WRONLY);
         bool repaired = fd >= 0 && ::ftruncate(fd, static_cast<off_t>(start)) == 0;
@@ -574,7 +574,7 @@ void DurableFakeIpStore::CloseWithIoLock() noexcept {
         healthy_ = false;
     }
 #if defined(_WIN32)
-    if (lock_handle_ != -1) CloseHandle(reinterpret_cast<HANDLE>(lock_handle_));
+    if (lock_handle_ != -1) ::CloseHandle(reinterpret_cast<HANDLE>(lock_handle_));
 #else
     if (lock_handle_ != -1) { ::flock(static_cast<int>(lock_handle_), LOCK_UN); ::close(static_cast<int>(lock_handle_)); }
 #endif
@@ -595,9 +595,9 @@ bool DurableFakeIpStore::AppendRecord(uint64_t sequence, uint32_t address,
     DWORD written = 0;
     const bool ok = WriteFile(handle, line.data(), static_cast<DWORD>(line.size()), &written, nullptr) && written == line.size();
     if (!ok || !StageAllowed(Stage::JournalFlush) || !FlushFileBuffers(handle)) {
-        CloseHandle(handle); SetError(error, "journal durable flush failed"); return false;
+        ::CloseHandle(handle); SetError(error, "journal durable flush failed"); return false;
     }
-    CloseHandle(handle);
+    ::CloseHandle(handle);
 #else
     int fd = ::open(path.c_str(), O_WRONLY | O_APPEND);
     if (fd < 0) { SetError(error, "journal open failed"); return false; }
@@ -749,7 +749,7 @@ bool DurableFakeIpStore::Compact(std::string* error) {
     HANDLE handle = CreateFileW(journal.wstring().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     const bool ok = handle != INVALID_HANDLE_VALUE && StageAllowed(Stage::JournalTruncateFlush) && FlushFileBuffers(handle) != 0;
-    if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+    if (handle != INVALID_HANDLE_VALUE) ::CloseHandle(handle);
 #else
     int fd = ::open(journal.c_str(), O_WRONLY | O_TRUNC);
     const bool ok = fd >= 0 && StageAllowed(Stage::JournalTruncateFlush) && ::fsync(fd) == 0;

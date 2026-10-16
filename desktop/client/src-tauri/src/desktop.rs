@@ -197,13 +197,27 @@ fn recover_pending_network(
     executable: &Path,
     data_dir: &Path,
 ) -> Result<(), String> {
+    recover_pending_network_with(process, executable, data_dir, |process, spec| {
+        process
+            .run_recovery_worker(spec, Duration::from_secs(5))
+            .map_err(|error| error.to_string())
+    })
+}
+
+fn recover_pending_network_with(
+    process: &mut ProcessManager,
+    executable: &Path,
+    data_dir: &Path,
+    run_worker: impl FnOnce(&mut ProcessManager, CommandSpec) -> Result<bool, String>,
+) -> Result<(), String> {
     let marker = network_recovery_marker(data_dir);
     let directory = executable
         .parent()
         .ok_or_else(|| "Core executable has no recovery directory".to_string())?
         .join("network-recovery");
     let journal = directory.join("network-recovery.journal");
-    let network_required = marker.exists() || journal.exists();
+    let network_required = process.snapshot().recovery_pending || marker.exists() || journal.exists();
+    let mut core_recovered = !network_required;
     let mut errors = Vec::new();
 
     if network_required {
@@ -214,8 +228,12 @@ fn recover_pending_network(
                 format!("--network-recovery-dir={}", directory.display()),
             ],
         );
-        match process.run_recovery_worker(spec, Duration::from_secs(5)) {
+        match run_worker(process, spec) {
             Ok(true) => {
+                // Core returns success only after validating the journal and
+                // recovering every entry. It keeps the empty journal header;
+                // file existence alone must not reinstate the recovery gate.
+                core_recovered = true;
                 // The marker is a second durable gate. Keep the visible pending
                 // state when it cannot be removed, even if the worker succeeded.
                 if let Err(error) = clear_network_recovery_marker(data_dir) {
@@ -234,7 +252,7 @@ fn recover_pending_network(
         errors.push(error);
     }
 
-    let network_pending = marker.exists() || journal.exists();
+    let network_pending = marker.exists() || !core_recovered;
     let proxy_pending = proxy_path.exists();
     if !network_pending && !proxy_pending {
         process.mark_recovery_complete();
@@ -1017,6 +1035,11 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
     if process.is_running() {
         return Err("Disconnect before connecting another node".into());
     }
+    // Validate/replay the journal before applying the connection gate. Core
+    // retains an empty journal after clean teardown; its presence alone does
+    // not imply unresolved resources and must not block every reconnect.
+    let executable = resolve_ppp_path(&preferences.ppp_path)?;
+    recover_pending_network(&mut process, &executable, &state.data_dir)?;
     let proxy_recovery_path = state.data_dir.join("proxy-recovery.json");
     if process.snapshot().recovery_pending
         || network_recovery_marker(&state.data_dir).exists()
@@ -1037,15 +1060,6 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
     } else {
         "client"
     };
-    let executable = resolve_ppp_path(&preferences.ppp_path)?;
-    let journal = executable
-        .parent()
-        .ok_or_else(|| "Core executable has no recovery directory".to_string())?
-        .join("network-recovery/network-recovery.journal");
-    if journal.exists() {
-        return Err("Network recovery is still pending; recover it before connecting".into());
-    }
-    recover_pending_network(&mut process, &executable, &state.data_dir)?;
     let mut spec = CommandSpec::new(
         executable,
         [
@@ -1473,7 +1487,11 @@ fn policy_kernel(state: &DesktopState) -> Result<PathBuf, String> {
         Some((_, _, supported)) => supported,
         None => {
             let info = crate::kernel::inspect(&path)?;
-            let supported = info["policySupported"].as_bool() == Some(true);
+            let supported = info["policySupported"].as_bool().ok_or_else(|| {
+                format!("Unable to determine kernel policy v2 support: version={}; probe={}",
+                    info["version"].as_str().unwrap_or("Unknown"),
+                    info["probeError"].as_str().unwrap_or("no recognizable version"))
+            })?;
             *state.policy_kernel.lock().map_err(|_| "Kernel lock")? =
                 Some((path.clone(), modified, supported));
             supported
@@ -2029,6 +2047,97 @@ mod tests {
     use crate::preferences::Preferences;
     use crate::subscription::{parse_subscription, RefreshResult};
     use serde_json::json;
+
+    #[test]
+    fn verified_empty_journal_clears_recovery_without_deleting_the_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let data_dir = directory.path().join("data");
+        let core_dir = directory.path().join("core");
+        let journal_dir = core_dir.join("network-recovery");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&journal_dir).unwrap();
+        let journal = journal_dir.join("network-recovery.journal");
+        let header = b"NWRJ|1|test-owner|empty-checksum\n";
+        std::fs::write(&journal, header).unwrap();
+        super::persist_network_recovery_marker(&data_dir).unwrap();
+        let executable = core_dir.join("ppp.exe");
+        let mut process = crate::process::ProcessManager::new(|_| {});
+        process.mark_recovery_pending();
+
+        super::recover_pending_network_with(
+            &mut process, &executable, &data_dir, |_, spec| {
+                assert_eq!(spec.program, executable);
+                assert_eq!(spec.args, vec![
+                    "--network-recovery".to_string(),
+                    format!("--network-recovery-dir={}", journal_dir.display()),
+                ]);
+                Ok(true)
+            },
+        ).unwrap();
+
+        assert_eq!(std::fs::read(&journal).unwrap(), header);
+        assert!(!super::network_recovery_marker(&data_dir).exists());
+        assert!(!process.snapshot().recovery_pending);
+        assert_eq!(process.snapshot().status, "disconnected");
+
+        // Next startup sees the retained header and validates it again.
+        process.mark_recovery_pending();
+        super::recover_pending_network_with(
+            &mut process, &executable, &data_dir, |_, _| Ok(true),
+        ).unwrap();
+        assert!(!process.snapshot().recovery_pending);
+        assert!(journal.exists());
+    }
+
+    #[test]
+    fn failed_or_unavailable_recovery_worker_keeps_the_durable_gate() {
+        for result in [Ok(false), Err("worker unavailable".to_string())] {
+            let directory = tempfile::tempdir().unwrap();
+            super::persist_network_recovery_marker(directory.path()).unwrap();
+            let marker = super::network_recovery_marker(directory.path());
+            let original = std::fs::read(&marker).unwrap();
+            let mut process = crate::process::ProcessManager::new(|_| {});
+            process.mark_recovery_pending();
+            assert!(super::recover_pending_network_with(
+                &mut process, &directory.path().join("ppp.exe"), directory.path(),
+                |_, _| result,
+            ).is_err());
+            assert!(process.snapshot().recovery_pending);
+            assert_eq!(std::fs::read(&marker).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn successful_worker_cannot_clear_an_unremovable_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = super::network_recovery_marker(directory.path());
+        std::fs::create_dir(&marker).unwrap();
+        let mut process = crate::process::ProcessManager::new(|_| {});
+        process.mark_recovery_pending();
+        assert!(super::recover_pending_network_with(
+            &mut process, &directory.path().join("ppp.exe"), directory.path(),
+            |_, _| Ok(true),
+        ).is_err());
+        assert!(marker.is_dir());
+        assert!(process.snapshot().recovery_pending);
+    }
+
+    #[test]
+    fn successful_core_recovery_does_not_hide_a_proxy_recovery_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        super::persist_network_recovery_marker(directory.path()).unwrap();
+        let proxy = directory.path().join("proxy-recovery.json");
+        std::fs::write(&proxy, b"invalid backup").unwrap();
+        let mut process = crate::process::ProcessManager::new(|_| {});
+        process.mark_recovery_pending();
+        assert!(super::recover_pending_network_with(
+            &mut process, &directory.path().join("ppp.exe"), directory.path(),
+            |_, _| Ok(true),
+        ).is_err());
+        assert!(!super::network_recovery_marker(directory.path()).exists());
+        assert!(proxy.exists());
+        assert!(process.snapshot().recovery_pending);
+    }
 
     #[test]
     fn stored_subscription_keeps_cache_metadata() {

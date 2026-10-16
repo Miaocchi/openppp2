@@ -105,7 +105,8 @@ namespace ppp
                     return ppp::string();
                 }
 
-                return std::to_string(static_cast<unsigned long long>(luid.Value));
+                return stl::transform<ppp::string>(
+                    std::to_string(static_cast<unsigned long long>(luid.Value)));
             }
 
             static bool GetDnsAutomaticByGuid(const ppp::string& guid, bool& automatic) noexcept

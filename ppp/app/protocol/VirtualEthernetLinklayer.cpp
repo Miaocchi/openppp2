@@ -1136,6 +1136,15 @@ namespace ppp {
                     return false;
                 }
 
+                // Multicast is not representable by this relay protocol.
+                // Drop it before encoding instead of returning a send failure:
+                // the UDP port treats a transport send failure as fatal to the
+                // shared carrier, so LAN discovery must not tear it down.
+                if (destinationEP.address().is_multicast()) {
+                    ppp::telemetry::Count("linklayer.udp.drop.multicast", 1);
+                    return true;
+                }
+
                 MemoryStream ms(packet_length + 1 + 2 * global::PACKET_ENDPOINT_RESERVE);
                 if (ms.WriteByte(static_cast<Byte>(PacketAction_SENDTO))) {
                     if (global::PACKET_IPEndPoint(ms, destinationEP)) {

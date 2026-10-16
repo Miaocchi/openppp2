@@ -56,8 +56,8 @@ int main() {
         auto context = std::make_shared<boost::asio::io_context>();
         auto provider = std::make_shared<Provider>();
         auto owner = std::make_shared<int>(1);
-        const DirectDatagramFlow::Endpoint target(boost::asio::ip::address_v4::from_string("192.0.2.1"), 1234);
-        const DirectDatagramFlow::Endpoint logical(boost::asio::ip::address_v4::from_string("198.18.0.1"), 1234);
+        const DirectDatagramFlow::Endpoint target(boost::asio::ip::make_address_v4("192.0.2.1"), 1234);
+        const DirectDatagramFlow::Endpoint logical(boost::asio::ip::make_address_v4("198.18.0.1"), 1234);
         int replies = 0;
         auto flow = std::make_shared<DirectDatagramFlow>(context, owner, target, logical,
             ppp::app::client::ClientUnderlyingSocketProtector(), provider, nullptr, 60,

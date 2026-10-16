@@ -68,13 +68,13 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
                 }
 
-                // The underlying gateway route is a host-network mutation.
-                // Do not continue toward Established when it could not be
-                // acquired and registered for teardown.
+#if !defined(_WIN32)
+                // Preserve the native platform initialization order.
                 if (!owner_->FixUnderlyingNgw()) {
                     return ppp::diagnostics::SetLastError(
                         ppp::diagnostics::ErrorCode::RouteAddFailed);
                 }
+#endif
                 }
 #endif
                 // Construction of VEtherent virtual Ethernet switcher processing framework.
@@ -220,7 +220,17 @@ namespace ppp {
                 if (NULLPTR == owner_->tun_ni_) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TunnelDeviceMissing);
                 }
+
 #if defined(_WIN32)
+                // The route platform captures both session gateways and
+                // adapter indexes. Create it only after VEthernet::Open has
+                // attached the TAP and its interface snapshot is available.
+                // Otherwise it retains a zero TAP gateway and cannot exclude
+                // TAP defaults or select that adapter during route updates.
+                if (!owner_->FixUnderlyingNgw()) {
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::RouteAddFailed);
+                }
                 // Route-only IPv6 protection is best-effort; binding failure must not block the VPN.
                 owner_->BindWindowsIPv6RouteOwner();
 #endif

@@ -315,14 +315,19 @@ namespace ppp {
 
                 bool RouteCoordinator::ApplyLocked(
                     const std::vector<RouteSpec>& routes) noexcept {
+                    const auto failure = [](const char* stage) noexcept {
+                        ppp::telemetry::Log(Level::kInfo, "route_coordinator",
+                            "route apply failed: stage=%s", stage);
+                        return false;
+                    };
                     if (!ownership_ || !ownership_->IsHeld() ||
                         stopped_.load(std::memory_order_acquire) || NULLPTR == platform_) {
-                        return false;
+                        return failure("ownership_or_stopped_or_platform");
                     }
 
                     const RouteStateSnapshot before = state_.Snapshot();
                     if (before.applied || !before.default_routes.empty()) {
-                        return false;
+                        return failure("transaction_already_present");
                     }
 
                     // A previous process may have died after a route intent
@@ -332,12 +337,12 @@ namespace ppp {
                     // owned by this coordinator and must not be replayed as
                     // stale state before the hosted route set is applied.
                     if (applied_.empty() && !RecoverPendingRoutesLocked()) {
-                        return false;
+                        return failure("recover_pending_routes");
                     }
 
                     const DefaultRouteCapture defaults = platform_->CaptureDefaults();
                     if (!defaults) {
-                        return false;
+                        return failure("capture_defaults");
                     }
                     for (const RouteSnapshotPtr& route : *defaults) {
                         if (!route) {
@@ -353,11 +358,11 @@ namespace ppp {
                             // removed in this transaction. Restore it before
                             // reporting the journal failure.
                             Rollback(applied_);
-                            return false;
+                            return failure("journal_default_intent");
                         }
                         if (!platform_->RemoveDefault(route)) {
                             Rollback(applied_);
-                            return false;
+                            return failure("remove_default");
                         }
                         // Publish ownership before confirming the durable
                         // intent.  If the confirm write fails, rollback can
@@ -365,7 +370,7 @@ namespace ppp {
                         RememberDefault(platform_, route);
                         if (!ConfirmRouteIntent(journal_target)) {
                             Rollback(applied_);
-                            return false;
+                            return failure("confirm_default");
                         }
                     }
 
@@ -377,12 +382,16 @@ namespace ppp {
                             (recovery_journal_ && !RecordRouteIntent(
                                 journal_target, encoded, {}))) {
                             Rollback(applied_);
-                            return false;
+                            return failure("journal_created_intent");
                         }
                         const RouteAddResult result = platform_->Add(route);
-                        if (result == RouteAddResult::Failed) {
+                        if (result == RouteAddResult::Failed ||
+                            result == RouteAddResult::FailedUnchanged) {
+                            if (result == RouteAddResult::FailedUnchanged) {
+                                RemoveRouteIntent(journal_target);
+                            }
                             Rollback(applied_);
-                            return false;
+                            return failure("add_route");
                         }
                         if (result == RouteAddResult::Created) {
                             applied_.emplace_back(route);
@@ -390,7 +399,7 @@ namespace ppp {
                                     route, journal_target, encoded) ||
                                 !ConfirmRouteIntent(journal_target)) {
                                 Rollback(applied_);
-                                return false;
+                                return failure("promote_or_confirm_created");
                             }
                         }
                         else if (recovery_journal_) {
@@ -567,6 +576,8 @@ namespace ppp {
                             input,
                             routing::HumanRoutingRouteEnvironment::Desktop);
                     if (human_plan.invalid_count != 0) {
+                        ppp::telemetry::Log(Level::kInfo, "route_coordinator",
+                            "route apply failed: stage=invalid_human_route_plan");
                         return false;
                     }
                     DnsRouteSpecPlan dns_plan = BuildDnsRouteSpecs(input);
@@ -621,7 +632,11 @@ namespace ppp {
                         return false;
                     }
                     const RouteAddResult result = platform_->Add(route);
-                    if (result == RouteAddResult::Failed) {
+                    if (result == RouteAddResult::Failed ||
+                        result == RouteAddResult::FailedUnchanged) {
+                        if (result == RouteAddResult::FailedUnchanged) {
+                            RemoveRouteIntent(journal_target);
+                        }
                         return false;
                     }
                     if (result == RouteAddResult::Created) {
@@ -722,7 +737,11 @@ namespace ppp {
                         return false;
                     }
                     const RouteAddResult result = platform_->Add(route);
-                    if (result == RouteAddResult::Failed) {
+                    if (result == RouteAddResult::Failed ||
+                        result == RouteAddResult::FailedUnchanged) {
+                        if (result == RouteAddResult::FailedUnchanged) {
+                            RemoveRouteIntent(journal_target);
+                        }
                         return false;
                     }
                     // A route that already existed is not owned by OpenPPP2.

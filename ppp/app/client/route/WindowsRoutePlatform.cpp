@@ -1,5 +1,6 @@
 #include <ppp/stdafx.h>
 #include <ppp/app/client/route/WindowsRoutePlatform.h>
+#include <ppp/diagnostics/TelemetryFwd.h>
 
 #if defined(_WIN32)
 #include <ppp/net/IPEndPoint.h>
@@ -8,6 +9,19 @@
 #endif
 
 namespace ppp::app::client::route {
+
+int ResolveWindowsRouteInterfaceIndex(
+    uint32_t gateway, uint32_t tap_gateway, int tap_interface_index,
+    uint32_t underlying_gateway, int underlying_interface_index,
+    const std::function<int(uint32_t)>& lookup) noexcept {
+    if (gateway != 0 && gateway == tap_gateway) {
+        return tap_interface_index > 0 ? tap_interface_index : -1;
+    }
+    if (gateway != 0 && gateway == underlying_gateway) {
+        return underlying_interface_index > 0 ? underlying_interface_index : -1;
+    }
+    return lookup ? lookup(gateway) : -1;
+}
 
 bool SameWindowsRouteIdentity(
     const WindowsRouteIdentity& left,
@@ -147,14 +161,17 @@ bool SameWindowsRouteSpec(
 bool TryFindWindowsRouteSpec(
     const RouteSpec& route,
     MIB_IPFORWARDROW& found,
-    bool& exists) noexcept {
+    bool& exists,
+    int interface_index = -1) noexcept {
     exists = false;
     auto mib = ppp::win32::network::Router::GetIpForwardTable();
     if (!mib) {
         return false;
     }
     for (DWORD i = 0; i < mib->dwNumEntries; ++i) {
-        if (SameWindowsRouteSpec(mib->table[i], route)) {
+        if (SameWindowsRouteSpec(mib->table[i], route) &&
+            (interface_index < 0 ||
+                mib->table[i].dwForwardIfIndex == static_cast<DWORD>(interface_index))) {
             found = mib->table[i];
             exists = true;
             break;
@@ -170,8 +187,8 @@ bool VerifyWindowsGatewayInterfaceIdentity(
     return adapter &&
         static_cast<std::uint32_t>(adapter->InterfaceIndex) ==
             expected.interface_index &&
-        adapter->InterfaceLuid == expected.interface_luid &&
-        adapter->Guid == expected.interface_guid;
+        _stricmp(adapter->InterfaceLuid.data(), expected.interface_luid.data()) == 0 &&
+        _stricmp(adapter->Guid.data(), expected.interface_guid.data()) == 0;
 }
 
 }
@@ -180,11 +197,13 @@ bool VerifyWindowsGatewayInterfaceIdentity(
 WindowsRoutePlatform::WindowsRoutePlatform(
     uint32_t tap_gateway,
     int underlying_interface_index,
-    std::string underlying_gateway) noexcept
+    std::string underlying_gateway,
+    int tap_interface_index) noexcept
     : WindowsRoutePlatform(CreateSystemOperations(
           tap_gateway,
           underlying_interface_index,
-          std::move(underlying_gateway))) {
+          std::move(underlying_gateway),
+          tap_interface_index)) {
 }
 
 WindowsRoutePlatform::WindowsRoutePlatform(WindowsRouteOperations operations) noexcept
@@ -423,7 +442,8 @@ bool WindowsRoutePlatform::RecoverRouteJournalEntry(
 WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
     uint32_t tap_gateway,
     int underlying_interface_index,
-    std::string underlying_gateway) noexcept {
+    std::string underlying_gateway,
+    int tap_interface_index) noexcept {
     WindowsRouteOperations operations;
 #if defined(_WIN32)
     operations.capture_defaults = [tap_gateway, underlying_interface_index,
@@ -475,11 +495,27 @@ WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
         return FindWindowsRoute(snapshot->route, snapshot->data) ==
             WindowsRouteLookup::Missing;
     };
-    operations.add = [](const RouteSpec& route) noexcept {
+    const uint32_t underlying_gateway_address = underlying_gateway.empty()
+        ? 0 : inet_addr(underlying_gateway.c_str());
+    operations.add = [tap_gateway, tap_interface_index,
+        underlying_gateway_address, underlying_interface_index](const RouteSpec& route) noexcept {
+        const int interface_index = ResolveWindowsRouteInterfaceIndex(
+            route.gateway, tap_gateway, tap_interface_index,
+            underlying_gateway_address, underlying_interface_index,
+            [](uint32_t gateway) noexcept {
+                return ppp::win32::network::Router::GetBestInterface(gateway);
+            });
+        if (interface_index <= 0) {
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                "windows_route", "add failed: stage=resolve_interface prefix=%d", route.prefix);
+            return RouteAddResult::FailedUnchanged;
+        }
         MIB_IPFORWARDROW exact;
         bool exact_exists = false;
         if (!TryFindWindowsRouteSpec(route, exact, exact_exists)) {
-            return RouteAddResult::Failed;
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                "windows_route", "add failed: stage=query_before_add prefix=%d", route.prefix);
+            return RouteAddResult::FailedUnchanged;
         }
         if (exact_exists) {
             return RouteAddResult::Unchanged;
@@ -488,12 +524,19 @@ WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
             route.network,
             ppp::net::IPEndPoint::PrefixToNetmask(route.prefix),
             route.gateway,
-            1);
-        if (!TryFindWindowsRouteSpec(route, exact, exact_exists)) {
+            1,
+            interface_index);
+        if (!TryFindWindowsRouteSpec(route, exact, exact_exists, interface_index)) {
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                "windows_route", "add failed: stage=query_after_add api_success=%d prefix=%d",
+                add_succeeded ? 1 : 0, route.prefix);
             return RouteAddResult::Failed;
         }
         if (!exact_exists) {
-            return RouteAddResult::Failed;
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                "windows_route", "add failed: stage=route_missing_after_add api_success=%d prefix=%d",
+                add_succeeded ? 1 : 0, route.prefix);
+            return add_succeeded ? RouteAddResult::Failed : RouteAddResult::FailedUnchanged;
         }
         return add_succeeded ? RouteAddResult::Created :
             RouteAddResult::Unchanged;
@@ -587,6 +630,7 @@ WindowsRouteOperations WindowsRoutePlatform::CreateSystemOperations(
     (void)tap_gateway;
     (void)underlying_interface_index;
     (void)underlying_gateway;
+    (void)tap_interface_index;
 #endif
     return operations;
 }

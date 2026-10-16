@@ -65,13 +65,13 @@ int main() {
         auto unsigned_version = Config();
         unsigned_version["client"]["policy"]["version"] = Json::UInt(2);
         Require(PolicySourceLoader::Load(unsigned_version, fixture.ConfigPath()).Ok(), "Unsigned integer schema version 2 must be accepted");
-        Require(loaded.source.rules_path == (fixture.dir / "data/routing.rules").string(), "relative path not configuration-relative");
+        Require(loaded.source.rules_path == fs::weakly_canonical(fixture.dir / "data/routing.rules").string(), "relative path not configuration-relative");
         Require(loaded.source.rules_text.find("example.test") != std::string::npos, "rule contents missing");
         Require(loaded.source.resolvers.at("local").via == PolicyAction::Direct, "resolver via lost");
         Require(loaded.source.resolvers.at("remote").servers.front() == "cloudflare", "provider metadata lost");
         const fs::path default_storage(loaded.source.fake_ip_storage);
         Require(loaded.source.fake_ip_range == "198.18.0.0/16" &&
-            default_storage == fixture.dir / "dns-fake-ip" &&
+            default_storage == (fixture.dir / "dns-fake-ip").lexically_normal().string() &&
             loaded.source.fake_ip_identity.size() == 64, "Fake-IP durable defaults must resolve from the config location");
         auto fake = Config();
         fake["client"]["policy"]["dns"]["mode"] = "fake-ip";
@@ -81,7 +81,7 @@ int main() {
         const auto fake_loaded = PolicySourceLoader::Load(fake, fixture.ConfigPath());
         Require(fake_loaded.Ok() && fake_loaded.source.dns_mode == "fake-ip" &&
             fake_loaded.source.fake_ip_range == "198.18.4.0/24" &&
-            fake_loaded.source.fake_ip_storage == (fixture.dir / "state/fake-ip").string() &&
+            fake_loaded.source.fake_ip_storage == (fixture.dir / "state/fake-ip").lexically_normal().string() &&
             fake_loaded.source.fake_ip_identity == "stable-client-01", "Fake-IP storage config must parse relative to the config file");
         const auto fake_snapshot = PolicyCompiler::Compile(fake_loaded.source);
         Require(fake_snapshot.Ok() && fake_snapshot.snapshot->DnsMode() == "fake-ip" &&
