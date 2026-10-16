@@ -1281,10 +1281,13 @@ foreach(_policy_test policy_source_loader_test policy_compiler_test policy_comma
     if(_policy_test STREQUAL "policy_command_test" OR _policy_test STREQUAL "policy_entrypoint_test"
         OR _policy_test STREQUAL "policy_cli_contract_test" OR _policy_test STREQUAL "policy_legacy_migration_test")
         target_link_libraries(${_policy_test} PRIVATE openppp2_policy_cli_test_support)
-        # The support library carries stdafx.obj; providing the source here keeps
-        # the win32_process_id_stub auto-injection out of these binaries.
-        target_sources(${_policy_test} PRIVATE "${OPENPPP2_ROOT}/ppp/stdafx.cpp")
-        target_compile_definitions(${_policy_test} PRIVATE PPP_STUB_NO_PROCESS_ID)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+            # These Windows fixtures need stdafx.obj instead of the process-id
+            # stub. On ELF platforms use the existing sectioned support library
+            # so offline tests do not pull in runtime static initialization.
+            target_sources(${_policy_test} PRIVATE "${OPENPPP2_ROOT}/ppp/stdafx.cpp")
+            target_compile_definitions(${_policy_test} PRIVATE PPP_STUB_NO_PROCESS_ID)
+        endif()
     endif()
     target_link_libraries(${_policy_test} PRIVATE openppp2_policy_test_core)
     set_tests_properties(${_policy_test} PROPERTIES LABELS "routing-policy;offline")
@@ -1380,8 +1383,11 @@ target_compile_options(policy_tunnel_update_connector_test PRIVATE -ffunction-se
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     target_compile_definitions(policy_tunnel_update_connector_test PRIVATE PPP_STUB_NO_YIELD_SPAWN PPP_STUB_NO_DURATIONTIME PPP_STUB_NO_SOCKET_CANCEL)
 endif()
-if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    target_compile_definitions(policy_tunnel_update_connector_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION)
+target_compile_definitions(policy_tunnel_update_connector_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION)
+if(NOT WIN32)
+    # The production link-layer multicast regression uses its clock and packet
+    # allocator even when no transport is opened.
+    target_sources(policy_tunnel_update_connector_test PRIVATE support/random_test_stubs.cpp)
 endif()
 target_link_options(policy_tunnel_update_connector_test PRIVATE -Wl,--gc-sections)
 target_link_libraries(policy_tunnel_update_connector_test PRIVATE
