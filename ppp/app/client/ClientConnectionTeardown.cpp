@@ -121,9 +121,12 @@ namespace ppp {
                     // DNS restoration is an independent resource operation. It
                     // must be attempted before route rollback and retain its
                     // pending state when the platform reports a failure.
+                    bool dns_pending = routes_applied;
+#if defined(_WIN32)
+                    dns_pending = dns_pending || !owner_->ni_dns_snapshots_.empty();
+#endif
                     const ClientTeardownRouteActions dns_actions =
-                        route_state_.CompleteAttempt(
-                            routes_applied || !owner_->ni_dns_snapshots_.empty(), false);
+                        route_state_.CompleteAttempt(dns_pending, false);
                     if (dns_actions.restore_dns) {
 #if defined(_WIN32)
                         for (auto it = owner_->ni_dns_snapshots_.begin();

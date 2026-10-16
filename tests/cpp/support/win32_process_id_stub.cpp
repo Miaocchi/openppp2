@@ -8,9 +8,9 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
 
 #if defined(_WIN32)
+#include <windows.h>
 
 #ifndef PPP_STUB_NO_PROCESS_ID
 namespace ppp {

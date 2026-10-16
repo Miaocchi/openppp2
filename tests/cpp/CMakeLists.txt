@@ -811,6 +811,9 @@ openppp2_add_cpp_test(route_coordinator_test SOURCES
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteState.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/routing/HumanRoutingRouteSpecs.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
+if(NOT WIN32)
+    target_sources(route_coordinator_test PRIVATE support/network_recovery_route_stub.cpp)
+endif()
 target_compile_definitions(route_coordinator_test PRIVATE
     OPENPPP2_ROUTE_TEST_MOBILE)
 set_tests_properties(route_coordinator_test PROPERTIES RUN_SERIAL TRUE)

@@ -64,7 +64,7 @@ public:
             static_cast<std::uint32_t>(data_[position_ + 3]);
         position_ += 4; return true;
     }
-    bool U64(std::uint64_t& value) noexcept {
+    bool ReadU64(std::uint64_t& value) noexcept {
         std::uint32_t hi = 0, lo = 0; if (!U32(hi) || !U32(lo)) return false;
         value = (static_cast<std::uint64_t>(hi) << 32) | lo; return true;
     }
@@ -121,7 +121,7 @@ bool DeserializeWindowsIPv6Snapshot(std::string_view serialized, WindowsIPv6Snap
             !reader.String(decoded.address) || !reader.U8(decoded.address_prefix_length) ||
             !reader.String(decoded.gateway) || !reader.String(decoded.subnet_prefix) ||
             !reader.U8(decoded.subnet_prefix_length) || !reader.String(decoded.subnet_gateway) ||
-            !reader.U8(decoded.mode) || !reader.U64(decoded.neighbor_interface_luid) ||
+            !reader.U8(decoded.mode) || !reader.ReadU64(decoded.neighbor_interface_luid) ||
             !reader.U32(decoded.neighbor_interface_index) || !reader.Bool(decoded.address_owned) ||
             !reader.Bool(decoded.neighbor_owned) || !reader.Bool(decoded.subnet_owned) ||
             !reader.Bool(decoded.dns_applied) || !reader.Bool(decoded.original_dns_automatic) ||

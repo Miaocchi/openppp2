@@ -16,9 +16,9 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
 
 #if defined(_WIN32)
+#include <windows.h>
 
 #include <ppp/threading/Executors.h>
 #include <ppp/threading/Timer.h>

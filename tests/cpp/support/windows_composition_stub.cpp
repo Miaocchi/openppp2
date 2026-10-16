@@ -13,12 +13,12 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
 
 #include <memory>
 #include <ppp/coroutines/YieldContext.h>
 
 #if defined(_WIN32)
+#include <windows.h>
 
 #include <ppp/net/asio/vdns.h>
 #include <ppp/net/Socket.h>
