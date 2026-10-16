@@ -125,6 +125,11 @@ client["tcp"]["listen"]["port"] = 0
 client["udp"]["listen"]["port"] = 0
 client["client"]["server"] = f"ppp://{server_ip}:{server_port}/"
 client["client"].pop("mappings", None)
+# Keep startup failures diagnosable; the proxy compatibility fixtures disable
+# telemetry, which otherwise hides the failing TUN initialization stage.
+for config in (server, client):
+    config["telemetry"] = {"enabled": True, "console-log": True,
+                           "console-metric": False, "console-span": False}
 (out / "server.json").write_text(json.dumps(server, indent=2) + "\n", encoding="utf-8")
 (out / "client.json").write_text(json.dumps(client, indent=2) + "\n", encoding="utf-8")
 PY

@@ -544,6 +544,7 @@ BOOST_AUTO_TEST_CASE(underlying_default_created_before_apply_is_owned_by_teardow
     route::RouteCoordinator coordinator(std::move(platform));
 
     route::RoutePlanInput input;
+    input.underlying_interface.name = "eth-physical";
     input.underlying_interface.gateway =
         boost::asio::ip::make_address("192.0.2.1");
     BOOST_REQUIRE(coordinator.EnsureUnderlyingDefault(input));
@@ -555,6 +556,12 @@ BOOST_AUTO_TEST_CASE(underlying_default_created_before_apply_is_owned_by_teardow
     BOOST_REQUIRE_EQUAL(view->calls.size(), 2u);
     BOOST_TEST(view->calls[0] == "add:0");
     BOOST_TEST(view->calls[1] == "delete:0");
+#if defined(_LINUX)
+    BOOST_REQUIRE_EQUAL(view->added_specs.size(), 1u);
+    BOOST_REQUIRE_EQUAL(view->deleted_specs.size(), 1u);
+    BOOST_TEST(view->added_specs[0].interface_name == "eth-physical");
+    BOOST_TEST(view->deleted_specs[0].interface_name == "eth-physical");
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(underlying_default_journal_intent_is_confirmed_and_removed) {

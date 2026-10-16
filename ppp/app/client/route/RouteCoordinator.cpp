@@ -703,7 +703,14 @@ namespace ppp {
                         0,
                         htonl(gateway.to_v4().to_uint()),
                         0,
+#if defined(_LINUX)
+                        // The NIC mapping is loaded later during startup.
+                        // An empty interface would resolve this physical
+                        // default through the TAP fallback on Linux.
+                        input.underlying_interface.name,
+#else
                         {},
+#endif
                     };
                     const RouteStateSnapshot snapshot = state_.Snapshot();
                     if (snapshot.applied || !snapshot.default_routes.empty()) {

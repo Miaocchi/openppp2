@@ -27,6 +27,21 @@ BOOST_AUTO_TEST_CASE(interface_selection_uses_tap_known_nic_then_tap_fallback) {
     BOOST_TEST(route::SelectLinuxInterface(30u, 10u, "tap0", "eth0", nics) == "tap0");
 }
 
+BOOST_AUTO_TEST_CASE(explicit_underlying_default_does_not_use_tap_fallback) {
+    route::LinuxRouteOperations operations;
+    std::string added_interface;
+    operations.add = [&added_interface](const route::RouteSpec& spec) noexcept {
+        added_interface = spec.interface_name;
+        return route::RouteAddResult::Unchanged;
+    };
+    route::LinuxRoutePlatform platform(
+        10u, "tap0", "eth0", {}, false, std::move(operations));
+    const route::RouteSpec physical_default{0u, 20u, 0, "eth0"};
+    BOOST_TEST(static_cast<int>(platform.Add(physical_default)) ==
+        static_cast<int>(route::RouteAddResult::Unchanged));
+    BOOST_TEST(added_interface == "eth0");
+}
+
 BOOST_AUTO_TEST_CASE(production_route_add_result_requires_exact_eexist) {
     using Result = ppp::tap::TapLinux::RouteMutationResult;
 
