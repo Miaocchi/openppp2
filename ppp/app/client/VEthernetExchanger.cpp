@@ -2294,8 +2294,9 @@ namespace ppp {
                             ppp::diagnostics::SetLastErrorCode(
                                 ppp::diagnostics::ErrorCode::RouteAddFailed);
                         }
-                        if (established) {
+#endif
 #if !defined(_ANDROID) && !defined(_IPHONE)
+                        if (established) {
                             if (std::shared_ptr<VEthernetNetworkSwitcher> switcher = switcher_; NULLPTR != switcher) {
                                 // Apply host routes and DNS before publishing
                                 // Established. A failed system-state apply must
@@ -2305,8 +2306,9 @@ namespace ppp {
                                     ppp::telemetry::Count("client_exchanger.route_setup.fail", 1);
                                 }
                             }
-#endif
                         }
+#endif
+#if defined(_WIN32)
                         if (!established) {
                             switcher_->RollbackWindowsIPv6Egress();
                         }
