@@ -106,13 +106,17 @@ jobs:
       - name: MSVC project source parity
         run: bash tools/check_vcxproj_sources.sh
 
+      - name: Prepare pinned XTCP
+        run: bash tools/prepare_xtcp.sh
+
       - name: Configure
         run: |
           cmake -S tests/cpp -B build/test \
             -G Ninja \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DENABLE_COVERAGE=ON
+            -DENABLE_COVERAGE=ON \
+            -DENABLE_XTCP_TESTS=ON
 
       - name: Build
         run: cmake --build build/test
@@ -124,7 +128,7 @@ jobs:
         run: |
           mkdir -p build/coverage
           LLVM_PROFILE_FILE="$PWD/build/coverage/%p-%m.profraw" \
-            ctest --test-dir build/test --output-on-failure
+            ctest --test-dir build/test --output-on-failure -j$(nproc)
 
       - name: Coverage report
         run: |
@@ -146,6 +150,46 @@ jobs:
         with:
           name: coverage-cpp-summary
           path: build/coverage/summary.txt
+          retention-days: 7
+
+      - name: Configure upstream XTCP suite
+        run: |
+          cmake -S third-party/xtcp -B build/xtcp-suite \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DXTCP_BUILD_TESTS=ON
+
+      - name: Build upstream XTCP suite
+        run: cmake --build build/xtcp-suite
+
+      # The local patch stack (tools/xtcp-patches) still fails 13-15 upstream
+      # tests (tracked as M1 item 1.2 in issue #91). Report them without
+      # failing the job until that work lands, then drop continue-on-error.
+      - name: Run upstream XTCP suite
+        continue-on-error: true
+        run: ctest --test-dir build/xtcp-suite --output-on-failure -j$(nproc)
+
+      # build/test is coverage-instrumented, so throughput comes from a
+      # separate Release build of the bridge test alone.
+      - name: Capture throughput JSON
+        run: |
+          cmake -S tests/cpp -B build/xtcp-bench \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_XTCP_TESTS=ON
+          cmake --build build/xtcp-bench --target xtcp_runtime_bridge_test
+          mkdir -p build/xtcp-bench/results
+          build/xtcp-bench/xtcp_runtime_bridge_test --throughput xtcp 3 \
+            > build/xtcp-bench/results/xtcp.jsonl
+          build/xtcp-bench/xtcp_runtime_bridge_test --throughput native 3 \
+            > build/xtcp-bench/results/native.jsonl
+
+      - name: Upload throughput JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: xtcp-smoke-throughput
+          path: build/xtcp-bench/results/*.jsonl
+          if-no-files-found: error
           retention-days: 7
 
       - name: Write lifecycle acceptance summary
