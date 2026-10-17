@@ -258,6 +258,63 @@ With a 64 KB window XTCP reaches about 1.84 Gbps over the TCP bridge; larger
 windows are capped because the synthetic peer does not negotiate window
 scaling.
 
+### Linux per-shard GSO output lanes and default segment cap (2026-10-18)
+
+With `OPENPPP2_XTCP_SHARDS` above 1, every shard used to push its TUN output
+through the single `TunGsoCoalescer` in `TapLinux`. That coalescer sits behind
+one mutex and writes one queue fd. Shards serialized on the lock, and flows
+from different shards interleaved in one merge buffer, which forced early
+flushes. Two shards with GSO on reached only about 900 Mbps at P64 DL.
+
+Changes:
+
+- `ppp/tap/TapOutputLane.h` adds a thread-local lane hint. When there is
+  more than one shard, `XtcpRuntime` wraps shard i's output handlers in
+  `TapOutputLaneScope(i)`.
+- On first use of a lane, `TapLinux` opens a dedicated `IFF_MULTI_QUEUE` queue
+  fd for it, with its own coalescer, hold timer and read loop. Lanes share no
+  lock. Each queue fd needs a reader because the kernel's tun automq steers a
+  flow's return packets to the queue that last wrote that flow.
+- If a lane cannot be created, only that shard falls back to the shared path.
+  When the TAP switches to SSMT or fails, every lane is flushed and merging
+  stops. An existing lane then writes unmerged frames on its own fd, so a flow
+  never changes queue.
+- `OPENPPP2_TAP_GSO_LANES_DISABLE=1` forces the shared path for comparison.
+- The default `TunGsoCoalescer::kSegmentCap` is now 32 instead of 4.
+  `OPENPPP2_TAP_GSO_SEGMENTS` (1-48) still overrides it, and
+  `OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` still selects 48 when no explicit cap
+  is set. The production-builder contract in `tun_gso_output_probe` pins
+  cap 4.
+
+WSL2 Debian, three isolated netns, XTCP, 2 rounds of 15 s plus 2 s per cell,
+median Mbps:
+
+| P / direction | 1 shard GSO off | 1 shard cap 4 | 1 shard cap 32 | 1 shard cap 48 | 2 shards GSO off | 2 shards cap 4 | 2 shards cap 32 | 2 shards cap 48 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| P1 DL | 488 | 497 | 497 | 494 | 389 | 316 | 390 | 402 |
+| P1 UL | 724 | 1610 | 1630 | 1533 | 1433 | 1370 | 1350 | 1352 |
+| P16 DL | 1761 | 2112 | 3129 | 3074 | 3292 | 1755 | 4919 | 4725 |
+| P16 UL | 988 | 2124 | 2022 | 1718 | 1567 | 2094 | 2011 | 2010 |
+| P64 DL | 1713 | 2472 | 3005 | 2957 | 3766 | 1963 | 4571 | 4630 |
+| P64 UL | 697 | 1786 | 1852 | 1823 | 1467 | 1918 | 1905 | 1871 |
+
+- Same binary, 2 shards, cap 4, P64 DL: 915 Mbps with lanes disabled, 1983
+  Mbps with lanes.
+- Caps 32 and 48 perform alike on downloads, and both let two shards with GSO
+  on beat GSO off at P16 and P64 DL. Cap 48 was lower for one shard at P16 UL
+  (1718 vs 2022), so the default is 32. Most of the gain from cap 4 to 32 is
+  on downloads; uploads are about flat.
+- Upload retransmits are far lower with GSO on at every cap than with GSO off
+  (for example, one shard at P64 UL averaged 47790 with GSO off and 4219 at
+  cap 32). The download iperf results carry no retransmit count.
+- `XTCP-GSO-STALL-001` (P16 DL, GSO on, cap 48, 10 s plus 2 s, 42 s watchdog)
+  passed 20 of 20 rounds with one shard and with two shards (median 2928 and
+  4775 Mbps), with no watchdog trips. That run was not repeated at cap 32.
+- C++ unit tests: 174/174 pass.
+- Not verified: lanes together with the `--stall-diagnostics` ledger, lanes
+  with NDI TSO, and latency distribution. These are directional results from
+  a shared WSL2 host with only 2 rounds per cell.
+
 ### Future AF_UNIX option (assessment only)
 
 Windows 10 1803+ AF_UNIX stream sockets are a possible follow-up, but cannot
