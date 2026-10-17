@@ -52,6 +52,14 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn("cargo test --locked --manifest-path src-tauri/Cargo.toml", workflow)
         self.assertIn("os: [ubuntu-latest, windows-2022]", workflow)
 
+    def test_upstream_xtcp_suite_is_blocking_with_one_retry(self) -> None:
+        workflow = self.read("test.yml")
+        start = workflow.index("      - name: Run upstream XTCP suite")
+        end = workflow.index("      - name:", start + 1)
+        step = workflow[start:end]
+        self.assertIn("--repeat until-pass:2", step)
+        self.assertNotIn("continue-on-error", step)
+
     def test_lifecycle_sanitizers_cover_durable_recovery_and_ownership(self) -> None:
         script = (ROOT / "scripts" / "run-lifecycle-sanitizers.sh").read_text(
             encoding="utf-8"
