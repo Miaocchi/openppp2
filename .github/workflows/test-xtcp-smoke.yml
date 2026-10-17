@@ -5,7 +5,7 @@ on:
   push:
     branches: [feat/throughput-m0]
   pull_request:
-    branches: [main]
+    branches: [main, feat/throughput-m0]
 
 concurrency:
   group: test-xtcp-smoke-${{ github.ref }}
