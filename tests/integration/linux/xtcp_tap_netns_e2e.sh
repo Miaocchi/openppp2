@@ -432,7 +432,7 @@ if [[ "${SKIP_NETEM}" != 1 ]]; then
   ip -n "${NS_C}" link set dev "${TUN_DEV}" mtu 1280
   NETEM_ACTIVE=1
   if command -v tcpdump >/dev/null; then
-    ip netns exec "${NS_C}" tcpdump -U -i "${TUN_DEV}" -nn -s 128 -c 200000 \
+    ip netns exec "${NS_C}" tcpdump -U -i "${TUN_DEV}" -nn -s 1600 -c 200000 \
       -w "${STATE_DIR}/netem-tun.pcap" 'tcp or icmp or icmp6' \
       >"${STATE_DIR}/netem-tcpdump.log" 2>&1 &
     pcap_pid=$!
