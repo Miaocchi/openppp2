@@ -241,6 +241,32 @@ mod native {
         fn GetLastError() -> u32;
         fn CloseHandle(handle: *mut c_void) -> i32;
     }
+    #[link(name = "user32")]
+    extern "system" {
+        fn FindWindowW(class: *const u16, title: *const u16) -> *mut c_void;
+        fn ShowWindow(window: *mut c_void, command: i32) -> i32;
+        fn SetForegroundWindow(window: *mut c_void) -> i32;
+        fn MessageBoxW(window: *mut c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    }
+    /// Brings the running client's window forward, including one hidden in the tray.
+    /// Falls back to a message box when the window cannot be found.
+    pub fn activate_existing(title: &str, fallback: &str) {
+        unsafe {
+            let window = FindWindowW(std::ptr::null(), wide(title).as_ptr());
+            if !window.is_null() {
+                ShowWindow(window, 5); // SW_SHOW: tray-hidden windows
+                ShowWindow(window, 9); // SW_RESTORE: minimized windows
+                SetForegroundWindow(window);
+                return;
+            }
+            MessageBoxW(
+                std::ptr::null_mut(),
+                wide(fallback).as_ptr(),
+                wide(title).as_ptr(),
+                0x40, // MB_ICONINFORMATION
+            );
+        }
+    }
     pub struct InstanceGuard(isize);
     impl Drop for InstanceGuard {
         fn drop(&mut self) {
@@ -257,7 +283,7 @@ mod native {
             }
             if GetLastError() == 183 && !allow_handoff {
                 CloseHandle(handle);
-                return Err("OpenPPP2 Client is already running".into());
+                return Err(ALREADY_RUNNING.into());
             }
             Ok(InstanceGuard(handle as isize))
         }
@@ -446,11 +472,15 @@ mod native {
     }
 }
 
+pub const ALREADY_RUNNING: &str = "OpenPPP2 Client is already running";
+
 #[cfg(windows)]
 pub use native::{
-    administrator, autostart, elevate, instance, pick_executable, query_proxy, set_proxy,
-    InstanceGuard,
+    activate_existing, administrator, autostart, elevate, instance, pick_executable, query_proxy,
+    set_proxy, InstanceGuard,
 };
+#[cfg(not(windows))]
+pub fn activate_existing(_: &str, _: &str) {}
 #[cfg(not(windows))]
 pub struct InstanceGuard;
 #[cfg(not(windows))]
