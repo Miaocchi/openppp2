@@ -1,5 +1,128 @@
 # XTCP Linux IPv4 laboratory runtime 设计
 
+> Status: Active
+> Type: Design
+> Last verified: 2026-10-17 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+
+## Windows / Android 构建支持
+
+Windows 和 Android 上的 XTCP 默认关闭，Linux 桌面版维持现有默认值。详细的跨平台构建步骤见英文版 [XTCP 平台构建说明](XTCP_INTEGRATION.md)。
+
+Windows 使用 Wintun L3 数据路径；传统 TapWindows L2 适配器当前不支持 XTCP，会在连接阶段记录原因并拒绝启用。Android 可通过 `PPP_ENABLE_XTCP=ON` 调用 `android/build.sh`，脚本会先准备固定版本的 XTCP 源码。Android 入站包走 `TapLinux` 路径；远端 TCP 连接由现有转发层创建，并在连接前调用 `VpnService.protect`。XTCP 桥接使用的 loopback socket 仅连接进程内 TCP 栈。
+
+### Windows 数据面与离线验证（2026-10-17）
+
+Windows XTCP 仅支持 x64、Wintun L3 和内部 loopback TCP 桥。固定依赖仍为 `third-party/xtcp` 的 revision `e79db8fd`。在 VS x64 开发者环境中构建：
+
+```bat
+bash tools/prepare_xtcp.sh
+build_windows.bat Release x64 xtcp
+```
+
+MSBuild 路径需要先单独构建固定依赖，保持静态 CRT、内置 CC 和校验和验证选项一致：
+
+```bat
+cmake -B build-xtcp-win -S third-party/xtcp -G "Visual Studio 17 2022" -A x64 "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>" -DXTCP_BUILD_TESTS=OFF -DXTCP_BUILD_BENCH=OFF -DXTCP_BUILD_SAMPLES=OFF -DXTCP_BUILD_PLUGINS=OFF -DXTCP_BUILD_LWIP=OFF -DXTCP_BUILD_CC_PLUGINS=ON -DXTCP_CHECKSUM_VALIDATE=ON
+cmake --build build-xtcp-win --config Release --target xtcp_static
+MSBuild ppp.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PreferredToolArchitecture=x64 /p:VcpkgTriplet=x64-windows-static /p:PppEnableXtcp=true /p:PppXtcpLibrary=build-xtcp-win\Release\xtcp_static.lib /p:OutDir=build\msbuild-xtcp\ /p:IntDir=build\msbuild-xtcp-int\ /m:2
+```
+
+根 CMake 的 MSVC 编译显式使用 `/utf-8` 和 `NOMINMAX`，与 vcxproj 一致，分别避免本机代码页误读中文注释、Windows min/max 宏破坏 Boost.UUID 声明。CMake 和 vcxproj 都链接 `bcrypt`、`winmm`，设置相同的三个 PPP XTCP 宏。Windows 默认不启用 XTCP，x86/ARM64 的 XTCP 构建会被拒绝。输出必须隔离于正在使用的安装目录。
+
+- **L3 与 GSO**：Wintun 接收回调直接传递 IP 包，没有以太网头；当前 XTCP 仅处理未分片 IPv4 TCP，不代表已支持 IPv6/UDP/IPv4 分片。TapWindows 没有覆盖 `SupportsTxGso`，默认 false；环境变量无法越过能力门控开启 TSO 或部分校验和输出，因此发送普通 MSS 分段，经 `Output` 交给 Wintun，不走 Windows 不支持的 `OutputGso`。
+- **loopback 与路由保护**：connector 绑定 `127.0.0.1:0`，取得系统分配端口后注册 external-client 表，再连 `127.0.0.1:<listener-port>`；新增 Windows 检查拒绝非 IPv4 loopback listener。内部桥不需要绑定物理网卡或远端 socket protect，否则反而干扰本机通信。真正的远端 carrier/bypass 仍经过原有转发和保护逻辑。此结论来自源码，尚未实际更改路由验证。
+- **线程与 Dispose**：多 shard 使用私有 I/O 线程；Windows 调现有线程命名 helper，不设置 CPU 亲和性。每个 shard 在自身 strand 取消 timer、关闭 flow 和销毁 stack/backend，最后释放池 lease；私有 work guard 随后释放，让取消回调排空，再退出线程。重复 Stop 在锁内检查运行状态，防止析构时再次向已退出池排队。析构检测当前 worker，避免 self-join；worker 自持 io_context 生命周期。修复共享停止实现的引用循环，不改变 Linux 包处理或桥选择逻辑。
+- **POSIX 审查**：`fcntl`、`socketpair`、POSIX `close` 和 pthread 命名均置于平台守卫内；NDI/backend 和 pool lease 未发现额外 POSIX 依赖。保留的 `getenv` 使用跨平台 CRT API，按现有规则严格匹配取值；诊断变量应在启动前设置，不与运行时启动并发修改环境。
+
+Windows 最小回归测试链接生产库，执行 16 次两 shard 启动、停止、释放，交替覆盖立即析构与延迟后重复 Stop，检查捕获对象及时释放；不创建网卡，不发送网络流量。`tests/cpp` 独立 XTCP suite 仍只支持 Linux，此处只增加专用 target：
+
+```bat
+rem 设置 VCPKG_ROOT 为本机已有且已安装 x64-windows-static 依赖的 vcpkg。
+cmake -S . -B build\ninja-xtcp-validation -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static "-DPPP_OUTPUT_DIR=%CD%/build/ninja-xtcp-validation/bin" -DENABLE_XTCP=ON -DENABLE_XTCP_WINDOWS_TESTS=ON
+cmake --build build\ninja-xtcp-validation --parallel 2
+ctest --test-dir build\ninja-xtcp-validation -R xtcp_windows_lifecycle_test --output-on-failure
+```
+
+上述隔离 Ninja 配置等价于 wrapper 的 Release/x64/XTCP 配置，保留构建目录便于复查。生产调用方在 `Start` 成功后才发布 runtime，每次重连创建新实例；本次未扩展同一实例并发 Start/Stop 或停止后变更 shard 数再启动的既有边界。测试检查 Impl 释放；当前 worker 自持 context 完成尾部退出，不以 token 过期声称所有 OS 线程已同步退出。测试与编译不能证明真实 VPN session 成功。后续还需授权后的 Windows 真机验证：Wintun 收发与 MTU/校验和、桥接双向传输与半关闭/RST、默认路由下的 loopback、重连与多 shard 退出；本次禁止启动 PPP 或修改路由/DNS/网卡/驱动/代理。
+
+`pwsh.exe` 缺失提示来自 vcpkg 导入的 `AppLocalFromInstalled` target（`scripts/buildsystems/msbuild/vcpkg.targets`），其内部消息为 `VcpkgApplocalDeps`，并非项目 `CopyDriverRuntime`。已安装版本在退出码 9009 时自动回退系统 Windows PowerShell，不需修改项目或外部 vcpkg。本机重复导入 vcpkg 的 MSB4011 与 XTCP 编译器警告是不同问题。
+
+2026-10-17 验证状态：MSBuild Release/x64 的 XTCP 开启与默认关闭构建均通过（exit 0）；隔离 VS x64 CMake/Ninja 配置和完整 342 步构建通过（exit 0）；生产库链接的 Windows 生命周期测试 1/1 通过（内部 16 次循环，0.49 秒）。include 边界、vcxproj 源文件匹配（259/259）和 `git diff --check` 均通过。XTCP 新增 MSVC 警告清零，包括 C4018；既有 C4005/C4099、本机 MSB4011 以及 CMake compatibility/policy 提示仍存在。共享生命周期安全修复未在本轮另跑 Linux 回归；没有启动或验证真实 VPN session。
+
+### Windows loopback 隔离回归（2026-10-17）
+
+按用户“允许隔离测试，不能影响现有连接”，并确认“没有虚拟机，先做 loopback 隔离测试”的范围，`ENABLE_XTCP_WINDOWS_TESTS` 现在还构建生产库链接的 `xtcp_runtime_bridge_test`。它向 XtcpRuntime 注入合成 IPv4/TCP 包，连接真实 `127.0.0.1` 临时端口 echo server；不启动 PPP 或 Wintun，不改路由/DNS/网卡。Windows 使用 TCP 桥，仅跳过 POSIX fd 所有权用例；环境变量 helper 和 work guard 使用 Windows 可用 API，保留 Linux relay/运行行为。
+
+```bat
+cmake --build build\ninja-xtcp-validation --target xtcp_runtime_bridge_test xtcp_windows_lifecycle_test --parallel 2
+ctest --test-dir build\ninja-xtcp-validation -R "^xtcp_(runtime_bridge|windows_lifecycle)_test$" --output-on-failure
+```
+
+MSVC 编译链接通过（exit 0）；CTest **2/2 通过**：生命周期测试 0.48 秒、bridge 12.84 秒、总计 13.32 秒。bridge 覆盖端点字节序、握手、双向字节完整性、半关闭、ready 前 RST、direct-read reservation、背压/恢复、过期回调、重启与全局 upload budget、FIN 幂等、队列记账及 **256 次连接创建/关闭**。这些是功能测试耗时，不是吞吐指标。
+
+宿主未发现可用 Windows Sandbox、Windows 虚拟机工具/清单，没有安装或启用虚拟化组件。Windows 真实 PPP/Wintun 的 native/XTCP 性能仍未测量；合成包 harness 与普通 Winsock loopback 的工作量不相同，不能用二者直接计算 VPN 加速比。
+
+### Windows loopback 吞吐实测（2026-10-17）
+
+构建 `xtcp_runtime_bridge_test` 后运行可复现脚本：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/run_windows_xtcp_loopback_benchmark.ps1 -Seconds 3 -Rounds 3
+```
+
+脚本只启动测试 exe，交错参考/XTCP 顺序，在子进程内清除 XTCP 环境覆盖，并保存逐轮数据、stderr、二进制 SHA-256 和中位数。每连接预热 1 秒、计时约 3 秒；排除握手和尾部完整性排空。两条路径使用相同确定性数据、32 KiB 应用在途上限和 1360 B 写入块；goodput 只计回显有效载荷一次，不把上行和下行相加。XTCP 使用 KCC、单 shard、无 GSO、合成 peer 显式 MSS=1460；Winsock 自行协商其回环 MSS。
+
+| 软件路径 | 三轮吞吐 Mbps | 中位 Mbps | 进程 CPU 中位 ns/B |
+| --- | --- | --- | --- |
+| 原生 Winsock TCP 回环参考 | 779.381 / 1023.176 / 967.785 | 967.785 | 14.208 |
+| XTCP Runtime + 合成 IPv4/TCP + 回环 echo | 22.634 / 20.480 / 19.486 | 20.480 | 417.082 |
+
+6/6 样本均通过 byte-exact 和最终全量排空校验，XTCP 入口 admission drop=0。三条 XTCP 连接分别观察到 536/532/559 个完整旧 payload 包（包含预热/排空），已识别为重复包且不计入有效载荷，原因尚未确认。初轮无 MSS option（peer 默认 MSS=536）诊断中位 XTCP=34.607 Mbps、Winsock=1018.449 Mbps；这是不同 profile，未与 MSS1460 结果混算。
+
+**XTCP 在这个测试器中的吞吐明显更低。** 参考路径是普通 Winsock TCP，不是 OpenPPP2 native 模式；XTCP 还承担合成包构造/校验和、入队、输出复制、解析及手工 ACK。进程 CPU 指标包含测试器轮询与 echo server，32 KiB 应用窗口也会约束闭环吞吐；不能将比值解释成 PPP/Wintun 性能差，也不能仅凭这些数字判定 pacing、计时调度、重传或测试器成本谁占主导。没有启动 PPP/Wintun 或更改路由、DNS、网卡设置。
+
+结果：`build/xtcp-validation/throughput-mss1460/results.json`，二进制 SHA-256=`7c021c03bacb4ff3d4e7b0b862336781cafe916818155ff30197267f4c1943bc`。后续功能回归 2/2 通过、总计 13.49 秒；同时修复 Windows 测试器的退出顺序，等待 runtime teardown 后再停止外部 context，避免测试器自身留下 Stop handler 引用循环。
+
+### Windows 吞吐跟进：根因与追平（2026-10-17）
+
+上面 20 Mbps 的结果由四个叠加原因造成。定位手段是给基准测试新增的进程内栈采样器（`XTCP_BENCH_PROFILE=io|main`）和按线程 CPU 统计（`XTCP_BENCH_THREADS=1`）：
+
+1. **热路径上的 `getenv`。** `ConnectorWriteCap()`、`ConnectorBatchBytes()`、`GlobalQueueBudget()`、`SendRetryDelay()` 和 GRO 尺寸 helper 每次写入或每个包都调用一次 `getenv`。Windows CRT 会加锁并扫描整个环境块，占 runtime I/O 线程约 36% CPU。现在改为 runtime 构造时读取一次（新建 runtime 仍会读到变更后的值），各平台都受益。
+2. **带数据的段被算成重复 ACK**（XTCP 补丁 `0030-dupack-excludes-data-segments.patch`）。双向传输时对端每个数据段都重复同一个累计 ACK，xtcp 把它们计为 dupack，触发虚假快速重传（即之前的"重复包"）并压垮 cwnd。现在带数据、SYN 或 FIN 的段不再计数（RFC 5681 第 2 节，Linux `FLAG_DATA`）。仅窗口变化的情况有意不排除，因为 xtcp 自己的接收端每缓冲一个乱序段就会缩小通告窗口。
+3. **KCC 遇上 Windows 粗粒度定时器。** KCC 的发送路径依赖定时器，而 Windows 的等待会向上取整到约 15.6 ms。Windows 现在默认用 `cubic`，可用 `OPENPPP2_XTCP_CC=kcc` 切回。补丁 `0029-pacing-late-wake-catch-up.patch` 为迟到的 pacing 唤醒补发额度（上限 20 ms），在本测试器中单独加它没有可测到的变化。
+4. **测试器干扰。** echo server 原本与 runtime 共用 I/O 线程，而 Winsock 参考路径中 echo server 有独立线程。基准测试现在让 echo server 跑在单独线程上。
+
+基准脚本，交错 3 轮，默认拥塞控制（cubic）：
+
+| 软件路径 | 中位 Mbps | 范围 Mbps | 进程 CPU 中位 ns/B | 重复包 |
+| --- | --- | --- | --- | --- |
+| 原生 Winsock TCP 回环参考 | 1061.767 | 1005.985-1076.121 | 13.343 | 0 |
+| XTCP Runtime + 合成 IPv4/TCP + 回环 echo | 1096.883 | 1074.658-1110.883 | 18.791 | 0 |
+
+同一构建下设 `XTCP_BENCH_CC=kcc` 测得 309-400 Mbps。在这个闭环测试器中 XTCP 吞吐已与参考持平，但每字节进程 CPU 仍多约 40%。这仍是组件基准，不是 PPP/Wintun VPN 实测。
+
+### Linux 回环吞吐与直连桥（2026-10-17）
+
+`xtcp_runtime_bridge_test --throughput xtcp|native <秒数>` 现在也能在 Linux 上构建（`ENABLE_XTCP_TESTS=ON`），其中 `native` 指内核 TCP 回环。设置 `OPENPPP2_XTCP_MEMORY_BRIDGE=1`（或 `XTCP_BENCH_DIRECT=1`）后，回环 TCP echo 会换成进程内的直连 second leg：它在自己的 pump 线程里通过 `SendToPeer` / `OnSecondLegPayload` 回显数据。`XTCP_BENCH_WINDOW` 可调整 32 KiB 的在途上限；`XTCP_BENCH_PROFILE` 在 Linux 上也可用（信号采样加 `addr2line`，需用 `-g` 构建）。
+
+本轮 runtime 改动：connector 写入和轮询定时器 kick 推迟到每个入站批次末尾（每批一次 gather-write、一次定时器重设）；`XtcpSecondLegHooks` 新增可选的 `BatchesPeerSend()` / `FlushPeerSend()`，second leg 可以每批只唤醒一次 writer，而不是每个段唤醒一次。生产代码中的 `VEthernetNetworkTcpipConnection` 还没有启用它。
+
+WSL2 Debian，32 KiB 窗口，单连接，每项 3 轮：
+
+| 路径 | Mbps |
+| --- | --- |
+| 内核 TCP 回环参考 | 7186-9561 |
+| XTCP，回环 TCP 桥（合并前） | 951-1199 |
+| XTCP，回环 TCP 桥（合并写入） | 1305-1389 |
+| XTCP，直连桥，逐段唤醒 | 1496-1543 |
+| XTCP，直连桥，`FlushPeerSend` 批量唤醒 | 1878-1987 |
+
+同一构建在 Windows 上：Winsock 约 1000 Mbps，TCP 桥约 1130 Mbps，直连桥 1240-1250 Mbps。Linux 上 XTCP 只达到内核回环的约 22%。runtime I/O 线程已经跑满，剩余成本是每个小批次的跨线程唤醒，以及单线程逐个处理 1360 字节段的用户态开销。要继续缩小差距，需要更大的处理单元（GSO/TSO 级别的段）或多线程流水线，靠局部修补收效有限。窗口设为 64 KB 时 TCP 桥约 1.84 Gbps；更大的窗口受合成对端未协商窗口缩放的限制。
+
+### Windows AF_UNIX 后续优化评估（本次不实现）
+
+Windows 10 1803+ 的 AF_UNIX stream socket 可作后续候选，但不能直接打开当前 POSIX `socketpair` 分支：Winsock 无 `socketpair`，Asio 的 Windows `local::connect_pair` 也不支持。需另写 bind/listen/connect/accept，处理文件名、权限与清理，避免把 Winsock `SOCKET` 截断为 `int`，并使用 local/generic stream socket，不应把 AF_UNIX 句柄交给 TCP socket。完成兼容性/IOCP/生命周期测试前保留 loopback TCP 和运行时回退；尚无吞吐改善证据。参见 [Microsoft AF_UNIX 说明](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/) 与 [Asio local socket 文档](https://www.boost.org/doc/libs/latest/doc/html/boost_asio/overview/posix/local.html)。
+
 > Status: Active / Laboratory
 > Type: Design
 > Last verified: 2026-09-27 (working tree; uncommitted)
@@ -69,7 +192,7 @@ XTCP 依赖来自已确认授权的内部仓库。许可证不再阻断内部 la
 当前明确不支持：
 
 - 跨平台 production rollout 或通用性能承诺；Linux 默认编译集成仍需按部署矩阵验收；
-- IPv6、UDP、IPv4 分片、Windows、Android、iOS；
+- IPv6、UDP、IPv4 分片、iOS；Windows/Android 目前仅 opt-in 构建接入，未完成生产运行验收（见本文开头）；
 - 运行中热切换；
 - MIMT；
 - 多 owner executor；
