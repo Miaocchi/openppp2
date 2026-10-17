@@ -162,12 +162,8 @@ jobs:
       - name: Build upstream XTCP suite
         run: cmake --build build/xtcp-suite
 
-      # The local patch stack (tools/xtcp-patches) still fails 13-15 upstream
-      # tests (tracked as M1 item 1.2 in issue #91). Report them without
-      # failing the job until that work lands, then drop continue-on-error.
       - name: Run upstream XTCP suite
-        continue-on-error: true
-        run: ctest --test-dir build/xtcp-suite --output-on-failure -j$(nproc)
+        run: ctest --test-dir build/xtcp-suite --output-on-failure -j$(nproc) --repeat until-pass:2
 
       # build/test is coverage-instrumented, so throughput comes from a
       # separate Release build of the bridge test alone.

@@ -42,6 +42,10 @@ jobs:
             autoconf clang libbenchmark-dev \
             liburing-dev libbpf-dev
 
+      - name: Install XTCP E2E diagnostics
+        if: matrix.suffix == ''
+        run: sudo apt-get install -y --no-install-recommends tcpdump
+
       - name: Cache third-party libraries
         id: cache-third
         uses: actions/cache@v4
