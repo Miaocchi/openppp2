@@ -912,8 +912,11 @@ void TestDirectDownloadReservationIdentity() {
     CHECK(hooks && hooks->OnSecondLegPayload(reservation_a, payload) ==
         XtcpDirectResult::Accepted);
     CHECK(reservation_a.token != 0);
+    // With batched peer-send wake (M0), SendDirectToPeer() always accepts and queues;
+    // FlushDirectPeerSend() starts the writer. Backpressure occurs only when the queue
+    // reaches kDirectQueueMaxBytes (32 MiB) or kDirectQueueMaxPackets (4096).
     CHECK(hooks && hooks->OnSecondLegPayload(reservation_b, payload) ==
-        XtcpDirectResult::Backpressured);
+        XtcpDirectResult::Accepted);
     CHECK(reservation_b.token != 0);
     CHECK(reservation_b.token != reservation_a.token);
 
@@ -925,8 +928,6 @@ void TestDirectDownloadReservationIdentity() {
             reservation_a, XtcpDirectCompletion::Accepted) == 1;
     }));
 
-    CHECK(hooks && hooks->OnSecondLegPayload(reservation_b, payload) ==
-        XtcpDirectResult::Accepted);
     bridge.Submit(xtcp::harness::BuildIp4Tcp(
         kClientIp, kServiceIp, kClientPort, kServicePort,
         client_isn + 1, syn_ack.seq + 1 + 8 * 1024, kAck));
@@ -939,7 +940,7 @@ void TestDirectDownloadReservationIdentity() {
     const RuntimeXtcpStats stats = bridge.Stats();
     CHECK(stats.direct_download_queue_bytes == 0);
     CHECK(stats.direct_download_chunks == 2);
-    CHECK(stats.direct_download_rejected == 1);
+    CHECK(stats.direct_download_rejected == 0);  // No rejection with batched wake
     CHECK(stats.direct_download_accepted_bytes == 16 * 1024);
     CHECK(second_leg->DownloadCompletionCount(
         reservation_a, XtcpDirectCompletion::Accepted) == 1);
