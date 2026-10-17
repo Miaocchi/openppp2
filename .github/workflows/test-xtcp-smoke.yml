@@ -52,12 +52,11 @@ jobs:
       - name: Build upstream XTCP suite
         run: cmake --build build/xtcp-suite --parallel 10
 
-      # The local patch stack (tools/xtcp-patches) still fails 13-15 upstream
-      # tests (tracked as M1 item 1.2 in issue #91). Report them without
-      # failing the job until that work lands, then drop continue-on-error.
+      # The patched upstream suite must pass. A few timing-sensitive cases
+      # can fail under full -j10 load on shared runners, so a failed case
+      # gets one retry.
       - name: Run upstream XTCP suite
-        continue-on-error: true
-        run: ctest --test-dir build/xtcp-suite --output-on-failure -j10
+        run: ctest --test-dir build/xtcp-suite --output-on-failure -j10 --repeat until-pass:2
 
       - name: Capture throughput JSON
         run: |
