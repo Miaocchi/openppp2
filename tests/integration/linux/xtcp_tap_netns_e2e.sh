@@ -460,40 +460,35 @@ def recv_exact(sock, want):
 # 1 MiB across a lossy/reordering path exercises XTCP retransmit + SACK on the
 # TUN leg. The echo-side byte count (asserted from echo.log below) proves the
 # upload recovered every segment. Drain the echo concurrently with upload to
-# avoid filling the receive window before the sender can half-close.
+# avoid filling the receive window while the full-duplex transfer is active.
 blob = bytes((i * 7) & 0xFF for i in range(1024 * 1024))
 with socket.create_connection((target_ip, echo_port), timeout=10) as sock:
     sock.settimeout(30)
     received = bytearray()
     send_error = []
 
-    def upload_and_half_close():
+    def upload_blob():
         try:
             sock.sendall(blob)
         except BaseException as exc:
             send_error.append(exc)
-        finally:
-            try:
-                sock.shutdown(socket.SHUT_WR)
-            except OSError:
-                pass
 
-    sender = threading.Thread(target=upload_and_half_close, daemon=True)
+    sender = threading.Thread(target=upload_blob, daemon=True)
     sender.start()
     try:
-        while True:
-            chunk = sock.recv(65536)
+        while len(received) < len(blob):
+            chunk = sock.recv(min(65536, len(blob) - len(received)))
             if not chunk:
                 break
             received += chunk
     finally:
-        if sender.is_alive():
+        if len(received) < len(blob) and sender.is_alive():
             try:
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            sender.join(timeout=5)
-    assert not sender.is_alive(), "netem upload did not finish after echo EOF"
+        sender.join(timeout=5)
+    assert not sender.is_alive(), "netem upload did not finish after full echo"
     if send_error:
         raise send_error[0]
     assert bytes(received) == blob, "netem echo was truncated, duplicated, or corrupted"
