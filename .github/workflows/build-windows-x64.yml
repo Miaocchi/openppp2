@@ -97,6 +97,7 @@ jobs:
           msbuild .\ppp.vcxproj /m /restore `
             /p:Configuration=${{ matrix.configuration }} `
             /p:Platform=${{ matrix.platform }} `
+            /p:PreferredToolArchitecture=x64 `
             /p:VcpkgEnableManifest=false `
             /p:VcpkgEnabled=true `
             /p:VcpkgUseStatic=true
