@@ -129,6 +129,8 @@ namespace ppp {
                 virtual void                                                Dispose() noexcept override;
                 virtual xtcp::XtcpDirectResult                              SendToPeer(const std::uint8_t* data, std::uint32_t length,
                     xtcp::XtcpUploadBudget::Reservation&& credit) noexcept override;
+                virtual bool                                                BatchesPeerSend() const noexcept override { return true; }
+                virtual void                                                FlushPeerSend() noexcept override;
                 virtual void                                                OnDownloadComplete(
                     const xtcp::XtcpDirectReadReservation& reservation,
                     xtcp::XtcpDirectCompletion completion) noexcept override;

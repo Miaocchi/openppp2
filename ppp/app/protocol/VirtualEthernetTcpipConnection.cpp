@@ -1128,7 +1128,6 @@ namespace ppp {
                     credit.Items() != 1 || disposed_ || !connected_) {
                     return DirectIoResult::Closed;
                 }
-                bool start_writer = false;
                 std::shared_ptr<XtcpUploadChunk> payload;
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
@@ -1159,29 +1158,12 @@ namespace ppp {
                     direct_upload_bytes_ += length;
                     ++direct_upload_packets_;
                     AddDirectUploadQueueTelemetry(direct_queue_telemetry_, length);
-                    if (!direct_upload_writer_started_) {
-                        direct_upload_writer_started_ = true;
-                        start_writer = true;
-                    }
                 }
-                if (!start_writer || StartDirectUploadWriter()) {
-                    return DirectIoResult::Accepted;
-                }
-                std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
-                {
-                    std::lock_guard<std::mutex> lock(direct_sync_);
-                    direct_upload_writer_started_ = false;
-                    if (!direct_upload_queue_.empty() && direct_upload_queue_.back() == payload) {
-                        direct_upload_bytes_ -= length;
-                        --direct_upload_packets_;
-                        direct_upload_queue_.pop_back();
-                        telemetry = direct_queue_telemetry_;
-                    }
-                }
-                if (telemetry) {
-                    RemoveDirectUploadQueueTelemetry(telemetry, length, 1);
-                }
-                return DirectIoResult::Closed;
+                // The writer is started by FlushDirectPeerSend(), which the
+                // XTCP runtime calls once per ingress batch (or right after
+                // this call outside a batch), so one coroutine start and one
+                // gather-write cover the whole batch.
+                return DirectIoResult::Accepted;
             }
 
             void VirtualEthernetTcpipConnection::CompleteDirectDownload(
@@ -1217,6 +1199,33 @@ namespace ppp {
                         Dispose();
                     }
                 });
+            }
+
+            bool VirtualEthernetTcpipConnection::StartDirectUploadWriterIfNeeded() noexcept {
+                {
+                    std::lock_guard<std::mutex> lock(direct_sync_);
+                    if (direct_upload_queue_.empty() || direct_upload_writer_started_) {
+                        return true;  // nothing to start, or the writer is running
+                    }
+                    direct_upload_writer_started_ = true;
+                }
+                if (StartDirectUploadWriter()) {
+                    return true;
+                }
+                std::lock_guard<std::mutex> lock(direct_sync_);
+                direct_upload_writer_started_ = false;
+                return false;
+            }
+
+            bool VirtualEthernetTcpipConnection::FlushDirectPeerSend() noexcept {
+                if (StartDirectUploadWriterIfNeeded()) {
+                    return true;
+                }
+                // The queued bytes were already accepted from XTCP; when the
+                // writer cannot be scheduled the connection cannot deliver
+                // them, so tear it down instead of silently stalling.
+                Dispose();
+                return false;
             }
 
             bool VirtualEthernetTcpipConnection::RunDirectUpload(YieldContext& y) noexcept {
