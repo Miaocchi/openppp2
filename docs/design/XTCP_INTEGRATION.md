@@ -1,5 +1,9 @@
 # XTCP platform build notes
 
+> Status: Active
+> Type: Design
+> Last verified: 2026-10-17 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+
 XTCP is opt-in on Windows and Android. Linux desktop retains its current
 default. All platforms use the pinned source in `third-party/xtcp` and the
 same production target settings from the root CMake build (revision `e79db8fd`).

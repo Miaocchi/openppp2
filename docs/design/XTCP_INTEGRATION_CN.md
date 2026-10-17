@@ -1,5 +1,9 @@
 # XTCP Linux IPv4 laboratory runtime 设计
 
+> Status: Active
+> Type: Design
+> Last verified: 2026-10-17 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+
 ## Windows / Android 构建支持
 
 Windows 和 Android 上的 XTCP 默认关闭，Linux 桌面版维持现有默认值。详细的跨平台构建步骤见英文版 [XTCP 平台构建说明](XTCP_INTEGRATION.md)。
