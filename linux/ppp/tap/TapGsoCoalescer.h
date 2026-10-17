@@ -28,13 +28,13 @@ namespace tap {
 
 class TunGsoCoalescer final {
 public:
-    static constexpr size_t kSegmentCap = 4;
+    static constexpr size_t kSegmentCap = 32;
     static constexpr size_t kMaxSegmentCap = 48;
     static constexpr size_t kMaxPacketBytes = 1500;
     // XTCP-SHARED-PATH-001 follow-up: the merge cap is runtime-tunable
-    // (OPENPPP2_TAP_GSO_SEGMENTS, default 4; up to 48 = ~64KB super-frames).
+    // (OPENPPP2_TAP_GSO_SEGMENTS, default 32; up to 48 = ~64KB super-frames).
     // The opt-in XTCP DL throughput profile selects 48 only when no explicit
-    // cap is supplied; it leaves the conservative default unchanged otherwise.
+    // cap is supplied; otherwise the default (32, see XTCP_INTEGRATION_CN.md) applies.
     static size_t SegmentCap() noexcept {
         const char* env = ::getenv("OPENPPP2_TAP_GSO_SEGMENTS");
         if (env != nullptr && env[0] != '\0') {

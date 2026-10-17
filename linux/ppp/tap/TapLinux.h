@@ -8,6 +8,7 @@
 #include <ppp/net/Socket.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/native/rib.h>
+#include <ppp/tap/TapOutputLane.h>
 #include <linux/ppp/tap/TapGsoCoalescer.h>
 
 namespace ppp
@@ -163,6 +164,23 @@ namespace ppp
             void                                                                    DisableGsoMergeLocked(int write_fd, TunGsoCoalescer::FlushReason reason = TunGsoCoalescer::FlushReason::Terminate) noexcept;
             void                                                                    ArmGsoHoldTimerLocked() noexcept;
             void                                                                    CancelGsoHoldTimerLocked() noexcept;
+            ssize_t                                                                 WriteGsoIov(int fd, const iovec* iovecs, int count, size_t frame_size) noexcept;
+            int                                                                     OpenSecondaryQueue() noexcept;
+
+            // A producer lane (one XTCP shard) owns a TUN queue fd and a GSO
+            // coalescer, so parallel producers neither share a lock nor
+            // interleave their flows in one merge buffer. The queue fd also
+            // has a read loop on the TAP context: the kernel steers a flow's
+            // return traffic to the queue that last wrote it.
+            struct GsoOutputLane;
+            GsoOutputLane*                                                          CurrentGsoOutputLane() noexcept;
+            GsoOutputLane*                                                          CreateGsoOutputLane(int index) noexcept;
+            bool                                                                    OutputLane(GsoOutputLane& lane, const void* packet, int packet_size, RetainedPacketOwner* owner) noexcept;
+            bool                                                                    OutputGsoLane(GsoOutputLane& lane, const std::shared_ptr<Byte>& packet, int packet_size, const virtio_net_hdr& header) noexcept;
+            void                                                                    ArmLaneHoldTimerLocked(GsoOutputLane& lane) noexcept;
+            void                                                                    CancelLaneHoldTimerLocked(GsoOutputLane& lane) noexcept;
+            void                                                                    LaneReadLoop(GsoOutputLane* lane) noexcept;
+            void                                                                    DisableGsoOutputLanes(TunGsoCoalescer::FlushReason reason, bool close) noexcept;
 
         private:    
             SynchronizedObject                                                      syncobj_;
@@ -192,6 +210,12 @@ namespace ppp
             uint64_t                                                                gso_timer_generation_ = 0;
             boost::asio::steady_timer                                               gso_hold_timer_;
             TunGsoCoalescer                                                        gso_coalescer_;
+            bool                                                                    gso_lanes_enabled_  = false;
+            std::atomic<bool>                                                       gso_lanes_disabled_{false};
+            std::mutex                                                              gso_lanes_mutex_;
+            std::atomic<uint32_t>                                                   gso_lanes_failed_{0};
+            std::array<std::atomic<GsoOutputLane*>, kMaxTapOutputLanes>             gso_lanes_{};
+            std::array<std::unique_ptr<GsoOutputLane>, kMaxTapOutputLanes>          gso_lane_owners_;
         };
     }
 }

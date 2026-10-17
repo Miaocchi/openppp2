@@ -7,8 +7,12 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <cstdlib>
 
 namespace {
+// These cases pin the historical 4-segment cap; the production default is larger.
+const bool kPinnedSegmentCap = ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "4", 1) == 0;
+
 using ppp::tap::TunGsoMergeabilityAnalyzer;
 
 /// Builds one IPv4+TCP packet the way the VPN stack hands it to TapLinux::Output.

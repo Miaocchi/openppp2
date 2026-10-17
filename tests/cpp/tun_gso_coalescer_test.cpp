@@ -12,6 +12,9 @@
 #include <vector>
 
 namespace {
+// These cases pin the historical 4-segment cap; the production default is larger.
+const bool kPinnedSegmentCap = ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "4", 1) == 0;
+
 using ppp::tap::TunGsoCoalescer;
 
 struct Spec { uint16_t payload = 100; uint32_t seq = 1000; uint32_t ack = 7; uint16_t window = 42; bool psh = false; bool control = false; bool tcp_options = false; uint16_t dport = 2; };
@@ -137,7 +140,7 @@ BOOST_AUTO_TEST_CASE(runtime_segment_cap_can_reach_maximum_without_overflow) {
         BOOST_REQUIRE(c.Push(value.data(), value.size(), 1000 + i));
     }
     BOOST_REQUIRE(c.Flush());
-    ::unsetenv("OPENPPP2_TAP_GSO_SEGMENTS");
+    ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "4", 1);
 
     // 45 * 1460 + 40 exceeds IPv4's 16-bit total_length. Even with cap 48,
     // the coalescer must flush the largest legal first frame and continue.
