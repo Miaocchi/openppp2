@@ -860,11 +860,12 @@ namespace ppp {
                 ppp::telemetry::Count("client.dns.setup", 1);
                 // Promiscuous mode intentionally leaves default routes alone;
                 // its disabled protection worker is not a setup failure.
-                if (!input.tap_promiscuous &&
-                    !route_coordinator_->ProtectDefaultRoute(input)) {
-                    rollback();
-                    return ppp::diagnostics::SetLastError(
-                        ppp::diagnostics::ErrorCode::RouteAddFailed);
+                if (!input.tap_promiscuous) {
+                    if (!route_coordinator_->ProtectDefaultRoute(input)) {
+                        rollback();
+                        return ppp::diagnostics::SetLastError(
+                            ppp::diagnostics::ErrorCode::RouteAddFailed);
+                    }
                 }
                 hosted_routes_apply_failed_ = false;
                 return true;
