@@ -18,6 +18,7 @@
 #include <ppp/app/client/xtcp/XtcpNdiBackend.h>
 #include <ppp/app/client/xtcp/XtcpPoolLease.h>
 #include <ppp/app/client/xtcp/XtcpRuntimePolicy.h>
+#include <ppp/tap/TapOutputLane.h>
 
 #include <xtcp/core/ip.h>
 #include <xtcp/core/stack.h>
@@ -931,9 +932,37 @@ public:
             Shard& s = shards_[i];
             s.index = i;
             s.strand = std::make_shared<Strand>(context_->get_executor());
+            OutputHandler shard_output = counted_output_;
+            BorrowedOutputHandler shard_borrowed_output = counted_borrowed_output_;
+            RetainedOutputHandler shard_retained_output = counted_retained_output_;
+            if (shard_count > 1) {
+                // Tag every TUN write from this shard with its lane so the
+                // Linux TAP routes it to the shard's own queue fd and GSO
+                // coalescer instead of one lock shared by all workers.
+                const int lane = static_cast<int>(i);
+                shard_output = [inner = counted_output_, lane](std::shared_ptr<Byte>&& data, int length,
+                    std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+                    ppp::tap::TapOutputLaneScope scope(lane);
+                    return inner && inner(std::move(data), length, gso);
+                };
+                if (counted_borrowed_output_) {
+                    shard_borrowed_output = [inner = counted_borrowed_output_, lane](const Byte* data, int length,
+                        std::optional<ppp::tap::TxGsoMetadata> gso) noexcept {
+                        ppp::tap::TapOutputLaneScope scope(lane);
+                        return inner(data, length, gso);
+                    };
+                }
+                if (counted_retained_output_) {
+                    shard_retained_output = [inner = counted_retained_output_, lane](const Byte* data, int length,
+                        ppp::tap::RetainedPacketOwner&& owner) noexcept {
+                        ppp::tap::TapOutputLaneScope scope(lane);
+                        return inner(data, length, std::move(owner));
+                    };
+                }
+            }
             s.backend = std::unique_ptr<XtcpNdiBackend>(
-                new (std::nothrow) XtcpNdiBackend(counted_output_, tx_gso_supported_,
-                    counted_borrowed_output_, counted_retained_output_));
+                new (std::nothrow) XtcpNdiBackend(std::move(shard_output), tx_gso_supported_,
+                    std::move(shard_borrowed_output), std::move(shard_retained_output)));
             if (!s.backend) {
                 for (std::size_t j = 0; j < i; ++j) {
                     shards_[j].backend->Stop();

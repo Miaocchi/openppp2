@@ -155,7 +155,7 @@ P1 direct GRO 扫描中 12KiB 三轮稳定（975/1010/1039 Mbps）；13–15KiB 
 1. 固定owner候选的 P1/UL 与 P4/DL 单核 GSO-on 已分别达到稳定 1.2×；但单核 P16/DL/GSO-on 仍只有约1.05×，完整跨并行度/方向矩阵未全部达到目标。P16/DL 双核路径虽稳定超过1.2×，公平性仍有间歇性异常，且route实验尚未晋升默认；
 2. default-off NDI TSO 负收益尚未解决，不能默认启用；
 3. `ITransmission` 协议级 half-close；
-4. P64 DL 既有 server-side wedge。
+4. ~~P64 DL 既有 server-side wedge~~：2026-10-17 在补丁栈 0001–0034 上未能复现（单/双 shard、GSO 开/关共 16 个单元全部通过，见 §11.4.1a），保留为回归单元，不再列为阻塞。
 
 **结论**：三条路线均有可运行实现和正确性证据，Route3 qualification 装置在修复 revision 上完成原子 108/108 pass，且 P4 DL 零窗口 watchdog 已消除；但性能门禁及协议级 half-close 等事项仍未完成，不能宣称路线 1–3 完成或 production ready。
 
@@ -545,6 +545,54 @@ payload_cap = effective_l3_mtu - actual_ipv4_header_length - actual_tcp_header_l
 
 当前仍保持 `GSO default-off`。未完成的 production gate 包括当前 direct revision 的完整三栈 strict 基准、idle/loaded latency 与短流/故障矩阵；因此这些回归不构成 default-on 或 production 结论。历史 `spinlock_test` 超时已定位为大量在线 CPU 上纯自旋压力的调度敏感性：固定 CPU0-7 后约 7.3s 通过，当前 lab 门禁为 135/135。
 
+#### 11.4.1a M1 复测：GSO stall 与 P64 DL wedge（2026-10-17）
+
+对应吞吐计划 #91 的 M1 1.3 / 1.4。binary 由分支 `fix/xtcp-gso-stall`（补丁栈 0001–0034，含 0033 的 option-aware payload cap 与 Nagle 修正）在 WSL2 Debian（6.6 内核，12 核）构建；`tools/run_datapath_linux_matrix.sh --stall-diagnostics`，三端独立 netns，CPU profile `none`，transport `aes-256-cfb`。
+
+| 场景 | 设置 | 结果 | 中位吞吐 |
+| --- | --- | --- | ---: |
+| `XTCP-GSO-STALL-001` | XTCP、P16、DL、GSO on，10s+2s，42s watchdog，20 轮 | 20/20 PASS | 1921 Mbps |
+| P64 DL wedge | XTCP、P64、DL、GSO off，30s+2s，5 轮 | 5/5 PASS | 1652 Mbps |
+| P64 DL wedge | XTCP、P64、DL、GSO on，30s+2s，5 轮 | 5/5 PASS | 2244 Mbps |
+| P64 DL wedge | 同上，`--xtcp-shards 2`，GSO off / on 各 3 轮 | 6/6 PASS | 3611 / 885 Mbps |
+| 对照 | native vs XTCP、P64、DL、GSO off，10s+2s，1 轮 | 2/2 PASS | 1005 / 1684 Mbps |
+
+结论与边界：
+
+- 0033 修改了 `DataPayloadCap()` 的算法，但 1500B MTU 下带时间戳的上限仍为 1448B；`XTCP-GSO-STALL-001` 20 轮无回退。
+- P64 DL wedge 在当前补丁栈上未能复现。当初复现所用的基线 binary（`e68b1e75`，未提交的工作区构建）已不可得，因此无法在同一环境中验证复现方法本身，只能表述为"当前 revision 未复现"，不能断言具体是哪个补丁修复了它；候选为之后合入的零窗口 pacing（0010）与乱序背压保留（0014/0015）。
+- 新观察：双 shard + GSO on 的 P64 DL（885 Mbps）明显低于单 shard（2244 Mbps）和双 shard + GSO off（3611 Mbps）。根因与修复见 §11.4.1b。
+- 本节为共享宿主（WSL2）上的功能/回归证据，不是 A/B 榜的严格性能结论。
+
+#### 11.4.1b 每 shard 独立 GSO 输出 lane 与默认段上限 32（2026-10-18）
+
+**根因**：`OPENPPP2_XTCP_SHARDS>1` 时，各 shard 的 strand 在多条 `xtcp-io` 线程上并行输出，但 `TapLinux` 只有一个 `TunGsoCoalescer`，由 `gso_mutex_` 保护并写同一个 queue fd。多个 shard 的输出在同一把锁上串行化，不同 shard 的流还会在同一个合并缓冲里交错，使合并提前 flush。
+
+**修复**：
+- `ppp/tap/TapOutputLane.h` 提供线程局部的 lane 提示。`XtcpRuntime` 在 shard 数大于 1 时，用 `TapOutputLaneScope(i)` 包住第 i 个 shard 的输出回调。
+- `TapLinux` 首次见到某个 lane 时，为它打开一个独立的 `IFF_MULTI_QUEUE` queue fd，并配一个独立的合并器、hold 定时器和读循环。lane 之间不共享锁。每个 queue fd 都有读循环，因为内核 tun automq 会把一条流的回程包导向最后写这条流的 queue。
+- lane 创建失败时，只有该 shard 回退到原共享路径。切到 SSMT 或出错时，先 flush 所有 lane 再停止合并；已有 lane 之后改为不合并直写，仍用自己的 fd，因此流不会换 queue。
+- `OPENPPP2_TAP_GSO_LANES_DISABLE=1` 可强制回到共享路径，用于对照。
+- `TunGsoCoalescer::kSegmentCap` 默认值从 4 改为 32。`OPENPPP2_TAP_GSO_SEGMENTS`（1–48）仍可覆盖；`OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` 在未显式设置时仍用 48。`tun_gso_output_probe` 的 production builder 契约固定在 cap 4 运行。
+
+**验证**（WSL2 Debian，三端独立 netns，XTCP，每格 2 轮×15s+2s，单位 Mbps，中位数）：
+
+| P / 方向 | 1 shard GSO off | 1 shard cap 4 | 1 shard cap 32 | 1 shard cap 48 | 2 shard GSO off | 2 shard cap 4 | 2 shard cap 32 | 2 shard cap 48 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| P1 DL | 488 | 497 | 497 | 494 | 389 | 316 | 390 | 402 |
+| P1 UL | 724 | 1610 | 1630 | 1533 | 1433 | 1370 | 1350 | 1352 |
+| P16 DL | 1761 | 2112 | 3129 | 3074 | 3292 | 1755 | 4919 | 4725 |
+| P16 UL | 988 | 2124 | 2022 | 1718 | 1567 | 2094 | 2011 | 2010 |
+| P64 DL | 1713 | 2472 | 3005 | 2957 | 3766 | 1963 | 4571 | 4630 |
+| P64 UL | 697 | 1786 | 1852 | 1823 | 1467 | 1918 | 1905 | 1871 |
+
+- 同一 binary 下，双 shard、cap 4、关闭 lane（旧共享路径）的 P64 DL 为 915 Mbps；开启 lane 后为 1983 Mbps。
+- cap 32 与 48 在 DL 上相当，并使双 shard + GSO on 在 P16/P64 DL 上超过 GSO off。cap 48 在单 shard P16 UL 上偏低（1718 vs 2022），因此默认取 32。cap 4 → 32 主要带来 DL 收益；UL 基本持平。
+- UL 重传：GSO on 的各 cap 均远低于 GSO off（例如单 shard P64 UL，GSO off 平均 47790，cap 32 平均 4219）。DL 方向的 iperf 结果不含重传计数。
+- `XTCP-GSO-STALL-001`（P16 DL、GSO on、cap 48、10s+2s、42s watchdog）单 shard 与双 shard 各 20 轮全部通过，中位 2928 / 4775 Mbps，无 watchdog。cap 32 未单独跑该专场。
+- C++ 单测 174/174 通过。
+- 未验证：lane 与 `--stall-diagnostics` ledger 同开时的统计口径、lane 与 NDI TSO 组合、延迟分布。本节为共享宿主上的方向性证据，每格只有 2 轮。
+
 #### 11.4.2 三栈 provisional benchmark（2026-09）
 
 已完成 CURRENT-LWIP、native 与 XTCP 在相同 Linux datapath 下的第一轮统一比较：`client.concurrent=1` 固定，P 仅映射为 `iperf3 -P`；每个 `(P,direction)` 跑 3 round，按 `native/off → lwip/off → xtcp/off → native/on → lwip/on → xtcp/on` 的 canonical mode 顺序循环轮换。共 **108/108** cell 完成并通过 runner 的配置、runtime proof 与统计完整性检查；所有 GSO-on cell 的每条 stats 样本均证明 `tap_linux.vnet_header=true` 且 `tap_linux.gso_merge_active=true`，没有 capability fallback、watchdog 或 XTCP stats 缺失。
@@ -885,7 +933,7 @@ WARN: 离散度异常 / zero-rate flow / P16 fairness 恶化 / 接近门槛
 **perf profile 实锤（client，UL on，单核）**：aesni+cfb128 ≈17.4%（隧道解密，native 同付）、**内核 loopback 桥（tcp_sendmsg→tcp_write_xmit→loopback RX→skb 拷贝→唤醒）≈25-30%**（XTCP 专属税，native 无此桥）、TcpChecksum 2.2%、mutex/syscall/copy 各 2-4%。接收端每包 ~20µs 的主要成分不是 XTCP 栈本身，而是**桥**。
 
 **本轮落地**：
-1. `TunGsoCoalescer` 合并上限 env 化（`OPENPPP2_TAP_GSO_SEGMENTS`，默认 4=历史行为，≤48=64KB 超帧）；TAP vnet 基础设施（IFF_VNET_HDR/TUNSETOFFLOAD/BuildGso）本就完整，超帧实测可过内核 netns 链（native 11KB 读即 TSO 超帧）。
+1. `TunGsoCoalescer` 合并上限 env 化（`OPENPPP2_TAP_GSO_SEGMENTS`，默认 4=历史行为，≤48=64KB 超帧；2026-10-18 起默认改为 32，见 §11.4.1b）；TAP vnet 基础设施（IFF_VNET_HDR/TUNSETOFFLOAD/BuildGso）本就完整，超帧实测可过内核 netns 链（native 11KB 读即 TSO 超帧）。
 2. **GSO-RX 分段器**（Submit 层，>MTU 帧拆回 MSS 段，seq/长度/校验和逐段修正，env `OPENPPP2_XTCP_GSO_RX` 默认开）——并实测证明**可关**：整帧直通 Inject（>MSS 段对接收端合法）与分段等价，拆不拆不是瓶颈。
 3. runner `--tap-gso-segments/--xtcp-gso-rx` 旗标。
 

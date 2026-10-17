@@ -89,7 +89,7 @@ flush 条件（任一触发即完成当前 superpacket 写出，然后按新包�
 
 ```text
 不兼容包（v1 资格/连续性任一失败）
-segments == 4（v1 固定上限）
+segments == 段上限（v1 固定为 4；2026-10-18 起默认 32，`OPENPPP2_TAP_GSO_SEGMENTS` 可设 1–48，见 XTCP_INTEGRATION_CN.md §11.4.1b）
 每段长度超过 `ITap::Mtu`（直接普通写）
 首段入队后 100µs（`steady_timer` flush）
 write 失败/短写
@@ -152,7 +152,7 @@ flush/rejection reason 与 hold histogram。它的 framing domain 固定标注�
 
 1. IP ID 语义等价 vs 逐字节等价（**必须二选一**，v1 假设前者）；
 2. PSH v1 全拒绝是否接受（psh-last-candidate 留作 v2）；
-3. max_segments 固定为 4；提高到 8 必须重新验证 A/B、延迟与 system CPU；
+3. max_segments 固定为 4；提高到 8 必须重新验证 A/B、延迟与 system CPU；（2026-10-18：已在 XTCP netns 矩阵上验证吞吐、重传与 stall 专场后改为默认 32，延迟与 system CPU 仍未单独测量，见 XTCP_INTEGRATION_CN.md §11.4.1b）
 4. 100µs hold 是否接受，且必须先补 singleton pending 的实际 timer flush 与 stop/close race 测试；
 5. 特性保持环境变量 opt-in + kill-switch，还是在所有 gate 后增加稳定配置面；
 6. default-on 前必须完成：隔离 CPU 的 system-wide softirq/ksoftirqd accounting、真实远端/不同内核、native + XTCP P1/P4/P16 × UL/DL、MTU/PMTU/loss/reorder/short-flow/FIN-stop 故障矩阵，以及全量 C++ 和相关 E2E 回归。
