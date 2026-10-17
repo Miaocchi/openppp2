@@ -444,7 +444,7 @@ if [[ "${SKIP_NETEM}" != 1 ]]; then
   fi
   ip netns exec "${NS_C}" python3 -u - "${TARGET_IP}" "${ECHO_PORT}" \
     >>"${STATE_DIR}/battery.log" 2>&1 <<'PY'
-import socket, sys
+import socket, sys, threading
 
 target_ip, echo_port = sys.argv[1], int(sys.argv[2])
 
@@ -459,24 +459,44 @@ def recv_exact(sock, want):
 
 # 1 MiB across a lossy/reordering path exercises XTCP retransmit + SACK on the
 # TUN leg. The echo-side byte count (asserted from echo.log below) proves the
-# upload recovered every segment; the download side races the teardown after
-# the upload half closes (same close semantics as the plain half-close case),
-# so it asserts an intact prefix plus prompt termination.
+# upload recovered every segment. Drain the echo concurrently with upload to
+# avoid filling the receive window before the sender can half-close.
 blob = bytes((i * 7) & 0xFF for i in range(1024 * 1024))
 with socket.create_connection((target_ip, echo_port), timeout=10) as sock:
     sock.settimeout(30)
-    sock.sendall(blob)
-    sock.shutdown(socket.SHUT_WR)
     received = bytearray()
-    while True:
+    send_error = []
+
+    def upload_and_half_close():
         try:
+            sock.sendall(blob)
+        except BaseException as exc:
+            send_error.append(exc)
+        finally:
+            try:
+                sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    sender = threading.Thread(target=upload_and_half_close, daemon=True)
+    sender.start()
+    try:
+        while True:
             chunk = sock.recv(65536)
-        except ConnectionResetError:
-            break
-        if not chunk:
-            break
-        received += chunk
-    assert bytes(received) == blob[:len(received)], "netem round-trip prefix corrupted"
+            if not chunk:
+                break
+            received += chunk
+    finally:
+        if sender.is_alive():
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sender.join(timeout=5)
+    assert not sender.is_alive(), "netem upload did not finish after echo EOF"
+    if send_error:
+        raise send_error[0]
+    assert bytes(received) == blob, "netem echo was truncated, duplicated, or corrupted"
 for i in range(64):
     with socket.create_connection((target_ip, echo_port), timeout=10) as sock:
         sock.settimeout(10)
