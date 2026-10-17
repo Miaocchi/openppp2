@@ -6,10 +6,9 @@
   import Nodes from './routes/Nodes.svelte'
   import Subscription from './routes/Subscription.svelte'
   import Logs from './routes/Logs.svelte'
-  import Config from './routes/Config.svelte'
   import Settings from './routes/Settings.svelte'
-  import Network from './routes/Network.svelte'
-  import Policy from './routes/Policy.svelte'
+  import Routing from './routes/Routing.svelte'
+  import Dns from './routes/Dns.svelte'
   import { language } from './lib/i18n.js'
   import { createRuntime } from './lib/runtime/index.js'
 
@@ -69,12 +68,10 @@
           <Subscription {state} {runtime} />
         {:else if state.route === 'logs'}
           <Logs {state} {runtime} />
-        {:else if state.route === 'config'}
-          <Config {state} {runtime} />
-        {:else if state.route === 'network'}
-          <Network {state} {runtime} />
-        {:else if state.route === 'policy'}
-          <Policy {state} {runtime} />
+        {:else if state.route === 'routing'}
+          <Routing {state} {runtime} />
+        {:else if state.route === 'dns'}
+          <Dns {state} {runtime} />
         {:else if state.route === 'settings'}
           <Settings {state} {runtime} />
         {/if}
