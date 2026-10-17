@@ -214,6 +214,8 @@ macOS, and Windows default it off and pass an explicit value in their workflows.
 
 ## CI coverage today
 
+The control-plane lifecycle contract, issue decomposition, and platform acceptance limits are documented in [VPN Network Lifecycle Contract](../architecture/NETWORK_LIFECYCLE_CONTRACT.md). Offline tests and real-system tests are separate evidence; passing CTest does not verify Windows DNS, route, or proxy restoration on a host.
+
 `.github/workflows/test.yml` is the primary unit-test workflow. It runs the standalone C++/coverage path, a separate full-suite ThreadSanitizer job, lifecycle sanitizers, Guardian and Go checks, Flutter tests, and iOS logic tests. It does **not** run the experimental Desktop Client's npm or Cargo test commands.
 
 Native build workflows are separate from that unit workflow. Read the relevant workflow before calling a platform or feature combination CI-covered.

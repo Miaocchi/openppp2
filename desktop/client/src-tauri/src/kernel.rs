@@ -19,11 +19,7 @@ pub fn inspect(path: &Path) -> Result<Value, String> {
         Ok(child) => child,
         Err(error) => {
             let version = file_version(path).ok_or_else(|| error.to_string())?;
-            return Ok(
-                json!({ "path": path, "version": version, "helpAvailable": false,
-                "probeError": error.to_string(), "statsSupported": null,
-                "muxTurboSupported": null, "proxySupported": null }),
-            );
+            return Ok(file_version_probe_info(path, &version, &error.to_string()));
         }
     };
     let stdout = child.stdout.take().unwrap();
@@ -74,6 +70,16 @@ pub fn inspect(path: &Path) -> Result<Value, String> {
         "tunIpv6Supported": flag("--tun-ipv6"),
         "policySupported": policy_supported(&version),
     }))
+}
+
+fn file_version_probe_info(path: &Path, version: &str, error: &str) -> Value {
+    json!({
+        "path": path, "version": version, "helpAvailable": false,
+        "probeError": error, "statsSupported": null,
+        "muxTurboSupported": null, "proxySupported": null,
+        "tcpStackSupported": null, "tunIpv6Supported": null,
+        "policySupported": policy_supported(version),
+    })
 }
 
 /// `ppp policy` ships from 2.1.7 and is absent from `--help`. Never probe it by
@@ -170,4 +176,23 @@ pub fn redact(mut value: Value) -> Value {
     }
     visit(&mut value);
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_version_fallback_preserves_policy_capability_when_help_cannot_spawn() {
+        for (version, supported) in [("2.1.7.0", Some(true)), ("2.1.6.0", Some(false)), ("Unknown", None)] {
+            let info = file_version_probe_info(
+                Path::new("ppp.exe"), version, "Access is denied (os error 5)");
+            assert_eq!(info["helpAvailable"], false);
+            assert_eq!(info["policySupported"].as_bool(), supported);
+            assert_eq!(info["version"], version);
+            assert!(info["probeError"].as_str().unwrap().contains("os error 5"));
+            assert!(info["statsSupported"].is_null());
+            assert!(info["tcpStackSupported"].is_null());
+        }
+    }
 }

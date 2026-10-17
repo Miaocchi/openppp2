@@ -37,6 +37,17 @@ impl CommandSpec {
 pub struct ExitInfo {
     pub code: Option<i32>,
     pub success: bool,
+    pub reason: ExitReason,
+    pub timed_out: bool,
+    pub recovery_pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ExitReason {
+    Natural,
+    Graceful,
+    ForcedKill,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -61,12 +72,30 @@ pub struct ProcessMessage {
 pub enum ProcessError {
     #[error("ppp 进程已在运行中")]
     AlreadyRunning,
+    #[error("ppp 网络恢复仍待处理")]
+    /// A future recovery worker must clear the persisted network state before
+    /// another session is allowed to start.
+    RecoveryPending,
     #[error("无法启动 ppp: {0}")]
     Spawn(#[from] std::io::Error),
+    #[error("网络恢复执行器启动失败: {0}")]
+    RecoverySpawn(std::io::Error),
+    #[error("网络恢复执行器超时")]
+    RecoveryTimeout,
+    #[error("停止 ppp 失败: {0}")]
+    Stop(std::io::Error),
 }
 
 type Emitter = Arc<dyn Fn(ProcessMessage) + Send + Sync + 'static>;
 type EventSink = Arc<dyn Fn(ProcessEvent) + Send + Sync + 'static>;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StopContext {
+    requested: bool,
+    forced: bool,
+    timed_out: bool,
+    recovery_pending: bool,
+}
 
 /// Clones share the same child; `stop` can then run without holding the
 /// caller's lock on the manager.
@@ -75,6 +104,7 @@ pub struct ProcessManager {
     child: Arc<Mutex<Option<Child>>>,
     emit: Emitter,
     snapshot: Arc<Mutex<ConnectionSnapshot>>,
+    stop_context: Arc<Mutex<StopContext>>,
 }
 
 impl ProcessManager {
@@ -86,6 +116,7 @@ impl ProcessManager {
             child: Arc::new(Mutex::new(None)),
             emit: Arc::new(emit),
             snapshot: Arc::new(Mutex::new(ConnectionSnapshot::default())),
+            stop_context: Arc::new(Mutex::new(StopContext::default())),
         }
     }
 
@@ -100,11 +131,86 @@ impl ProcessManager {
             .clone()
     }
 
+    /// Restores the durable desktop-side gate after a previous forced stop.
+    /// This does not claim that the OS network state is clean; only a verified
+    /// recovery path may clear the flag.
+    pub fn mark_recovery_pending(&mut self) {
+        let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+        snapshot.status = "recovery_pending".into();
+        snapshot.phase = "recovery_pending".into();
+        snapshot.recovery_pending = true;
+        snapshot.pid = None;
+        snapshot.requested_stop = false;
+    }
+
+    /// Marks the desktop-side state clean only after an independent recovery
+    /// process has returned success and its journal has been verified.
+    pub fn mark_recovery_complete(&mut self) {
+        let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+        if !snapshot.recovery_pending {
+            return;
+        }
+        snapshot.recovery_pending = false;
+        snapshot.status = "disconnected".into();
+        snapshot.phase = "idle".into();
+        snapshot.pid = None;
+        snapshot.requested_stop = false;
+        snapshot.last_error.clear();
+        let connection = snapshot.clone();
+        drop(snapshot);
+        (self.emit)(ProcessMessage {
+            session_id: connection.session_id,
+            event: ProcessEvent::State(connection.clone()),
+            connection,
+        });
+    }
+
+    /// Runs a fresh Core process in recovery-only mode. The worker is never
+    /// stored in the normal child slot and cannot be mistaken for a VPN
+    /// session. A non-zero exit or timeout leaves the journal retryable.
+    pub fn run_recovery_worker(
+        &mut self,
+        spec: CommandSpec,
+        timeout: Duration,
+    ) -> Result<bool, ProcessError> {
+        if self.is_running() {
+            return Err(ProcessError::AlreadyRunning);
+        }
+        let mut command = Command::new(&spec.program);
+        command
+            .args(&spec.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut worker = command.spawn().map_err(ProcessError::RecoverySpawn)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match worker.try_wait().map_err(ProcessError::RecoverySpawn)? {
+                Some(status) => return Ok(status.success()),
+                None if Instant::now() >= deadline => {
+                    let _ = worker.kill();
+                    let _ = worker.wait();
+                    return Err(ProcessError::RecoveryTimeout);
+                }
+                None => thread::sleep(Duration::from_millis(25)),
+            }
+        }
+    }
+
     pub fn start(&mut self, spec: CommandSpec) -> Result<u32, ProcessError> {
         let mut slot = self.child.lock().expect("process lock poisoned");
         if slot.is_some() {
             return Err(ProcessError::AlreadyRunning);
         }
+        // A pending marker is a recovery gate, not a permanent deadlock.  The
+        // next Core invocation must be allowed to consume its journal before
+        // applying new network state; Core remains fail-closed if recovery
+        // cannot be verified.
         let mut command = Command::new(&spec.program);
         command
             .args(&spec.args)
@@ -118,6 +224,10 @@ impl ProcessManager {
         }
         let mut child = command.spawn()?;
         let pid = child.id();
+        *self
+            .stop_context
+            .lock()
+            .expect("stop context lock poisoned") = StopContext::default();
         let session_id = {
             let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
             let session_id = snapshot.session_id + 1;
@@ -157,15 +267,29 @@ impl ProcessManager {
         }
         *slot = Some(child);
         drop(slot);
-        monitor_child(Arc::clone(&self.child), send, spec.stats_path, pid);
+        monitor_child(
+            Arc::clone(&self.child),
+            send,
+            spec.stats_path,
+            pid,
+            Arc::clone(&self.stop_context),
+        );
         Ok(pid)
     }
 
     pub fn stop(&mut self) -> Result<(), ProcessError> {
+        self.stop_with_timeout(GRACEFUL_STOP_TIMEOUT)
+    }
+
+    fn stop_with_timeout(&mut self, graceful_timeout: Duration) -> Result<(), ProcessError> {
         let pid = match self.child.lock().expect("process lock poisoned").as_ref() {
             Some(child) => child.id(),
             None => return Ok(()),
         };
+        self.stop_context
+            .lock()
+            .expect("stop context lock poisoned")
+            .requested = true;
         let state = {
             let mut state = self.snapshot.lock().expect("snapshot lock poisoned");
             state.requested_stop = true;
@@ -179,8 +303,9 @@ impl ProcessManager {
         });
         // The kernel rolls back routes, DNS and the adapter on shutdown; give it
         // time to finish before falling back to a hard kill.
-        let grace = if request_graceful_stop(pid) {
-            GRACEFUL_STOP_TIMEOUT
+        let graceful_requested = request_graceful_stop(pid);
+        let grace = if graceful_requested {
+            graceful_timeout
         } else {
             Duration::ZERO
         };
@@ -193,23 +318,63 @@ impl ProcessManager {
             }
             thread::sleep(Duration::from_millis(25));
         }
+        if graceful_requested {
+            self.stop_context
+                .lock()
+                .expect("stop context lock poisoned")
+                .timed_out = true;
+            let timeout = {
+                let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+                snapshot.status = "stop_timeout".into();
+                snapshot.phase = "stop_timeout".into();
+                snapshot.clone()
+            };
+            (self.emit)(ProcessMessage {
+                session_id: timeout.session_id,
+                event: ProcessEvent::State(timeout.clone()),
+                connection: timeout,
+            });
+        }
+        {
+            let mut context = self
+                .stop_context
+                .lock()
+                .expect("stop context lock poisoned");
+            context.forced = true;
+            context.recovery_pending = true;
+        }
+        let pending = {
+            let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
+            snapshot.status = "recovery_pending".into();
+            snapshot.phase = "recovery_pending".into();
+            snapshot.recovery_pending = true;
+            snapshot.clone()
+        };
+        (self.emit)(ProcessMessage {
+            session_id: pending.session_id,
+            event: ProcessEvent::State(pending.clone()),
+            connection: pending,
+        });
         let exit = {
             let mut slot = self.child.lock().expect("process lock poisoned");
             match slot.as_mut().filter(|child| child.id() == pid) {
                 Some(child) => {
-                    child.kill()?;
-                    child.wait()?;
+                    child.kill().map_err(ProcessError::Stop)?;
+                    let status = child.wait().map_err(ProcessError::Stop)?;
                     slot.take();
-                    true
+                    Some(ExitInfo {
+                        code: status.code(),
+                        success: false,
+                        reason: ExitReason::ForcedKill,
+                        timed_out: graceful_requested,
+                        recovery_pending: true,
+                    })
                 }
-                None => false,
+                None => None,
             }
         };
-        if exit {
-            let event = ProcessEvent::Exited(ExitInfo {
-                code: None,
-                success: true,
-            });
+        if let Some(exit) = exit {
+            let event = ProcessEvent::Exited(exit);
             let connection = {
                 let mut snapshot = self.snapshot.lock().expect("snapshot lock poisoned");
                 snapshot.apply(&event);
@@ -230,6 +395,7 @@ fn monitor_child(
     emit: EventSink,
     stats_path: Option<PathBuf>,
     pid: u32,
+    stop_context: Arc<Mutex<StopContext>>,
 ) {
     thread::spawn(move || {
         let mut offset = 0;
@@ -259,10 +425,7 @@ fn monitor_child(
                 {
                     Some(status) => {
                         slot.take();
-                        Some(ExitInfo {
-                            code: status.code(),
-                            success: status.success(),
-                        })
+                        Some(exit_info(status, &stop_context))
                     }
                     None => {
                         if slot.is_none() {
@@ -282,6 +445,25 @@ fn monitor_child(
             thread::sleep(Duration::from_millis(50));
         }
     });
+}
+
+fn exit_info(status: std::process::ExitStatus, stop_context: &Arc<Mutex<StopContext>>) -> ExitInfo {
+    let context = *stop_context
+        .lock()
+        .expect("stop context lock poisoned");
+    ExitInfo {
+        code: status.code(),
+        success: status.success() && !context.forced,
+        reason: if context.forced {
+            ExitReason::ForcedKill
+        } else if context.requested {
+            ExitReason::Graceful
+        } else {
+            ExitReason::Natural
+        },
+        timed_out: context.timed_out,
+        recovery_pending: context.recovery_pending,
+    }
 }
 
 fn read_stats(
@@ -351,4 +533,100 @@ fn request_graceful_stop(pid: u32) -> bool {
 #[cfg(unix)]
 fn request_graceful_stop(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::sync::mpsc;
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_stop_reports_pending_recovery_and_never_success() {
+        let (tx, rx) = mpsc::channel();
+        let mut manager = ProcessManager::new(move |event| {
+            let _ = tx.send(event);
+        });
+        manager
+            .start(CommandSpec::new(
+                "sh",
+                ["-c", "trap '' TERM; while :; do true; done"],
+            ))
+            .unwrap();
+
+        // Force the fallback path immediately; the command intentionally
+        // ignores SIGTERM, so this exercises the durable recovery marker.
+        manager.stop_with_timeout(Duration::ZERO).unwrap();
+
+        let mut saw_pending = false;
+        let mut forced_exit = None;
+        while let Ok(event) = rx.recv_timeout(Duration::from_millis(500)) {
+            match event.event {
+                ProcessEvent::State(snapshot) if snapshot.status == "recovery_pending" => {
+                    saw_pending = true;
+                }
+                ProcessEvent::Exited(exit) => {
+                    forced_exit = Some(exit);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_pending);
+        let exit = forced_exit.expect("forced stop must emit an exit event");
+        assert_eq!(exit.reason, ExitReason::ForcedKill);
+        assert!(exit.timed_out);
+        assert!(!exit.success);
+        assert!(exit.recovery_pending);
+        assert_eq!(manager.snapshot().status, "recovery_pending");
+        assert!(manager.snapshot().recovery_pending);
+    }
+
+    #[test]
+    fn persisted_recovery_gate_allows_core_recovery_attempt() {
+        let mut manager = ProcessManager::new(|_| {});
+        manager.mark_recovery_pending();
+        assert_eq!(manager.snapshot().status, "recovery_pending");
+        assert!(manager.snapshot().recovery_pending);
+        assert!(manager.start(CommandSpec::new("sh", ["-c", "exit 0"])).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_worker_is_separate_and_clears_state_only_after_success() {
+        let mut manager = ProcessManager::new(|_| {});
+        manager.mark_recovery_pending();
+        let worker = CommandSpec::new("sh", ["-c", "exit 0", "--network-recovery"]);
+        assert!(manager
+            .run_recovery_worker(worker, Duration::from_secs(1))
+            .unwrap());
+        manager.mark_recovery_complete();
+        assert!(!manager.snapshot().recovery_pending);
+        assert_eq!(manager.snapshot().status, "disconnected");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_worker_failure_does_not_clear_pending_state() {
+        let mut manager = ProcessManager::new(|_| {});
+        manager.mark_recovery_pending();
+        let worker = CommandSpec::new("sh", ["-c", "exit 7", "--network-recovery"]);
+        assert!(!manager
+            .run_recovery_worker(worker, Duration::from_secs(1))
+            .unwrap());
+        assert!(manager.snapshot().recovery_pending);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_worker_timeout_preserves_pending_state() {
+        let mut manager = ProcessManager::new(|_| {});
+        manager.mark_recovery_pending();
+        let worker = CommandSpec::new("sh", ["-c", "sleep 2", "--network-recovery"]);
+        let result = manager.run_recovery_worker(worker, Duration::from_millis(25));
+        assert!(matches!(result, Err(ProcessError::RecoveryTimeout)));
+        assert!(manager.snapshot().recovery_pending);
+    }
 }

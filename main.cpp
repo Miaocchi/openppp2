@@ -5,6 +5,7 @@
 
 #include <ppp/facade/ApplicationBootstrap.h>
 #include <ppp/app/ApplicationPolicyCommand.h>
+#include <ppp/app/client/NetworkRecoveryJournal.h>
 #include <iostream>
 
 /**
@@ -14,6 +15,11 @@
  * @return Exit code returned by the application runtime.
  */
 int main(int argc, char** argv) {
+    if (ppp::app::client::NetworkRecoveryJournal::IsRecoveryCommand(
+            argc, const_cast<const char* const*>(argv))) {
+        return ppp::app::client::NetworkRecoveryJournal::RunRecoveryCommand(
+            argc, const_cast<const char* const*>(argv));
+    }
     if (auto result = ppp::app::ApplicationPolicyCommand::Dispatch(argc, argv, std::cout, std::cerr)) {
         return *result;
     }

@@ -1,4 +1,4 @@
-use openppp2_client_desktop::process::{CommandSpec, ProcessEvent, ProcessManager};
+use openppp2_client_desktop::process::{CommandSpec, ExitReason, ProcessEvent, ProcessManager};
 use openppp2_client_desktop::stats::StatsSampler;
 use openppp2_client_desktop::telemetry::{classify_line, ConnectionSignal, Severity};
 use std::sync::mpsc;
@@ -104,6 +104,8 @@ fn process_manager_enforces_single_child_and_reports_stderr_and_exit_code() {
                 }
                 ProcessEvent::Exited(exit) => {
                     exit_code = exit.code;
+                    assert_eq!(exit.reason, ExitReason::Natural);
+                    assert!(!exit.recovery_pending);
                     break;
                 }
                 ProcessEvent::Stats(_) => {}
@@ -130,19 +132,25 @@ fn fixture_command() -> CommandSpec {
 
 #[test]
 fn stop_then_restart_keeps_the_new_session_authoritative() {
-    let (tx, rx) = mpsc::channel();
-    let mut manager = ProcessManager::new(move |event| { let _ = tx.send(event); });
+    let mut manager = ProcessManager::new(|_| {});
     manager.start(fixture_command()).unwrap();
     let first = manager.snapshot().session_id;
     manager.stop().unwrap();
     assert!(!manager.is_running());
+    // Windows may need the independent recovery worker when CTRL+C cannot be
+    // delivered to a detached console. Simulate its verified completion before
+    // starting the next session.
+    if manager.snapshot().recovery_pending {
+        manager.mark_recovery_complete();
+    }
     assert_eq!(manager.snapshot().status, "disconnected");
     manager.start(fixture_command()).unwrap();
     let second = manager.snapshot().session_id;
     assert!(second > first);
     for _ in 0..30 {
-        let event = rx.recv_timeout(Duration::from_millis(500)).unwrap();
-        if event.session_id == second && matches!(event.event, ProcessEvent::Exited(_)) { break; }
+        let snapshot = manager.snapshot();
+        if snapshot.session_id == second && snapshot.pid.is_none() { break; }
+        std::thread::sleep(Duration::from_millis(500));
     }
     assert_eq!(manager.snapshot().session_id, second);
     assert_eq!(manager.snapshot().pid, None);
@@ -176,7 +184,12 @@ fn stop_waits_for_the_kernel_to_finish_its_shutdown_rollback() {
     while let Ok(event) = rx.recv_timeout(Duration::from_millis(500)) {
         match event.event {
             ProcessEvent::Telemetry(t) => rollback |= t.message.contains("rollback done"),
-            ProcessEvent::Exited(exit) => { exit_code = exit.code; }
+            ProcessEvent::Exited(exit) => {
+                exit_code = exit.code;
+                assert_eq!(exit.reason, ExitReason::Graceful);
+                assert!(!exit.timed_out);
+                assert!(!exit.recovery_pending);
+            }
             _ => {}
         }
     }

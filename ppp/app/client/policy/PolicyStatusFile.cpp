@@ -236,7 +236,7 @@ bool ParseProcessStart(std::uint64_t pid, std::string& token, bool& unverifiable
     DWORD exitCode = 0;
     const BOOL ok = GetProcessTimes(process, &creation, &exitTime, &kernel, &user) &&
         GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE;
-    CloseHandle(process);
+    ::CloseHandle(process);
     if (!ok) { unverifiable = true; return false; }
     ULARGE_INTEGER value;
     value.LowPart = creation.dwLowDateTime;
@@ -389,7 +389,7 @@ bool PolicyStatusWriterLease::TryAcquire(const std::string& statusPath,
     }
     if (!LockFileEx(lease->handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
         0, MAXDWORD, MAXDWORD, &lease->overlapped)) {
-        CloseHandle(lease->handle);
+        ::CloseHandle(lease->handle);
         lease->handle = INVALID_HANDLE_VALUE;
         error = "status writer lease is already held";
         return false;
@@ -437,7 +437,7 @@ void PolicyStatusWriterLease::Release() noexcept {
 #if defined(_WIN32)
     if (impl_->handle != INVALID_HANDLE_VALUE) {
         UnlockFileEx(impl_->handle, 0, MAXDWORD, MAXDWORD, &impl_->overlapped);
-        CloseHandle(impl_->handle);
+        ::CloseHandle(impl_->handle);
         impl_->handle = INVALID_HANDLE_VALUE;
     }
 #else

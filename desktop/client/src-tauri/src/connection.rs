@@ -12,6 +12,7 @@ pub struct ConnectionSnapshot {
     pub last_error: String,
     pub stats: Option<StatsView>,
     pub requested_stop: bool,
+    pub recovery_pending: bool,
     pub connected_at: Option<u64>,
 }
 
@@ -25,6 +26,7 @@ impl Default for ConnectionSnapshot {
             last_error: String::new(),
             stats: None,
             requested_stop: false,
+            recovery_pending: false,
             connected_at: None,
         }
     }
@@ -78,13 +80,18 @@ impl ConnectionSnapshot {
                 }
             }
             ProcessEvent::Exited(exit) => {
-                self.status = if self.requested_stop || exit.success {
+                self.recovery_pending = exit.recovery_pending;
+                self.status = if exit.recovery_pending {
+                    "recovery_pending"
+                } else if self.requested_stop || exit.success {
                     "disconnected"
                 } else {
                     "error"
                 }
                 .into();
-                if self.status == "error" && self.last_error.is_empty() {
+                if self.status == "recovery_pending" {
+                    self.last_error = "network recovery is pending".into();
+                } else if self.status == "error" && self.last_error.is_empty() {
                     self.last_error = format!("ppp exited: {:?}", exit.code);
                 }
                 self.pid = None;

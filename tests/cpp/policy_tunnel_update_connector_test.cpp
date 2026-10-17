@@ -1,4 +1,5 @@
 #include <ppp/app/client/policy/PolicyTunnelUpdateConnector.h>
+#include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 
 #include <boost/asio.hpp>
 
@@ -201,10 +202,34 @@ void CancellationBeforeBootstrapResponseDoesNotStartTunnel() {
         "cancellation before bootstrap response must not start the control tunnel");
 }
 
+void MulticastDatagramsDoNotFailSharedTunnel() {
+    using Link = ppp::app::protocol::VirtualEthernetLinklayer;
+    auto context = std::make_shared<asio::io_context>();
+    Link link({}, context, {});
+    ppp::Byte payload[] = {0x01};
+    const Udp::endpoint source(asio::ip::make_address("192.0.2.10"), 1024);
+    // No carrier is supplied: these datagrams must be consumed before any
+    // transport access. A false result makes the UDP port dispose its carrier.
+    const Udp::endpoint destinations[] = {
+        {asio::ip::make_address("224.0.0.252"), 5355},
+        {asio::ip::make_address("224.0.0.251"), 5353},
+        {asio::ip::make_address("239.255.255.250"), 1900},
+        {asio::ip::make_address("ff02::fb"), 5353},
+    };
+    for (const auto& destination : destinations) {
+        Require(link.DoSendTo({}, source, destination, payload, 1,
+            ppp::nullof<Link::YieldContext>()),
+            "multicast drop must not report a shared-carrier write failure");
+    }
+    Require(!link.DoSendTo({}, source, destinations[0], nullptr, 1,
+        ppp::nullof<Link::YieldContext>()), "malformed datagrams must still fail");
+}
+
 } // namespace
 
 int main() {
     try {
+        MulticastDatagramsDoNotFailSharedTunnel();
         ResolvesHostAndKeepsProxyEgress();
         NumericHostDoesNotRequireBootstrapAndDirectIsRejected();
         MissingBootstrapAndPreCancelledRequestsFailClosed();

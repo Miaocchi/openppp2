@@ -2,7 +2,7 @@ use openppp2_client_desktop::{
     config::{apply_network_overrides, build_node_config_with_base},
     connection::ConnectionSnapshot,
     kernel, network,
-    process::{ExitInfo, ProcessEvent},
+    process::{ExitInfo, ExitReason, ProcessEvent},
     subscription::parse_subscription,
 };
 use serde_json::json;
@@ -39,8 +39,32 @@ fn intentional_disconnect_is_not_an_error() {
     snapshot.apply(&ProcessEvent::Exited(ExitInfo {
         code: Some(1),
         success: false,
+        reason: ExitReason::Graceful,
+        timed_out: false,
+        recovery_pending: false,
     }));
     assert_eq!(snapshot.status, "disconnected");
+    assert!(snapshot.pid.is_none());
+}
+
+#[test]
+fn forced_exit_keeps_recovery_pending_visible() {
+    let mut snapshot = ConnectionSnapshot {
+        pid: Some(42),
+        requested_stop: true,
+        status: "recovery_pending".into(),
+        ..Default::default()
+    };
+    snapshot.apply(&ProcessEvent::Exited(ExitInfo {
+        code: None,
+        success: false,
+        reason: ExitReason::ForcedKill,
+        timed_out: true,
+        recovery_pending: true,
+    }));
+    assert_eq!(snapshot.status, "recovery_pending");
+    assert!(snapshot.recovery_pending);
+    assert_eq!(snapshot.last_error, "network recovery is pending");
     assert!(snapshot.pid.is_none());
 }
 

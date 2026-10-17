@@ -52,12 +52,18 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
       const point = { time: state.stats.sampledAt, rx: state.stats.rxRateMbps, tx: state.stats.txRateMbps }
       state.history = [...state.history.filter((previous) => Math.floor(previous.time / 1000) !== Math.floor(point.time / 1000)), point].filter((point) => point.time > Date.now() - 60_000).slice(-60)
     } else if (event.type === 'exited') {
-      state.connection.status = event.connection?.status || (state.connection.status === 'stopping' || event.payload.success ? 'disconnected' : 'error')
+      const recoveryPending = !!(event.connection?.recoveryPending || event.payload.recoveryPending)
+      state.connection.recoveryPending = recoveryPending
+      state.connection.status = recoveryPending
+        ? 'recovery_pending'
+        : event.connection?.status || (state.connection.status === 'stopping' || event.payload.success ? 'disconnected' : 'error')
       state.connection.exitCode = event.payload.code
       state.connection.connectedAt = null
       state.connection.statsAvailable = false
       state.connection.pid = null
-      if (state.connection.status === 'error' && !event.payload.success && !state.connection.lastError) {
+      if (recoveryPending) {
+        state.connection.lastError = 'network recovery is pending'
+      } else if (state.connection.status === 'error' && !event.payload.success && !state.connection.lastError) {
         state.connection.lastError = `ppp 进程异常退出，退出码 ${event.payload.code ?? '未知'}`
       }
     }
@@ -96,6 +102,10 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
     state.networkOverrides = bootstrap.networkOverrides || {}
     state.administrator = !!bootstrap.administrator
     state.proxyRecoveryPending = !!bootstrap.proxyRecoveryPending
+    if (bootstrap.connection?.recoveryPending) {
+      state.connection.recoveryPending = true
+      state.connection.status = 'recovery_pending'
+    }
     state.policyDir = bootstrap.policyDir || ''
     state.policyEnabled = !!bootstrap.policyEnabled
     if (bootstrap.connection) {
@@ -161,6 +171,22 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
         if (connection) processEvent({type:'state',sessionId:connection.sessionId,connection})
         else { state.connection = {...state.connection,status:'disconnected',phase:'idle',pid:null,connectedAt:null,statsAvailable:false}; emit() }
       } catch (error) { state.connection.lastError = String(error); appendEvent({ message: String(error), severity: 'error' }); emit(); throw error }
+    },
+    async retryRecovery() {
+      const result = await bridge.core.invoke('client_retry_recovery')
+      if (result?.networkRecoveryPending) {
+        state.connection.recoveryPending = true
+        state.connection.status = 'recovery_pending'
+        state.connection.lastError = result.message || 'network recovery is pending'
+      } else {
+        state.connection.recoveryPending = false
+        state.connection.status = 'disconnected'
+        state.connection.phase = 'idle'
+        state.connection.lastError = ''
+      }
+      if (result && Object.hasOwn(result, 'proxyRecoveryPending')) state.proxyRecoveryPending = !!result.proxyRecoveryPending
+      emit()
+      return result
     },
     async cancel() { await runtime.disconnect() },
     async switchNode(nodeId) {

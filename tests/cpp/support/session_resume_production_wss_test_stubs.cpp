@@ -11,7 +11,9 @@
 
 #include <chrono>
 #include <cstring>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 
 namespace ppp {
 

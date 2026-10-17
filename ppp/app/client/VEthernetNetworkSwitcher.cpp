@@ -17,6 +17,7 @@
 #include <ppp/app/client/AssignedAddressManager.h>
 #include <ppp/app/client/ClientConnectionTeardown.h>
 #include <ppp/app/client/ClientConnectionOpener.h>
+#include <ppp/app/client/NetworkRecoveryJournal.h>
 #include <ppp/app/client/ClientPacketDispatchHandler.h>
 #include <ppp/app/client/xtcp/XtcpRuntime.h>
 #include <ppp/app/client/ClientBypassRouteLoader.h>
@@ -60,6 +61,7 @@
 
 #include <chrono>
 #include <openssl/sha.h>
+#include <sstream>
 
 namespace {
 std::string FakeIpIdentityDirectory(const std::string& root, const std::string& identity) {
@@ -168,6 +170,30 @@ static bool SameManagedIPv6Configuration(
         left.AssignedIPv6RoutePrefixLength == right.AssignedIPv6RoutePrefixLength &&
         left.AssignedIPv6Dns1 == right.AssignedIPv6Dns1 &&
         left.AssignedIPv6Dns2 == right.AssignedIPv6Dns2;
+}
+
+namespace {
+#if defined(_WIN32)
+using NetworkDnsSnapshot = ppp::win32::network::NetworkDnsSnapshot;
+
+std::string SerializeDnsSnapshot(const NetworkDnsSnapshot& snapshot) {
+    std::ostringstream out;
+    out << "dns-v1|" << snapshot.InterfaceIndex << '|'
+        << snapshot.InterfaceLuid << '|' << snapshot.Guid << '|'
+        << (snapshot.DnsAutomatic ? '1' : '0') << '|';
+    for (std::size_t i = 0; i < snapshot.DnsAddresses.size(); ++i) {
+        if (i) out << ',';
+        out << snapshot.DnsAddresses[i].to_string();
+    }
+    out << '|';
+    for (std::size_t i = 0; i < snapshot.AppliedDnsAddresses.size(); ++i) {
+        if (i) out << ',';
+        out << snapshot.AppliedDnsAddresses[i].to_string();
+    }
+    return out.str();
+}
+
+#endif
 }
 
 using ppp::auxiliary::StringAuxiliary;
@@ -295,10 +321,10 @@ namespace ppp {
                     std::string interface_name;
                     std::uint32_t interface_index = 0;
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                    const auto interface = underlying_ni_;
-                    if (interface) {
-                        interface_name.assign(interface->Name.begin(), interface->Name.end());
-                        if (interface->Index > 0) interface_index = static_cast<std::uint32_t>(interface->Index);
+                    const auto network_interface = underlying_ni_;
+                    if (network_interface) {
+                        interface_name.assign(network_interface->Name.begin(), network_interface->Name.end());
+                        if (network_interface->Index > 0) interface_index = static_cast<std::uint32_t>(network_interface->Index);
                     }
 #endif
                     const ppp::string protected_interface(interface_name.data(), interface_name.size());
@@ -329,7 +355,7 @@ namespace ppp {
 #elif defined(_IPHONE)
                         bool direct_capable = false;
 #else
-                        bool direct_capable = interface != nullptr && !interface_name.empty();
+                        bool direct_capable = network_interface != nullptr && !interface_name.empty();
 #if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
                         direct_capable = direct_capable && interface_index > 0;
 #endif
@@ -664,21 +690,96 @@ namespace ppp {
                 return address_manager_->LastAssignedIPv6();
             }
 
-            bool VEthernetNetworkSwitcher::TryApplyHostedNetworkRoutes() noexcept {
+            bool VEthernetNetworkSwitcher::TryApplyHostedNetworkRoutes(bool allow_pre_established) noexcept {
                 route::RoutePlanInput input = BuildRoutePlanInput();
                 if (!input.tap_hosted) return true;
+#if defined(_WIN32)
+                // Recover durable DNS intents before permitting a new network
+                // mutation. A failed recovery is fail-closed.
+                if (!EnsureNetworkRecoveryJournal()) {
+                    ppp::diagnostics::SetLastErrorCode(
+                        ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                    return false;
+                }
+#endif
                 const route::RouteStateSnapshot snapshot = route_coordinator_->Snapshot();
+                if (hosted_routes_apply_failed_) return false;
+                // Routes and DNS belong to the switcher, not an individual
+                // transport attempt. Reconnect reuses a successfully applied
+                // host transaction and its teardown-owned DNS snapshots.
                 if (snapshot.applied) return true;
+#if defined(_WIN32)
+                // Only an unapplied transaction with residual DNS ownership
+                // needs recovery before a new host mutation is permitted.
+                if (!ni_dns_snapshots_.empty()) {
+                    ppp::diagnostics::SetLastErrorCode(
+                        ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                    return false;
+                }
+#endif
                 const bool established = exchanger_ &&
                     exchanger_->GetNetworkState() == VEthernetExchanger::NetworkState_Established;
-                if (route::RouteCoordinator::ShouldDeferHostedRouteApply(snapshot.apply_ready, established)) {
+                if (route::RouteCoordinator::ShouldDeferHostedRouteApply(
+                        snapshot.apply_ready, established || allow_pre_established)) {
                     ppp::telemetry::Count("client.route.defer", 1);
                     return true;
                 }
-                if (!route_coordinator_->AddRoute(input)) return false;
+
+                bool dns_attempted = false;
+                bool dns_applied = false;
+                auto rollback = [this, &dns_attempted]() noexcept {
+#if defined(_WIN32)
+                    if (dns_attempted) {
+                        // Restore only the explicitly authorized TAP adapter.
+                        // Failed or ownership-conflicted snapshots stay in the
+                        // table for teardown/recovery retry.
+                        for (auto it = ni_dns_snapshots_.begin(); it != ni_dns_snapshots_.end();) {
+                            if (ppp::win32::network::RestoreDnsSnapshot(it->second)) {
+                                const bool journal_removed =
+                                    !network_recovery_journal_ ||
+                                    network_recovery_journal_->Remove(
+                                        "windows-dns", stl::transform<std::string>(it->second.Guid), nullptr);
+                                if (journal_removed) {
+                                    it = ni_dns_snapshots_.erase(it);
+                                } else {
+                                    // Keep ownership durable when journal
+                                    // deletion is not confirmed.
+                                    ++it;
+                                }
+                            } else {
+                                ++it;
+                            }
+                        }
+                        if (ni_dns_snapshots_.empty()) {
+                            ppp::tap::TapWindows::DnsFlushResolverCache();
+                        } else {
+                            ppp::telemetry::Count("client.dns.rollback.fail", 1);
+                        }
+                    }
+                    if (paper_airplane_ctrl_) {
+                        paper_airplane_ctrl_->Dispose();
+                        paper_airplane_ctrl_.reset();
+                    }
+#elif !defined(_ANDROID) && !defined(_IPHONE)
+                    if (dns_attempted) {
+                        if (!ClientNetworkInterfaceResolver::SetDnsResolveConfiguration(underlying_ni_)) {
+                            ppp::telemetry::Count("client.dns.rollback.fail", 1);
+                        }
+                    }
+#endif
+                    const bool rollback_complete = route_coordinator_->RollbackApplied();
+                    hosted_routes_apply_failed_ = !rollback_complete;
+                    return rollback_complete;
+                };
+
+                if (!route_coordinator_->AddRoute(input)) {
+                    const bool rollback_complete = route_coordinator_->RollbackApplied();
+                    hosted_routes_apply_failed_ = !rollback_complete;
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RouteAddFailed);
+                }
 #if defined(_WIN32)
                 if (!UsePaperAirplaneController()) {
-                    route_coordinator_->DeleteRoute();
+                    rollback();
                     return false;
                 }
 #endif
@@ -686,18 +787,87 @@ namespace ppp {
                     ppp::telemetry::SpanScope span("client.dns.apply");
 #if defined(_WIN32)
                     if (tun_ni_) {
-                        ppp::win32::network::SetAllNicsDnsAddresses(tun_ni_->DnsAddresses, ni_dns_servers_);
+                        ppp::win32::network::NetworkDnsSnapshot snapshot;
+                        ppp::vector<ppp::string> servers;
+                        ppp::net::Ipep::AddressesTransformToStrings(tun_ni_->DnsAddresses, servers);
+                        dns_applied = ppp::win32::network::CaptureDnsSnapshot(
+                            tun_ni_->Index, snapshot);
+                        if (dns_applied) {
+                            // Freeze the original state before adding the
+                            // target values that will be written. The journal
+                            // must retain both sides of the transaction.
+                            const std::string before_dns = SerializeDnsSnapshot(snapshot);
+                            snapshot.AppliedDnsAddresses.clear();
+                            for (const ppp::string& value : servers) {
+                                boost::system::error_code ec;
+                                const auto address = boost::asio::ip::make_address(value.data(), ec);
+                                if (!ec && !address.is_unspecified() && !address.is_multicast()) {
+                                    snapshot.AppliedDnsAddresses.emplace_back(address);
+                                }
+                            }
+                            const bool journal_intent = network_recovery_journal_ &&
+                                network_recovery_journal_->RecordIntent(
+                                    "windows-dns", stl::transform<std::string>(snapshot.Guid),
+                                    before_dns,
+                                    SerializeDnsSnapshot(snapshot), nullptr);
+                            if (journal_intent) {
+                                // The durable intent itself means a write may
+                                // have happened before a crash. Mark the
+                                // snapshot as owned before invoking the OS so
+                                // any failure path still uses compare-and-
+                                // restore rather than an unconditional write.
+                                snapshot.DnsApplyAttempted = true;
+                                dns_attempted = true;
+                                dns_applied = ppp::win32::network::SetDnsAddressesWithSnapshot(
+                                    tun_ni_->Index, servers, snapshot);
+                                if (dns_applied) {
+                                    dns_applied = network_recovery_journal_->Confirm(
+                                        "windows-dns", stl::transform<std::string>(snapshot.Guid), nullptr);
+                                }
+                            } else {
+                                dns_applied = false;
+                            }
+                        }
+                        // Preserve the snapshot even when the WMI write fails.
+                        // This is the only DNS ownership record for teardown.
+                        // Do not let an unrelated pending resource make an
+                        // unjournaled DNS snapshot appear owned: restoring
+                        // such a snapshot would bypass the CAS guard.
+                        if (snapshot.InterfaceIndex >= 0 &&
+                            snapshot.DnsApplyAttempted) {
+                            ni_dns_snapshots_[snapshot.InterfaceIndex] = std::move(snapshot);
+                        }
                     }
-                    ppp::tap::TapWindows::DnsFlushResolverCache();
-                    if (underlying_ni_) {
-                        ppp::win32::network::DeleteAllDefaultGatewayRoutes(underlying_ni_->GatewayServer);
+                    if (dns_applied) {
+                        ppp::tap::TapWindows::DnsFlushResolverCache();
+                    }
+                    if (dns_applied && underlying_ni_) {
+                        if (!ppp::win32::network::DeleteAllDefaultGatewayRoutes(underlying_ni_->GatewayServer)) {
+                            rollback();
+                            return false;
+                        }
                     }
 #else
-                    if (tun_ni_) ppp::unix__::UnixAfx::SetDnsAddresses(tun_ni_->DnsAddresses);
+                    dns_attempted = tun_ni_ != nullptr;
+                    dns_applied = !tun_ni_ || ppp::unix__::UnixAfx::SetDnsAddresses(tun_ni_->DnsAddresses);
 #endif
                 }
+                if (!dns_applied) {
+                    rollback();
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::NetworkInterfaceConfigureFailed);
+                }
                 ppp::telemetry::Count("client.dns.setup", 1);
-                route_coordinator_->ProtectDefaultRoute(input);
+                // Promiscuous mode intentionally leaves default routes alone;
+                // its disabled protection worker is not a setup failure.
+                if (!input.tap_promiscuous) {
+                    if (!route_coordinator_->ProtectDefaultRoute(input)) {
+                        rollback();
+                        return ppp::diagnostics::SetLastError(
+                            ppp::diagnostics::ErrorCode::RouteAddFailed);
+                    }
+                }
+                hosted_routes_apply_failed_ = false;
                 return true;
             }
 #endif
@@ -1048,6 +1218,10 @@ namespace ppp {
                 address_manager_->RestoreAssignedIPv4();
             }
 
+            bool VEthernetNetworkSwitcher::HasPendingAssignedIPv4Cleanup() const noexcept {
+                return address_manager_ && address_manager_->HasPendingIPv4Cleanup();
+            }
+
 #endif
 
             void VEthernetNetworkSwitcher::ClearPeerPrefixRoutes() noexcept {
@@ -1273,7 +1447,10 @@ namespace ppp {
                     ppp::net::proxies::HttpProxy::SetSystemProxy(server) &&
                     ppp::net::proxies::HttpProxy::RefreshSystemProxy();
                 if (!bok) {
-                    return ClearHttpProxyToSystemEnv();
+                    // Clearing a partially applied proxy is best effort, but it
+                    // must not turn a failed setup into a successful result.
+                    ClearHttpProxyToSystemEnv();
+                    return false;
                 }
 
                 return bok;
@@ -1473,12 +1650,12 @@ namespace ppp {
                         return ppp::android::ProtectSocketFd(socket);
 #elif defined(_LINUX)
                         if (owner->protect_network_) return owner->protect_network_->ProtectSync(socket);
-                        const auto interface = owner->underlying_ni_;
-                        return interface && ProtectClientUnderlyingSocket(socket, interface->Name, interface->Index);
+                        const auto network_interface = owner->underlying_ni_;
+                        return network_interface && ProtectClientUnderlyingSocket(socket, network_interface->Name, network_interface->Index);
 #elif defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
-                        const auto interface = owner->underlying_ni_;
-                        return interface && ProtectClientUnderlyingSocket(
-                            static_cast<ClientUnderlyingSocketHandle>(socket), interface->Name, interface->Index);
+                        const auto network_interface = owner->underlying_ni_;
+                        return network_interface && ProtectClientUnderlyingSocket(
+                            static_cast<ClientUnderlyingSocketHandle>(socket), network_interface->Name, network_interface->Index);
 #else
                         (void)socket;
                         return false;
@@ -1489,6 +1666,70 @@ namespace ppp {
             }
 
 #if defined(_WIN32)
+            bool VEthernetNetworkSwitcher::EnsureNetworkRecoveryJournal() noexcept {
+                if (network_recovery_checked_) {
+                    if (network_recovery_ready_ && network_recovery_journal_ &&
+                        network_recovery_journal_->IsOpen()) {
+                        // Entries created by this live session are expected
+                        // after startup recovery. They are owned by teardown
+                        // and must not be replayed as stale state.
+                        return true;
+                    }
+                    // A failed worker must be retryable. Release the old
+                    // process-local lock before opening the journal again.
+                    if (network_recovery_journal_) {
+                        network_recovery_journal_->Close();
+                        network_recovery_journal_.reset();
+                    }
+                    network_recovery_checked_ = false;
+                }
+                network_recovery_checked_ = true;
+                const ppp::string startup = ppp::GetApplicationStartupPath();
+                if (startup.empty()) return false;
+                const std::string directory =
+                    (ppp::filesystem::fs::path(startup.data()) / "network-recovery").string();
+                auto journal = std::make_unique<NetworkRecoveryJournal>();
+                std::string error;
+                if (!journal->Open(directory, "openppp2-core-network-v1", {}, &error)) {
+                    ppp::telemetry::Count("client.network_journal.open_fail", 1);
+                    return false;
+                }
+
+                // Use the same complete, independent recovery path as the
+                // desktop worker.  The previous in-process implementation
+                // replayed DNS only and then treated durable IPv4/IPv6
+                // records as unsupported, even though the recovery command
+                // can verify routes, assigned addresses, and the system
+                // proxy.  Close this process-local lock before invoking the
+                // worker, then reopen it so any unresolved resource remains a
+                // durable fail-closed gate for the next mutation.
+                journal->Close();
+                const std::string recovery_directory_arg =
+                    "--network-recovery-dir=" + directory;
+                const char* recovery_argv[] = {
+                    "openppp2-core",
+                    "--network-recovery",
+                    recovery_directory_arg.c_str(),
+                };
+                const int recovery_status =
+                    NetworkRecoveryJournal::RunRecoveryCommand(
+                        3, recovery_argv);
+                if (!journal->Open(directory, "openppp2-core-network-v1", {}, &error)) {
+                    ppp::telemetry::Count("client.network_journal.reopen_fail", 1);
+                    return false;
+                }
+                network_recovery_journal_ = std::move(journal);
+                route_coordinator_->SetRecoveryJournal(
+                    network_recovery_journal_.get());
+                if (recovery_status != 0 || network_recovery_journal_->HasPending()) {
+                    network_recovery_ready_ = false;
+                    ppp::telemetry::Count("client.network_journal.recovery_pending", 1);
+                    return false;
+                }
+                network_recovery_ready_ = true;
+                return true;
+            }
+
             /** @brief Starts optional PaperAirplane helper service on Windows. */
             bool VEthernetNetworkSwitcher::UsePaperAirplaneController() noexcept {
                 // Open the [PaperAirplane NSP/LSP] paper airplane server controller,

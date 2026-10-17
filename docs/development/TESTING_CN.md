@@ -199,6 +199,8 @@ ARM/Android 默认关闭；Windows MSBuild 可用 `/p:OpenPPP2EnableSimd=false` 
 
 ## 当前 CI 覆盖
 
+网络控制面生命周期的合同、Issue 拆分和平台验收边界见[VPN 网络生命周期合同](../architecture/NETWORK_LIFECYCLE_CONTRACT_CN.md)。其中的离线测试和真实系统测试是两种不同证据；通过 CTest 不等于 Windows DNS、路由或代理已在实机恢复。
+
 `.github/workflows/test.yml` 是主单元测试 workflow。它运行独立 C++/覆盖率路径、独立的完整套件 ThreadSanitizer job、生命周期 sanitizer、Guardian 和 Go 检查、Flutter 测试以及 iOS 逻辑测试。它**不**运行实验性 Desktop Client 的 npm 或 Cargo 测试命令。
 
 原生构建 workflows 与这个单元测试 workflow 分开。宣称某个平台或特性已由 CI 覆盖前，请阅读对应 workflow。

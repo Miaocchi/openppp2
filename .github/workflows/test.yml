@@ -75,6 +75,13 @@ jobs:
           python3 -m unittest tests.tooling.test_vmux_receive_semantics_ci -v
           python3 -m unittest tests.tooling.test_proxy_only_static_wiring -v
           python3 -m unittest tests.tooling.test_p2p_capability_wiring -v
+          python3 -m unittest tests.tooling.test_windows_dns_snapshot_contract -v
+          python3 -m unittest tests.tooling.test_windows_network_resource_contract -v
+          python3 -m unittest tests.tooling.test_windows_ipv6_contract -v
+          python3 -m unittest tests.tooling.test_lifecycle_wiring -v
+          python3 -m unittest tests.tooling.test_ci_workflow_contract -v
+          python3 -m unittest tests.tooling.test_network_lifecycle_issue_pack -v
+          python3 -m unittest tests.tooling.test_network_lifecycle_publish_boundary -v
           PYTHONDONTWRITEBYTECODE=1 python3 tests/tooling/test_datapath_acceptance.py
           python3 tools/check_repository_layout.py
 
@@ -89,6 +96,7 @@ jobs:
           sudo OPENPPP2_NAMESPACE_ARTIFACT_DIR="$PWD/build/route-dns-rollback" bash tests/integration/linux/route_dns_rollback.sh
 
       - name: Upload Route/DNS rollback snapshots
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: route-dns-rollback-snapshots
@@ -140,6 +148,26 @@ jobs:
           path: build/coverage/summary.txt
           retention-days: 7
 
+      - name: Write lifecycle acceptance summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 tools/write_network_lifecycle_summary.py \
+            --job-status "$JOB_STATUS" \
+            --output build/lifecycle-acceptance/summary.json
+          python3 tools/verify_network_lifecycle_summary.py \
+            build/lifecycle-acceptance/summary.json
+
+      - name: Upload lifecycle acceptance summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifecycle-acceptance-summary
+          path: build/lifecycle-acceptance/summary.json
+          if-no-files-found: error
+          retention-days: 7
+
   go:
     name: Go unit tests
     runs-on: ubuntu-latest
@@ -167,6 +195,51 @@ jobs:
           name: coverage-go
           path: go/build/coverage/go-summary.txt
           retention-days: 7
+
+  desktop-rust:
+    name: Desktop frontend and Rust tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    defaults:
+      run:
+        working-directory: desktop/client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/client/package-lock.json
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Install Tauri Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl file libayatana-appindicator3-dev \
+            libgtk-3-dev libssl-dev libwebkit2gtk-4.1-dev \
+            librsvg2-dev libxdo-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Build frontend assets
+        run: npm run build
+
+      - name: Rust unit and integration tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
   flutter:
     name: Flutter unit tests

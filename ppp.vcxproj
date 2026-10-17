@@ -429,6 +429,8 @@
     <ClCompile Include="ppp\app\client\routing\TcpRoutingSelector.cpp" />
     <ClCompile Include="ppp\app\client\routing\UdpRoutingSelector.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator.cpp" />
+    <ClCompile Include="ppp\app\client\route\NetworkOwnership.cpp" />
+    <ClCompile Include="ppp\app\client\NetworkRecoveryJournal.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator_mobile.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator_win32.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteCoordinator_darwin.cpp" />
@@ -439,6 +441,8 @@
     <ClCompile Include="ppp\app\client\route\RouteState.cpp" />
     <ClCompile Include="ppp\app\client\route\RouteSpecs.cpp" />
     <ClCompile Include="ppp\app\client\route\WindowsRoutePlatform.cpp" />
+    <ClCompile Include="ppp\app\client\route\WindowsRouteSnapshot.cpp" />
+    <ClCompile Include="ppp\app\client\route\WindowsRouteSnapshotWin32.cpp" />
     <ClCompile Include="ppp\app\client\udp\ClientDatagramPortManager.cpp" />
     <ClCompile Include="ppp\app\client\udp\UdpRelayHost.cpp" />
     <ClCompile Include="ppp\app\server\udp\ServerDatagramPortManager.cpp" />
@@ -501,6 +505,7 @@
     <ClCompile Include="ppp\net\native\dnsx.cpp" />
     <ClCompile Include="ppp\net\rinetd\RinetdConnection.cpp" />
     <ClCompile Include="ppp\app\client\AssignedAddressManager.cpp" />
+    <ClCompile Include="ppp\app\client\WindowsIPv6Snapshot.cpp" />
     <ClCompile Include="ppp\app\client\ClientConnectionTeardown.cpp" />
     <ClCompile Include="ppp\app\client\ClientFrpRegistry.cpp" />
     <ClCompile Include="ppp\app\client\ClientBypassRouteLoader.cpp" />
@@ -837,6 +842,10 @@
     <ClInclude Include="ppp\app\client\dns\HumanDnsQueryPolicy.h" />
     <ClInclude Include="ppp\app\client\routing\GeoDataReader.h" />
     <ClInclude Include="ppp\app\client\routing\HumanRoutingRouteSpecs.h" />
+    <ClInclude Include="ppp\app\client\route\RouteJournalCodec.h" />
+    <ClInclude Include="ppp\app\client\route\RouteSnapshotContract.h" />
+    <ClInclude Include="ppp\app\client\route\WindowsRouteSnapshot.h" />
+    <ClInclude Include="windows\ppp\win32\network\WindowsRouteSnapshotWin32.h" />
     <ClInclude Include="ppp\app\client\routing\HumanRoutingRules.h" />
     <ClInclude Include="ppp\app\client\policy\PolicyModel.h" />
     <ClInclude Include="ppp\app\client\policy\PolicySourceLoader.h" />
@@ -898,6 +907,7 @@
     <ClInclude Include="ppp\net\http\httplib.h" />
     <ClInclude Include="ppp\net\rinetd\RinetdConnection.h" />
     <ClInclude Include="ppp\app\client\AssignedAddressManager.h" />
+    <ClInclude Include="ppp\app\client\WindowsIPv6Snapshot.h" />
     <ClInclude Include="ppp\app\client\ClientConnectionTeardown.h" />
     <ClInclude Include="ppp\app\client\ClientBypassRouteLoader.h" />
     <ClInclude Include="ppp\app\client\AggregatorLoader.h" />

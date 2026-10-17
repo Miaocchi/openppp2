@@ -96,7 +96,7 @@ BOOST_AUTO_TEST_CASE(completion_before_suspend_multi_runner) {
 
     for (int i = 0; i < kCoroutines; ++i) {
         const bool spawned = ppp::coroutines::YieldContext::Spawn(runner.context,
-            [&done, &failures](ppp::coroutines::YieldContext& y) noexcept {
+            [&done, &failures, kIterations](ppp::coroutines::YieldContext& y) noexcept {
                 boost::asio::io_context& ctx = y.GetContext();
                 for (int k = 0; k < kIterations; ++k) {
                     const Anchor anchor = y.Arm();

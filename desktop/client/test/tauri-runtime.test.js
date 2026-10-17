@@ -82,6 +82,28 @@ test('tauri runtime invokes commands and derives connection state only from even
   assert.equal(state.connection.exitCode, 7)
 })
 
+test('tauri runtime keeps forced recovery visible and exposes an explicit retry action', async () => {
+  const fake = fakeBridge({}, {
+    client_retry_recovery: () => ({ networkRecoveryPending: true, proxyRecoveryPending: true, message: 'retry later' }),
+  })
+  const runtime = createTauriRuntime(fake.bridge)
+  let state
+  runtime.subscribe((next) => { state = next })
+  await runtime.ready
+  fake.emit({
+    type: 'exited',
+    payload: { code: null, success: false, recoveryPending: true },
+    connection: { sessionId: 1, pid: null, status: 'recovery_pending', recoveryPending: true },
+  })
+  assert.equal(state.connection.status, 'recovery_pending')
+  assert.equal(state.connection.recoveryPending, true)
+  assert.equal(state.connection.lastError, 'network recovery is pending')
+  const result = await runtime.retryRecovery()
+  assert.equal(result.networkRecoveryPending, true)
+  assert.equal(state.connection.status, 'recovery_pending')
+  assert.equal(fake.calls.at(-1)[0], 'client_retry_recovery')
+})
+
 test('tauri runtime merges latency only for known nodes and reprobes after refresh', async () => {
   const fake = fakeBridge()
   const runtime = createTauriRuntime(fake.bridge)

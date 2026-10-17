@@ -65,7 +65,7 @@ bool FlushFile(const fs::path& path) {
         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return false;
     const bool ok = FlushFileBuffers(handle) != 0;
-    CloseHandle(handle);
+    ::CloseHandle(handle);
     return ok;
 #else
     int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
@@ -102,39 +102,45 @@ bool AtomicWrite(const fs::path& target, const std::string& bytes, std::string& 
         error = "cannot write durable temporary file";
         return false;
     }
+    error_code ec;
     {
         std::ofstream output(ppp::filesystem::StreamPath(temporary), std::ios::binary | std::ios::trunc);
         if (!output) { error = "cannot create durable temporary file"; return false; }
         output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         output.flush();
-        if (!output) { error = "cannot write durable temporary file"; output.close(); fs::remove(temporary); return false; }
+        if (!output) { error = "cannot write durable temporary file"; output.close(); fs::remove(temporary, ec); return false; }
     }
     if (allow_stage && !allow_stage(FileDurablePolicyBundleStore::Stage::Flush)) {
         error = "cannot flush durable temporary file";
-        fs::remove(temporary);
+        fs::remove(temporary, ec);
         return false;
     }
     if (!FlushFile(temporary)) {
         error = "cannot fsync durable temporary file";
-        fs::remove(temporary);
+        fs::remove(temporary, ec);
         return false;
     }
-    error_code ec;
     if (allow_stage && !allow_stage(FileDurablePolicyBundleStore::Stage::Rename)) {
         error = "cannot atomically replace durable pointer";
-        fs::remove(temporary);
+        fs::remove(temporary, ec);
         return false;
     }
     if (rename_attempted) *rename_attempted = true;
 #if defined(_WIN32)
-    if (!MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) ec = error_code(GetLastError(), std::system_category());
+    for (int attempt = 0; ; ++attempt) {
+        if (MoveFileExW(temporary.wstring().c_str(), target.wstring().c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { ec.clear(); break; }
+        ec = error_code(GetLastError(), std::system_category());
+        if (attempt >= 100) { error = "cannot atomically replace durable pointer: last win32 error " + std::to_string(ec.value()); return false; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // Antivirus/indexer scans can transiently lock freshly written files.
+    }
 #else
     fs::rename(temporary, target, ec);
 #endif
     if (ec) {
         error = "cannot atomically replace durable pointer";
-        fs::remove(temporary);
+        fs::remove(temporary, ec);
         return false;
     }
     if ((allow_stage && !allow_stage(FileDurablePolicyBundleStore::Stage::DirectoryFlush)) ||
@@ -345,12 +351,12 @@ std::unique_ptr<DurablePolicyWriterLock> FileDurablePolicyBundleStore::AcquireWr
     if (handle == INVALID_HANDLE_VALUE) { error = "cannot open durable policy lock"; return {}; }
     OVERLAPPED overlapped{};
     if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &overlapped)) {
-        CloseHandle(handle); error = "cannot acquire durable policy lock"; return {};
+        ::CloseHandle(handle); error = "cannot acquire durable policy lock"; return {};
     }
     class Lock final : public DurablePolicyWriterLock {
     public:
         Lock(HANDLE h, OVERLAPPED o) : handle(h), overlapped(o) {}
-        ~Lock() override { UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &overlapped); CloseHandle(handle); }
+        ~Lock() override { UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &overlapped); ::CloseHandle(handle); }
         HANDLE handle; OVERLAPPED overlapped;
     };
     return std::make_unique<Lock>(handle, overlapped);

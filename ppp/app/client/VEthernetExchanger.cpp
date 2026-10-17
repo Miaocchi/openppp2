@@ -1558,6 +1558,28 @@ namespace ppp {
                     register_cancel([socket]() noexcept { Socket::Closesocket(socket); });
                 }
 
+#if defined(_WIN32)
+                // Opening the TAP can install its default gateway before the
+                // hosted route transaction installs the server bypass. Keep
+                // the control transport on the selected physical interface
+                // throughout startup and reconnect, independent of that route.
+                if (!switcher_->ProxyOnly(nullptr) && remoteIP.is_v4() &&
+                    !remoteIP.is_loopback()) {
+                    const auto network_interface = switcher_->GetUnderlyingNetworkInterface();
+                    if (!network_interface || !ProtectClientUnderlyingSocket(
+                            socket->native_handle(), network_interface->Name,
+                            network_interface->Index)) {
+                        rollback_windows_ipv6_route();
+                        Socket::Closesocket(socket);
+                        return ppp::diagnostics::SetLastError(
+                            ppp::diagnostics::ErrorCode::TunnelProtectionConfigureFailed,
+                            VEthernetExchanger::ITransmissionPtr(NULLPTR));
+                    }
+                    ppp::telemetry::Log(Level::kDebug, "client_exchanger",
+                        "control socket protected: physical_interface_index=%d",
+                        network_interface->Index);
+                }
+#endif
 #if defined(_LINUX)
                 // If IPV4 is not a loop IP address, it needs to be linked to a physical network adapter.
                 // IPV6 does not need to be linked, because VPN is IPV4,
@@ -2272,6 +2294,21 @@ namespace ppp {
                             ppp::diagnostics::SetLastErrorCode(
                                 ppp::diagnostics::ErrorCode::RouteAddFailed);
                         }
+#endif
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                        if (established) {
+                            if (std::shared_ptr<VEthernetNetworkSwitcher> switcher = switcher_; NULLPTR != switcher) {
+                                // Apply host routes and DNS before publishing
+                                // Established. A failed system-state apply must
+                                // follow the normal reconnect/failure path.
+                                if (!switcher->TryApplyHostedNetworkRoutes(true)) {
+                                    established = false;
+                                    ppp::telemetry::Count("client_exchanger.route_setup.fail", 1);
+                                }
+                            }
+                        }
+#endif
+#if defined(_WIN32)
                         if (!established) {
                             switcher_->RollbackWindowsIPv6Egress();
                         }
@@ -2293,14 +2330,6 @@ namespace ppp {
                             ExchangeToEstablishState();
                             ppp::telemetry::Count("client_exchanger.connect", 1);
                             ppp::telemetry::Log(Level::kInfo, "client_exchanger", "exchanger connected");
-#if !defined(_ANDROID) && !defined(_IPHONE)
-                            if (std::shared_ptr<VEthernetNetworkSwitcher> switcher = switcher_; NULLPTR != switcher) {
-                                if (!switcher->TryApplyHostedNetworkRoutes()) {
-                                    ppp::telemetry::Log(Level::kInfo, "client_exchanger", "route setup failed after exchanger connected");
-                                    ppp::telemetry::Count("client_exchanger.route_setup.fail", 1);
-                                }
-                            }
-#endif
                             bool main_run_ok = false;
                             if (SendRequestedIPv6Configuration(transmission, y)) {
                                 RegisterAllMappingPorts();

@@ -27,6 +27,7 @@ namespace ppp::net::packet { class UdpFrame; class BufferSegment; }
 #include <ppp/tap/TapRuntimeStats.h>
 #include <ppp/app/protocol/VirtualEthernetInformationFwd.h>
 #include <ppp/app/client/ClientNetworkInterface.h>
+#include <ppp/app/client/NetworkRecoveryJournal.h>
 #include <ppp/net/native/rib_fwd.h>
 #include <memory>
 #include <atomic>
@@ -38,6 +39,7 @@ namespace ppp::net::packet { class UdpFrame; class BufferSegment; }
 #if defined(_WIN32)
 struct _MIB_IPFORWARDROW;
 typedef struct _MIB_IPFORWARDROW MIB_IPFORWARDROW;
+#include <windows/ppp/win32/network/NetworkInterface.h>
 namespace ppp::win32::ipv6 { class WindowsIPv6RouteOwner; }
 #endif
 
@@ -115,8 +117,9 @@ namespace ppp {
                 typedef ppp::threading::Timer Timer;
                 typedef ppp::vector<std::pair<ppp::string, uint32_t>/**/> LoadIPListFileVector;
                 typedef std::shared_ptr<LoadIPListFileVector> LoadIPListFileVectorPtr;
-                typedef ppp::vector<boost::asio::ip::address> NicDnsServerAddresses;
-                typedef ppp::unordered_map<int, NicDnsServerAddresses> AllNicDnsServerAddresses;
+#if defined(_WIN32)
+                typedef ppp::unordered_map<int, ppp::win32::network::NetworkDnsSnapshot> NetworkDnsSnapshots;
+#endif
                 typedef std::shared_ptr<ppp::transmissions::proxys::IForwarding> IForwardingPtr;
 
             public:

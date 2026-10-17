@@ -7,6 +7,14 @@ option(ENABLE_TSAN "Enable ThreadSanitizer (cannot be combined with ENABLE_SANIT
 option(ENABLE_XTCP_TESTS "Build the pinned XTCP dependency contract tests" OFF)
 option(ENABLE_POLICY_BENCHMARKS "Build offline policy benchmarks outside CTest" OFF)
 
+# Match the runtime library to the provisioned Boost/OpenSSL triplet.  The
+# static triplet ships MT libraries; a mismatch fails at link time (LNK2038).
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    option(OPENPPP2_TESTS_STATIC_RUNTIME "Link the static MSVC runtime" ON)
+    if(OPENPPP2_TESTS_STATIC_RUNTIME)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+endif()
 get_filename_component(OPENPPP2_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 set(XTCP_SOURCE_DIR "${OPENPPP2_ROOT}/third-party/xtcp" CACHE PATH
     "Path to the pinned XTCP source tree")
@@ -14,6 +22,19 @@ set(XTCP_SOURCE_DIR "${OPENPPP2_ROOT}/third-party/xtcp" CACHE PATH
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
+# Boost components are linked by bare target name (boost_context,
+# boost_filesystem, ...).  On Windows/vcpkg the compiled libs carry versioned
+# names, so map them through the CMake targets provided by the toolchain.
+if(NOT TARGET boost_context)
+    find_package(Boost REQUIRED COMPONENTS context system filesystem regex thread)
+    if(TARGET Boost::context)
+        add_library(boost_context ALIAS Boost::context)
+        add_library(boost_system ALIAS Boost::system)
+        add_library(boost_filesystem ALIAS Boost::filesystem)
+        add_library(boost_regex ALIAS Boost::regex)
+        add_library(boost_thread ALIAS Boost::thread)
+    endif()
+endif()
 set(OPENPPP2_TEST_INCLUDES
     "${OPENPPP2_ROOT}"
     "${OPENPPP2_ROOT}/common"
@@ -21,7 +42,8 @@ set(OPENPPP2_TEST_INCLUDES
     "${OPENPPP2_ROOT}/common/json/include"
 )
 
-foreach(_hint /usr/include /usr/local/include /opt/homebrew/include)
+foreach(_hint /usr/include /usr/local/include /opt/homebrew/include
+        "C:/vcpkg/installed/x64-windows-static/include")
     if(EXISTS "${_hint}/boost/version.hpp")
         list(APPEND OPENPPP2_TEST_INCLUDES "${_hint}")
         break()
@@ -40,7 +62,8 @@ set(OPENPPP2_AGGREGATOR_LOADER_TEST_SUPPORT
     "${OPENPPP2_ROOT}/ppp/diagnostics/Error.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp"
-    "${OPENPPP2_ROOT}/ppp/app/client/SwitcherTimeoutRegistry.cpp")
+    "${OPENPPP2_ROOT}/ppp/app/client/SwitcherTimeoutRegistry.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/route/NetworkOwnership.cpp")
 
 set(OPENPPP2_TRANSPORT_AUTH_BINDING_SOURCES
     "${OPENPPP2_ROOT}/ppp/cryptography/noise/NoisePsk.cpp"
@@ -56,12 +79,35 @@ function(openppp2_add_cpp_test target)
         target_link_libraries(${target} PRIVATE stdc++fs)
     endif()
     target_include_directories(${target} PRIVATE ${OPENPPP2_TEST_INCLUDES})
-    target_compile_options(${target} PRIVATE
-        -Wno-format
-        -Wno-deprecated-declarations
-        -Wno-tautological-constant-out-of-range-compare
-    )
+    if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+        set(_has_stdafx OFF)
+        foreach(_src IN LISTS ARG_SOURCES)
+            if(_src MATCHES "stdafx[.]cpp$")
+                set(_has_stdafx ON)
+            endif()
+        endforeach()
+        if(NOT _has_stdafx)
+            # Telemetry's OTLP exporter needs the native process identifier; the
+            # recovery journal needs the platform CloseHandle.  Targets that
+            # link ppp/stdafx.cpp already define these symbols.
+            target_sources(${target} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/support/win32_process_id_stub.cpp")
+        endif()
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+        # MSVC does not accept GCC-style -Wno-* flags.
+        target_compile_options(${target} PRIVATE /W3)
+    else()
+        target_compile_options(${target} PRIVATE
+            -Wno-format
+            -Wno-deprecated-declarations
+            -Wno-tautological-constant-out-of-range-compare
+        )
+    endif()
     target_compile_definitions(${target} PRIVATE FUNCTION)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+        # Windows headers define min/max macros unless suppressed.
+        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
     if(ENABLE_COVERAGE)
         target_compile_options(${target} PRIVATE -fprofile-instr-generate -fcoverage-mapping)
         target_link_options(${target} PRIVATE -fprofile-instr-generate)
@@ -82,8 +128,13 @@ function(openppp2_add_cpp_test target)
             -fno-omit-frame-pointer)
         target_link_options(${target} PRIVATE -fsanitize=thread)
     endif()
-    if(target STREQUAL "runtime_snapshot_test" OR target STREQUAL "runtime_stats_json_test" OR target STREQUAL "p2p_replay_window_test" OR target STREQUAL "base64_test" OR target STREQUAL "dns_server_validation_test" OR target STREQUAL "dns_wire_validation_test" OR target STREQUAL "sysctl_validation_test" OR target STREQUAL "dns_redirect_plan_test" OR target STREQUAL "dns_reachability_test" OR target STREQUAL "dns_response_handler_test" OR target STREQUAL "dns_route_dispatcher_test" OR target STREQUAL "dns_udp_relay_test" OR target STREQUAL "dns_host_ports_test" OR target STREQUAL "dns_host_interface_test" OR target STREQUAL "dns_host_wiring_test" OR target STREQUAL "dns_session_context_test" OR target STREQUAL "dns_controller_test" OR target STREQUAL "route_host_ports_test" OR target STREQUAL "route_host_interface_test" OR target STREQUAL "route_state_test" OR target STREQUAL "route_coordinator_test" OR target STREQUAL "linux_route_platform_contract_test" OR target STREQUAL "route_platform_adapters_test" OR target STREQUAL "aggregator_loader_test" OR target STREQUAL "fake_ip_pool_test" OR target STREQUAL "dns_fake_ip_response_test" OR target STREQUAL "quic_reject_rate_limit_test" OR target STREQUAL "client_bypass_route_loader_test" OR target STREQUAL "exchanger_static_echo_channel_test" OR target STREQUAL "switcher_timeout_registry_test" OR target STREQUAL "peer_prefix_route_entry_test" OR target STREQUAL "peer_prefix_route_from_json_test" OR target STREQUAL "client_datagram_port_manager_test" OR target STREQUAL "server_datagram_port_manager_test" OR target STREQUAL "static_datagram_port_manager_test" OR target STREQUAL "peer_route_announce_policy_test" OR target STREQUAL "tcp_mss_clamp_test" OR target STREQUAL "icmp_path_mtu_test" OR target STREQUAL "client_bootstrap_policy_test")
+    if(target STREQUAL "runtime_snapshot_test" OR target STREQUAL "runtime_stats_json_test" OR target STREQUAL "p2p_replay_window_test" OR target STREQUAL "base64_test" OR target STREQUAL "dns_server_validation_test" OR target STREQUAL "dns_wire_validation_test" OR target STREQUAL "sysctl_validation_test" OR target STREQUAL "dns_redirect_plan_test" OR target STREQUAL "dns_reachability_test" OR target STREQUAL "dns_response_handler_test" OR target STREQUAL "dns_route_dispatcher_test" OR target STREQUAL "dns_udp_relay_test" OR target STREQUAL "dns_host_ports_test" OR target STREQUAL "dns_host_interface_test" OR target STREQUAL "dns_host_wiring_test" OR target STREQUAL "dns_session_context_test" OR target STREQUAL "dns_controller_test" OR target STREQUAL "route_host_ports_test" OR target STREQUAL "route_host_interface_test" OR target STREQUAL "route_state_test" OR target STREQUAL "route_coordinator_test" OR target STREQUAL "network_ownership_test" OR target STREQUAL "network_recovery_journal_test" OR target STREQUAL "linux_route_platform_contract_test" OR target STREQUAL "route_platform_adapters_test" OR target STREQUAL "windows_route_snapshot_test" OR target STREQUAL "windows_ipv6_snapshot_test" OR target STREQUAL "aggregator_loader_test" OR target STREQUAL "fake_ip_pool_test" OR target STREQUAL "dns_fake_ip_response_test" OR target STREQUAL "quic_reject_rate_limit_test" OR target STREQUAL "client_bypass_route_loader_test" OR target STREQUAL "exchanger_static_echo_channel_test" OR target STREQUAL "switcher_timeout_registry_test" OR target STREQUAL "peer_prefix_route_entry_test" OR target STREQUAL "peer_prefix_route_from_json_test" OR target STREQUAL "client_datagram_port_manager_test" OR target STREQUAL "server_datagram_port_manager_test" OR target STREQUAL "static_datagram_port_manager_test" OR target STREQUAL "peer_route_announce_policy_test" OR target STREQUAL "tcp_mss_clamp_test" OR target STREQUAL "icmp_path_mtu_test" OR target STREQUAL "client_bootstrap_policy_test")
         target_link_libraries(${target} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+        # Windows network functions (inet_ntop, htonl) used by dnslib and the
+        # network recovery path live in these import libraries.
+        target_link_libraries(${target} PRIVATE ws2_32 iphlpapi winmm)
     endif()
     add_test(NAME ${target} COMMAND ${target})
     # Watchdog: coroutine/lifecycle deadlocks must fail the test instead of
@@ -93,6 +144,17 @@ endfunction()
 
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
+
+openppp2_add_cpp_test(network_recovery_journal_test
+    SOURCES network_recovery_journal_test.cpp
+            support/network_recovery_route_stub.cpp
+            support/network_recovery_windows_stub.cpp
+            "${OPENPPP2_ROOT}/ppp/app/client/NetworkRecoveryJournal.cpp")
+openppp2_add_cpp_test(route_snapshot_contract_test SOURCES
+    route_snapshot_contract_test.cpp)
+openppp2_add_cpp_test(windows_ipv6_snapshot_test SOURCES
+    windows_ipv6_snapshot_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/client/WindowsIPv6Snapshot.cpp")
 
 if(ENABLE_XTCP_TESTS)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
@@ -268,6 +330,9 @@ uint64_t Executors::GetTickCount() noexcept { return 0; }
 openppp2_add_cpp_test(transport_auth_configuration_test SOURCES
     transport_auth_configuration_test.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/transport_auth_configuration_test_stubs.cpp"
+    support/windows_composition_stub.cpp
+    support/policy_link_runtime_stub.cpp
+    support/socket_platform_guard_stub.cpp
     "${OPENPPP2_ROOT}/ppp/configurations/AppConfiguration.cpp"
     "${OPENPPP2_ROOT}/ppp/configurations/TransportAuthConfiguration.cpp"
     "${OPENPPP2_ROOT}/ppp/app/ApplicationMode.cpp"
@@ -278,6 +343,8 @@ openppp2_add_cpp_test(transport_auth_configuration_test SOURCES
     "${OPENPPP2_ROOT}/ppp/cryptography/EVP.cpp"
     "${OPENPPP2_ROOT}/ppp/cryptography/rc4.cpp"
     "${OPENPPP2_ROOT}/ppp/cryptography/ssea.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/md5.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/digest.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Error.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp"
@@ -291,12 +358,18 @@ openppp2_add_cpp_test(transport_auth_configuration_test SOURCES
     "${OPENPPP2_ROOT}/ppp/ssl/SSL.cpp"
     "${OPENPPP2_ROOT}/ppp/stdafx.cpp"
     "${OPENPPP2_ROOT}/ppp/threading/Thread.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
+    "${OPENPPP2_ROOT}/common/chnroutes2/chnroutes2.cpp"
     "${OPENPPP2_ROOT}/common/json/src/json_reader.cpp"
     "${OPENPPP2_ROOT}/common/json/src/json_value.cpp"
     "${OPENPPP2_ROOT}/common/json/src/json_writer.cpp")
 target_compile_options(transport_auth_configuration_test PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(transport_auth_configuration_test PRIVATE -Wl,--gc-sections)
-target_link_libraries(transport_auth_configuration_test PRIVATE Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(transport_auth_configuration_test PRIVATE boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_definitions(transport_auth_configuration_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
+endif()
 openppp2_add_cpp_test(transport_auth_negotiation_test SOURCES
     transport_auth_negotiation_test.cpp
     "${OPENPPP2_ROOT}/ppp/app/protocol/TransportAuthNegotiation.cpp"
@@ -345,6 +418,7 @@ openppp2_add_cpp_test(session_resume_production_wss_lifecycle_test SOURCES
     ${OPENPPP2_TRANSPORT_AUTH_BINDING_SOURCES}
     "${OPENPPP2_ROOT}/ppp/transmissions/ITransmissionQoS.cpp"
     "${OPENPPP2_ROOT}/ppp/transmissions/IWebsocketTransmission.cpp"
+    support/qoss_stub.cpp
     "${OPENPPP2_ROOT}/ppp/Random.cpp"
     "${OPENPPP2_ROOT}/ppp/cryptography/ssea.cpp"
     "${OPENPPP2_ROOT}/ppp/cryptography/Ciphertext.cpp"
@@ -420,6 +494,7 @@ openppp2_add_cpp_test(session_resume_establish_transaction_wss_test SOURCES
     ${OPENPPP2_TRANSPORT_AUTH_BINDING_SOURCES}
     "${OPENPPP2_ROOT}/ppp/transmissions/ITransmissionQoS.cpp"
     "${OPENPPP2_ROOT}/ppp/transmissions/IWebsocketTransmission.cpp"
+    support/qoss_stub.cpp
     "${OPENPPP2_ROOT}/ppp/Random.cpp"
     "${OPENPPP2_ROOT}/ppp/cryptography/ssea.cpp"
     "${OPENPPP2_ROOT}/ppp/cryptography/Ciphertext.cpp"
@@ -653,7 +728,12 @@ add_library(p2p_v2_app_wiring_compile OBJECT
 target_compile_features(p2p_v2_app_wiring_compile PRIVATE cxx_std_17)
 target_include_directories(p2p_v2_app_wiring_compile PRIVATE ${OPENPPP2_TEST_INCLUDES})
 target_compile_definitions(p2p_v2_app_wiring_compile PRIVATE FUNCTION)
-target_compile_options(p2p_v2_app_wiring_compile PRIVATE -Wno-deprecated-declarations -Wno-format)
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_options(p2p_v2_app_wiring_compile PRIVATE -Wno-deprecated-declarations -Wno-format)
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_definitions(p2p_v2_app_wiring_compile PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 openppp2_add_cpp_test(p2p_coalesce_frames_test SOURCES
     p2p_coalesce_frames_test.cpp)
 target_link_libraries(p2p_coalesce_frames_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
@@ -708,22 +788,36 @@ target_link_libraries(dns_controller_test PRIVATE Threads::Threads OpenSSL::SSL 
 openppp2_add_cpp_test(route_state_test SOURCES
     route_state_test.cpp
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteState.cpp")
+openppp2_add_cpp_test(network_ownership_test SOURCES
+    network_ownership_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/client/route/NetworkOwnership.cpp")
+set_tests_properties(network_ownership_test PROPERTIES RUN_SERIAL TRUE)
 openppp2_add_cpp_test(client_connection_teardown_state_test SOURCES
     client_connection_teardown_state_test.cpp)
 openppp2_add_cpp_test(route_coordinator_test SOURCES
     route_coordinator_test.cpp
+    support/network_recovery_windows_stub.cpp
     support/ppp_test_stubs.cpp
     "${OPENPPP2_ROOT}/ppp/hash/hash_bytes.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteCoordinator.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/NetworkRecoveryJournal.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/route/NetworkOwnership.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteCoordinator_mobile.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/MobileRoutePlatform.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRoutePlatform.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRouteSnapshot.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRouteSnapshotWin32.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteSpecs.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/RouteState.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/routing/HumanRoutingRouteSpecs.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
+if(NOT WIN32)
+    target_sources(route_coordinator_test PRIVATE support/network_recovery_route_stub.cpp)
+endif()
 target_compile_definitions(route_coordinator_test PRIVATE
     OPENPPP2_ROUTE_TEST_MOBILE)
+set_tests_properties(route_coordinator_test PROPERTIES RUN_SERIAL TRUE)
+if(UNIX AND NOT APPLE)
 openppp2_add_cpp_test(linux_route_platform_contract_test SOURCES
     linux_route_platform_contract_test.cpp
     support/linux_route_platform_stubs.cpp
@@ -732,21 +826,41 @@ openppp2_add_cpp_test(linux_route_platform_contract_test SOURCES
 openppp2_add_cpp_test(linux_ipv6_contract_test SOURCES
     linux_ipv6_contract_test.cpp)
 target_link_libraries(linux_ipv6_contract_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 openppp2_add_cpp_test(windows_ipv6_route_transaction_test SOURCES
     windows_ipv6_route_transaction_test.cpp
     "${OPENPPP2_ROOT}/ppp/ipv6/IPv6RouteTransaction.cpp")
 openppp2_add_cpp_test(route_platform_adapters_test SOURCES
     route_platform_adapters_test.cpp
+    support/network_recovery_windows_stub.cpp
     "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRoutePlatform.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRouteSnapshot.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRouteSnapshotWin32.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/route/DarwinRoutePlatform.cpp"
-    "${OPENPPP2_ROOT}/ppp/app/client/route/MobileRoutePlatform.cpp")
+    "${OPENPPP2_ROOT}/ppp/app/client/route/MobileRoutePlatform.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
+openppp2_add_cpp_test(windows_route_snapshot_test SOURCES
+    windows_route_snapshot_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/client/route/WindowsRouteSnapshot.cpp")
+# Prefer a full bash (arrays/[[ ]] are required by the compile smoke);
+# busybox-style shells such as w64devkit bash fail with "bad substitution".
+if(NOT DEFINED OPENPPP2_BASH_PROGRAM)
+    find_program(OPENPPP2_BASH_PROGRAM bash
+        HINTS "C:/Program Files/Git/bin" "$ENV{ProgramFiles}/Git/bin"
+        DOC "Bash interpreter for compile-smoke scripts")
+endif()
 add_test(
     NAME client_packet_dispatch_compile_test
-    COMMAND bash "${OPENPPP2_ROOT}/tools/check_dispatch_handler_compiles.sh"
+    COMMAND "${OPENPPP2_BASH_PROGRAM}" "${OPENPPP2_ROOT}/tools/check_dispatch_handler_compiles.sh"
         "${CMAKE_CURRENT_BINARY_DIR}/client_packet_dispatch_compile.o")
+set_tests_properties(client_packet_dispatch_compile_test PROPERTIES
+    ENVIRONMENT "CXX=g++")
 openppp2_add_cpp_test(aggregator_loader_test SOURCES
     aggregator_loader_test.cpp
-    ${OPENPPP2_AGGREGATOR_LOADER_TEST_SUPPORT})
+    support/network_recovery_route_stub.cpp
+    support/network_recovery_windows_stub.cpp
+    ${OPENPPP2_AGGREGATOR_LOADER_TEST_SUPPORT}
+    "${OPENPPP2_ROOT}/ppp/app/client/NetworkRecoveryJournal.cpp")
 target_include_directories(aggregator_loader_test BEFORE PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/support/fake_aggligator")
 openppp2_add_cpp_test(peer_prefix_route_entry_test SOURCES
@@ -857,6 +971,7 @@ openppp2_add_cpp_test(yield_context_test SOURCES
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
 target_link_libraries(yield_context_test PRIVATE boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(UNIX AND NOT APPLE)
 openppp2_add_cpp_test(tun_gso_mergeability_test SOURCES
     tun_gso_mergeability_test.cpp)
 openppp2_add_cpp_test(tun_gso_coalescer_test SOURCES
@@ -866,6 +981,7 @@ openppp2_add_cpp_test(tun_gso_ledger_test SOURCES
 openppp2_add_cpp_test(tap_vnet_codec_test SOURCES
     tap_vnet_codec_test.cpp)
 target_link_libraries(tap_vnet_codec_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 openppp2_add_cpp_test(random_test SOURCES
     random_test.cpp
     support/random_test_stubs.cpp
@@ -983,9 +1099,14 @@ set_tests_properties(app_configuration_routing_test PROPERTIES
 get_target_property(OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES
     transport_auth_configuration_test SOURCES)
 list(REMOVE_ITEM OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES
-    transport_auth_configuration_test.cpp)
+    transport_auth_configuration_test.cpp
+    support/policy_link_runtime_stub.cpp
+    support/socket_platform_guard_stub.cpp)
 openppp2_add_cpp_test(routing_policy_baseline_test SOURCES
     routing_policy_baseline_test.cpp
+    support/windows_composition_stub.cpp
+    support/policy_link_runtime_stub.cpp
+    support/socket_platform_guard_stub.cpp
     ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES}
     "${OPENPPP2_ROOT}/ppp/app/client/routing/HumanRoutingRules.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/routing/GeoDataReader.cpp"
@@ -995,9 +1116,14 @@ openppp2_add_cpp_test(routing_policy_baseline_test SOURCES
     "${OPENPPP2_ROOT}/ppp/app/client/dns/DnsRedirectPlan.cpp"
     "${OPENPPP2_ROOT}/ppp/dns/DnsProviderCatalog.cpp"
     "${OPENPPP2_ROOT}/ppp/dns/DnsResolver.cpp"
-    "${OPENPPP2_ROOT}/ppp/net/Firewall.cpp")
+    "${OPENPPP2_ROOT}/ppp/dns/DnsUdpFlowRegistry.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/Firewall.cpp"
+    "${OPENPPP2_ROOT}/common/chnroutes2/chnroutes2.cpp")
 target_compile_definitions(routing_policy_baseline_test PRIVATE
-    OPENPPP2_POLICY_FIXTURE_DIR="${OPENPPP2_ROOT}/tests/contracts/routing-policy/v1")
+    OPENPPP2_POLICY_FIXTURE_DIR="${OPENPPP2_ROOT}/tests/contracts/routing-policy/v1"
+    BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
 target_compile_options(routing_policy_baseline_test PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(routing_policy_baseline_test PRIVATE -Wl,--gc-sections)
 target_link_libraries(routing_policy_baseline_test PRIVATE
@@ -1013,22 +1139,34 @@ set_tests_properties(routing_policy_baseline_harness_test PROPERTIES
     TIMEOUT 120 LABELS "routing-policy;offline")
 openppp2_add_cpp_test(policy_runtime_guard_test SOURCES
     policy_runtime_guard_test.cpp
+    support/windows_composition_stub.cpp
+    support/policy_link_runtime_stub.cpp
+    support/socket_platform_guard_stub.cpp
+    "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
+    "${OPENPPP2_ROOT}/common/chnroutes2/chnroutes2.cpp"
     ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES})
 target_compile_options(policy_runtime_guard_test PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(policy_runtime_guard_test PRIVATE -Wl,--gc-sections)
 target_link_libraries(policy_runtime_guard_test PRIVATE
-    Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+    boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_definitions(policy_runtime_guard_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
+endif()
 if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(policy_runtime_guard_test PRIVATE -fno-sanitize=vptr)
 endif()
 set_tests_properties(policy_runtime_guard_test PROPERTIES LABELS "routing-policy;offline")
 openppp2_add_cpp_test(policy_configuration_test SOURCES
     policy_configuration_test.cpp
+    support/windows_composition_stub.cpp
+    support/policy_link_runtime_stub.cpp
+    support/socket_platform_guard_stub.cpp
     "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
     "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
     ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES})
 target_compile_options(policy_configuration_test PRIVATE -ffunction-sections -fdata-sections)
-target_compile_definitions(policy_configuration_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION)
+target_compile_definitions(policy_configuration_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
 target_link_options(policy_configuration_test PRIVATE -Wl,--gc-sections)
 target_link_libraries(policy_configuration_test PRIVATE
     boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
@@ -1053,7 +1191,12 @@ add_library(openppp2_policy_test_core STATIC
 target_compile_features(openppp2_policy_test_core PUBLIC cxx_std_17)
 target_include_directories(openppp2_policy_test_core PUBLIC ${OPENPPP2_TEST_INCLUDES})
 target_compile_definitions(openppp2_policy_test_core PRIVATE FUNCTION)
-target_compile_options(openppp2_policy_test_core PRIVATE -Wno-deprecated-declarations -Wno-format)
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_definitions(openppp2_policy_test_core PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_options(openppp2_policy_test_core PRIVATE -Wno-deprecated-declarations -Wno-format)
+endif()
 target_link_libraries(openppp2_policy_test_core PUBLIC Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
     AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9
@@ -1082,6 +1225,9 @@ add_library(openppp2_policy_update_test_core STATIC
     "${OPENPPP2_ROOT}/ppp/app/client/policy/PolicyStatusFile.cpp")
 target_link_libraries(openppp2_policy_update_test_core PUBLIC openppp2_policy_test_core)
 target_compile_definitions(openppp2_policy_update_test_core PRIVATE FUNCTION)
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_definitions(openppp2_policy_update_test_core PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 target_compile_options(openppp2_policy_update_test_core PRIVATE -ffunction-sections -fdata-sections)
 if(ENABLE_COVERAGE)
     target_compile_options(openppp2_policy_update_test_core PRIVATE -fprofile-instr-generate -fcoverage-mapping)
@@ -1099,12 +1245,21 @@ add_library(openppp2_policy_cli_test_support STATIC
     "${OPENPPP2_ROOT}/ppp/app/client/routing/HumanRoutingRules.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/dns/Rule.cpp"
     "${OPENPPP2_ROOT}/ppp/dns/DnsResolver.cpp"
+    "${OPENPPP2_ROOT}/ppp/dns/DnsUdpFlowRegistry.cpp"
     "${OPENPPP2_ROOT}/ppp/net/Firewall.cpp"
     "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
     "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
+    support/policy_link_runtime_stub.cpp
+    support/socket_platform_guard_stub.cpp
     ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES})
 target_compile_definitions(openppp2_policy_cli_test_support PRIVATE FUNCTION BUDDY_ALLOC_IMPLEMENTATION)
-target_compile_options(openppp2_policy_cli_test_support PRIVATE -ffunction-sections -fdata-sections -Wno-deprecated-declarations -Wno-format)
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_definitions(openppp2_policy_cli_test_support PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
+endif()
+target_compile_options(openppp2_policy_cli_test_support PRIVATE -ffunction-sections -fdata-sections)
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_options(openppp2_policy_cli_test_support PRIVATE -Wno-deprecated-declarations -Wno-format)
+endif()
 target_link_libraries(openppp2_policy_cli_test_support PUBLIC
     openppp2_policy_update_test_core boost_regex boost_filesystem)
 target_link_options(openppp2_policy_cli_test_support INTERFACE -Wl,--gc-sections)
@@ -1126,16 +1281,31 @@ foreach(_policy_test policy_source_loader_test policy_compiler_test policy_comma
     if(_policy_test STREQUAL "policy_command_test" OR _policy_test STREQUAL "policy_entrypoint_test"
         OR _policy_test STREQUAL "policy_cli_contract_test" OR _policy_test STREQUAL "policy_legacy_migration_test")
         target_link_libraries(${_policy_test} PRIVATE openppp2_policy_cli_test_support)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+            # These Windows fixtures need stdafx.obj instead of the process-id
+            # stub. On ELF platforms use the existing sectioned support library
+            # so offline tests do not pull in runtime static initialization.
+            target_sources(${_policy_test} PRIVATE "${OPENPPP2_ROOT}/ppp/stdafx.cpp")
+            target_compile_definitions(${_policy_test} PRIVATE PPP_STUB_NO_PROCESS_ID)
+        endif()
     endif()
     target_link_libraries(${_policy_test} PRIVATE openppp2_policy_test_core)
     set_tests_properties(${_policy_test} PROPERTIES LABELS "routing-policy;offline")
     if(_policy_test STREQUAL "policy_entrypoint_test")
+        # main.cpp dispatches the recovery worker before normal bootstrap.  The
+        # offline entrypoint fixture must link that implementation as well.
+        target_sources(${_policy_test} PRIVATE
+            "${CMAKE_CURRENT_LIST_DIR}/support/network_recovery_route_stub.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/support/network_recovery_windows_stub.cpp"
+            "${OPENPPP2_ROOT}/ppp/app/client/NetworkRecoveryJournal.cpp")
         target_compile_definitions(${_policy_test} PRIVATE
             OPENPPP2_POLICY_EXAMPLE_CONFIG="${OPENPPP2_ROOT}/tests/contracts/routing-policy/v2/example.json")
     endif()
 endforeach()
 openppp2_add_cpp_test(policy_dns_transport_test SOURCES
     policy_dns_transport_test.cpp
+    support/windows_composition_stub.cpp
+    support/policy_link_runtime_stub.cpp
     ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES}
     "${OPENPPP2_ROOT}/ppp/app/client/dns/PolicyResolverService.cpp"
     "${OPENPPP2_ROOT}/ppp/app/client/dns/DnsSessionContext.cpp"
@@ -1144,16 +1314,16 @@ openppp2_add_cpp_test(policy_dns_transport_test SOURCES
     "${OPENPPP2_ROOT}/ppp/net/Socket.cpp"
     "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
     "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
-    support/policy_network_guard_stubs.cpp
+    "${OPENPPP2_ROOT}/common/chnroutes2/chnroutes2.cpp"
     "${OPENPPP2_ROOT}/common/dnslib/buffer.cpp"
     "${OPENPPP2_ROOT}/common/dnslib/message.cpp"
     "${OPENPPP2_ROOT}/common/dnslib/qs.cpp"
     "${OPENPPP2_ROOT}/common/dnslib/rr.cpp")
-target_compile_definitions(policy_dns_transport_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION)
+target_compile_definitions(policy_dns_transport_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_SOCKET_CANCEL PPP_STUB_NO_GETCURRENT)
 target_compile_options(policy_dns_transport_test PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(policy_dns_transport_test PRIVATE -Wl,--gc-sections)
 target_link_libraries(policy_dns_transport_test PRIVATE
-    openppp2_policy_test_core boost_regex boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+    openppp2_policy_test_core boost_regex boost_filesystem boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(policy_dns_transport_test PRIVATE -fno-sanitize=vptr)
 endif()
@@ -1168,14 +1338,60 @@ foreach(_policy_extended_test policy_status_file_test policy_update_connectors_t
 endforeach()
 openppp2_add_cpp_test(policy_tunnel_update_connector_test SOURCES
     policy_tunnel_update_connector_test.cpp
+    support/windows_composition_stub.cpp
+    support/policy_link_runtime_stub.cpp
     "${OPENPPP2_ROOT}/ppp/app/client/policy/PolicyTunnelUpdateConnector.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/client/PolicyTunnelDnsStream.cpp"
+    "${OPENPPP2_ROOT}/ppp/dns/DnsResolver.cpp"
+    "${OPENPPP2_ROOT}/ppp/ssl/SSL.cpp"
+    "${OPENPPP2_ROOT}/ppp/coroutines/YieldContext.cpp"
+    "${OPENPPP2_ROOT}/ppp/io/File.cpp"
+    "${OPENPPP2_ROOT}/ppp/stdafx.cpp"
+    "${OPENPPP2_ROOT}/ppp/Random.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/Thread.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/EVP.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/rc4.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/md5.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/digest.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/ssea.cpp"
+    "${OPENPPP2_ROOT}/common/aesni/aes.cpp"
+    "${OPENPPP2_ROOT}/common/chnroutes2/chnroutes2.cpp"
+    "${OPENPPP2_ROOT}/ppp/dns/DnsUdpFlowRegistry.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/Timer.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/Socket.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/IPEndPoint.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/Ipep.cpp"
+    "${OPENPPP2_ROOT}/ppp/auxiliary/StringAuxiliary.cpp"
+    "${OPENPPP2_ROOT}/ppp/auxiliary/JsonAuxiliary.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/Error.cpp"
+    "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
+    support/vdns_resolve_stub.cpp
+    "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/protocol/VirtualEthernetInformation.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/protocol/VirtualEthernetLinklayer.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/protocol/VirtualEthernetTcpipConnection.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/protocol/VirtualEthernetLogger.cpp"
+    "${OPENPPP2_ROOT}/ppp/DateTime.cpp"
+    "${OPENPPP2_ROOT}/ppp/net/native/checksum.cpp"
     "${OPENPPP2_ROOT}/common/dnslib/buffer.cpp"
     "${OPENPPP2_ROOT}/common/dnslib/message.cpp"
     "${OPENPPP2_ROOT}/common/dnslib/qs.cpp"
     "${OPENPPP2_ROOT}/common/dnslib/rr.cpp")
 target_compile_options(policy_tunnel_update_connector_test PRIVATE -ffunction-sections -fdata-sections)
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_definitions(policy_tunnel_update_connector_test PRIVATE PPP_STUB_NO_YIELD_SPAWN PPP_STUB_NO_DURATIONTIME PPP_STUB_NO_SOCKET_CANCEL)
+endif()
+target_compile_definitions(policy_tunnel_update_connector_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION)
+if(NOT WIN32)
+    # The production link-layer multicast regression uses its clock and packet
+    # allocator even when no transport is opened.
+    target_sources(policy_tunnel_update_connector_test PRIVATE support/random_test_stubs.cpp)
+endif()
 target_link_options(policy_tunnel_update_connector_test PRIVATE -Wl,--gc-sections)
-target_link_libraries(policy_tunnel_update_connector_test PRIVATE openppp2_policy_test_core)
+target_link_libraries(policy_tunnel_update_connector_test PRIVATE
+    boost_filesystem boost_context openppp2_policy_test_core)
 set_tests_properties(policy_tunnel_update_connector_test PROPERTIES LABELS "routing-policy;offline")
 openppp2_add_cpp_test(mta_handoff_telemetry_test SOURCES
     mta_handoff_telemetry_test.cpp)

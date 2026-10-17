@@ -101,7 +101,26 @@ fn run_parses_reports_for_documented_exit_codes() {
 fn real_policy_cli_accepts_gui_drafts() {
     let Some(kernel) = std::env::var_os("OPENPPP2_POLICY_CLI") else { return };
     let kernel = std::path::PathBuf::from(kernel);
+    let info = openppp2_client_desktop::kernel::inspect(&kernel).unwrap();
+    assert_eq!(info["policySupported"].as_bool(), Some(true),
+        "GUI capability probe rejected the policy kernel: version={}, probe_error={}",
+        info["version"], info["probeError"]);
     let dir = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    {
+        // Preserve the actual PE version resources but make the image
+        // unlaunchable, exercising the real Win32 file-version fallback.
+        let mut image = std::fs::read(&kernel).unwrap();
+        let pe = u32::from_le_bytes(image[0x3c..0x40].try_into().unwrap()) as usize;
+        assert_eq!(&image[pe..pe + 4], b"PE\0\0");
+        image[pe + 4..pe + 6].copy_from_slice(&0xffffu16.to_le_bytes());
+        let fixture = dir.path().join("unlaunchable-version-probe.exe");
+        std::fs::write(&fixture, image).unwrap();
+        let fallback = openppp2_client_desktop::kernel::inspect(&fixture).unwrap();
+        assert_eq!(fallback["helpAvailable"], false);
+        assert!(fallback["probeError"].as_str().is_some_and(|error| !error.is_empty()));
+        assert_eq!(fallback["policySupported"], true);
+    }
     let workspace = dir.path().join("policy");
     let staging = Staging::new(&dir.path().join("staging")).unwrap();
     let out = staging.path("out");
