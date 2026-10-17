@@ -59,8 +59,23 @@ TARGET_IP="192.0.2.2"
 SERVER_IP="198.51.100.1"
 
 pids=()
+pcap_pid=""
+TUN_DEV=""
+NETEM_ACTIVE=0
 cleanup() {
+  local exit_status=$?
   set +e
+  if [[ 0 -ne "${exit_status}" && 1 -eq "${NETEM_ACTIVE}" && -n "${TUN_DEV}" ]] && ip netns list | grep -Fq "${NS_C}"; then
+    ip netns exec "${NS_C}" ss -tinap >"${STATE_DIR}/netem-ss.txt" 2>&1
+    ip -n "${NS_C}" -s link show dev "${TUN_DEV}" >"${STATE_DIR}/netem-link.txt" 2>&1
+    ip netns exec "${NS_C}" tc -s qdisc show dev "${TUN_DEV}" >"${STATE_DIR}/netem-qdisc.txt" 2>&1
+    ip netns exec "${NS_C}" cat /proc/net/snmp >"${STATE_DIR}/netem-snmp.txt" 2>&1
+  fi
+  if [[ -n "${pcap_pid}" ]]; then
+    kill "${pcap_pid}" 2>/dev/null || true
+    wait "${pcap_pid}" 2>/dev/null || true
+    pcap_pid=""
+  fi
   if [[ -n "${OPENPPP2_NAMESPACE_ARTIFACT_DIR:-}" ]]; then
     mkdir -p "${OPENPPP2_NAMESPACE_ARTIFACT_DIR}"
     cp -f "${STATE_DIR}"/* "${OPENPPP2_NAMESPACE_ARTIFACT_DIR}/" 2>/dev/null || true
@@ -415,6 +430,18 @@ if [[ "${SKIP_NETEM}" != 1 ]]; then
   ip netns exec "${NS_C}" tc qdisc replace dev "${TUN_DEV}" root netem loss 1% reorder 25% delay 10ms || {
     echo "tc netem setup failed" >&2; exit 1; }
   ip -n "${NS_C}" link set dev "${TUN_DEV}" mtu 1280
+  NETEM_ACTIVE=1
+  if command -v tcpdump >/dev/null; then
+    ip netns exec "${NS_C}" tcpdump -U -i "${TUN_DEV}" -nn -s 128 -c 200000 \
+      -w "${STATE_DIR}/netem-tun.pcap" 'tcp or icmp or icmp6' \
+      >"${STATE_DIR}/netem-tcpdump.log" 2>&1 &
+    pcap_pid=$!
+    sleep 0.2
+    if ! kill -0 "${pcap_pid}" 2>/dev/null; then
+      wait "${pcap_pid}" || true
+      pcap_pid=""
+    fi
+  fi
   ip netns exec "${NS_C}" python3 -u - "${TARGET_IP}" "${ECHO_PORT}" \
     >>"${STATE_DIR}/battery.log" 2>&1 <<'PY'
 import socket, sys
