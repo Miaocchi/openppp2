@@ -147,6 +147,17 @@ namespace ppp {
                 }
             }
 
+            void VEthernetNetworkTcpipConnection::FlushPeerSend() noexcept {
+                std::shared_ptr<VirtualEthernetTcpipConnection> connection;
+                {
+                    std::lock_guard<std::mutex> lock(external_direct_sync_);
+                    connection = external_direct_connection_.lock();
+                }
+                if (connection) {
+                    connection->FlushDirectPeerSend();
+                }
+            }
+
             void VEthernetNetworkTcpipConnection::SetDirectQueueTelemetry(
                 const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry) noexcept {
                 std::shared_ptr<VirtualEthernetTcpipConnection> connection;
