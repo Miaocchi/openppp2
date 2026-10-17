@@ -449,9 +449,9 @@ public:
             echo_guard_.reset();
             echo_context_->stop();
             echo_thread_.join();
-            echo_.reset();
-            echo_context_.reset();
         }
+        echo_.reset();
+        echo_context_.reset();
     }
 
 #if defined(_WIN32)
