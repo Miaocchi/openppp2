@@ -203,6 +203,8 @@ namespace ppp {
                 bool                                                            StartDirectBridge(const DirectReadHandler& on_data, const DirectCloseHandler& on_close, const DirectWritableHandler& on_writable) noexcept;
                 DirectIoResult                                                  SendDirectToPeer(const Byte* data, std::uint32_t length,
                     XtcpUploadBudget::Reservation&& credit) noexcept;
+                /** @brief Starts the direct upload writer once for the sends queued by SendDirectToPeer(). */
+                bool                                                            FlushDirectPeerSend() noexcept;
                 void                                                            CompleteDirectDownload(
                     const XtcpDirectReadReservation& reservation,
                     XtcpDirectCompletion completion) noexcept;
@@ -249,6 +251,7 @@ namespace ppp {
                 bool                                                            RunDirectUpload(YieldContext& y) noexcept;
                 bool                                                            RunDirectDownload(YieldContext& y) noexcept;
                 bool                                                            StartDirectUploadWriter() noexcept;
+                bool                                                            StartDirectUploadWriterIfNeeded() noexcept;
                 /**
                  * @brief Arms asynchronous read from socket.
                  * @param buffer Receive buffer.

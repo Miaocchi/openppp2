@@ -120,6 +120,7 @@ struct TcpView final {
     std::uint32_t ack = 0;
     std::uint16_t window = 0;
     std::uint8_t flags = 0;
+    std::uint8_t wscale = 0xFF;  // RFC 7323 shift from a SYN option; 0xFF = absent
     std::vector<Byte> payload;
 };
 
@@ -153,6 +154,15 @@ bool ParseTcp(const std::vector<Byte>& packet, TcpView& view) noexcept {
     view.ack = ReadBe32(tcp + 8);
     view.window = ReadBe16(tcp + 14);
     view.flags = tcp[13];
+    view.wscale = 0xFF;
+    for (std::size_t i = 20; i < tcp_header;) {
+        const Byte kind = tcp[i];
+        if (kind == 0) break;            // end of option list
+        if (kind == 1) { ++i; continue; }  // NOP
+        if (i + 1 >= tcp_header || tcp[i + 1] < 2 || i + tcp[i + 1] > tcp_header) break;
+        if (kind == 3 && tcp[i + 1] == 3) view.wscale = tcp[i + 2];
+        i += tcp[i + 1];
+    }
     view.payload.assign(tcp + tcp_header, packet.data() + packet.size());
     return true;
 }
@@ -717,22 +727,31 @@ private:
 // Drives one full handshake and returns the established sequence numbers.
 bool Handshake(Bridge& bridge, std::uint16_t client_port,
         std::uint32_t& client_next, std::uint32_t& server_next, std::uint16_t peer_mss = 0,
-        const std::shared_ptr<XtcpSecondLegHooks>& direct = nullptr) {
+        const std::shared_ptr<XtcpSecondLegHooks>& direct = nullptr, bool window_scaling = false,
+        std::uint8_t* runtime_wscale = nullptr) {
     const std::size_t accepted_before = bridge.AcceptedCount();
     const std::uint32_t client_isn = 1000 + client_port;
     auto syn = xtcp::harness::BuildIp4Tcp(
         kClientIp, kServiceIp, client_port, kServicePort, client_isn, 0, kSyn);
     if (peer_mss != 0) {
-        syn.resize(44, 0);
+        const std::size_t header_size = window_scaling ? 48 : 44;
+        syn.resize(header_size, 0);
         syn[2] = 0;
-        syn[3] = 44;
-        syn[32] = 0x60;
+        syn[3] = static_cast<Byte>(header_size);
+        syn[32] = window_scaling ? 0x70 : 0x60;
         syn[40] = 2;
         syn[41] = 4;
         syn[42] = static_cast<Byte>(peer_mss >> 8);
         syn[43] = static_cast<Byte>(peer_mss);
+        if (window_scaling) {
+            syn[44] = 1;
+            syn[45] = 3;
+            syn[46] = 3;
+            syn[47] = 8;
+        }
         xtcp::harness::FillIp4Checksum(syn.data());
-        xtcp::harness::FillTcp4Checksum(syn.data(), syn.data() + 20, 24);
+        xtcp::harness::FillTcp4Checksum(syn.data(), syn.data() + 20,
+            static_cast<UInt32>(header_size - 20));
     }
     bridge.Submit(syn);
     if (!WaitFor([&]() { return bridge.AcceptedCount() > accepted_before; })) {
@@ -753,6 +772,10 @@ bool Handshake(Bridge& bridge, std::uint16_t client_port,
     const std::uint32_t server_isn = syn_ack.seq;
     if (syn_ack.ack != client_isn + 1) {
         return false;
+    }
+    if (runtime_wscale != nullptr) {
+        // Scaling is in effect only when both SYNs carried the option.
+        *runtime_wscale = window_scaling && peer_mss != 0 ? syn_ack.wscale : std::uint8_t(0xFF);
     }
     bridge.Submit(xtcp::harness::BuildIp4Tcp(
         kClientIp, kServiceIp, client_port, kServicePort,
@@ -1483,7 +1506,10 @@ void TestGlobalUploadBudgetWakesOtherFlowAndSurvivesRestart() {
 namespace {
 // This measures the test harness + runtime + loopback echo, not PPP/Wintun.
 // Application flight limit. XTCP_BENCH_WINDOW overrides it (bytes, 1360..1MiB)
-// to separate latency-bound closed-loop effects from per-byte cost.
+// to separate latency-bound closed-loop effects from per-byte cost. XTCP_BENCH_CHUNK
+// overrides the synthetic peer segment size (bytes, 1360..16KiB); the XTCP stack and
+// external TCP bridge accept the resulting segments, but the report remains a fixed-
+// cost comparison, not a GSO capability claim.
 std::size_t BenchmarkWindow() {
     static const std::size_t window = []() {
         const char* env = std::getenv("XTCP_BENCH_WINDOW");
@@ -1492,8 +1518,21 @@ std::size_t BenchmarkWindow() {
     }();
     return window;
 }
-constexpr std::size_t kBenchmarkChunk = 1360;
+std::size_t BenchmarkChunk() {
+    static const std::size_t chunk = []() {
+        const char* env = std::getenv("XTCP_BENCH_CHUNK");
+        const long long value = env != nullptr ? std::atoll(env) : 0;
+        return value >= 1360 && value <= 16 * 1024 ? static_cast<std::size_t>(value) : std::size_t(1360);
+    }();
+    return chunk;
+}
 constexpr std::uint16_t kBenchmarkMss = 1460;
+// Data segments (XTCP) or write calls (native) issued by the harness. Snapshots
+// at the measured window edges let runs with different XTCP_BENCH_CHUNK values
+// separate per-segment fixed cost from per-byte cost.
+std::uint64_t g_bench_segments = 0;
+std::uint64_t g_bench_segments_start = 0;
+std::uint64_t g_bench_segments_end = 0;
 
 std::vector<Byte> BenchmarkPattern() {
     std::vector<Byte> data(1024 * 1024);
@@ -1859,13 +1898,17 @@ void PrintThroughput(const char* name, std::uint64_t bytes, double elapsed,
     std::printf("{\"benchmark\":\"%s\",\"payload_bytes\":%llu,\"seconds\":%.6f,"
         "\"mbps\":%.3f,\"process_cpu_seconds\":%.6f,\"cpu_ns_per_byte\":%.3f,"
         "\"byte_exact\":true,\"ingress_dropped\":%llu,\"duplicate_packets\":%llu,"
-        "\"connections\":1,\"warmup_seconds\":1,\"window_bytes\":%zu,\"chunk_bytes\":%zu,\"synthetic_peer_mss\":%u}\n",
+        "\"connections\":1,\"warmup_seconds\":1,\"window_bytes\":%zu,\"chunk_bytes\":%zu,\"synthetic_peer_mss\":%u,"
+        "\"segments\":%llu,\"cpu_ns_per_segment\":%.1f}\n",
         name, static_cast<unsigned long long>(bytes), elapsed,
         static_cast<double>(bytes) * 8.0 / elapsed / 1000000.0, cpu,
         cpu * 1000000000.0 / static_cast<double>(bytes),
         static_cast<unsigned long long>(dropped),
-        static_cast<unsigned long long>(duplicates), BenchmarkWindow(), kBenchmarkChunk,
-        static_cast<unsigned>(peer_mss));
+        static_cast<unsigned long long>(duplicates), BenchmarkWindow(), BenchmarkChunk(),
+        static_cast<unsigned>(peer_mss),
+        static_cast<unsigned long long>(g_bench_segments_end - g_bench_segments_start),
+        g_bench_segments_end > g_bench_segments_start
+            ? cpu * 1000000000.0 / static_cast<double>(g_bench_segments_end - g_bench_segments_start) : 0.0);
 }
 
 // Direct-bridge echo peer for the throughput benchmark: stands in for the
@@ -2038,7 +2081,12 @@ int RunXtcpThroughput(int seconds) {
     const bool direct = BenchmarkDirectBridge();
     const std::shared_ptr<DirectEchoLeg> echo_leg = direct ? std::make_shared<DirectEchoLeg>() : nullptr;
     std::uint32_t client_initial = 0, server_initial = 0;
-    if (!Handshake(bridge, kClientPort, client_initial, server_initial, kBenchmarkMss, echo_leg)) {
+    std::uint8_t runtime_wscale = 0xFF;
+    // XTCP_BENCH_WSCALE=0 keeps the synthetic SYN without the window-scale option.
+    const char* wscale_env = std::getenv("XTCP_BENCH_WSCALE");
+    const bool window_scaling = wscale_env == nullptr || wscale_env[0] != '0';
+    if (!Handshake(bridge, kClientPort, client_initial, server_initial, kBenchmarkMss, echo_leg,
+            window_scaling, &runtime_wscale)) {
         throw std::runtime_error("XTCP handshake failed");
     }
     if (echo_leg) {
@@ -2086,6 +2134,7 @@ int RunXtcpThroughput(int seconds) {
 #endif
             }
             warmup_bytes = received;
+            g_bench_segments_start = g_bench_segments;
             measured = true;
         }
         if (measured && !finished && std::chrono::steady_clock::now() >= send_deadline) {
@@ -2093,6 +2142,7 @@ int RunXtcpThroughput(int seconds) {
             cpu_end = ProcessCpuSeconds();
             BenchThreadsMark(false);
             finish_bytes = received;
+            g_bench_segments_end = g_bench_segments;
             finished = true;
         }
         bool progress = false;
@@ -2113,7 +2163,9 @@ int RunXtcpThroughput(int seconds) {
                         throw std::runtime_error("XTCP ACK beyond sent bytes");
                     }
                     acknowledged += static_cast<std::uint32_t>(advance);
-                    receive_window = view.window;
+                    receive_window = runtime_wscale <= 14
+                        ? static_cast<std::uint32_t>(view.window) << runtime_wscale
+                        : static_cast<std::uint32_t>(view.window);
                 }
             }
             if (!view.payload.empty()) {
@@ -2146,7 +2198,7 @@ int RunXtcpThroughput(int seconds) {
         while (std::chrono::steady_clock::now() < send_deadline &&
             sent - received < BenchmarkWindow() && sent < acknowledged + receive_window) {
             const std::size_t position = static_cast<std::size_t>(sent % pattern.size());
-            const std::size_t count = std::min({kBenchmarkChunk,
+            const std::size_t count = std::min({BenchmarkChunk(),
                 BenchmarkWindow() - static_cast<std::size_t>(sent - received),
                 static_cast<std::size_t>(acknowledged + receive_window - sent),
                 pattern.size() - position});
@@ -2156,6 +2208,7 @@ int RunXtcpThroughput(int seconds) {
                 pattern.data() + position, static_cast<UInt32>(count));
             if (!bridge.TrySubmit(packet)) throw std::runtime_error("XTCP data admission rejected");
             sent += count;
+            ++g_bench_segments;
             progress = true;
         }
         if (!progress) std::this_thread::yield();
@@ -2164,6 +2217,7 @@ int RunXtcpThroughput(int seconds) {
         finish = std::chrono::steady_clock::now();
         cpu_end = ProcessCpuSeconds();
         finish_bytes = received;
+        g_bench_segments_end = g_bench_segments;
     }
     if (profile_target != nullptr && measured) {
         sampler.StopAndReport(profile_target);
@@ -2238,6 +2292,7 @@ int RunWinsockThroughput(int seconds) {
             cpu_start = ProcessCpuSeconds();
             BenchThreadsMark(true);
             warmup_bytes = received;
+            g_bench_segments_start = g_bench_segments;
             measured = true;
         }
         if (measured && !finished && std::chrono::steady_clock::now() >= send_deadline) {
@@ -2245,6 +2300,7 @@ int RunWinsockThroughput(int seconds) {
             cpu_end = ProcessCpuSeconds();
             BenchThreadsMark(false);
             finish_bytes = received;
+            g_bench_segments_end = g_bench_segments;
             finished = true;
         }
         bool progress = false;
@@ -2262,12 +2318,13 @@ int RunWinsockThroughput(int seconds) {
         }
         while (std::chrono::steady_clock::now() < send_deadline && sent - received < BenchmarkWindow()) {
             const std::size_t position = static_cast<std::size_t>(sent % pattern.size());
-            const std::size_t count = std::min({kBenchmarkChunk,
+            const std::size_t count = std::min({BenchmarkChunk(),
                 BenchmarkWindow() - static_cast<std::size_t>(sent - received), pattern.size() - position});
             const auto written = native.Socket().write_some(boost::asio::buffer(pattern.data() + position, count), ec);
             if (ec == boost::asio::error::would_block || ec == boost::asio::error::try_again) break;
             if (ec || written == 0) throw std::runtime_error("Winsock write failed");
             sent += written;
+            ++g_bench_segments;
             progress = true;
         }
         if (!progress) std::this_thread::yield();
@@ -2276,6 +2333,7 @@ int RunWinsockThroughput(int seconds) {
         finish = std::chrono::steady_clock::now();
         cpu_end = ProcessCpuSeconds();
         finish_bytes = received;
+        g_bench_segments_end = g_bench_segments;
     }
     if (!measured || finish_bytes <= warmup_bytes) {
         throw std::runtime_error("no measured payload after warmup");
