@@ -9,6 +9,27 @@ PROJECT(${NAME} C CXX) # CMAKE_CURRENT_SOURCE_DIR
 OPTION(ENABLE_P2P_V2_PRODUCTION
     "Enable authenticated P2P v2 production capability" ON)
 
+OPTION(ENABLE_XTCP "Build with the pinned XTCP userspace TCP/IP stack" OFF)
+SET(XTCP_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../third-party/xtcp" CACHE PATH
+    "Path to the pinned XTCP source tree")
+IF(ENABLE_XTCP)
+    IF(NOT EXISTS "${XTCP_SOURCE_DIR}/CMakeLists.txt")
+        MESSAGE(FATAL_ERROR "XTCP source tree not found at ${XTCP_SOURCE_DIR}; run tools/prepare_xtcp.sh first.")
+    ENDIF()
+
+    SET(XTCP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_PLUGINS OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_LWIP OFF CACHE BOOL "" FORCE)
+    SET(XTCP_BUILD_CC_PLUGINS ON CACHE BOOL "" FORCE)
+    SET(XTCP_CHECKSUM_VALIDATE ON CACHE BOOL "" FORCE)
+    ADD_SUBDIRECTORY("${XTCP_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/third-party/xtcp" EXCLUDE_FROM_ALL)
+    IF(NOT TARGET xtcp_static)
+        MESSAGE(FATAL_ERROR "XTCP source tree did not define the required xtcp_static target.")
+    ENDIF()
+ENDIF()
+
 # C/CXX compiler configurations.
 SET(CMAKE_C_FLAGS "-fPIC -fvisibility=hidden -Wno-format -Wno-implicit-function-declaration")
 SET(CMAKE_CXX_FLAGS "-fPIC -stdlib=libc++ -fvisibility=hidden -Ulinux -Wno-#pragma-messages -Wno-format -Wno-inconsistent-missing-override -Wno-pointer-bool-conversion -Wno-unsequenced -Wno-null-dereference -Wno-gnu-variable-sized-type-not-at-end -Wno-tautological-undefined-compare -Wno-deprecated-declarations -Wno-shift-count-overflow")
@@ -141,6 +162,13 @@ IF(ENABLE_P2P_V2_PRODUCTION)
     TARGET_COMPILE_DEFINITIONS(${NAME} PRIVATE OPENPPP2_P2P_V2_PRODUCTION=1)
 ELSE()
     TARGET_COMPILE_DEFINITIONS(${NAME} PRIVATE OPENPPP2_P2P_V2_PRODUCTION=0)
+ENDIF()
+IF(ENABLE_XTCP)
+    TARGET_LINK_LIBRARIES(${NAME} xtcp_static)
+    TARGET_COMPILE_DEFINITIONS(${NAME} PRIVATE
+        PPP_ENABLE_XTCP=1
+        PPP_XTCP_RUNTIME_WIRED=1
+        PPP_XTCP_HAS_TIMER_DEADLINE=1)
 ENDIF()
 
 # Set the compilation output files path.

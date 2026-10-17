@@ -67,7 +67,11 @@ namespace ppp {
                 std::shared_ptr<VEthernetNetworkTcpipConnection> connection =
                     std::dynamic_pointer_cast<VEthernetNetworkTcpipConnection>(base);
                 if (NULLPTR == connection) {
+#if defined(_WIN32)
+                    ppp::net::Socket::Closesocket(fd);
+#else
                     ::close(fd);
+#endif
                     return false;
                 }
                 connection->SetExternalFirstLeg(
@@ -75,7 +79,11 @@ namespace ppp {
                 if (!RegisterExternalClient(source_port, runtime_generation,
                         flow_generation, connection)) {
                     connection->Dispose();
+#if defined(_WIN32)
+                    ppp::net::Socket::Closesocket(fd);
+#else
                     ::close(fd);
+#endif
                     return false;
                 }
                 const boost::asio::ip::tcp::endpoint natEP(

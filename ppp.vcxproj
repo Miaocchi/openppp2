@@ -33,6 +33,9 @@
     <RootNamespace>ppp</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
+  <PropertyGroup>
+    <PppXtcpLibrary Condition="'$(PppXtcpLibrary)'==''">$(ProjectDir)build-xtcp-win\$(Configuration)\xtcp_static.lib</PppXtcpLibrary>
+  </PropertyGroup>
   <PropertyGroup Label="OpenPPP2Options">
     <OpenPPP2EnableSimd Condition="'$(OpenPPP2EnableSimd)' == '' and '$(Platform)' == 'ARM64'">false</OpenPPP2EnableSimd>
     <OpenPPP2EnableSimd Condition="'$(OpenPPP2EnableSimd)' == ''">true</OpenPPP2EnableSimd>
@@ -336,6 +339,19 @@
       <AdditionalOptions>%(AdditionalOptions) /U__SIMD__</AdditionalOptions>
     </ClCompile>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(PppEnableXtcp)'=='true'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)third-party\xtcp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>PPP_ENABLE_XTCP=1;PPP_XTCP_RUNTIME_WIRED=1;PPP_XTCP_HAS_TIMER_DEADLINE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(PppXtcpLibrary);bcrypt.lib;winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <Target Name="ValidatePppXtcpLibrary" BeforeTargets="PrepareForBuild" Condition="'$(PppEnableXtcp)'=='true'">
+    <Error Condition="'$(Platform)'!='x64'" Text="XTCP through ppp.vcxproj is currently supported for x64 only." />
+    <Error Condition="!Exists('$(PppXtcpLibrary)')" Text="XTCP is enabled but $(PppXtcpLibrary) was not found. Build xtcp_static with third-party/xtcp CMake or set PppXtcpLibrary." />
+  </Target>
   <ItemGroup>
     <ClCompile Include="common\aesni\aes.cpp" />
     <ClCompile Include="common\aesni\impl\simd_aes_128_cfb.cpp" />

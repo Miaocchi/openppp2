@@ -30,6 +30,9 @@
 #include <linux/ppp/tap/TapLinux.h>
 #include <linux/ppp/net/ProtectorNetwork.h>
 #endif
+#if defined(_WIN32)
+#include <windows/ppp/tap/TapWindows.h>
+#endif
 
 using ppp::net::IPEndPoint;
 using ppp::telemetry::Level;
@@ -53,6 +56,19 @@ namespace ppp {
                         ppp::telemetry::Histogram("client.connect.us", elapsed);
                     }
                 } connect_histogram;
+
+#if defined(_WIN32) && defined(PPP_ENABLE_XTCP)
+                if (owner_->tcp_stack_mode_ == ppp::app::TcpStackMode::Xtcp) {
+                    const std::shared_ptr<ppp::tap::TapWindows> windows_tap =
+                        std::dynamic_pointer_cast<ppp::tap::TapWindows>(tap);
+                    if (!windows_tap || !windows_tap->IsWintunBackend()) {
+                        ppp::telemetry::Log(Level::kInfo, "xtcp",
+                            "XTCP requires the Windows Wintun L3 adapter; TAP L2 is unsupported");
+                        return ppp::diagnostics::SetLastError(
+                            ppp::diagnostics::ErrorCode::NetworkProtocolUnsupported);
+                    }
+                }
+#endif
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
                 if (!owner_->proxy_only_) {
@@ -90,6 +106,7 @@ namespace ppp {
                         output_rejection_enabled
                             ? make_shared_object<xtcp::XtcpOutputRejectionDiagnostics>(true) : nullptr;
                     xtcp::XtcpRuntime::BorrowedOutputHandler borrowed_output;
+                    xtcp::XtcpRuntime::RetainedOutputHandler retained_output;
 #if defined(__linux__)
                     // Linux TAP Output(const void*, size) consumes the bytes
                     // synchronously (write/writev or copies them into the
@@ -108,7 +125,6 @@ namespace ppp {
                         }
                         return accepted;
                     };
-                    xtcp::XtcpRuntime::RetainedOutputHandler retained_output;
                     retained_output = [weak, output_rejection_diagnostics](const Byte* packet, int size,
                         ppp::tap::RetainedPacketOwner&& retained) noexcept {
                         const std::shared_ptr<VEthernetNetworkSwitcher> owner = weak.lock();
