@@ -1073,7 +1073,14 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
     append_launch_args(&launch_options, &mut spec.args).map_err(|error| error.to_string())?;
     let network = network_payload(&launch_options, &config);
     let address = network["httpProxy"].as_str().unwrap_or_default().to_owned();
-    if mode == "proxy" && preferences.settings.auto_system_proxy {
+    // A subnet-only client (proxyInternet off) refuses Internet targets, so publishing it as
+    // the system proxy would break ordinary browsing.
+    let proxy_internet = launch_options
+        .get("proxyInternet")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let auto_system_proxy = mode == "proxy" && preferences.settings.auto_system_proxy && proxy_internet;
+    if auto_system_proxy {
         let endpoint: std::net::SocketAddr = address
             .parse()
             .map_err(|_| "Configure a loopback HTTP proxy port before connecting")?;
@@ -1086,7 +1093,7 @@ fn connect_node(node_id: &str, state: &DesktopState) -> Result<ConnectPayload, S
     }
     *state.proxy.lock().map_err(|_| "Proxy lock")? = ProxySession {
         address,
-        auto: mode == "proxy" && preferences.settings.auto_system_proxy,
+        auto: auto_system_proxy,
         applied: false,
     };
     spec.stats_path = Some(stats_path);
@@ -1963,7 +1970,19 @@ pub fn run() {
     }
     let app = tauri::Builder::default()
         .setup(|app| {
-            app.manage(DesktopState::new(&app.handle())?);
+            let state = match DesktopState::new(&app.handle()) {
+                Ok(state) => state,
+                Err(error) if error == crate::windows::ALREADY_RUNNING => {
+                    // A second launch shows the running client instead of exiting silently.
+                    crate::windows::activate_existing(
+                        "OpenPPP2 Client",
+                        "OpenPPP2 已在运行，请从任务栏托盘图标打开。\nOpenPPP2 is already running; open it from the tray icon.",
+                    );
+                    std::process::exit(0);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            app.manage(state);
             setup_tray(app)?;
             if let Some(path) = std::env::args()
                 .find_map(|arg| arg.strip_prefix("--elevated-ready=").map(PathBuf::from))

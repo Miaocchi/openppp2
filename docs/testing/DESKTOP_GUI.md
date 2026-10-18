@@ -1,6 +1,8 @@
 # Desktop GUI verification
 
-Last checked: 2026-10-05. Windows development client, external kernel.
+Offline checks last run: 2026-10-18. All 40 frontend tests, the production frontend build and 59 Windows Rust tests passed after updating the redesign onto main. No desktop application or kernel was launched; `OPENPPP2_POLICY_CLI` was unset, so the optional real-kernel policy test returned early.
+
+Historical native/browser checks: 2026-10-05. Windows development client, external kernel. These acceptance checks were not repeated during the offline validation above.
 
 Recorded result: 13 frontend tests and 34 Rust tests passed. The Windows x64 Release kernel and native GUI rebuilt successfully. Hidden native smoke passed with kernel `2.1.5.0`: actual ordinary-user spawn, HTTP/SOCKS listeners, structured statistics, duplicate-connect rejection, active-node deletion rejection, disconnect releasing both ports, session generation and the administrator guard. No QA processes or listeners remained, and the host system-proxy fingerprint was unchanged. Browser smoke previously passed at all three widths.
 
@@ -28,7 +30,7 @@ $env:PLAYWRIGHT_MODULE='build/gui-tools/node_modules/playwright/index.mjs'
 node desktop/client/test/gui-smoke.mjs
 ```
 
-The script checks light/dark layouts at 1120, 720 and 375 pixels, loaded logo, navigation, manual-node and subscription creation, network tabs/save, language changes, keyboard modal dismissal, logs and page errors. Screenshots go to ignored `build/gui-checks`.
+The script checks light/dark layouts at 1120, 720 and 375 pixels, loaded logo, navigation, manual-node and subscription creation, routing template and rule add, DNS save, settings tabs, language changes, keyboard modal dismissal, logs and page errors. Screenshots go to ignored `build/gui-checks`.
 
 ## Isolated native commands
 

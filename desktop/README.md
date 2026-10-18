@@ -21,9 +21,11 @@ Keep Vite running on `http://127.0.0.1:1420`, then run `npm run desktop` in anot
 - Connection: select a node and proxy or virtual-adapter mode; view backend connection phase, rates, traffic history and last error.
 - Nodes: create/edit/duplicate manual profiles, import/export, favorites, source filters and batch TCP latency probes.
 - Subscriptions: independently add, enable, refresh and delete sources. Node IDs and caches are isolated per source. Failed refreshes retain the same source's last valid cache.
-- Network: routing, DNS, loopback HTTP/SOCKS listeners, adapter launch options and advanced JSON. Saved changes apply on the next connection. Unknown node configuration fields are preserved.
+- Routing: a rule list over the local policy v2 (`routing.rules`). Start from a template (mainland direct, proxy all, direct all) or migrate the legacy lists, then add, disable, re-target or delete rules, switch to the raw text view, and test an address offline. Matching follows precision, not list order: explicit rules beat rule sets; exact > suffix > keyword > regex; longer suffixes and IPv4 prefixes win.
+- DNS: with a policy enabled, the resolution mode, Fake-IP pool and policy resolvers; otherwise the legacy domestic/foreign upstreams, cache, TLS verification, ECS and Fake-IP switches.
+- Saved routing and DNS changes apply on the next connection. Unknown node configuration fields are preserved.
 - Logs: severity/session filters, search, pause, copy and redacted export.
-- Settings: executable selection and version inspection, Chinese/English, light/dark/system theme, autostart, tray behavior, proxy recovery and diagnostics.
+- Settings: General (autostart, tray, proxy recovery, theme, language), Kernel (executable and version, elevation), Network (loopback HTTP/SOCKS listeners, P2P, adapter launch options) and Advanced (launch options, legacy routing lists used only without a policy, overrides JSON, preview and diagnostics).
 
 Choose `ppp.exe` in Settings. Without a configured path, the client looks beside its own executable, not on `PATH`. Current Windows builds permit proxy mode without elevation. Older binaries with a `requireAdministrator` manifest must be rebuilt. Settings offers an explicit administrator restart with the normal Windows UAC prompt; virtual-adapter mode requires it.
 

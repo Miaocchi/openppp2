@@ -9,7 +9,7 @@
 
 ## Status and boundary
 
-The daily-client implementation now targets Windows, with independent subscriptions, proxy/virtual-adapter modes, reversible current-user system proxy, explicit administrator restart, Chinese/English and light/dark/system themes. See [desktop overview](../../desktop/README.md) for current workflows and [GUI verification](../testing/DESKTOP_GUI.md) for tested behavior and remaining live acceptance.
+The daily-client implementation now targets Windows, with independent subscriptions, node management, proxy/virtual-adapter modes, Routing and DNS pages, logs and diagnostics, reversible current-user system proxy, explicit administrator restart, Chinese/English and light/dark/system themes. Settings groups General, Kernel, Network and Advanced controls. See [desktop overview](../../desktop/README.md) for current workflows and [GUI verification](../testing/DESKTOP_GUI.md) for tested behavior and remaining live acceptance.
 
 The Desktop Client lives in `desktop/client/` and is an **experimental** Tauri 2 + Svelte surface. Its checked-in Tauri configuration has bundling disabled, so this guide describes source-run evaluation rather than a supported installer or release package.
 
@@ -64,7 +64,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - Subscription and manual-node data are merged into a generated runtime configuration before connection.
 - The process manager discards the child process's standard output and captures standard error for classification; the UI is not a complete process-output console.
 - Runtime statistics are read from the generated NDJSON path supplied with `--stats-json`.
-- The Policy page manages a local policy v2 (`<app data>/policy/policy.json` and `routing.rules`) through the kernel's offline `ppp policy` commands: templates, check, rule testing, migration, status and manual update. These commands run only when the kernel version is 2.1.7 or later. When enabled, every connection first runs `policy check` and does not start the kernel if it fails.
+- The Routing page (with policy DNS on the DNS page) manages a local policy v2 (`<app data>/policy/policy.json` and `routing.rules`) through the kernel's offline `ppp policy` commands: templates, check, rule testing, migration, status and manual update. These commands run only when the kernel version is 2.1.7 or later. When enabled, every connection first runs `policy check` and does not start the kernel if it fails.
 - When a node or the local policy uses `client.policy`, the generated runtime configuration drops the v1 routing/DNS fields and resolves relative rule paths under `<app data>/policy`.
 - Disconnect sends Ctrl+C to the kernel and waits up to 5 seconds for route and DNS rollback before forcing it to stop.
 - Connecting affects a native client process. Follow the [User Manual](USER_MANUAL.md) and platform/operations documentation before using a non-proxy network mode on a real host.
