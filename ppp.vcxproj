@@ -642,6 +642,13 @@
     <ClCompile Include="ppp\stdafx.cpp" />
     <ClCompile Include="ppp\tap\ITap.cpp" />
     <ClCompile Include="ppp\tap\TapStub.cpp" />
+    <ClCompile Include="ppp\tap\TapUserspace.cpp" />
+    <ClInclude Include="common\libtcpip\netstack_outbound.h" />
+    <ClInclude Include="ppp\tap\TapUserspace.h" />
+    <ClInclude Include="ppp\tap\TapUserspaceRoute.h" />
+    <ClInclude Include="ppp\app\client\proxys\UserspaceSubnetBridge.h" />
+    <ClCompile Include="ppp\app\client\proxys\UserspaceSubnetBridge.cpp" />
+    <ClCompile Include="common\libtcpip\netstack_outbound.cpp" />
     <ClCompile Include="windows\ppp\tap\WintunAdapter.cpp" />
     <ClCompile Include="windows\ppp\win32\network\NetworkInterface.cpp" />
     <ClCompile Include="windows\ppp\win32\network\Win32Firewall.cpp" />

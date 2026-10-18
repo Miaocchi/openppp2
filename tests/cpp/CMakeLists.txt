@@ -1080,6 +1080,8 @@ openppp2_add_cpp_test(client_underlying_socket_protector_test SOURCES
     "${OPENPPP2_ROOT}/ppp/app/client/ClientUnderlyingSocketProtector.cpp")
 target_link_libraries(client_underlying_socket_protector_test PRIVATE
     Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+openppp2_add_cpp_test(tap_userspace_route_test SOURCES
+    tap_userspace_route_test.cpp)
 openppp2_add_cpp_test(rinetd_socket_protector_contract_test SOURCES
     rinetd_socket_protector_contract_test.cpp)
 set_tests_properties(rinetd_socket_protector_contract_test PROPERTIES

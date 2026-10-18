@@ -75,6 +75,15 @@
     <ClCompile Include="ppp\tap\TapStub.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\tap\TapUserspace.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ppp\app\client\proxys\UserspaceSubnetBridge.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="common\libtcpip\netstack_outbound.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\threading\Thread.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -1991,6 +2000,18 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\client\proxys\VEthernetLocalProxyConnection.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="common\libtcpip\netstack_outbound.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\tap\TapUserspace.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\tap\TapUserspaceRoute.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\client\proxys\UserspaceSubnetBridge.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\client\proxys\VEthernetLocalProxySwitcher.h">
