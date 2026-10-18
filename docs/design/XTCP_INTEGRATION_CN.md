@@ -127,13 +127,13 @@ Windows 10 1803+ 的 AF_UNIX stream socket 可作后续候选，但不能直接�
 > Type: Design
 > Last verified: 2026-09-27 (working tree; uncommitted)
 
-## 0. 现状总览（2026-09-04，`XTCP-SINGLECORE-BASELINE-20260902` 之后）
+## 0. 现状总览（默认策略更新于 2026-10-18）
 
 > 本文其余章节按时间线记录实验细节；本节是当前状态的唯一起点摘要。
 
-**当前工作树**包含端到端 TCPv4 GSO ingress、opt-in 单-owner 用户态 direct bridge、显式 receive resume、16KiB download chunk、DL 零窗口 persist/pacing 治理、Route3 strict isolation/qualification，以及 default-off NDI TSO laboratory capability。binary：`build/xtcp-runtime-root/bin/ppp`。这些改动尚未提交，不能把历史 commit 链当作当前 revision。
+**当前实现**包含端到端 TCPv4 GSO ingress、单-owner 用户态 direct bridge、显式 receive resume、16KiB download chunk、DL 零窗口 persist/pacing 治理、Route3 strict isolation/qualification，以及 default-off NDI TSO laboratory capability。下文 binary 路径与性能数据属于各节对应的历史实验，不能当作当前 revision 的验证证据。
 
-**direct bridge（仅在 `OPENPPP2_XTCP_MEMORY_BRIDGE=1` 时启用；未设置或设为其他值时保持 legacy socket pump；runner `--xtcp-memory-bridge` 显式启用）**替换原 socket pump，而不是与其并行：XTCP receive → 32MiB/4096-item 有界 upload queue → 唯一 transmission writer；唯一 transmission reader → 16KiB alias chunk → XTCP `Send`。runtime 强持有 second leg；队列降到 low watermark 后显式 `ResumeReceive()`/window update。`ITransmission` 默认不保证半关；raw child `ITcpipTransmission` 则通过真实 TCP `shutdown(SHUT_WR)` 在 upload queue 排空后发送 FIN、保留接收方向。该 direct 路径按 carrier capability gate；WebSocket/TLS 等不支持的 carrier 安全回退 socket pump；`degraded_half_close` 仅为兼容遥测，正确路径保持 0。
+**direct bridge（Linux 桌面/服务器 `__linux__` 且非 Android：`OPENPPP2_XTCP_MEMORY_BRIDGE` 未设置或为空时默认尝试；所有平台精确值 `1` 启用，`0` 或其他非空值关闭；Windows/Android/macOS 等未设置或为空时仍关闭）**替换原 socket pump，而不是与其并行：XTCP receive → 32MiB/4096-item 有界 upload queue → 唯一 transmission writer；唯一 transmission reader → 16KiB alias chunk → XTCP `Send`。runtime 强持有 second leg；队列降到 low watermark 后显式 `ResumeReceive()`/window update。`ITransmission` 默认不保证半关；raw child `ITcpipTransmission` 则通过真实 TCP `shutdown(SHUT_WR)` 在 upload queue 排空后发送 FIN、保留接收方向。该 direct 路径按 carrier capability gate；WebSocket/TLS 等不支持的 carrier 安全回退 socket pump；`degraded_half_close` 仅为兼容遥测，正确路径保持 0。策略在首次使用时缓存，环境变量应在进程启动前设置。此策略不改变 XTCP 栈本身的启用方式；Linux matrix runner 默认不注入该变量，显式开关设置 `1`/`0`，受控 acceptance contract 继续固定 `=1`。§11 的历史 opt-in 描述仅适用于当时版本，合成 throughput benchmark 的显式开关也保持不变。
 
 **当前严格单核 paired 证据**（GSO-on，direct bridge，CPU8）已有三轮 artifact `artifacts/direct-final-*` 的 36/36 qualification pass。旧六模式主矩阵 `artifacts/route3-six-mode-strict-r3-20260904` 仅生成 106/106 cell；修复 revision 的原子矩阵 `artifacts/route3-six-mode-strict-persist-fix-r3b-20260904` 已完成 **108/108 cell qualification 全 pass**。原故障维度 `XTCP/GSO-on/P4/DL` 三轮为 614.4–619.1 Mbps，未再出现 watchdog。
 
@@ -1507,6 +1507,8 @@ GSO-on 的 XTCP/native ratio 为 `0.9030×/0.9471×/0.9386×`，median `0.9386×
 因此停止继续扩大共用 GSO segment cap：该 knob 改善 shared TUN path，而非已证实的 XTCP 专属优势；更大 cap 没有证据能满足1.20×目标。NDI TSO TX 仍保持关闭，避免重启已观察到的回退候选。
 
 ### 11.69 memory bridge 对可支持 carrier 改为默认尝试（2026-09-25）
+
+**2026-10-18 实现补齐**：本节原先记录的默认策略未进入 main，现由纯函数 `xtcp::DirectBridgeEnabled` 与 `XtcpMemoryBridgeEnabled()` 首次调用缓存落实。默认尝试仅适用于 Linux 桌面/服务器（`__linux__` 且非 Android）；Windows、Android、macOS 及其他平台保持精确 `1` 才启用。Linux 未设置/空值启用，所有平台 `0`/其他非空值关闭；原有 carrier half-close gate 不变。下文 2026-09-25 binary、计数与 artifact 是历史证据，当前验证结果见本次 `build/bridge/REPORT.md`。
 
 在 §11.66 的短时 lifecycle/512连接 churn E2E 通过，且 formal P1/UL GSO-on 3/3达标明确依赖 direct bridge 后，将 `XtcpMemoryBridgeEnabled()` 的默认语义改为：环境变量未设置或为空时尝试 direct bridge；精确值 `1` 显式启用；`0` 或其他非空值关闭。`AckAccept()` 原有 transmission/capability 检查不变：不支持真实 half-close 的 carrier 仍走 legacy socket pump，显式 `OPENPPP2_XTCP_MEMORY_BRIDGE=0` 保留回退开关。没有改动 direct 状态机、queue/backpressure、FIN 顺序或 recovery gate。
 

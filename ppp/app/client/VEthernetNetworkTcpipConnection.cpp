@@ -1,6 +1,7 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/client/VEthernetNetworkTcpipConnection.h>
 #include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
+#include <ppp/app/client/xtcp/XtcpDirectBridgePolicy.h>
 #include <ppp/app/client/VEthernetNetworkTcpipForwarding.inl>
 #include <ppp/app/client/VEthernetExchanger.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
@@ -37,8 +38,14 @@ namespace ppp {
         namespace client {
             namespace {
                 bool XtcpMemoryBridgeEnabled() noexcept {
-                    const char* env = ::getenv("OPENPPP2_XTCP_MEMORY_BRIDGE");
-                    return env != nullptr && env[0] == '1' && env[1] == '\0';
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(_ANDROID)
+                    constexpr bool platform_default = true;
+#else
+                    constexpr bool platform_default = false;
+#endif
+                    static const bool enabled = xtcp::DirectBridgeEnabled(
+                        ::getenv("OPENPPP2_XTCP_MEMORY_BRIDGE"), platform_default);
+                    return enabled;
                 }
             }
 

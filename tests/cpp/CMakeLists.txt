@@ -142,6 +142,8 @@ function(openppp2_add_cpp_test target)
     set_tests_properties(${target} PROPERTIES TIMEOUT 120)
 endfunction()
 
+openppp2_add_cpp_test(xtcp_direct_bridge_policy_test SOURCES xtcp_direct_bridge_policy_test.cpp)
+
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
 
