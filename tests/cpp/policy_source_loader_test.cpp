@@ -145,6 +145,18 @@ int main() {
             valid["client"]["policy"]["dns"]["resolvers"]["remote"]["servers"][0] = endpoint;
             Require(PolicySourceLoader::Load(valid, fixture.ConfigPath()).Ok(), "valid explicit DNS endpoint rejected");
         }
+        // Policy resolvers use only DoH/DoT; providers that publish plain DNS alone are rejected.
+        for (const auto& provider : {"114", "baidu"}) {
+            auto plain = Config();
+            plain["client"]["policy"]["dns"]["resolvers"]["remote"]["servers"][0] = provider;
+            Require(Has(PolicySourceLoader::Load(plain, fixture.ConfigPath()), "E_POLICY_CONFIG", server_path),
+                "provider without DoH/DoT endpoint accepted");
+        }
+        for (const auto& provider : {"doh.pub", "alidns", "tuna"}) {
+            auto encrypted = Config();
+            encrypted["client"]["policy"]["dns"]["resolvers"]["remote"]["servers"][0] = provider;
+            Require(PolicySourceLoader::Load(encrypted, fixture.ConfigPath()).Ok(), "provider with DoH/DoT endpoint rejected");
+        }
         {
             auto structured = Config();
             Json::Value server;

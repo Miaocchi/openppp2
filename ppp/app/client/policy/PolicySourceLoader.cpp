@@ -362,7 +362,11 @@ PolicyLoadResult PolicySourceLoader::LoadInternal(const Json::Value& config, con
                     const auto& item = value["servers"][i];
                     if (item.isString()) {
                         auto server = String(result, item, item_path);
-                        if (!server.empty() && !Server(server))
+                        if (!server.empty() && ppp::dns::DnsProviderCatalog::HasProvider(ppp::string(server.data(), server.size())) &&
+                            !ppp::dns::DnsProviderCatalog::HasEncryptedEndpoint(ppp::string(server.data(), server.size())))
+                            Error(result, "E_POLICY_CONFIG", item_path,
+                                "Provider '" + server + "' has no DoH/DoT endpoint; policy resolvers need one. Use another provider or an explicit udp:// or tcp:// address.");
+                        else if (!server.empty() && !Server(server))
                             Error(result, "E_POLICY_CONFIG", item_path,
                                 "Expected a known provider or numeric-address DNS endpoint; hostname endpoints require structured addresses or bootstrap.");
                         if (!server.empty()) {
