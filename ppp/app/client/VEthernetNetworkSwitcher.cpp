@@ -359,6 +359,8 @@ namespace ppp {
 #if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
                         direct_capable = direct_capable && interface_index > 0;
 #endif
+                        const bool unbound = proxy_only_ && network_interface == nullptr;
+                        direct_capable = direct_capable || unbound;
 #endif
                         if (!direct_capable) {
                             policy_update_service_->Gate().Fail();
@@ -369,6 +371,9 @@ namespace ppp {
                         options.interface_name = interface_name;
                         options.interface_index = interface_index;
                         options.bootstrap_nameservers = bootstrap;
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                        options.unbound = unbound;
+#endif
                         options.protect_socket = [protect_socket](boost::asio::ip::tcp::socket::native_handle_type socket) {
                             return protect_socket(static_cast<ClientUnderlyingSocketHandle>(socket));
                         };

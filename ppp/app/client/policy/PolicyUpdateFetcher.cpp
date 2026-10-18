@@ -180,6 +180,7 @@ bool WaitReady(Tcp::socket& socket, Tcp::socket::wait_type wait, std::chrono::st
 }
 
 bool SetBoundInterface(Tcp::socket& socket, const DirectPolicySocketOptions& options, std::string& error) {
+    if (options.unbound) return true;
     const auto handle = socket.native_handle();
 #if defined(_ANDROID)
     if (!options.protect_socket || !options.protect_socket(
@@ -216,6 +217,7 @@ bool SetBoundInterface(Tcp::socket& socket, const DirectPolicySocketOptions& opt
 }
 
 bool SetBoundInterface(Udp::socket& socket, const DirectPolicySocketOptions& options, std::string& error) {
+    if (options.unbound) return true;
     const auto handle = socket.native_handle();
 #if defined(_ANDROID)
     if (!options.protect_socket || !options.protect_socket(
