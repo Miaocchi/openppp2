@@ -8,6 +8,23 @@ XTCP is opt-in on Windows and Android. Linux desktop retains its current
 default. All platforms use the pinned source in `third-party/xtcp` and the
 same production target settings from the root CMake build (revision `e79db8fd`).
 
+## Direct Bridge Policy (2026-10-18)
+
+For XTCP sessions on Linux desktop/server builds (`__linux__`, excluding
+Android), an unset or empty `OPENPPP2_XTCP_MEMORY_BRIDGE` now tries the direct
+memory bridge. Exact `1` enables it on every platform; `0` or any other
+non-empty value selects the legacy socket pump. Windows, Android, macOS and
+other platforms retain their opt-in default: unset/empty disables the bridge.
+The process caches this choice on first use; set the variable before startup.
+
+The existing carrier capability gate still applies: carriers without real
+half-close support, including WebSocket/TLS, fall back to the socket pump.
+This does not enable the XTCP stack itself. The controlled datapath acceptance
+contract continues to pin `=1`; the Linux matrix runner's default leaves the
+variable unset, and its explicit bridge flags set `1` or `0`.
+The synthetic `xtcp_runtime_bridge_test` throughput switch documented below
+remains explicit and is separate from this production policy.
+
 ## Windows
 
 Prepare the pinned source, then build with the repository's CMake/Ninja
