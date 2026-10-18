@@ -2,7 +2,7 @@
 
 > Status: Active
 > Type: Guide
-> Last verified: 2026-10-11（对照 `ApplicationMode.cpp`、`ApplicationClientBootstrap.cpp`、`VEthernetLocalProxySwitcher.cpp`）
+> Last verified: 2026-10-12（对照 `ApplicationMode.cpp`、`ApplicationClientBootstrap.cpp`、`ClientConnectionOpener.cpp`、`VEthernetLocalProxySwitcher.cpp`）
 >
 > **用途：** 只在本机提供 HTTP / SOCKS5 代理，不修改系统路由和 DNS。
 > **读者：** 不想接管整机网络、只想让部分应用走隧道的用户。
@@ -14,7 +14,7 @@
 |---|---|
 | 整机流量都按规则走隧道 | TUN 客户端：`--mode=client` |
 | 只让浏览器 / 某些程序走隧道，系统网络保持不变 | **代理模式**：`--mode=proxy` |
-| 没有管理员权限的桌面环境 | 代理模式（桌面上不创建虚拟网卡，一般不需要管理员权限） |
+| 没有管理员权限的桌面环境 | 代理模式（不创建网卡、不需要管理员；经本地代理也能访问其他客户端） |
 
 ## 2. 快速开始
 
@@ -68,19 +68,38 @@ curl -x http://127.0.0.1:8080 https://example.com
 }
 ```
 
-## 6. 各平台的差异
+## 6. 访问其他客户端（虚拟子网）
+
+服务端开启 `server.subnet` 时，同一服务器下的客户端可以通过虚拟 IP 互相访问。桌面代理模式**不创建任何网卡**，而是在客户端进程内接入虚拟子网（进程内协议栈）。两个开关独立控制，组合出三种用法：
+
+| 用法 | `--proxy-subnet` | `--proxy-internet` | 效果 |
+|---|---|---|---|
+| 组网 + 代理（默认） | `yes` | `yes` | 本地代理既能上网，也能访问其他客户端 |
+| 只组网 | `yes` | `no` | 本地代理只接受虚拟子网目标，其余拒绝（`ProxyInternetDisabled`）；客户端不设置系统代理 |
+| 只代理 | `no` | `yes` | 原来的行为：只代理上网，不接入虚拟子网 |
+
+接入虚拟子网后：
+
+- **出站**：经本地 HTTP / SOCKS5 代理访问对端虚拟 IP 的 TCP 和 UDP，由进程内协议栈从本机虚拟 IP 发出；P2P 直连建立后走直连，否则经服务器中转。这些流量绝不会经宿主机套接字发出。其他程序不能绕过本地代理直接访问对端。
+- **入站**：对端只能连接显式开放的 TCP 端口，用 `--proxy-forward` 指定，例如 `--proxy-forward=22,8080:3000`：本机虚拟 IP 的 22 端口转发到 `127.0.0.1:22`，8080 端口转发到 `127.0.0.1:3000`。未列出的端口一律拒绝。
+- **虚拟 IP**：指定了 `--tun-ip` 时按手动地址登记，不向服务器地址池申请；没有指定时向服务器地址池申请，并把分到的地址用在进程内协议栈上（需要客户端配置了 `server.ipv4-pool`，否则使用默认地址）。
+- P2P 需要读取物理网卡信息来绑定套接字、生成候选地址；只读取，不修改任何路由。
+
+当前限制：入站转发只支持 TCP；单个 UDP 数据报负载上限为 1372 字节；对端局域网前缀（peer-routes）不提供。详见[计划](../design/p2p-direct-channel/proxy-only-subnet-plan_CN.md)。
+
+## 7. 各平台的差异
 
 | 平台 | 代理模式下 | 权限 |
 |---|---|---|
-| Windows / Linux / macOS | 不创建真实虚拟网卡（使用内部占位网卡），不改路由、不改 DNS | 一般不需要管理员 |
+| Windows / Linux / macOS | 不创建网卡。接入虚拟子网时使用进程内协议栈，否则使用内部占位网卡。都不改路由、不改 DNS | 不需要管理员 |
 | Android | 仍创建一个最小的 VPN 接口（用于保护套接字），只保留该接口子网路由；不接管 DNS 和 IPv6；不会把本地代理发布为系统代理 | 需要 VPN 授权 |
 | iOS | Network Extension 只保留隧道子网路由，不设置系统 DNS | 需要 Network Extension 授权 |
 
 Android App 中的开关名为“仅代理模式”。
 
-## 7. 其他限制
+## 8. 其他限制
 
-- 代理模式下强制关闭静态 UDP 隧道：`--tun-static` 无效，不进行 `STATIC`/`STATICACK` 交换；即使指定了 `--tun-ip`，IPv4 也使用自动分配（automatic）模式。
+- 代理模式下强制关闭静态 UDP 隧道：`--tun-static` 无效，不进行 `STATIC`/`STATICACK` 交换。未接入虚拟子网时，即使指定了 `--tun-ip`，IPv4 也使用自动分配（automatic）模式；接入虚拟子网时，`--tun-ip` 按手动地址生效。
 - 系统 DNS 不变，所以应用自身的 DNS 查询不经过隧道；用 `socks5h://`（由代理端解析域名）可以避免本地解析。
 
 ## 相关文档

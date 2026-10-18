@@ -71,7 +71,13 @@ namespace ppp {
 #endif
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
-                if (!owner_->proxy_only_) {
+                // Proxy-only with the in-process subnet stack only reads the physical NIC, for
+                // P2P socket binding and host candidates; it never touches routes, and a missing
+                // NIC merely leaves P2P unavailable.
+                if (owner_->proxy_only_ && owner_->proxy_subnet_userspace_) {
+                    owner_->underlying_ni_ = ClientNetworkInterfaceResolver::GetUnderlyingNetworkInterface(tap, owner_->preferred_nic_);
+                }
+                elif(!owner_->proxy_only_) {
                 owner_->underlying_ni_ = ClientNetworkInterfaceResolver::GetUnderlyingNetworkInterface(tap, owner_->preferred_nic_);
 
                 if (auto underlying_ni = owner_->underlying_ni_; NULLPTR != underlying_ni) {

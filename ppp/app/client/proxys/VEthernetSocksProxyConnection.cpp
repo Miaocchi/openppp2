@@ -7,6 +7,8 @@
 #include <ppp/app/client/proxys/VEthernetSocksProxyConnection.h>
 #include <ppp/app/client/proxys/SocksAddressType.h>
 #include <ppp/app/client/proxys/LocalProxyPolicyDestination.h>
+#include <ppp/tap/TapUserspace.h>
+#include <ppp/app/ProxySubnetOptions.h>
 #include <ppp/net/Ipep.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/Socket.h>
@@ -194,6 +196,11 @@ namespace ppp {
                 }
 
                 VEthernetSocksProxyConnection::~VEthernetSocksProxyConnection() noexcept {
+                    if (uint16_t port = std::exchange(userspace_udp_port_, static_cast<uint16_t>(0)); 0 != port) {
+                        if (std::shared_ptr<ppp::tap::TapUserspace> tap = userspace_tap_.lock(); NULLPTR != tap) {
+                            tap->ReleaseDatagram(port);
+                        }
+                    }
                     VEthernetExchangerPtr exchanger = GetExchanger();
                     if (NULLPTR != exchanger && udp_client_ep_.port() > ppp::net::IPEndPoint::MinPort) {
                         exchanger->ReleaseDatagramHandler(udp_client_ep_);
@@ -831,6 +838,9 @@ namespace ppp {
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkPortInvalid);
                         }
 
+                        if (switcher && !switcher->ProxyInternet(NULLPTR)) {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProxyInternetDisabled);
+                        }
                         if (!policy_v2) {
                             destination_address = ppp::coroutines::asio::GetAddressByHostName<boost::asio::ip::udp>(host.data(), port, y).address();
                             if (ppp::net::IPEndPoint::IsInvalid(destination_address)) {
@@ -858,6 +868,11 @@ namespace ppp {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
                     }
 
+                    // Refuse before DNS, pinned-flow dispatch, or handler registration.
+                    if (switcher && !ProxyDestinationAllowed(switcher->ProxyInternet(NULLPTR),
+                        switcher->IsVirtualSubnetAddress(destination_address))) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProxyInternetDisabled);
+                    }
                     auto policy_action = routing::RoutingAction::Auto;
                     bool original_is_fake = false;
                     if (policy_v2) {
@@ -930,11 +945,52 @@ namespace ppp {
                             return self->SendUdpAssociatePacketToClient(reply.source, reply.destination, responsePacket, responsePacketLength);
                         });
 
+                    // Virtual-subnet datagrams must never reach a host socket (it would leave
+                    // through the physical default route); the in-process adapter sends them
+                    // from the virtual IP instead (relay or P2P).
+                    if (switcher && switcher->IsVirtualSubnetAddress(destinationEP.address())) {
+                        return SendUserspaceDatagram(switcher, sourceEP, destinationEP, packet + offset, payload_length);
+                    }
+                    if (switcher && !switcher->ProxyInternet(NULLPTR)) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProxyInternetDisabled);
+                    }
                     if (policy_v2) {
                         return exchanger->SendTo(sourceEP, destinationEP, packet + offset, payload_length,
                             policy_action, original_domain, snapshot, original_is_fake);
                     }
                     return exchanger->SendTo(sourceEP, destinationEP, packet + offset, payload_length);
+                }
+
+                bool VEthernetSocksProxyConnection::SendUserspaceDatagram(const std::shared_ptr<VEthernetNetworkSwitcher>& switcher,
+                    const boost::asio::ip::udp::endpoint& sourceEP, const boost::asio::ip::udp::endpoint& destinationEP,
+                    const void* payload, int payload_length) noexcept {
+                    std::shared_ptr<ppp::tap::TapUserspace> tap = std::dynamic_pointer_cast<ppp::tap::TapUserspace>(switcher->GetTap());
+                    if (NULLPTR == tap || !destinationEP.address().is_v4()) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
+                    }
+
+                    udp_client_ep_ = sourceEP;
+                    if (0 == userspace_udp_port_) {
+                        std::weak_ptr<VEthernetSocksProxyConnection> weak =
+                            std::static_pointer_cast<VEthernetSocksProxyConnection>(shared_from_this());
+                        userspace_udp_port_ = tap->BindDatagram(
+                            [weak](uint32_t source, uint16_t source_port, const void* data, int length) noexcept {
+                                std::shared_ptr<VEthernetSocksProxyConnection> self = weak.lock();
+                                if (NULLPTR == self || self->IsDisposed()) {
+                                    return;
+                                }
+
+                                const boost::asio::ip::udp::endpoint remote(boost::asio::ip::address_v4(ntohl(source)), source_port);
+                                self->SendUdpAssociatePacketToClient(remote, self->udp_client_ep_, const_cast<void*>(data), length);
+                            });
+                        if (0 == userspace_udp_port_) {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::UdpMappingFailed);
+                        }
+                        userspace_tap_ = tap;
+                    }
+
+                    return tap->SendDatagram(userspace_udp_port_, htonl(destinationEP.address().to_v4().to_uint()),
+                        destinationEP.port(), payload, payload_length);
                 }
 
                 /** @brief Encodes and sends a SOCKS5 UDP response datagram to the local client. */

@@ -703,3 +703,4 @@ X(ConfigLegacyKdfMd5, "Protocol or transport cipher key derivation uses MD5 inte
 X(ConfigPolicyRuntimeUnavailable, "The v2 client policy runtime is unavailable or has not been prepared", ErrorSeverity::kFatal)
 X(ConfigPolicyTcpSniffUnsupported, "TUN TCP domain sniffing is not supported on this platform", ErrorSeverity::kError)
 X(ConfigPolicyUdpIdentityConflict, "The v2 client virtual address conflicts with the internal UDP identity range 198.19.0.0/16", ErrorSeverity::kError)
+X(ProxyInternetDisabled, "Proxy-only Internet access is disabled; only virtual-subnet destinations are allowed", ErrorSeverity::kError)

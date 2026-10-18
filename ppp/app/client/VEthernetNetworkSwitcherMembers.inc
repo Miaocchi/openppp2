@@ -12,9 +12,16 @@
                     bool                                                            block_quic_       = false;
                     bool                                                            static_mode_      = false;
                     bool                                                            proxy_only_       = false;
+                    // Proxy-only runtime joined to the virtual subnet: the in-process stack is the
+                    // subnet member and host sockets must never carry subnet traffic.
+                    bool                                                            proxy_subnet_userspace_ = false;
+                    // Proxy-only runtime that also proxies Internet destinations (off: subnet only).
+                    bool                                                            proxy_internet_ = true;
                     uint16_t                                                        mux_              = 0;
                     uint8_t                                                         mux_acceleration_ = 0;
                 };
+                // Proxy-only subnet: virtual-IP TCP port -> 127.0.0.1 port that peers may open.
+                ppp::unordered_map<uint16_t, uint16_t>                              proxy_subnet_forwards_;
                 VEthernetHttpProxySwitcherPtr                                       http_proxy_;
                 VEthernetSocksProxySwitcherPtr                                      socks_proxy_;
                 std::unique_ptr<SwitcherTimeoutRegistry>                            timeout_registry_;

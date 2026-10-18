@@ -34,7 +34,8 @@ bool Same(PolicyAction next, routing::RoutingAction old) {
 std::string ResolverName(const std::string& configured, const char* fallback) {
     if (!configured.empty()) {
         const ppp::string value(configured.data(), configured.size());
-        if (ppp::dns::DnsProviderCatalog::HasProvider(value)) return configured;
+        // Policy resolvers only use DoH/DoT, so plain-DNS-only providers cannot carry over.
+        if (ppp::dns::DnsProviderCatalog::HasEncryptedEndpoint(value)) return configured;
     }
     return fallback;
 }
@@ -164,6 +165,19 @@ LegacyPolicyMigrationResult LegacyPolicyMigration::CreateDraft(const LegacyPolic
         representable = false;
         AddReason(result.report, "E_MIGRATE_DNS_PROVIDER",
             "A legacy DNS provider is not in the built-in catalog; select an explicit v2 resolver.");
+    }
+    auto plain_only = [](const std::string& provider) {
+        if (provider.empty()) return false;
+        const ppp::string value(provider.data(), provider.size());
+        return ppp::dns::DnsProviderCatalog::HasProvider(value) &&
+            !ppp::dns::DnsProviderCatalog::HasEncryptedEndpoint(value);
+    };
+    bool substituted = plain_only(legacy.domestic_dns) || plain_only(legacy.foreign_dns);
+    for (const auto& binding : legacy.dns_providers) substituted = substituted || plain_only(binding.provider);
+    if (substituted) {
+        representable = false;
+        AddReason(result.report, "E_MIGRATE_DNS_PROVIDER",
+            "A legacy DNS provider offers only plain DNS; policy resolvers need DoH/DoT, so the draft uses doh.pub/cloudflare instead.");
     }
     for (const auto& binding : legacy.dns_providers) {
         if (!known_provider(binding.provider)) {

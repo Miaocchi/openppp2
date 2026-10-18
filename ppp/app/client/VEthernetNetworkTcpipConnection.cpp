@@ -321,6 +321,20 @@ namespace ppp {
                     boost::asio::ip::tcp::endpoint remoteEP = GetRemoteEndPoint();
                     const bool policy_resolution_was_pending = policy_resolve_domain_;
 
+                    // Proxy-only subnet: the in-process stack only accepts peers opening this
+                    // client's virtual IP, and only explicitly forwarded ports are bridged, to a
+                    // loopback target.
+                    if (const auto switcher = exchanger->GetSwitcher(); NULLPTR != switcher && switcher->ProxySubnetUserspace(NULLPTR)) {
+                        boost::asio::ip::tcp::endpoint target;
+                        if (!switcher->ResolveSubnetForward(remoteEP, target)) {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpConnectFailed);
+                            return false;
+                        }
+
+                        return Rinetd(self, exchanger, context, strand, configuration, socket,
+                            target, true, connection_rinetd_, y) == 0;
+                    }
+
                     if (policy_snapshot_) {
                         if (policy_resolve_domain_) {
                             const auto switcher = exchanger->GetSwitcher();

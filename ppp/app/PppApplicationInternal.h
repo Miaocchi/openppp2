@@ -120,6 +120,12 @@ struct NetworkInterface final {
     // Legacy compatibility mirror; TcpStack remains the authoritative value.
     bool Lwip = false;
     bool VNet = false;
+    // Proxy mode: join the virtual subnet through the in-process stack (no host adapter).
+    bool ProxySubnet = true;
+    // Proxy mode: also proxy Internet destinations; off leaves a subnet-only client.
+    bool ProxyInternet = true;
+    // Proxy mode: TCP ports on the virtual IP that peers may open, mapped to 127.0.0.1 ports.
+    ppp::unordered_map<uint16_t, uint16_t> ProxyForwards;
     bool HostedNetwork = false;
     bool BlockQUIC = false;
 

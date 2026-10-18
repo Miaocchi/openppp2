@@ -140,6 +140,18 @@ void WholePolicyNeedsRuntimeEvidence() {
         "IPv6 and AAAA behavior must be identified as unproven");
 }
 
+void PlainOnlyProviderIsSubstituted() {
+    auto legacy = Legacy("default direct\n[proxy]\nexample.test\n");
+    legacy.domestic_dns = "114";
+    legacy.foreign_dns = "cloudflare";
+    auto migrated = LegacyPolicyMigration::CreateDraft(legacy, "/tmp/migration/policy.json", "socks", "linux");
+    Require(HasDiagnostic(migrated.report, "E_MIGRATE_DNS_PROVIDER"),
+        "A plain-DNS-only provider must be reported as a migration difference");
+    const auto& local = migrated.policy_config["client"]["policy"]["dns"]["resolvers"]["local"]["servers"];
+    Require(local.size() == 1 && std::string(local[0].asCString()) == "doh.pub",
+        "Policy resolvers must not keep a provider without DoH/DoT endpoints");
+}
+
 }
 
 int main() {
@@ -148,6 +160,7 @@ int main() {
         AutoFailsClosedAndRemainsDraft();
         RegexOverlapIsStructuralCounterexample();
         WholePolicyNeedsRuntimeEvidence();
+        PlainOnlyProviderIsSubstituted();
         std::cout << "legacy policy migration tests passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

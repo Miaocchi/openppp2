@@ -1080,6 +1080,8 @@ openppp2_add_cpp_test(client_underlying_socket_protector_test SOURCES
     "${OPENPPP2_ROOT}/ppp/app/client/ClientUnderlyingSocketProtector.cpp")
 target_link_libraries(client_underlying_socket_protector_test PRIVATE
     Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+openppp2_add_cpp_test(tap_userspace_route_test SOURCES
+    tap_userspace_route_test.cpp)
 openppp2_add_cpp_test(rinetd_socket_protector_contract_test SOURCES
     rinetd_socket_protector_contract_test.cpp)
 set_tests_properties(rinetd_socket_protector_contract_test PROPERTIES
@@ -1302,6 +1304,15 @@ foreach(_policy_test policy_source_loader_test policy_compiler_test policy_comma
             OPENPPP2_POLICY_EXAMPLE_CONFIG="${OPENPPP2_ROOT}/tests/contracts/routing-policy/v2/example.json")
     endif()
 endforeach()
+openppp2_add_cpp_test(proxy_subnet_options_test SOURCES proxy_subnet_options_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/ProxySubnetOptions.cpp")
+target_link_libraries(proxy_subnet_options_test PRIVATE openppp2_policy_cli_test_support)
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_sources(proxy_subnet_options_test PRIVATE "${OPENPPP2_ROOT}/ppp/stdafx.cpp")
+    target_compile_definitions(proxy_subnet_options_test PRIVATE PPP_STUB_NO_PROCESS_ID)
+endif()
+set_tests_properties(proxy_subnet_options_test PROPERTIES LABELS "offline")
+target_compile_definitions(proxy_subnet_options_test PRIVATE OPENPPP2_SOURCE_ROOT="${OPENPPP2_ROOT}")
 openppp2_add_cpp_test(policy_dns_transport_test SOURCES
     policy_dns_transport_test.cpp
     support/windows_composition_stub.cpp

@@ -60,6 +60,7 @@ X-macro 目录使用后者的拼写。当前目录没有使用 `kTrace` 或 `kDe
 | `ConfigPolicyRuntimeUnavailable` | `kFatal` | v2 客户端策略运行时不可用或尚未准备。 |
 | `ConfigPolicyTcpSniffUnsupported` | `kError` | 当前平台不支持 TUN TCP 域名嗅探。 |
 | `ConfigPolicyUdpIdentityConflict` | `kError` | v2 客户端虚拟地址与内部 UDP identity 地址范围冲突。 |
+| `ProxyInternetDisabled` | `kError` | 代理模式以 `--proxy-internet=no` 运行，只允许访问虚拟子网目标。 |
 
 策略 CLI 和 source loader 还会生成 `E_POLICY_CONFIG`、`E_POLICY_JSON`、
 `E_POLICY_SOURCE_CONFLICT`、`E_POLICY_SOURCE_UNAVAILABLE`、

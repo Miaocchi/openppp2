@@ -53,6 +53,9 @@ struct DirectPolicySocketOptions final {
     boost::asio::ip::address local_address;
     std::vector<boost::asio::ip::udp::endpoint> bootstrap_nameservers;
     std::function<bool(boost::asio::ip::tcp::socket::native_handle_type)> protect_socket;
+    // Desktop proxy-only runtimes install no TUN routes, so the default route is already
+    // direct and there is no underlying interface to bind to.
+    bool unbound = false;
 };
 
 class PolicyUpdateSocketConnector {

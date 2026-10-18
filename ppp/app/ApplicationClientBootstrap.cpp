@@ -13,6 +13,8 @@
 #include <ppp/net/Ipep.h>
 #include <ppp/tap/ITap.h>
 #include <ppp/tap/TapStub.h>
+#include <ppp/tap/TapUserspace.h>
+#include <libtcpip/netstack.h>
 
 #include <string>
 #include <vector>
@@ -54,8 +56,35 @@ bool PrepareClientLoopbackEnvironment(
         }
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
+        bool proxy_subnet_userspace = false;
         if (proxy_only_runtime) {
-            tap = ppp::tap::TapStub::Create(context);
+            // Proxy-only never creates a host adapter. With virtual-subnet access on, the
+            // in-process stack is the subnet member: peer packets addressed to the virtual IP
+            // are handed to it, and its own packets re-enter the client path as adapter input
+            // (relay or P2P).
+            if (network_interface->ProxySubnet && network_interface->IPAddress.is_v4() &&
+                network_interface->GatewayServer.is_v4() && network_interface->SubmaskAddress.is_v4()) {
+                std::shared_ptr<ppp::tap::TapUserspace> userspace = ppp::tap::TapUserspace::Create(context,
+                    htonl(network_interface->IPAddress.to_v4().to_uint()),
+                    htonl(network_interface->GatewayServer.to_v4().to_uint()),
+                    htonl(network_interface->SubmaskAddress.to_v4().to_uint()));
+                if (NULLPTR != userspace) {
+                    userspace->SetHostInput(
+                        [](const void* packet, int packet_size) noexcept {
+                            return lwip::netstack::input(packet, packet_size);
+                        });
+                    std::unordered_set<uint16_t> inbound_ports;
+                    for (const auto& forward : network_interface->ProxyForwards) {
+                        inbound_ports.insert(forward.first);
+                    }
+                    userspace->SetInboundTcpPorts(inbound_ports);
+                    tap = userspace;
+                    proxy_subnet_userspace = true;
+                }
+            }
+            if (!proxy_subnet_userspace) {
+                tap = ppp::tap::TapStub::Create(context);
+            }
         }
         else {
 #endif
@@ -91,6 +120,16 @@ bool PrepareClientLoopbackEnvironment(
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelListenFailed);
             break;
         }
+#if !defined(_ANDROID) && !defined(_IPHONE)
+        ethernet->ProxySubnetUserspace(&proxy_subnet_userspace);
+        if (proxy_subnet_userspace) {
+            ethernet->ProxySubnetForwards(network_interface->ProxyForwards);
+        }
+        {
+            bool proxy_internet = !proxy_only_runtime || network_interface->ProxyInternet;
+            ethernet->ProxyInternet(&proxy_internet);
+        }
+#endif
 
         if (network_interface->IPv6Address.is_v6()) {
             std::string requested_ipv6_std = network_interface->IPv6Address.to_string();
@@ -110,13 +149,19 @@ bool PrepareClientLoopbackEnvironment(
         ethernet->MuxAcceleration(&network_interface->MuxAcceleration);
         bool static_mode = NormalizeClientStaticMode(network_interface->StaticMode, proxy_only_runtime);
         ethernet->StaticMode(&static_mode);
+#if !defined(_ANDROID) && !defined(_IPHONE)
+        // The in-process subnet stack is a real subnet member, so an explicit --tun-ip is
+        // honored; without one the address comes from the server pool.
+        ethernet->ManualIPv4(network_interface->ManualIPv4 && (!proxy_only_runtime || proxy_subnet_userspace));
+#else
         ethernet->ManualIPv4(network_interface->ManualIPv4 && !proxy_only_runtime);
+#endif
         {
             bool proxy_only_flag = proxy_only_runtime;
             ethernet->ProxyOnly(&proxy_only_flag);
         }
 #if !defined(_ANDROID) && !defined(_IPHONE)
-        if (!proxy_only_runtime) {
+        if (!proxy_only_runtime || proxy_subnet_userspace) {
             ethernet->PreferredNgw(network_interface->Ngw);
             ethernet->PreferredNic(network_interface->Nic);
         }

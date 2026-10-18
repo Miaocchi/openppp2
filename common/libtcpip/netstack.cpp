@@ -841,6 +841,27 @@ namespace lwip {
         return pbuf;
     }
 
+    bool netstack::set_address(uint32_t ip, uint32_t mask) noexcept {
+        std::shared_ptr<boost::asio::io_context> executor = netstack::Executor;
+        if (NULLPTR == executor) {
+            return false;
+        }
+
+        netstack::IP = ip;
+        netstack::GW = ip;
+        netstack::MASK = mask;
+        boost::asio::post(*executor,
+            [ip, mask]() noexcept {
+                struct netif* netif = netif_;
+                if (NULLPTR != netif) {
+                    // Same layout as open(): the gateway is the interface address itself.
+                    ip4_addr_t ips[] = { ip, mask, ip };
+                    netif_set_addr(netif, ips + 0, ips + 1, ips + 2);
+                }
+            });
+        return true;
+    }
+
     bool netstack::input(const void* packet, int size) noexcept {
         struct pbuf* pbuf = netstack_pbuf_copy(packet, size);
         if (!pbuf) {

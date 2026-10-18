@@ -31,6 +31,7 @@
 #include <ppp/app/client/proxys/VEthernetHttpProxySwitcher.h>
 #include <ppp/app/client/proxys/VEthernetSocksProxySwitcher.h>
 #include <ppp/app/client/dns/DnsInterceptor.h>
+#include <libtcpip/netstack.h>
 #include <ppp/app/client/dns/DurableFakeIpStore.h>
 #include <ppp/app/client/dns/DnsController.h>
 #include <ppp/transmissions/proxys/IForwarding.h>
@@ -359,6 +360,8 @@ namespace ppp {
 #if defined(_WIN32) || (defined(_MACOS) && !defined(_IPHONE))
                         direct_capable = direct_capable && interface_index > 0;
 #endif
+                        const bool unbound = proxy_only_ && network_interface == nullptr;
+                        direct_capable = direct_capable || unbound;
 #endif
                         if (!direct_capable) {
                             policy_update_service_->Gate().Fail();
@@ -369,6 +372,9 @@ namespace ppp {
                         options.interface_name = interface_name;
                         options.interface_index = interface_index;
                         options.bootstrap_nameservers = bootstrap;
+#if !defined(_ANDROID) && !defined(_IPHONE)
+                        options.unbound = unbound;
+#endif
                         options.protect_socket = [protect_socket](boost::asio::ip::tcp::socket::native_handle_type socket) {
                             return protect_socket(static_cast<ClientUnderlyingSocketHandle>(socket));
                         };
@@ -1241,7 +1247,7 @@ namespace ppp {
 
             /** @brief Updates runtime state from server information and extensions. */
             bool VEthernetNetworkSwitcher::OnInformation(const std::shared_ptr<VirtualEthernetInformation>& info, const VirtualEthernetInformationExtensions& extensions) noexcept {
-                if (HasPolicyV2() && !proxy_only_ && extensions.ClientIPv4Assign.enabled &&
+                if (HasPolicyV2() && (!proxy_only_ || proxy_subnet_userspace_) && extensions.ClientIPv4Assign.enabled &&
                     extensions.ClientIPv4Assign.accepted) {
                     boost::system::error_code error;
                     const auto address = StringToAddress(extensions.ClientIPv4Assign.address, error);
@@ -1287,8 +1293,29 @@ namespace ppp {
                     ApplyAssignedIPv6(extensions);
                 }
 
+                // The in-process subnet stack has no OS adapter: a server-assigned IPv4 readdresses
+                // the in-process adapter and stack instead.
+                if (proxy_subnet_userspace_) {
+                    const auto& ipv4 = extensions.ClientIPv4Assign;
+                    std::shared_ptr<ppp::tap::ITap> tap = GetTap();
+                    boost::system::error_code address_error;
+                    boost::system::error_code mask_error;
+                    const boost::asio::ip::address address = StringToAddress(ipv4.address.data(), address_error);
+                    const boost::asio::ip::address mask = StringToAddress(ipv4.mask.data(), mask_error);
+                    if (ipv4.enabled && ipv4.accepted && NULLPTR != tap && !address_error && !mask_error &&
+                        address.is_v4() && mask.is_v4()) {
+                        tap->IPAddress = htonl(address.to_v4().to_uint());
+                        tap->SubmaskAddress = htonl(mask.to_v4().to_uint());
+                        boost::system::error_code gateway_error;
+                        const boost::asio::ip::address gateway = StringToAddress(ipv4.gateway.data(), gateway_error);
+                        if (!gateway_error && gateway.is_v4()) {
+                            tap->GatewayServer = htonl(gateway.to_v4().to_uint());
+                        }
+                        lwip::netstack::set_address(tap->IPAddress, tap->SubmaskAddress);
+                    }
+                }
                 // Apply server-assigned IPv4 address to TAP interface.
-                {
+                else {
                     const auto& ipv4 = extensions.ClientIPv4Assign;
                     if (ipv4.enabled && ipv4.accepted) {
                         if (!address_manager_->Ipv4Applied()) {
@@ -1903,6 +1930,70 @@ namespace ppp {
                 }
 
                 return previous;
+            }
+
+            /** @brief Gets current proxy-only userspace subnet mode and optionally updates it. */
+            bool VEthernetNetworkSwitcher::ProxySubnetUserspace(bool* proxy_subnet_userspace) noexcept {
+                SynchronizedObjectScope scope(GetSynchronizedObject());
+                bool previous = proxy_subnet_userspace_;
+                if (NULLPTR != proxy_subnet_userspace) {
+                    proxy_subnet_userspace_ = *proxy_subnet_userspace;
+                }
+
+                return previous;
+            }
+
+            /** @brief Gets whether proxy-only also proxies Internet destinations and optionally updates it. */
+            bool VEthernetNetworkSwitcher::ProxyInternet(bool* proxy_internet) noexcept {
+                SynchronizedObjectScope scope(GetSynchronizedObject());
+                bool previous = proxy_internet_;
+                if (NULLPTR != proxy_internet) {
+                    proxy_internet_ = *proxy_internet;
+                }
+
+                return previous;
+            }
+
+            void VEthernetNetworkSwitcher::ProxySubnetForwards(const ppp::unordered_map<uint16_t, uint16_t>& forwards) noexcept {
+                SynchronizedObjectScope scope(GetSynchronizedObject());
+                proxy_subnet_forwards_ = forwards;
+            }
+
+            bool VEthernetNetworkSwitcher::ResolveSubnetForward(const boost::asio::ip::tcp::endpoint& destination,
+                boost::asio::ip::tcp::endpoint& target) noexcept {
+                std::shared_ptr<ppp::tap::ITap> tap = GetTap();
+                if (!proxy_subnet_userspace_ || NULLPTR == tap || !destination.address().is_v4() ||
+                    htonl(destination.address().to_v4().to_uint()) != tap->IPAddress) {
+                    return false;
+                }
+
+                SynchronizedObjectScope scope(GetSynchronizedObject());
+                auto tail = proxy_subnet_forwards_.find(destination.port());
+                if (tail == proxy_subnet_forwards_.end()) {
+                    return false;
+                }
+
+                target = boost::asio::ip::tcp::endpoint(boost::asio::ip::address_v4::loopback(), tail->second);
+                return true;
+            }
+
+            bool VEthernetNetworkSwitcher::IsVirtualSubnetAddress(const boost::asio::ip::address& ip) noexcept {
+                if (!proxy_subnet_userspace_ || !ip.is_v4()) {
+                    return false;
+                }
+
+                std::shared_ptr<ppp::tap::ITap> tap = GetTap();
+                if (NULLPTR == tap) {
+                    return false;
+                }
+
+                const uint32_t address = htonl(ip.to_v4().to_uint());
+                const uint32_t mask = tap->SubmaskAddress;
+                if (address == tap->IPAddress || address == tap->GatewayServer) {
+                    return false;
+                }
+
+                return (address & mask) == (tap->GatewayServer & mask);
             }
 
             /** @brief Gets current mux size and optionally updates it. */
