@@ -1,9 +1,19 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -108,6 +108,7 @@
+
+     set(XTCP_TESTS
+         test_smoke
++        test_fin_state_callbacks
+         test_ndi
+         test_mempool
+         test_bufref
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -5023,10 +5023,18 @@
-                                 ++rcv_nxt_;
+@@ -5024,10 +5024,19 @@
                                  SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
                                  Transition(TcpState::kCloseWait);
+                                 NotifyStateChanged();  // peer half-closed: the app must see it
 +                                drained_gap = false;  // the FIN ACK above covers the gap
                                  break;
                              }
@@ -16,20 +26,136 @@
 +                        if (hdr.IsFin()) {
 +                            SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
 +                            Transition(TcpState::kCloseWait);
++                            NotifyStateChanged();  // peer half-closed: the app must see it
 +                        } else if (drained_gap) {
                              // Gap filled: ACK immediately (the sender's fast
                              // retransmit / RACK recovery waits on this
                              // cumulative ACK); the ACK covers any previously
-@@ -5035,9 +5043,6 @@
+@@ -5036,10 +5045,6 @@
                              ack_pending_ = false;
                              ack_count_ = 0;
                              ack_deadline_ = 0;
 -                        } else if (hdr.IsFin()) {
 -                            SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
 -                            Transition(TcpState::kCloseWait);
+-                            NotifyStateChanged();  // peer half-closed: the app must see it
                          } else if (quickack_) {
                              // TCP_QUICKACK: ACK every segment immediately.
                              // Linux one-shot semantics: the flag is cleared by
+--- /dev/null
++++ b/tests/test_fin_state_callbacks.cpp
+@@ -0,0 +1,111 @@
++#include <xtcp/core/tcp.h>
++#include <algorithm>
++#include <cstdio>
++#include <vector>
++
++static unsigned failures = 0;
++#define CHECK(value) do { if (!(value)) { ++failures; std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #value); } } while (0)
++
++static void Put32(Byte* p, UInt32 n) {
++    p[0] = Byte(n >> 24); p[1] = Byte(n >> 16);
++    p[2] = Byte(n >> 8); p[3] = Byte(n);
++}
++
++static void CheckFin(UInt32 irs, unsigned scenario, bool close_on_state) {
++    using namespace xtcp::core;
++    Endpoint local, remote;
++    local.family = remote.family = 4;
++    local.addr[0] = 0x0a000001; remote.addr[0] = 0x0a000002;
++    local.port = 40002; remote.port = 443;
++    constexpr UInt32 iss = 100;
++    TcpConn conn(TcpState::kEstablished, local, remote, iss, irs,
++        [](xtcp::buf::BufRef&&) {});
++    unsigned notifications = 0;
++    UInt32 delivered = 0;
++    conn.SetRecvHandler([&](const Byte*, UInt32 length) {
++        delivered += length;
++        return true;
++    });
++    conn.SetStateChangeCallback([&](TcpState state) {
++        ++notifications;
++        CHECK(state == TcpState::kCloseWait);
++        CHECK(conn.State() == state);
++        CHECK(conn.RcvNxt() == irs + 1 + 2001);
++        CHECK(delivered == 2000);
++        if (close_on_state) conn.Close();
++    });
++    const auto inject = [&](UInt32 offset, UInt32 length, bool fin) {
++        std::vector<Byte> packet(20 + length, 0);
++        packet[0] = Byte(remote.port >> 8); packet[1] = Byte(remote.port);
++        packet[2] = Byte(local.port >> 8); packet[3] = Byte(local.port);
++        Put32(packet.data() + 4, irs + 1 + offset);
++        Put32(packet.data() + 8, iss + 1);
++        packet[12] = 0x50; packet[13] = Byte(kFlagAck | (fin ? kFlagFin : 0));
++        packet[14] = packet[15] = 0xff;
++        conn.OnSegment(packet.data(), static_cast<UInt32>(packet.size()));
++    };
++    if (scenario == 1) {
++        inject(1000, 1000, true);
++        CHECK(notifications == 0);
++        inject(0, 1000, false);
++    } else {
++        if (scenario == 2) {
++            inject(1000, 500, false);
++            CHECK(notifications == 0);
++        }
++        inject(0, 2000, true);
++    }
++    CHECK(notifications == 1);
++    CHECK(conn.State() == (close_on_state ? TcpState::kLastAck : TcpState::kCloseWait));
++    CHECK(conn.RcvNxt() == irs + 1 + 2001);
++    CHECK(conn.ReceiveState().ooo_bytes == 0);
++    CHECK(!conn.ReceiveState().rcv_blocked);
++    // A duplicate FIN must not notify or resurrect a callback-closed connection.
++    inject(2000, 0, true);
++    CHECK(notifications == 1);
++    CHECK(conn.State() == (close_on_state ? TcpState::kLastAck : TcpState::kCloseWait));
++}
++
++static void CheckRecvClose(UInt32 irs, bool drained) {
++    using namespace xtcp::core;
++    Endpoint local, remote;
++    local.family = remote.family = 4;
++    local.addr[0] = 0x0a000001; remote.addr[0] = 0x0a000002;
++    local.port = 40002; remote.port = 443;
++    TcpConn conn(TcpState::kEstablished, local, remote, 100, irs,
++        [](xtcp::buf::BufRef&&) {});
++    unsigned calls = 0, notifications = 0;
++    conn.SetStateChangeCallback([&](TcpState) { ++notifications; });
++    conn.SetRecvHandler([&](const Byte*, UInt32) {
++        if (++calls == (drained ? 2U : 1U)) conn.Close();
++        return true;
++    });
++    const auto inject = [&](UInt32 offset, bool fin) {
++        std::vector<Byte> packet(1020, 0);
++        packet[0] = Byte(remote.port >> 8); packet[1] = Byte(remote.port);
++        packet[2] = Byte(local.port >> 8); packet[3] = Byte(local.port);
++        Put32(packet.data() + 4, irs + 1 + offset);
++        Put32(packet.data() + 8, 101);
++        packet[12] = 0x50; packet[13] = Byte(kFlagAck | (fin ? kFlagFin : 0));
++        packet[14] = packet[15] = 0xff;
++        conn.OnSegment(packet.data(), static_cast<UInt32>(packet.size()));
++    };
++    if (drained) inject(1000, true);
++    inject(0, !drained);
++    CHECK(calls == (drained ? 2U : 1U));
++    CHECK(conn.State() == TcpState::kFinWait1);
++    CHECK(notifications == 0);
++}
++
++int main() {
++    xtcp::buf::InitPools();
++    for (UInt32 irs : {200U, 0xfffffc00U}) {
++        for (unsigned scenario = 0; scenario != 3; ++scenario) {
++            for (bool close_on_state : {false, true}) CheckFin(irs, scenario, close_on_state);
++        }
++        for (bool drained : {false, true}) CheckRecvClose(irs, drained);
++    }
++    xtcp::buf::ShutdownPools();
++    std::printf("FIN state callbacks: 16 scenarios, %u failures\n", failures);
++    return failures ? 1 : 0;
++}
 --- a/tests/test_ooo_frontier.cpp
 +++ b/tests/test_ooo_frontier.cpp
 @@ -77,6 +77,13 @@
