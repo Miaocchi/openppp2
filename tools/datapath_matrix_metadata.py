@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -35,6 +36,33 @@ def collect_version_fingerprint(root: Path, ppp_bin: Path) -> dict:
     with ppp_bin.open("rb") as binary_file:
         for chunk in iter(lambda: binary_file.read(1024 * 1024), b""):
             binary_sha256.update(chunk)
+
+    frozen_manifest = os.environ.get("OPENPPP2_FROZEN_SOURCE_MANIFEST")
+    if frozen_manifest:
+        manifest_path = Path(frozen_manifest)
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        files = manifest["files"]
+        if not files:
+            raise ValueError("empty frozen source manifest")
+        for name, expected in files.items():
+            path = (root / name).resolve()
+            if not path.is_relative_to(root.resolve()) or not path.is_file():
+                raise ValueError(f"invalid frozen source path: {name}")
+            if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise ValueError(f"frozen source mismatch: {name}")
+        if binary_sha256.hexdigest() != manifest["binary_sha256"]:
+            raise ValueError("frozen binary mismatch")
+        return {
+            "ppp_binary": {"path": str(ppp_bin.resolve()),
+                           "sha256": binary_sha256.hexdigest(),
+                           "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+            "git": manifest["git"],
+            "xtcp": manifest["xtcp"],
+            "frozen_source": {"manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                              "file_count": len(files),
+                              "archive_sha256": manifest["archive_sha256"]},
+        }
 
     changed_paths = [
         path for path in _git(root, "diff", "--name-only", "-z", "HEAD", "--").split(b"\0") if path
@@ -142,6 +170,8 @@ def evaluate_qualification_status(records: list[dict], run_failed: bool = False)
         return "fail"
     for record in records:
         if record.get("status") != "pass":
+            return "fail"
+        if record.get("fairness", {}).get("zero_rate_flows", 0) > 0:
             return "fail"
         cpu_measurement = record.get("cpu_measurement", {})
         if cpu_measurement.get("profile", "none") != "none":
