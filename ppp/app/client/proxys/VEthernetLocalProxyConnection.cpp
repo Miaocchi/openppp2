@@ -8,6 +8,7 @@
 #include <ppp/app/client/proxys/VEthernetLocalProxySwitcher.h>
 #include <ppp/app/client/proxys/VEthernetLocalProxyConnection.h>
 #include <ppp/app/client/proxys/LocalProxyPolicyDestination.h>
+#include <ppp/app/ProxySubnetOptions.h>
 #include <ppp/diagnostics/Error.h>
 
 #include <ppp/IDisposable.h>
@@ -79,6 +80,7 @@ namespace ppp {
                         std::shared_ptr<VirtualEthernetTcpipConnection> connection = std::move(connection_);
                         std::shared_ptr<RinetdConnection> connection_rinetd = std::move(connection_rinetd_);
                         std::shared_ptr<vmux::vmux_skt> connection_mux = std::move(connection_mux_);
+                        std::shared_ptr<UserspaceSubnetBridge> connection_userspace = std::move(connection_userspace_);
 
 #if defined(_IPHONE)
                         if (ios_child_transmission_slot_held_) {
@@ -101,6 +103,11 @@ namespace ppp {
 
                         if (NULLPTR != connection_mux) {
                             connection_mux->close();
+                        }
+
+                        if (NULLPTR != connection_userspace) {
+                            connection_userspace->OnClosed = NULLPTR;
+                            connection_userspace->Dispose();
                         }
 
                         if (NULLPTR != exchanger_) {
@@ -141,6 +148,10 @@ namespace ppp {
                     elif(std::shared_ptr<vmux::vmux_skt> connection = this->connection_mux_; NULLPTR != connection) {
                         this->Update();
                         return connection->run();
+                    }
+                    elif(std::shared_ptr<UserspaceSubnetBridge> connection = this->connection_userspace_; NULLPTR != connection) {
+                        this->Update();
+                        return connection->Run();
                     }
                     else {
                         return RunAfterHandshakeWithoutBridge(y);
@@ -190,7 +201,48 @@ namespace ppp {
                         return K->send_to_peer_yield(messages, messages_size, y);
                     }
 
+                    std::shared_ptr<UserspaceSubnetBridge> U = this->connection_userspace_;
+                    if (NULLPTR != U) {
+                        return U->Send(messages, messages_size);
+                    }
+
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionTransportMissing);
+                }
+
+                bool VEthernetLocalProxyConnection::ConnectUserspaceSubnet(const boost::asio::ip::address& address, int port, YieldContext& y) noexcept {
+                    std::shared_ptr<boost::asio::ip::tcp::socket> socket = GetSocket();
+                    if (NULLPTR == socket || !socket->is_open()) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketDisconnected);
+                    }
+
+                    auto configuration = exchanger_->GetConfiguration();
+                    const int timeout = NULLPTR != configuration ? configuration->tcp.connect.timeout : 0;
+                    std::shared_ptr<UserspaceSubnetBridge> bridge = make_shared_object<UserspaceSubnetBridge>(socket, timeout);
+                    if (NULLPTR == bridge) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    }
+
+                    std::weak_ptr<VEthernetLocalProxyConnection> weak =
+                        std::static_pointer_cast<VEthernetLocalProxyConnection>(shared_from_this());
+                    bridge->OnActivity = [weak]() noexcept {
+                        if (auto self = weak.lock(); NULLPTR != self) {
+                            self->Update();
+                        }
+                    };
+                    bridge->OnClosed = [weak]() noexcept {
+                        if (auto self = weak.lock(); NULLPTR != self) {
+                            self->Dispose();
+                        }
+                    };
+
+                    if (!bridge->Connect(boost::asio::ip::tcp::endpoint(address, static_cast<unsigned short>(port)), y)) {
+                        bridge->OnClosed = NULLPTR;
+                        bridge->Dispose();
+                        return false;
+                    }
+
+                    connection_userspace_ = std::move(bridge);
+                    return true;
                 }
 
                 /**
@@ -216,6 +268,15 @@ namespace ppp {
                     auto self = shared_from_this();
                     ppp::string connect_host = destinationEP->Host;
                     auto policy_switcher = exchanger_->GetSwitcher();
+                    // Subnet-only proxy-only clients carry nothing but virtual-subnet peers.
+                    if (policy_switcher && !policy_switcher->ProxyInternet(NULLPTR)) {
+                        boost::system::error_code address_error;
+                        const boost::asio::ip::address address = StringToAddress(destinationEP->Host.data(), address_error);
+                        if (!ProxyDestinationAllowed(false, !address_error && policy_switcher->IsVirtualSubnetAddress(address))) {
+                            return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProxyInternetDisabled);
+                        }
+                        return ConnectUserspaceSubnet(address, destinationEP->Port, y);
+                    }
                     auto policy_snapshot = policy_switcher ? policy_switcher->GetPolicySnapshot() : nullptr;
                     if (policy_switcher && policy_switcher->HasPolicyV2()) {
                         if (!policy_switcher->IsPolicyBusinessAllowed())
@@ -241,6 +302,12 @@ namespace ppp {
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
                         }
                         policy_switcher->RecordPolicyDecision(target.action);
+                        // Without a host adapter only the in-process stack may carry subnet
+                        // traffic: a host socket would leave through the physical default route.
+                        if (policy_switcher->ProxySubnetUserspace(NULLPTR) &&
+                            policy_switcher->IsVirtualSubnetAddress(target.address)) {
+                            return ConnectUserspaceSubnet(target.address, destinationEP->Port, y);
+                        }
                         if (target.action == policy::PolicyAction::Direct) {
                             const int status = VEthernetNetworkTcpipConnection::Rinetd(self,
                                 exchanger_, context_, strand_, configuration, socket,
@@ -269,6 +336,10 @@ namespace ppp {
 
                             if (ppp::net::IPEndPoint::IsInvalid(address)) {
                                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkAddressInvalid);
+                            }
+
+                            if (switcher->ProxySubnetUserspace(NULLPTR) && switcher->IsVirtualSubnetAddress(address)) {
+                                return ConnectUserspaceSubnet(address, destinationEP->Port, y);
                             }
 
                             int rinetd_status = VEthernetNetworkTcpipConnection::Rinetd(self,
@@ -422,6 +493,9 @@ namespace ppp {
                     }
                     elif(std::shared_ptr<vmux::vmux_skt> connection = connection_mux_; NULLPTR != connection) {
                         linked = connection->is_connected();
+                    }
+                    elif(std::shared_ptr<UserspaceSubnetBridge> connection = connection_userspace_; NULLPTR != connection) {
+                        linked = connection->IsLinked();
                     }
 
                     uint64_t now = Executors::GetTickCount();

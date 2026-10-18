@@ -78,6 +78,9 @@
     <ClCompile Include="ppp\tap\TapUserspace.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\app\ProxySubnetOptions.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\app\client\proxys\UserspaceSubnetBridge.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -2006,6 +2009,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\tap\TapUserspace.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\ProxySubnetOptions.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\tap\TapUserspaceRoute.h">

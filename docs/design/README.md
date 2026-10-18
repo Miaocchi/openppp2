@@ -21,6 +21,7 @@ stable-reference claims.
 - [P2P direct-channel state machine](p2p-direct-channel/state-machine.md)
 - [P2P direct-channel threat model](p2p-direct-channel/threat-model.md)
 - [XTCP platform build notes](XTCP_INTEGRATION.md)
+- [仅代理模式接入虚拟子网与 P2P 直连（计划）](p2p-direct-channel/proxy-only-subnet-plan_CN.md)
 - [OpenPPP2 Sub / Client 方案设计](SUB_CLIENT_DESIGN_CN.md)
 - [桌面客户端手动节点与启动参数设计](CLIENT_MANUAL_PROFILES_DESIGN_CN.md)
 - [OpenPPP2 Client 管理器 UI/UX 设计](CLIENT_UIUX_DESIGN_CN.md)

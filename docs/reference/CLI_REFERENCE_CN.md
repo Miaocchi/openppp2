@@ -55,8 +55,11 @@ ppp policy <子命令> [选项]
 | `--tun-mask=<位数>` | `30` | 前缀长度，限制在 16–32。 |
 | `--tun-ipv6=<IP>` | 服务端分配 | 请求指定的 IPv6 地址。 |
 | `--tun-vnet=yes\|no` | `yes` | 子网转发（客户端之间互通）。 |
+| `--proxy-subnet=yes\|no` | `yes` | 仅代理模式：经进程内协议栈接入虚拟子网（不建网卡）。见[代理模式](../guides/PROXY_MODE_CN.md)。 |
+| `--proxy-internet=yes\|no` | `yes` | 仅代理模式：同时代理上网；`no` 时只组网。 |
+| `--proxy-forward=<端口>[:<本机端口>][,...]` | （无） | 接入虚拟子网的代理模式：对端可连接的虚拟 IP TCP 端口，转发到 `127.0.0.1`。 |
 | `--tun-host=yes\|no` | `yes` | 把默认路由指向隧道（全局）。 |
-| `--tun-static=yes\|no` | `no` | 静态 UDP 隧道模式（使用服务端 `udp.listen.port`）。proxy 模式下无效：不进行 `STATIC`/`STATICACK` 交换，IPv4 保持自动分配（automatic）。 |
+| `--tun-static=yes\|no` | `no` | 静态 UDP 隧道模式（使用服务端 `udp.listen.port`）。proxy 模式下无效：不进行 `STATIC`/`STATICACK` 交换；`--proxy-subnet=yes` 时仍接受显式指定的 `--tun-ip`。 |
 | `--nic=<网卡>` | 自动 | 指定物理出口网卡。 |
 | `--ngw=<IP>` | 自动 | 指定物理网关。 |
 

@@ -643,8 +643,10 @@
     <ClCompile Include="ppp\tap\ITap.cpp" />
     <ClCompile Include="ppp\tap\TapStub.cpp" />
     <ClCompile Include="ppp\tap\TapUserspace.cpp" />
+    <ClCompile Include="ppp\app\ProxySubnetOptions.cpp" />
     <ClInclude Include="common\libtcpip\netstack_outbound.h" />
     <ClInclude Include="ppp\tap\TapUserspace.h" />
+    <ClInclude Include="ppp\app\ProxySubnetOptions.h" />
     <ClInclude Include="ppp\tap\TapUserspaceRoute.h" />
     <ClInclude Include="ppp\app\client\proxys\UserspaceSubnetBridge.h" />
     <ClCompile Include="ppp\app\client\proxys\UserspaceSubnetBridge.cpp" />

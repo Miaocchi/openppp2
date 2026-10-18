@@ -5,6 +5,7 @@
 
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/ApplicationClientBootstrap.h>
+#include <ppp/app/ProxySubnetOptions.h>
 #include <ppp/app/PppApplicationInternal.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/Telemetry.h>
@@ -498,6 +499,11 @@ std::shared_ptr<NetworkInterface> PppApplication::GetNetworkInterface(int argc, 
         ni->ManualIPv4 = address_modes.manual_ipv4;
         ni->HostedNetwork = ppp::ToBoolean(ppp::GetCommandArgument("--tun-host", argc, argv, "y").data());
         ni->VNet = ppp::ToBoolean(ppp::GetCommandArgument("--tun-vnet", argc, argv, "y").data());
+        auto proxy_options = ParseProxySubnetOptions(argc, argv);
+        ni->ProxySubnet = proxy_options.subnet;
+        ni->ProxyInternet = proxy_options.internet;
+        ni->ProxyForwards.clear();
+        ni->ProxyForwards.insert(proxy_options.forwards.begin(), proxy_options.forwards.end());
 
 #if defined(_LINUX)
         ni->BypassNic = ppp::RTrim(ppp::LTrim(ppp::GetCommandArgument("--bypass-nic", argc, argv)));

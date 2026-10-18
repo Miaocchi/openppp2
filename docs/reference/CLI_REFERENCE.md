@@ -55,8 +55,11 @@ Server listeners, address pools, IPv6, and the rest live in the configuration fi
 | `--tun-mask=<bits>` | `30` | Prefix length, clamped to 16–32. |
 | `--tun-ipv6=<ip>` | server-assigned | Request a specific IPv6 address. |
 | `--tun-vnet=yes\|no` | `yes` | Subnet forwarding (client-to-client). |
+| `--proxy-subnet=yes\|no` | `yes` | Proxy mode only: join the virtual subnet through the in-process stack (no adapter). See [Proxy mode](../guides/PROXY_MODE.md). |
+| `--proxy-internet=yes\|no` | `yes` | Proxy mode only: also proxy Internet destinations; `no` leaves a subnet-only client. |
+| `--proxy-forward=<port>[:<local>][,...]` | (none) | Proxy mode with the virtual subnet: TCP ports on the virtual IP that peers may open, forwarded to `127.0.0.1`. |
 | `--tun-host=yes\|no` | `yes` | Point the default route at the tunnel (full tunnel). |
-| `--tun-static=yes\|no` | `no` | Static UDP tunnel mode (uses the server's `udp.listen.port`). Ignored in proxy mode: no `STATIC`/`STATICACK` exchange, and IPv4 assignment stays automatic. |
+| `--tun-static=yes\|no` | `no` | Static UDP tunnel mode (uses the server's `udp.listen.port`). Ignored in proxy mode: no `STATIC`/`STATICACK` exchange. With `--proxy-subnet=yes`, an explicit `--tun-ip` is still honored. |
 | `--nic=<interface>` | auto | Physical egress interface. |
 | `--ngw=<ip>` | auto | Physical gateway. |
 

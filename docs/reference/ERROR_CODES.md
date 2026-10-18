@@ -64,6 +64,7 @@ The current local `ErrorCodes.def` adds these three enum entries:
 | `ConfigPolicyRuntimeUnavailable` | `kFatal` | The v2 client policy runtime is unavailable or has not been prepared. |
 | `ConfigPolicyTcpSniffUnsupported` | `kError` | TUN TCP domain sniffing is unsupported on this platform. |
 | `ConfigPolicyUdpIdentityConflict` | `kError` | The v2 client virtual address conflicts with the internal UDP identity range. |
+| `ProxyInternetDisabled` | `kError` | Proxy mode runs with `--proxy-internet=no`; only virtual-subnet destinations are allowed. |
 
 The policy CLI and source loader also emit diagnostic strings such as
 `E_POLICY_CONFIG`, `E_POLICY_JSON`, `E_POLICY_SOURCE_CONFLICT`,
