@@ -5,6 +5,7 @@ option(ENABLE_COVERAGE "Enable LLVM coverage instrumentation" OFF)
 option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(ENABLE_TSAN "Enable ThreadSanitizer (cannot be combined with ENABLE_SANITIZERS)" OFF)
 option(ENABLE_XTCP_TESTS "Build the pinned XTCP dependency contract tests" OFF)
+option(ENABLE_XTCP_P64_PROBES "Build P64 allocation-pressure regression tests" OFF)
 option(ENABLE_POLICY_BENCHMARKS "Build offline policy benchmarks outside CTest" OFF)
 
 # Match the runtime library to the provisioned Boost/OpenSSL triplet.  The
@@ -187,6 +188,16 @@ if(ENABLE_XTCP_TESTS)
         target_link_libraries(${_xtcp_test} PRIVATE xtcp_static)
     endforeach()
 
+    if(ENABLE_XTCP_P64_PROBES)
+        openppp2_add_cpp_test(xtcp_allocation_recovery_test SOURCES xtcp_allocation_recovery_test.cpp)
+        target_link_libraries(xtcp_allocation_recovery_test PRIVATE xtcp_static Threads::Threads)
+        foreach(_allocation_case delayed resume closed lost repeated-delayed repeated-resume repeated-closed probe fin timewait dsack ecn)
+            add_test(NAME xtcp_allocation_recovery_${_allocation_case}
+                COMMAND xtcp_allocation_recovery_test ${_allocation_case})
+            set_tests_properties(xtcp_allocation_recovery_${_allocation_case} PROPERTIES TIMEOUT 5)
+        endforeach()
+    endif()
+
     openppp2_add_cpp_test(xtcp_ooo_frontier_test SOURCES "${XTCP_SOURCE_DIR}/tests/test_ooo_frontier.cpp")
     target_link_libraries(xtcp_ooo_frontier_test PRIVATE xtcp_static)
 
@@ -226,6 +237,13 @@ if(ENABLE_XTCP_TESTS)
         "${XTCP_SOURCE_DIR}/tests")
     target_link_libraries(xtcp_runtime_bridge_test PRIVATE
         xtcp_static Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+    if(ENABLE_XTCP_P64_PROBES)
+        foreach(_pressure_case ordinary large split0 split1 split2)
+            add_test(NAME xtcp_ingress_pressure_${_pressure_case}
+                COMMAND xtcp_runtime_bridge_test --pressure ${_pressure_case})
+            set_tests_properties(xtcp_ingress_pressure_${_pressure_case} PROPERTIES TIMEOUT 5)
+        endforeach()
+    endif()
 endif()
 
 openppp2_add_cpp_test(runtime_snapshot_test SOURCES
