@@ -91,7 +91,13 @@ namespace ppp {
 #endif
 
                 if (force) {
-                    connection_rinetd->RemoteSocketProtectorRequired = true;
+                    bool protector_required = true;
+#if !defined(_ANDROID) && !defined(_IPHONE) && !defined(IPHONE)
+                    // Desktop proxy-only mode installs no TUN routes: the default route already
+                    // egresses directly, and no underlying interface was resolved to bind to.
+                    protector_required = !switcher->ProxyOnly(NULLPTR) && protector_required;
+#endif
+                    connection_rinetd->RemoteSocketProtectorRequired = protector_required;
                     connection_rinetd->ProtectRemoteSocket =
                         BuildClientUnderlyingSocketProtector(
                             remoteEP.address().is_v4(),
