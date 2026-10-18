@@ -1,0 +1,269 @@
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -379,13 +379,20 @@
+                 Byte sack_n = 0;
+                 UInt32 sack_opt_len = 0;
+                 if (!include_sack && NULLPTR != sack_blocks && 0 < sack_blocks_count) {
+-                    // RFC 2385 MD5 shares the 60-byte TCP option budget with
+-                    // RFC 2018 SACK. MD5 costs 20 bytes, so cap SACK at 2
+-                    // blocks (2 + 16 + 2 NOP = 20 bytes): 20 + 20 + 20 = 60.
+-                    // Without MD5, 4 blocks (2 + 32 + 2 NOP = 36) fit: 56.
+-                    const Byte sack_cap = include_md5 ? 2 : 4;
++                    // RFC 2018 SACK shares the 40-byte TCP option space with
++                    // every other option on the segment: the 12-byte TSopt
++                    // (RFC 7323) and the 20-byte MD5 signature (RFC 2385).
++                    // Fit as many blocks as the remaining space allows -
++                    // 4 alone (2 + 32 + 2 NOP = 36), 3 with timestamps
++                    // (12 + 2 + 24 + 2 NOP = 40, as Linux), 2 with MD5
++                    // (20 + 2 + 16 + 2 NOP = 40). Overflowing 40 bytes makes
++                    // the 4-bit data offset wrap: the peer drops the ACK.
++                    const UInt32 used = syn_opt_len + (include_md5 ? 20 : 0);
++                    const UInt32 room = (used < 40) ? 40 - used : 0;
++                    const UInt32 fit = (room >= 2 + 8) ? (room - 2) / 8 : 0;
++                    const Byte sack_cap = static_cast<Byte>(fit < 4 ? fit : 4);
+                     sack_n = (sack_blocks_count > sack_cap) ? sack_cap : sack_blocks_count;
+-                    sack_opt_len = ((2 + 8 * sack_n) + 3) & ~3u;  // NOP-padded to 4
++                    sack_opt_len = (0 < sack_n) ? (((2 + 8 * sack_n) + 3) & ~3u) : 0;  // NOP-padded to 4
+                 }
+                 const UInt32 md5_off = syn_opt_len + sack_opt_len;
+                 const UInt32 opt_len = md5_off + (include_md5 ? 20 : 0);
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -132,6 +132,7 @@
+         test_tlp
+         test_rack
+         test_dsack
++        test_sack_option_budget
+         test_ip
+         test_pmtud
+         test_mtu_probe
+--- /dev/null
++++ b/tests/test_sack_option_budget.cpp
+@@ -0,0 +1,227 @@
++/**
++ * @file test_sack_option_budget.cpp
++ * @brief RFC 2018 / RFC 7323 option space: SACK blocks share the 40-byte TCP
++ *        option area with the 12-byte TSopt. With timestamps on, an ACK may
++ *        carry at most 3 SACK blocks. Emitting 4 makes the TCP header 68
++ *        bytes, the 4-bit data offset wraps (17 -> 1), and the peer drops the
++ *        malformed ACK - the sender then stalls in RTO backoff although the
++ *        receiver keeps "acknowledging" every retransmission.
++ *
++ * Scenario: establish a timestamp+SACK connection, send ten full-MSS frames
++ * and deliver only every second one, so the receiver holds five out-of-order
++ * ranges. Every ACK the receiver emits must be a well-formed TCP header: the
++ * data offset matches the bytes on the wire, the header is at most 60 bytes,
++ * the option list parses to its end, and a TSopt-carrying ACK has at most 3
++ * SACK blocks. At least one ACK must carry SACK blocks (scenario sanity).
++ */
++
++#include <xtcp/buf/bufref.h>
++#include <xtcp/core/stack.h>
++#include <xtcp/ndi/manual.h>
++
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstring>
++#include <thread>
++#include <vector>
++
++static int g_failures = 0;
++
++#define CHECK(cond)                                                           \
++    do {                                                                      \
++        if (!(cond)) {                                                        \
++            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
++            ++g_failures;                                                     \
++        }                                                                     \
++    } while (0)
++
++namespace {
++    struct AckShape {
++        bool valid = false;
++        bool has_ts = false;
++        UInt32 sack_blocks = 0;
++    };
++
++    // Parses one IPv4/TCP pure ACK as a peer would: the IP total length must
++    // equal IHL + data offset (no payload), the data offset must be 20..60,
++    // and the option list must parse exactly to the data offset.
++    AckShape InspectAck(const Byte* p, UInt32 n) {
++        AckShape shape;
++        if (n < 40 || 4 != (p[0] >> 4) || 6 != p[9]) {
++            return shape;
++        }
++        const UInt32 ihl = static_cast<UInt32>(p[0] & 0x0F) * 4;
++        const UInt32 total = (static_cast<UInt32>(p[2]) << 8) | p[3];
++        const UInt32 doff = static_cast<UInt32>(p[ihl + 12] >> 4) * 4;
++        if (total != n || doff < 20 || doff > 60 || ihl + doff != total) {
++            return shape;  // malformed: wrapped data offset or phantom payload
++        }
++        const Byte* t = p + ihl;
++        for (UInt32 o = 20; o < doff;) {
++            const Byte kind = t[o];
++            if (0 == kind) {
++                break;  // EOL: rest is padding
++            }
++            if (1 == kind) {
++                ++o;
++                continue;
++            }
++            if (o + 1 >= doff) {
++                return shape;
++            }
++            const Byte len = t[o + 1];
++            if (len < 2 || o + len > doff) {
++                return shape;
++            }
++            if (8 == kind && 10 == len) {
++                shape.has_ts = true;
++            }
++            if (5 == kind) {
++                if (0 != (len - 2) % 8) {
++                    return shape;
++                }
++                shape.sack_blocks = (len - 2) / 8;
++            }
++            o += len;
++        }
++        shape.valid = true;
++        return shape;
++    }
++}
++
++int main() {
++    xtcp::buf::InitPools();
++    {
++        xtcp::ndi::ManualBackend backend_a, backend_b;
++        xtcp::XtcpStack stack_a(&backend_a);
++        xtcp::XtcpStack stack_b(&backend_b);
++        stack_a.SetDefaultCongestionControl("");
++        stack_b.SetDefaultCongestionControl("");
++        backend_a.SetRxHandler([&stack_a](xtcp::ndi::Packet&& p) {
++            xtcp::buf::BufRef buf = xtcp::buf::BufRef::Acquire(p.len);
++            std::memcpy(buf.Data(), p.data, p.len);
++            buf.SetLen(p.len);
++            stack_a.OnPacket(std::move(buf));
++        });
++        backend_b.SetRxHandler([&stack_b](xtcp::ndi::Packet&& p) {
++            xtcp::buf::BufRef buf = xtcp::buf::BufRef::Acquire(p.len);
++            std::memcpy(buf.Data(), p.data, p.len);
++            buf.SetLen(p.len);
++            stack_b.OnPacket(std::move(buf));
++        });
++        std::atomic<UInt64> b_recv{0};
++        stack_b.SetRecvHandler([&b_recv](UInt64, const Byte*, UInt32 len) {
++            b_recv.fetch_add(len, std::memory_order_relaxed);
++            return true;
++        });
++
++        Byte out[65536];
++        bool drop_even_frames = false;
++        UInt32 big_idx = 0;
++        UInt32 acks_seen = 0, acks_malformed = 0, acks_with_sack = 0, acks_over_budget = 0;
++        UInt32 max_sack_blocks = 0;
++        auto pump = [&]() {
++            while (0 != backend_a.TxPending()) {
++                const UInt32 n = backend_a.PollTx(out);
++                if (0 == n) {
++                    continue;
++                }
++                if (drop_even_frames && n >= 1400) {
++                    // Network loss: only every second full-MSS frame arrives.
++                    const bool deliver = 1 == (big_idx++ & 1);
++                    if (!deliver) {
++                        continue;
++                    }
++                }
++                backend_b.Inject(out, n, 0x0800);
++            }
++            while (0 != backend_b.TxPending()) {
++                const UInt32 n = backend_b.PollTx(out);
++                if (0 == n) {
++                    continue;
++                }
++                if (drop_even_frames) {
++                    const AckShape shape = InspectAck(out, n);
++                    ++acks_seen;
++                    if (!shape.valid) {
++                        ++acks_malformed;
++                    } else {
++                        if (0 < shape.sack_blocks) {
++                            ++acks_with_sack;
++                        }
++                        if (shape.sack_blocks > max_sack_blocks) {
++                            max_sack_blocks = shape.sack_blocks;
++                        }
++                        if (shape.has_ts && shape.sack_blocks > 3) {
++                            ++acks_over_budget;
++                        }
++                    }
++                }
++                backend_a.Inject(out, n, 0x0800);
++            }
++            stack_a.PollAckTimers();
++            stack_b.PollAckTimers();
++        };
++
++        xtcp::core::Endpoint server_ep, client_ep;
++        server_ep.family = 4;
++        server_ep.addr[0] = 0x0A000001;
++        server_ep.port = 443;
++        client_ep.family = 4;
++        client_ep.addr[0] = 0xC0A80102;
++        client_ep.port = 40000;
++        CHECK(stack_b.Listen(server_ep));
++
++        const UInt64 conn = stack_a.Connect(client_ep, server_ep);
++        CHECK(0 != conn);
++        for (UInt32 i = 0; i < 300 && xtcp::core::TcpState::kEstablished != stack_a.ConnectionState(conn); ++i) {
++            pump();
++        }
++        CHECK(xtcp::core::TcpState::kEstablished == stack_a.ConnectionState(conn));
++
++        // Warm up with small sends so timestamps and SACK are in use.
++        const UInt32 kBase = 4 * 1024;
++        std::vector<Byte> payload(kBase + 10 * 1460, 0x5A);
++        UInt32 sent = 0;
++        for (UInt32 i = 0; i < 5000 && sent < kBase; ++i) {
++            if (stack_a.Send(conn, payload.data() + sent, 1024)) {
++                sent += 1024;
++            }
++            pump();
++        }
++        for (UInt32 i = 0; i < 500 && b_recv.load() < kBase; ++i) {
++            pump();
++        }
++        CHECK(kBase == b_recv.load());
++
++        // Ten full-MSS frames, every second one lost: five OOO ranges.
++        drop_even_frames = true;
++        sent = 0;
++        for (UInt32 i = 0; i < 5000 && sent < 10 * 1460; ++i) {
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));  // pacing window
++            if (stack_a.Send(conn, payload.data() + kBase + sent, 1460)) {
++                sent += 1460;
++            } else {
++                pump();
++            }
++        }
++        CHECK(10 * 1460 == sent);
++        for (UInt32 i = 0; i < 50; ++i) {
++            pump();
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));
++        }
++
++        std::fprintf(stderr, "acks=%u malformed=%u with_sack=%u max_blocks=%u over_budget=%u\n",
++                     acks_seen, acks_malformed, acks_with_sack, max_sack_blocks, acks_over_budget);
++        CHECK(0 < acks_seen);
++        CHECK(0 < acks_with_sack);       // the scenario produced SACK-carrying ACKs
++        CHECK(0 == acks_malformed);      // no wrapped data offset / phantom payload
++        CHECK(0 == acks_over_budget);    // TSopt + at most 3 SACK blocks
++        CHECK(3 <= max_sack_blocks);     // the option space is used, not under-filled
++    }
++    xtcp::buf::ShutdownPools();
++    std::fprintf(stderr, g_failures ? "SACK option budget: FAILED (%d)\n" : "SACK option budget: ALL PASSED\n",
++                 g_failures);
++    return g_failures ? 1 : 0;
++}

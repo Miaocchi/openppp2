@@ -1,3 +1,28 @@
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1440,6 +1440,7 @@
+         UInt64 conn_id, core::ReceiveStateSnapshot* state) noexcept {
+         Shard* shard = ShardOf(conn_id);
+         std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
++        MarkSweep(*shard);
+         auto it = shard->conns_.find(conn_id);
+         if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
+             if (NULLPTR != state) {
+@@ -1448,6 +1449,14 @@
+             return core::ReceiveResumeResult::kConnectionMissing;
+         }
+         const core::ReceiveResumeResult result = it->second->conn->ResumeReceiveDetailed();
++        it = shard->conns_.find(conn_id);
++        if (it == shard->conns_.end() || NULLPTR == it->second->conn ||
++            core::TcpState::kClosed == it->second->conn->State()) {
++            if (NULLPTR != state) {
++                *state = {};
++            }
++            return core::ReceiveResumeResult::kConnectionMissing;
++        }
+         if (NULLPTR != state) {
+             *state = it->second->conn->ReceiveState();
+         }
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
 @@ -1804,13 +1804,13 @@
@@ -36,8 +61,8 @@
                                  break;
                              }
                              if (TcpState::kClosed == state_) {
-@@ -3973,6 +3971,9 @@
- 
+@@ -3987,6 +3985,9 @@
+
          ReceiveResumeResult TcpConn::ResumeReceiveDetailed() noexcept {
              std::lock_guard<std::recursive_mutex> scope(syncobj_);
 +            if (TcpState::kClosed == state_) {
@@ -46,7 +71,7 @@
              if (!rcv_blocked_) {
                  return ReceiveResumeResult::kNotBlocked;
              }
-@@ -3980,10 +3981,72 @@
+@@ -3994,10 +3995,72 @@
              ack_pending_ = false;
              ack_count_ = 0;
              ack_deadline_ = 0;
@@ -119,9 +144,9 @@
 -                : ReceiveResumeResult::kResumed;
 +                ? ReceiveResumeResult::kReceiveWindowFull : ReceiveResumeResult::kResumed;
          }
- 
+
          void TcpConn::SendSyn() noexcept {
-@@ -4746,15 +4809,12 @@
+@@ -4771,15 +4834,12 @@
                                  ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
                              }
                              if (!seg.data.empty() && recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
@@ -140,7 +165,7 @@
                                  break;
                              }
                              if (TcpState::kEstablished != state_) {
-@@ -4869,12 +4929,11 @@
+@@ -4896,12 +4956,11 @@
                                      const UInt32 prev_os = rcv_nxt_;
                                      rcv_nxt_ += static_cast<UInt32>(os.data.size());  // advance before callback
                                      if (!os.data.empty() && recv_cb_ && !recv_cb_(os.data.data(), static_cast<UInt32>(os.data.size()))) {
@@ -155,39 +180,8 @@
                                          break;
                                      }
                                      if (TcpState::kEstablished != state_) {
-@@ -5343,5 +5402,3 @@
+@@ -5370,5 +5429,3 @@
          }
-     }
- }
--
--
---- a/src/core/stack.cpp
-+++ b/src/core/stack.cpp
-@@ -1428,6 +1428,7 @@
-         UInt64 conn_id, core::ReceiveStateSnapshot* state) noexcept {
-         Shard* shard = ShardOf(conn_id);
-         std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
-+        MarkSweep(*shard);
-         auto it = shard->conns_.find(conn_id);
-         if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
-             if (NULLPTR != state) {
-@@ -1436,6 +1437,14 @@
-             return core::ReceiveResumeResult::kConnectionMissing;
-         }
-         const core::ReceiveResumeResult result = it->second->conn->ResumeReceiveDetailed();
-+        it = shard->conns_.find(conn_id);
-+        if (it == shard->conns_.end() || NULLPTR == it->second->conn ||
-+            core::TcpState::kClosed == it->second->conn->State()) {
-+            if (NULLPTR != state) {
-+                *state = {};
-+            }
-+            return core::ReceiveResumeResult::kConnectionMissing;
-+        }
-         if (NULLPTR != state) {
-             *state = it->second->conn->ReceiveState();
-         }
-@@ -2547,5 +2556,3 @@
-         return iss;
      }
  }
 -
@@ -199,10 +193,10 @@
          CHECK(conn.RcvNxt() == irs + 1 + 2000);
          CHECK(conn.ReceiveState().rcv_blocked);
 -        CHECK(conn.ReceiveState().ooo_bytes == 0);
--        CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
 +        CHECK(conn.ReceiveState().ooo_bytes == 2000);
-         reject_tail = false;
-+        CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
++        reject_tail = false;
+         CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
+-        reject_tail = false;
          inject(2000, 2000);
          expected = 4000;
          break;

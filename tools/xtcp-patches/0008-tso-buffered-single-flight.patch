@@ -1,6 +1,32 @@
+--- a/src/core/stack.cpp
++++ b/src/core/stack.cpp
+@@ -1314,10 +1314,7 @@
+         if (0 < snd_buf_) {
+             entry->conn->SetSndBuf(snd_buf_);
+         }
+-        // TSO direct-sends: the backend's TSO cap + no qdisc. The Emit-side
+-        // TSO gate re-checks the qdisc (SetTxQdisc is startup-only, but a
+-        // conn bound before the mount would otherwise bypass the qdisc).
+-        entry->conn->SetTsoTx(0 != (caps_ & ndi::kCapTsoTx) && NULLPTR == tx_qdisc_);
++        // BindDataPath applies the common backend capability policy.
+         // RFC 7413: reconnections to a known peer carry its cached TFO
+         // cookie automatically; a newly learned cookie updates the cache.
+         {
+@@ -1351,6 +1348,11 @@
+     void XtcpStack::BindDataPath(UInt64 id, Shard& shard, const core::Endpoint& local,
+                                  const core::Endpoint& remote, core::TcpConn& conn,
+                                  bool as_accept) noexcept {
++        // Every connection creation path (plain/TFO/MD5 connect, listener SYN,
++        // SYN-cookie rebuild) converges here. Inherit backend TSO capability
++        // uniformly; signed flows remain software-segmented because hardware
++        // segmentation cannot reproduce the TCP-MD5 option per segment.
++        conn.SetTsoTx(0 != (caps_ & ndi::kCapTsoTx) && NULLPTR == tx_qdisc_ && !conn.Md5Enabled());
+         // Bug(state-cb): timer-driven transitions (RTO exhaustion, keepalive
+         // abort, FIN-WAIT-2 timeout) never reached the application - the only
+         // handler call sat on the packet path (OnPacket). Route the
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -3532,11 +3532,16 @@
+@@ -3593,17 +3593,30 @@
                  if (n > limit - inflight) {
                      n = limit - inflight;
                  }
@@ -21,10 +47,10 @@
                  }
                  // A segment may not exceed the remaining pacing budget of the
                  // current tick (the quantum refills to >= payload_cap, so n
-@@ -3544,6 +3549,14 @@
+                 // stays positive here).
                  if (0 < cc_.pacing_rate && static_cast<UInt64>(n) > pacing_budget) {
                      n = static_cast<UInt32>(pacing_budget);
-                 }
++                }
 +                const bool tso_flush = tso_tx_ && retrans_queue_.empty() &&
 +                    !fast_recovery_ && n > payload_cap;
 +                // Ordinary recovery entries must leave room for a fresh TSopt
@@ -32,11 +58,10 @@
 +                // exceed the per-segment payload cap.
 +                if (!tso_flush && n > payload_cap) {
 +                    n = payload_cap;
-+                }
+                 }
                  // No Nagle gate here: this is the ACK-driven flush path, and
                  // Nagle (RFC 896) applies only at the application send entry.
-                 // Gating the tail here deadlocks: after a partial ACK leaves
-@@ -3592,6 +3605,11 @@
+@@ -3659,6 +3672,11 @@
                      pacing_budget -= n;
                  }
                  off += n;
@@ -48,32 +73,6 @@
              }
              // Bug(close): when Close() deferred the FIN because buffered data
              // was window-constrained, this drain is what unlocks it - the FIN
---- a/src/core/stack.cpp
-+++ b/src/core/stack.cpp
-@@ -1304,10 +1304,7 @@
-         if (0 < snd_buf_) {
-             entry->conn->SetSndBuf(snd_buf_);
-         }
--        // TSO direct-sends: the backend's TSO cap + no qdisc. The Emit-side
--        // TSO gate re-checks the qdisc (SetTxQdisc is startup-only, but a
--        // conn bound before the mount would otherwise bypass the qdisc).
--        entry->conn->SetTsoTx(0 != (caps_ & ndi::kCapTsoTx) && NULLPTR == tx_qdisc_);
-+        // BindDataPath applies the common backend capability policy.
-         // RFC 7413: reconnections to a known peer carry its cached TFO
-         // cookie automatically; a newly learned cookie updates the cache.
-         {
-@@ -1340,6 +1337,11 @@
- 
-     void XtcpStack::BindDataPath(UInt64 id, Shard& shard, const core::Endpoint& local, core::TcpConn& conn,
-                                  bool as_accept) noexcept {
-+        // Every connection creation path (plain/TFO/MD5 connect, listener SYN,
-+        // SYN-cookie rebuild) converges here. Inherit backend TSO capability
-+        // uniformly; signed flows remain software-segmented because hardware
-+        // segmentation cannot reproduce the TCP-MD5 option per segment.
-+        conn.SetTsoTx(0 != (caps_ & ndi::kCapTsoTx) && NULLPTR == tx_qdisc_ && !conn.Md5Enabled());
-         // Bug(state-cb): timer-driven transitions (RTO exhaustion, keepalive
-         // abort, FIN-WAIT-2 timeout) never reached the application - the only
-         // handler call sat on the packet path (OnPacket). Route the
 --- a/tests/test_tso_tx.cpp
 +++ b/tests/test_tso_tx.cpp
 @@ -42,8 +42,11 @@
@@ -86,7 +85,7 @@
 +    xtcp::buf::SegMeta last_gso_meta{};
 +    UInt32 last_gso_payload = 0;
      xtcp::buf::SegMeta rejected_meta{};
- 
+
      void SetRxHandler(xtcp::ndi::RxHandler handler) noexcept override {
 @@ -59,6 +62,13 @@
          tx_calls.fetch_add(1, std::memory_order_relaxed);
@@ -102,7 +101,7 @@
          if (peer_) {
              peer_(std::move(packet));
          }
-@@ -104,10 +114,21 @@
+@@ -104,8 +114,19 @@
              stack_a.OnPacket(std::move(buf));
          };
          std::atomic<UInt64> b_recv{0};
@@ -115,15 +114,13 @@
 +        });
          stack_b.SetRecvHandler([&b_recv](UInt64, const Byte*, UInt32 len) {
              b_recv.fetch_add(len, std::memory_order_relaxed);
-             return true;
-         });
-+        stack_a.SetRecvHandler([&a_recv](UInt64, const Byte*, UInt32 len) {
-+            a_recv.fetch_add(len, std::memory_order_relaxed);
 +            return true;
 +        });
- 
-         auto pump = [&]() {
-             stack_a.PollAckTimers();
++        stack_a.SetRecvHandler([&a_recv](UInt64, const Byte*, UInt32 len) {
++            a_recv.fetch_add(len, std::memory_order_relaxed);
+             return true;
+         });
+
 @@ -181,9 +202,9 @@
          // itself is a single call, never the ~22 MSS-sized GSO segments).
          const UInt64 tso_calls = backend_a.tx_calls.load() - calls_before;

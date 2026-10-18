@@ -433,12 +433,10 @@ public:
     ~Bridge() {
         if (runtime_) {
             runtime_->Stop();
-#if defined(_WIN32)
             runtime_.reset();
             // Keep the owner context running until Stop's posted teardown and
             // cancellation handlers release Impl; stopping it first leaks a cycle.
             CHECK(WaitFor([this]() { return runtime_lifetime_.expired(); }));
-#endif
         }
         work_guard_.reset();
         context_->stop();
@@ -483,17 +481,11 @@ public:
         echo_ = std::make_shared<EchoServer>(separate_echo ? *echo_context_ : *context_, echo_port);
         echo_->Start();
         const auto listener_endpoint = echo_->Endpoint();
-#if defined(_WIN32)
         const auto lifetime = std::make_shared<int>(0);
         runtime_lifetime_ = lifetime;
-#endif
         runtime_ = std::make_shared<XtcpRuntime>(
             context_,
-            [this
-#if defined(_WIN32)
-                , lifetime
-#endif
-            ](std::shared_ptr<Byte>&& data, int length,
+            [this, lifetime](std::shared_ptr<Byte>&& data, int length,
                 std::optional<ppp::tap::TxGsoMetadata>) noexcept {
                 std::lock_guard<std::mutex> lock(output_mutex_);
                 const Byte* bytes = data ? data.get() : nullptr;
@@ -714,9 +706,7 @@ private:
     std::unique_ptr<WorkGuard> echo_guard_;
     std::thread echo_thread_;
     std::shared_ptr<XtcpRuntime> runtime_;
-#if defined(_WIN32)
     std::weak_ptr<int> runtime_lifetime_;
-#endif
     std::mutex output_mutex_;
     std::deque<std::vector<Byte>> output_;
     std::mutex flows_mutex_;
@@ -783,6 +773,87 @@ bool Handshake(Bridge& bridge, std::uint16_t client_port,
     client_next = client_isn + 1;
     server_next = server_isn + 1;
     return true;
+}
+
+// Rejected borrowed input is retried by the peer; it must never be partly
+// delivered or retain ingress credits after a failed multi-chunk allocation.
+void TestIngressPressure(const char* mode) {
+    CHECK(SetTestEnvironment("OPENPPP2_XTCP_GRO_BYTES", "12288"));
+    CHECK(SetTestEnvironment("OPENPPP2_XTCP_UNIX_BRIDGE", "1"));
+    Bridge bridge;
+    CHECK(bridge.StartRuntime(0));
+    auto second = std::make_shared<DirectSecondLeg>();
+    second->SetAccepting();
+    std::uint32_t client_next = 0, server_next = 0;
+    CHECK(Handshake(bridge, kClientPort, client_next, server_next, 0, second));
+    const bool ordinary = std::strcmp(mode, "ordinary") == 0;
+    const bool large = std::strcmp(mode, "large") == 0;
+    const unsigned available = ordinary || large ? 0 : unsigned(mode[5] - '0');
+    CHECK(available <= 2);
+    const UInt32 request = ordinary ? 40 : 32752;
+    std::vector<xtcp::buf::BufRef> held;
+    for (;;) {
+        auto ref = xtcp::buf::BufRef::Acquire(request);
+        if (ref.IsEmpty()) break;
+        held.push_back(std::move(ref));
+    }
+    CHECK(!held.empty());
+    for (unsigned i = 0; i < available; ++i) held.pop_back();
+    std::vector<Byte> payload(ordinary ? 1000 : large ? 8000 : 30000);
+    for (std::size_t i = 0; i < payload.size(); ++i) payload[i] = Byte(i % 251);
+    const auto packet = xtcp::harness::BuildIp4Tcp(kClientIp, kServiceIp,
+        kClientPort, kServicePort, client_next, server_next, kAck,
+        payload.data(), UInt32(payload.size()));
+    const auto before = bridge.Stats();
+    for (unsigned i = 0; i < 256; ++i) CHECK(!bridge.TrySubmit(packet));
+    const auto rejected = bridge.Stats();
+    CHECK(rejected.ingress_dropped == before.ingress_dropped + 256);
+    CHECK(rejected.ingress_submitted == before.ingress_submitted);
+    CHECK(rejected.direct_upload_accepted_bytes == before.direct_upload_accepted_bytes);
+    CHECK(second->Received().empty());
+    // Earlier split chunks must have returned to the global tier-2 pool.
+    std::vector<xtcp::buf::BufRef> recovered;
+    if (!ordinary) {
+        for (;;) {
+            auto ref = xtcp::buf::BufRef::Acquire(32752);
+            if (ref.IsEmpty()) break;
+            recovered.push_back(std::move(ref));
+        }
+        CHECK(recovered.size() == available);
+    }
+    recovered.clear();
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool released = false, done = false;
+    std::thread releaser([&] {
+        held.clear();
+        std::unique_lock<std::mutex> lock(mutex);
+        released = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return done; });
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return released; });
+    }
+    CHECK(bridge.TrySubmit(packet));
+    CHECK(WaitFor([&] { return second->Received().size() == payload.size(); }, 1000));
+    CHECK(second->Received() == payload);
+    TcpView ack;
+    CHECK(bridge.WaitOutput([&](const TcpView& view) {
+        return view.ack == client_next + payload.size();
+    }, ack, 1000));
+    // A duplicate retransmission must be acknowledged without redelivery.
+    CHECK(bridge.TrySubmit(packet));
+    CHECK(bridge.WaitOutput([&](const TcpView& view) {
+        return view.ack == client_next + payload.size();
+    }, ack, 1000));
+    CHECK(second->Received() == payload);
+    { std::lock_guard<std::mutex> lock(mutex); done = true; }
+    cv.notify_all();
+    releaser.join();
+    std::printf("pressure %s: rejected=256 delivered=%zu recovered_chunks=%zu\n",
+        mode, second->Received().size(), recovered.size());
 }
 
 void TestEndpointByteOrder() {
@@ -2353,6 +2424,15 @@ int RunWinsockThroughput(int seconds) {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 3 && std::strcmp(argv[1], "--pressure") == 0) {
+        if (std::strcmp(argv[2], "ordinary") != 0 && std::strcmp(argv[2], "large") != 0 &&
+            std::strcmp(argv[2], "split0") != 0 && std::strcmp(argv[2], "split1") != 0 &&
+            std::strcmp(argv[2], "split2") != 0) return 2;
+        xtcp::buf::InitPools();
+        TestIngressPressure(argv[2]);
+        xtcp::buf::ShutdownPools();
+        return failures ? 1 : 0;
+    }
 #if defined(_WIN32)
     if (!SetTestEnvironment("OPENPPP2_XTCP_SHARDS", "1") ||
         // Functional cases pin kcc; the throughput benchmark uses the runtime

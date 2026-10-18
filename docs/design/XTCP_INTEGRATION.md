@@ -2,11 +2,80 @@
 
 > Status: Active
 > Type: Design
-> Last verified: 2026-10-17 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+> Last verified: 2026-10-18 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+
+Rebase validation (2026-10-18): the new pin passes Linux product, contracts
+(188/188), assertion-enabled general tests (179/179), fault (20/20), and full
+standalone tests (241/241). Windows x64 static Release builds with zero errors;
+both offline tests pass (2/2), and all ten packaged Driver files match. No
+Windows client or driver was started or installed.
+
+Runtime acceptance is blocked. The isolated before/after stall campaign
+qualifies 160/160 cells, but the three-round P16/P64 DL/UL, one/two-shard,
+GSO-off/on matrix qualifies only 83/96. Thirteen cells contain zero-completion
+flows: seven before and six after (107/104 individual flows). They occur in
+P64/GSO-off uploads on both binaries and shard counts, plus one old-binary
+download cell. Positive aggregate throughput and zero all-stream-zero intervals
+do not satisfy per-flow completion. Read-only samples show kernel TUN TX drops
+and BBR retransmission backoff on both versions; the complete recovery cause
+and any rebase-specific contribution remain unverified. Original failures and
+additional matched comparisons are retained separately in the local execution
+report under `build/plan15/`; no CC, queue, default or feature gate is promoted.
+
+Root cause found (2026-10-18): the zero-completion flows are an upstream xtcp
+bug. `BuildSegmentPacket` allowed 4 SACK blocks next to the 12-byte TSopt, so
+ACKs for flows with many out-of-order ranges had 48 bytes of options and a
+68-byte TCP header; the 4-bit data offset wrapped (17 -> 1) and the kernel
+dropped every such ACK, leaving the sender in RTO backoff. A header-only TUN
+capture plus a diagnostic build (per-flow ingress/egress counters and the last
+output headers; not committed) showed XTCP received every retransmission and
+wrote an ACK to the TUN each time, each with IP total length 88 and data offset
+1. Patch 0036 sizes SACK blocks to the remaining 40-byte option space (3 with
+timestamps, as Linux; 2 with MD5); its `test_sack_option_budget` fails on
+upstream main and passes with the fix, and it is upstreamed as
+liulilittle/xtcp#2. Patch 0035 separately fixes ACK/window state being cleared
+when ACK construction fails on buffer exhaustion; it alone did not remove the
+P64 stalls.
+
+P64 UL GSO-off A/B on the shared remote VM, diagnostics off, three alternating
+rounds (median Mbps; zero-completion flows summed over rounds, of 64 per round):
+
+| Cell | 0035 only | Zero flows | 0035 + 0036 | Zero flows |
+| --- | ---: | ---: | ---: | ---: |
+| One shard | 288.2 | 60 | 250.4 | 0 |
+| Two shards | 769.2 | 36 | 707.2 | 1 |
+
+The native control ran at 289.7 Mbps with no zero flows. Open items: one zero
+flow remains in one two-shard round; aggregate throughput drops 8-13% because
+previously stalled flows now compete (retransmissions rise from about 90-106k
+to about 152k in the one-shard cell); P16/P64 DL, GSO-on and the stall
+campaign have not been re-run with 0036. See XTCP_INTEGRATION_CN.md §11.186.
 
 XTCP is opt-in on Windows and Android. Linux desktop retains its current
 default. All platforms use the pinned source in `third-party/xtcp` and the
-same production target settings from the root CMake build (revision `e79db8fd`).
+same production target settings from the root CMake build (revision
+`77d455853b2c63442ecb182e94354b89de81e3e8`). The verified archive SHA256 is
+`dc78c701a1936f720a718e19e89814f6113590c01169b58f32b7f45f6adaf550`.
+
+The current local series has 27 patches with stable, sparse IDs: 0001-0015,
+0023, 0025-0029 and 0031-0036 (0035: retry ACK/window construction after
+allocation failure; 0036: SACK blocks fit the option space, pending upstream as
+liulilittle/xtcp#2). Upstream absorbs former local 0016 (PSH tail),
+0017 (loss-test helpers), 0018-0022 (KCC), 0024 (pool counts), and 0030
+(duplicate-ACK classification). Their local patch files are removed; this
+rebase introduces no new KCC policy, pool sizing, bridge or GSO defaults.
+
+Upstream owns OOO frontier reclamation. Residual 0013 retains
+`drained_gap |= TrimOooToFrontier()` for the local ACK integration and the
+rejected receive-callback/resume scenario. Patches 0014/0015 preserve
+backpressured OOO and in-order frontier data. Patch 0031 preserves both
+upstream CLOSE-WAIT notifications while restoring FIN-first ordering after
+0005; its focused regression covers 16 callback/close/wrap scenarios.
+Patch 0034 retains eight local-semantic test adaptations. Patch 0027 only
+needs a context repair during this rebase; its behavior is unchanged.
+Historical revisions, binary hashes and measurements below retain their
+original provenance. See the separately dated migration record in
+[the Chinese integration notes](XTCP_INTEGRATION_CN.md), section 11.185.
 
 ## Direct Bridge Policy (2026-10-18)
 
@@ -209,8 +278,8 @@ accounting (`XTCP_BENCH_THREADS=1`) added to the benchmark:
    block, which cost about 36% of the runtime I/O thread. These values are now
    read once when the runtime is constructed (a new runtime still picks up
    changed variables). This helps every platform.
-2. **Data segments counted as duplicate ACKs** (XTCP patch
-   `0030-dupack-excludes-data-segments.patch`). On a bidirectional flow every
+2. **Data segments counted as duplicate ACKs** (upstream `0255dae`, formerly
+   local `0030-dupack-excludes-data-segments.patch`). On a bidirectional flow every
    peer data segment repeats the cumulative ACK; xtcp counted them as dupacks,
    triggering spurious fast retransmits (the "duplicate packets") and cwnd
    collapse. Data/SYN/FIN segments are no longer counted (RFC 5681 section 2,
