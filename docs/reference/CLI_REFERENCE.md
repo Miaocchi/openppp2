@@ -59,7 +59,7 @@ Server listeners, address pools, IPv6, and the rest live in the configuration fi
 | `--proxy-internet=yes\|no` | `yes` | Proxy mode only: also proxy Internet destinations; `no` leaves a subnet-only client. |
 | `--proxy-forward=<port>[:<local>][,...]` | (none) | Proxy mode with the virtual subnet: TCP ports on the virtual IP that peers may open, forwarded to `127.0.0.1`. |
 | `--tun-host=yes\|no` | `yes` | Point the default route at the tunnel (full tunnel). |
-| `--tun-static=yes\|no` | `no` | Static UDP tunnel mode (uses the server's `udp.listen.port`). Ignored in proxy mode: no `STATIC`/`STATICACK` exchange. With `--proxy-subnet=yes`, an explicit `--tun-ip` is still honored. |
+| `--tun-static=yes\|no` | `no` | Static UDP tunnel mode (uses the server's `udp.listen.port`). Ignored in proxy mode: no `STATIC`/`STATICACK` exchange. With `--proxy-subnet=yes`, an explicit `--tun-ip` is still honored; otherwise proxy-mode IPv4 assignment remains automatic. |
 | `--nic=<interface>` | auto | Physical egress interface. |
 | `--ngw=<ip>` | auto | Physical gateway. |
 

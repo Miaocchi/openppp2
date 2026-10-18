@@ -3,6 +3,7 @@
 > Status: In progress；内核接线已整合，Linux 默认 / 显式 XTCP=ON 与 Windows Release 编译通过，Linux 离线测试 181/181 通过；桌面 GUI 与实机验收未完成，详见 `build/subnet/INTEGRATION_REPORT.md`
 > Type: Design / Plan
 > Last reviewed: 2026-10-18，内核 WIP 整合到 origin/main 205d588b；运行时、P2P、多端及 macOS 验收尚未进行，不以源码接线证明连接可用
+> Last verified: 2026-10-18，文档元数据与静态接线检查；运行时验收尚未进行
 > **Purpose:** 让桌面端仅代理模式（`--mode=proxy` / `client.proxy-only`）不创建网卡，也能接入虚拟子网、访问其他客户端并复用 P2P v2 直连。
 > **Audience:** 客户端运行时、P2P、平台适配与桌面 GUI 维护者。
 > **Parent index:** [Design Documents](../README.md)
