@@ -4,6 +4,22 @@
 > Type: Design
 > Last verified: 2026-10-17 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
 
+## 实验性 runtime 执行域
+
+Linux 启动前设置 `OPENPPP2_XTCP_PRIVATE_IO=1`，可让单 shard 也使用独立的
+`io_context` 和一个 `xtcp-io` worker。未设置、空值及其他值仍让单 shard
+使用调用方提供的 context；多 shard 原本就使用专属 worker。该实验开关只改变
+执行位置，不改变 shard 数量、输出 lane、carrier 加密或 gather 策略。唯一的队列
+影响：单 shard、TAP GSO 生效且未设置 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES` 时，共享
+上传预算默认 2MiB 而非 32MiB。否则 worker 会对主线程尚未加密的上传数据提前 ACK，发送窗口脱离
+carrier 进度膨胀并溢出 TUN 队列（P64 上传 TUN 丢包 1-4 万、重传 10-22 万）。
+2MiB 下 P64 GSO-on 上传实测 +10~15%，TUN 丢包降两个数量级，P16 持平；1MiB 会
+压低 P16。TAP GSO 关闭时主线程逐个排空 1500 字节包更慢，2MiB 会把 P64 上传从约
+720 压到约 340Mbit/s，因此 GSO 关闭时仍为 32MiB。显式设置 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES` 始终优先。
+它增加一个 CPU 执行域，不代表单核性能资格。一个 runtime 实例存续期间须保持
+设置不变；此开关不表示默认值已改变或吞吐验收已通过。
+其他平台忽略此开关。
+
 ## Windows / Android 构建支持
 
 Windows 和 Android 上的 XTCP 默认关闭，Linux 桌面版维持现有默认值。详细的跨平台构建步骤见英文版 [XTCP 平台构建说明](XTCP_INTEGRATION.md)。
@@ -163,7 +179,7 @@ P1 direct GRO 扫描中 12KiB 三轮稳定（975/1010/1039 Mbps）；13–15KiB 
 
 本轮先处理有界所有权与回压后的正确性，不宣称完成 RX 零拷贝或稳定 1.20× 性能目标。
 
-- `XtcpUploadBudget` 为同一 runtime 的 direct/connector 上传提供共享预算，默认 32MiB、65536 个原始接收 chunk；字节上限沿用 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES`，在 runtime 首次启动时确定。原来的 direct 单流 32MiB/4096-item 上限仍保留。
+- `XtcpUploadBudget` 为同一 runtime 的 direct/connector 上传提供共享预算，默认 32MiB（单 shard、TAP GSO 生效且 `OPENPPP2_XTCP_PRIVATE_IO=1` 时为 2MiB）、65536 个原始接收 chunk；字节上限沿用 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES`，在 runtime 首次启动时确定。原来的 direct 单流 32MiB/4096-item 上限仍保留。
 - 在全局和单流 admission 成功后才复制回调借用的数据，拒绝路径不再先分配/复制 payload。接受路径仍有一次 payload copy，并非零拷贝。
 - move-only reservation 随队列及在途异步写存活，gather 只合并已有额度，写完成才归还；关闭清除未提交队列，重启仍统计旧代在途持有者。预算统计的是逻辑上传 payload，不包括 gather 临时副本、编码缓冲和内核 socket 内存。
 - 额度释放通过合并的 shard 通知唤醒全局预算阻塞流，不依赖另一个连接的 writable 回调；单流 backpressure 标志仍用于通知，不改成硬性高低水位 admission 锁存。

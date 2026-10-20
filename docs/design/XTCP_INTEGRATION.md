@@ -94,6 +94,28 @@ variable unset, and its explicit bridge flags set `1` or `0`.
 The synthetic `xtcp_runtime_bridge_test` throughput switch documented below
 remains explicit and is separate from this production policy.
 
+### Experimental Runtime Execution Context
+
+On Linux, set `OPENPPP2_XTCP_PRIVATE_IO=1` before startup to run even a single XTCP
+shard on its own `io_context` and one `xtcp-io` worker. Unset, empty, and other
+values preserve the supplied context for one shard. Multiple shards already
+use private workers. This experimental switch changes execution placement,
+not shard count, output lanes, carrier encryption, or gather policy. Its one
+queue effect: with one shard, TAP GSO active, and
+`OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES` unset, the shared upload budget defaults to
+2 MiB instead of 32 MiB. The worker otherwise
+ACKs upload data that the main thread has not yet encrypted, so the sender's
+window outruns carrier progress and overflows the TUN queue (P64 upload: 10k-40k
+TUN drops, 100k-220k retransmits). With 2 MiB, P64 GSO-on upload measured
++10-15% with TUN drops two orders lower and P16 unchanged; 1 MiB slowed P16.
+With TAP GSO off the main thread drains 1500-byte packets more slowly, and
+2 MiB cut P64 upload from about 720 to 340 Mbit/s, so GSO-off keeps 32 MiB.
+An explicit `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES` always wins.
+It adds a CPU execution domain and does not establish single-core performance.
+Keep the setting fixed for the lifetime of a runtime instance. No default
+change or throughput qualification is implied.
+Other platforms ignore this switch.
+
 ## Windows
 
 Prepare the pinned source, then build with the repository's CMake/Ninja

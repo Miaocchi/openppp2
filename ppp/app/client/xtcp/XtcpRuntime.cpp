@@ -346,7 +346,13 @@ std::size_t ConnectorBatchBytes() noexcept {
     return 32 * 1024;
 }
 
-std::size_t GlobalQueueBudget() noexcept {
+// private_worker: 单 shard + OPENPPP2_XTCP_PRIVATE_IO=1 + TAP GSO。worker 对已入队
+// 但主线程尚未加密发出的数据提前 ACK, 32MiB 预算永远不触发, 发送端 cwnd 脱离
+// carrier 进度膨胀直到 TUN 队列溢出 (P64 上传 TUN 丢包 1-4 万, 重传 10-22 万)。
+// 2MiB 让预算重新约束 ACK 时钟; P64 实测 +10~15% 且丢包降两个数量级, P16 持平,
+// 1MiB 会压低 P16。GSO 关时主线程逐个 1500B 包排空更慢, 2MiB 会把 P64 上传
+// 从约 720 压到约 340Mbps, 故仅 GSO 开时生效。显式环境变量始终优先。
+std::size_t GlobalQueueBudget(bool private_worker) noexcept {
     const char* env = ::getenv("OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES");
     if (env != nullptr) {
         const long long value = ::atoll(env);
@@ -354,7 +360,7 @@ std::size_t GlobalQueueBudget() noexcept {
             return static_cast<std::size_t>(value);
         }
     }
-    return 32ull * 1024 * 1024;
+    return private_worker ? 2ull * 1024 * 1024 : 32ull * 1024 * 1024;
 }
 // Send-admission retry cadence. Laboratory default: 1ms. LAB-ONLY knob
 // (OPENPPP2_XTCP_LAB_SEND_RETRY_US): the A1 experiment proved retry cadence
@@ -919,14 +925,23 @@ public:
 #endif
         }();
         shard_count_ = shard_count;
-        if (shard_count > 1) {
+#if defined(__linux__)
+        const char* private_io_env = ::getenv("OPENPPP2_XTCP_PRIVATE_IO");
+        const bool private_io = private_io_env != nullptr &&
+            private_io_env[0] == '1' && private_io_env[1] == '\0';
+#else
+        const bool private_io = false;
+#endif
+        if (shard_count > 1 || private_io) {
             // XTCP-SHARED-PATH-001 S1: 默认 context 只在主线程 run (Executors::Run),
             // strand 再多也没有并行执行域。shards>1 时给 runtime 建专属 io_context
             // + 每 shard 一个工作线程; 所有 shard strand/poll timer/flow connector
-            // 都跑在这个池上。shards=1 保持外部 context 不变 (行为零变化)。
+            // 都跑在这个池上。单 shard 默认仍用外部 context; PRIVATE_IO=1
+            // 只将执行域移到一个专属 worker, 不改变 shard/输出 lane 数量。
             own_context_ = std::make_shared<boost::asio::io_context>();
             context_ = own_context_;
         }
+        global_queue_budget_ = GlobalQueueBudget(shard_count == 1 && private_io && tx_gso_supported_);
         shards_.resize(static_cast<std::size_t>(shard_count));
         for (std::size_t i = 0; i < shards_.size(); ++i) {
             Shard& s = shards_[i];
@@ -4459,7 +4474,8 @@ private:
     // 环境块, 逐写/逐包调用时实测占 io 线程约 36% CPU。
     const std::size_t connector_write_cap_ = ConnectorWriteCap();
     const std::size_t connector_batch_bytes_ = ConnectorBatchBytes();
-    const std::size_t global_queue_budget_ = GlobalQueueBudget();
+    // 构造函数确定执行域后赋值, 之后只读。
+    std::size_t global_queue_budget_ = GlobalQueueBudget(false);
     const std::chrono::microseconds send_retry_delay_ = SendRetryDelay();
     const std::size_t gro_bytes_override_ = GroBytesOverride();
 };

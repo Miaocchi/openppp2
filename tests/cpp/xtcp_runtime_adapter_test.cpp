@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -600,6 +601,62 @@ void TestRuntimeRepeatedStartStop() {
     runtime->Stop();
     context->run_for(std::chrono::milliseconds(10));
 }
+
+void TestPrivateRuntimeLifecycle() {
+    const char* old_shards = std::getenv("OPENPPP2_XTCP_SHARDS");
+    const char* old_private = std::getenv("OPENPPP2_XTCP_PRIVATE_IO");
+    const bool had_shards = old_shards != nullptr;
+    const bool had_private = old_private != nullptr;
+    const std::string saved_shards = old_shards ? old_shards : "";
+    const std::string saved_private = old_private ? old_private : "";
+    setenv("OPENPPP2_XTCP_SHARDS", "1", 1);
+
+    for (bool private_io : {false, true}) {
+        setenv("OPENPPP2_XTCP_PRIVATE_IO", private_io ? "1" : "0", 1);
+        auto context = std::make_shared<boost::asio::io_context>();
+        using Runtime = ppp::app::client::xtcp::XtcpRuntime;
+        auto runtime = std::make_shared<Runtime>(context,
+            Runtime::OutputHandler(), Runtime::ListenerEndpointHandler(),
+            Runtime::ExternalAcceptHandler(), Runtime::ExternalCancelHandler());
+        CHECK(runtime->Start());
+        runtime->MarkReady();
+        const auto generation = runtime->Generation();
+        runtime->Stop();
+
+        bool restarted = false;
+        if (private_io) {
+            // The supplied context is deliberately never run: shutdown and
+            // restart must progress entirely on the runtime's private worker.
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!(restarted = runtime->Start()) && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            CHECK(restarted);
+        }
+        else {
+            CHECK(!runtime->Start());
+        }
+        if (!restarted) {
+            context->run_for(std::chrono::milliseconds(10));
+            context->restart();
+            CHECK(runtime->Start());
+        }
+        CHECK(runtime->Generation() != generation);
+        runtime->MarkReady();
+        CHECK(runtime->IsReady());
+        runtime->Stop();
+        const std::weak_ptr<Runtime> weak = runtime;
+        runtime.reset();
+        context->restart();
+        context->run_for(std::chrono::milliseconds(10));
+        CHECK(weak.expired());
+    }
+
+    if (had_shards) setenv("OPENPPP2_XTCP_SHARDS", saved_shards.c_str(), 1);
+    else unsetenv("OPENPPP2_XTCP_SHARDS");
+    if (had_private) setenv("OPENPPP2_XTCP_PRIVATE_IO", saved_private.c_str(), 1);
+    else unsetenv("OPENPPP2_XTCP_PRIVATE_IO");
+}
 } // namespace
 
 int main() {
@@ -617,6 +674,7 @@ int main() {
     xtcp::buf::ShutdownPools();
     TestRuntimeRejectsNullContext();
     TestRuntimeRepeatedStartStop();
+    TestPrivateRuntimeLifecycle();
 
     if (failures != 0) {
         std::fprintf(stderr, "xtcp_runtime_adapter_test: %d failure(s)\n", failures);
