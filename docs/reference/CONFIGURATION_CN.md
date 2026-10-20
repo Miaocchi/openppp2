@@ -129,17 +129,20 @@ MUX 是否启用、开几条连接由客户端命令行 `--tun-mux=<连接数>` 
 | `inactive.timeout` | int（秒） | `60` | 子连接空闲超时。 |
 | `keep-alived` | int[2]（秒） | `[0, 0]` | 保活间隔范围，负数归零。 |
 | `congestions` | int（字节） | `134217728` | 拥塞窗口预算；`0` 表示不限制，小于 1 MiB 的正数或负数回退为默认值。 |
-| `flow.reorder.bytes` | int | `1048576` | 每连接重排缓冲上限。 |
-| `flow.reorder.timeout` | int（毫秒） | `400` | 每连接缺口等待超时。 |
-| `flow.session_reorder.bytes` | int | `16777216` | 会话级重排缓冲上限。 |
+| `flow.reorder.bytes` | int | `8388608` | 每连接重排缓冲软上限：超过后暂停读取送来该帧的链路（反压），超过 2 倍才重置该连接。 |
+| `flow.reorder.timeout` | int（毫秒） | `400` | 缺口等待超时（flow_v2 按连接，compat 按会话），从最近一次按序交付开始计时。 |
+| `flow.session_reorder.bytes` | int | `33554432` | 会话级重排缓冲软上限：超过后暂停读取送来该帧的链路；超过 2 倍才重置连接（flow_v2）或重建会话（compat）。 |
 | `flow.max_open` | int | `4096` | 最大逻辑流数。 |
 | `flow.unknown_cid.max` | int | `64` | 未知流 ID 容忍数。 |
 | `tx.queue.max` | int（帧） | `4096` | 发送队列高水位，达到后对读取限流。 |
 | `tx.queue.stall` | int（毫秒） | `8000` | 发送队列持续积压超过该时间则重建会话。 |
 | `tx.ctrl.budget_frames` | int | `32` | 每轮优先发送的控制帧数。 |
 | `reliability.enabled` | bool | `true` | 协商可靠传输（重传）。 |
-| `reliability.rtx.bytes` | int | `8388608` | 重传缓冲上限。 |
+| `reliability.rtx.bytes` | int | `33554432` | 会话级重传发送窗口（未确认字节）；满时帧留在队列中等待，超过 2 倍才重建会话。吞吐上限约为 窗口 / RTT。 |
+| `reliability.rtx.flow_bytes` | int | `8388608` | flow_v2 下的单流发送窗口（不超过 `reliability.rtx.bytes`）；单条连接上限约为 该值 / RTT。 |
 | `reliability.rtx.max_attempts` | int | `8` | 单帧最大重传次数。 |
+| `reliability.rtx.pto` | bool | `false` | 超时（PTO）重传。默认关闭：承载链路是可靠字节流，PTO 多数只是把还排在慢链路后面的帧重发一遍。链路断开时，其上未确认的帧总会在剩余链路上补发。 |
+| `reliability.rtx.fast` | bool | `false` | dup-ACK 快速重传。默认关闭：跨链路乱序不等于丢包。 |
 | `reliability.ack.delay` | int（毫秒） | `10` | 延迟 ACK 上限。 |
 | `reliability.gap.timeout` | int（毫秒） | `3000` | 启用可靠传输时的缺口超时。 |
 | `fec.enabled` | bool | `false` | XOR 前向纠错。 |

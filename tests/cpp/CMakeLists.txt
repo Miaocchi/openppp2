@@ -390,6 +390,20 @@ target_link_libraries(transport_auth_configuration_test PRIVATE boost_filesystem
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     target_compile_definitions(transport_auth_configuration_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
 endif()
+
+# VMUX reliability defaults / JSON round-trip on the real AppConfiguration,
+# reusing the transport-auth link fixture.
+get_target_property(OPENPPP2_VMUX_CONFIG_SOURCES transport_auth_configuration_test SOURCES)
+list(REMOVE_ITEM OPENPPP2_VMUX_CONFIG_SOURCES transport_auth_configuration_test.cpp)
+openppp2_add_cpp_test(vmux_reliability_config_test SOURCES
+    vmux_reliability_config_test.cpp
+    ${OPENPPP2_VMUX_CONFIG_SOURCES})
+target_compile_options(vmux_reliability_config_test PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(vmux_reliability_config_test PRIVATE -Wl,--gc-sections)
+target_link_libraries(vmux_reliability_config_test PRIVATE boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+    target_compile_definitions(vmux_reliability_config_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
+endif()
 openppp2_add_cpp_test(transport_auth_negotiation_test SOURCES
     transport_auth_negotiation_test.cpp
     "${OPENPPP2_ROOT}/ppp/app/protocol/TransportAuthNegotiation.cpp"
@@ -571,6 +585,10 @@ openppp2_add_cpp_test(vmux_fec_codec_test SOURCES
     vmux_fec_codec_test.cpp)
 openppp2_add_cpp_test(vmux_flow_reorder_test SOURCES
     vmux_flow_reorder_test.cpp)
+openppp2_add_cpp_test(vmux_rx_backpressure_test SOURCES
+    vmux_rx_backpressure_test.cpp)
+openppp2_add_cpp_test(vmux_tx_backpressure_test SOURCES
+    vmux_tx_backpressure_test.cpp)
 openppp2_add_cpp_test(vmux_flow_context_admission_test SOURCES
     vmux_flow_context_admission_test.cpp)
 openppp2_add_cpp_test(peer_route_announce_policy_test SOURCES

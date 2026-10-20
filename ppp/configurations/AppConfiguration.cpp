@@ -308,7 +308,10 @@ namespace ppp {
             config.mux.debug.set_mode = "";
             config.mux.reliability.enabled = true;
             config.mux.reliability.rtx.bytes = PPP_MUX_RELIABILITY_RTX_BYTES;
+            config.mux.reliability.rtx.flow_bytes = PPP_MUX_RTX_FLOW_MAX_BYTES;
             config.mux.reliability.rtx.max_attempts = PPP_MUX_RELIABILITY_RTX_MAX_ATTEMPTS;
+            config.mux.reliability.rtx.pto = false;
+            config.mux.reliability.rtx.fast = false;
             config.mux.reliability.ack.delay = PPP_MUX_RELIABILITY_ACK_DELAY;
             config.mux.reliability.gap.timeout = PPP_MUX_RELIABILITY_GAP_TIMEOUT;
             config.mux.fec.enabled = false;
@@ -788,6 +791,13 @@ namespace ppp {
 
             if (config.mux.reliability.rtx.bytes <= 0) {
                 config.mux.reliability.rtx.bytes = PPP_MUX_RELIABILITY_RTX_BYTES;
+            }
+
+            if (config.mux.reliability.rtx.flow_bytes <= 0) {
+                config.mux.reliability.rtx.flow_bytes = PPP_MUX_RTX_FLOW_MAX_BYTES;
+            }
+            if (config.mux.reliability.rtx.flow_bytes > config.mux.reliability.rtx.bytes) {
+                config.mux.reliability.rtx.flow_bytes = config.mux.reliability.rtx.bytes;
             }
 
             if (config.mux.reliability.rtx.max_attempts <= 0) {
@@ -1899,7 +1909,10 @@ namespace ppp {
             config.mux.tx.ctrl.budget_frames = JsonAuxiliary::AsValue<int>(json["mux"]["tx"]["ctrl"]["budget_frames"]);
             AssignBoolIfPresent(config.mux.reliability.enabled, json["mux"]["reliability"]["enabled"]);
             config.mux.reliability.rtx.bytes = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["rtx"]["bytes"]);
+            config.mux.reliability.rtx.flow_bytes = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["rtx"]["flow_bytes"]);
             config.mux.reliability.rtx.max_attempts = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["rtx"]["max_attempts"]);
+            AssignBoolIfPresent(config.mux.reliability.rtx.pto, json["mux"]["reliability"]["rtx"]["pto"]);
+            AssignBoolIfPresent(config.mux.reliability.rtx.fast, json["mux"]["reliability"]["rtx"]["fast"]);
             config.mux.reliability.ack.delay = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["ack"]["delay"]);
             config.mux.reliability.gap.timeout = JsonAuxiliary::AsValue<int>(json["mux"]["reliability"]["gap"]["timeout"]);
             AssignBoolIfPresent(config.mux.fec.enabled, json["mux"]["fec"]["enabled"]);
@@ -2327,7 +2340,10 @@ namespace ppp {
             mux["tx"]["ctrl"]["budget_frames"] = config.mux.tx.ctrl.budget_frames;
             mux["reliability"]["enabled"] = config.mux.reliability.enabled;
             mux["reliability"]["rtx"]["bytes"] = config.mux.reliability.rtx.bytes;
+            mux["reliability"]["rtx"]["flow_bytes"] = config.mux.reliability.rtx.flow_bytes;
             mux["reliability"]["rtx"]["max_attempts"] = config.mux.reliability.rtx.max_attempts;
+            mux["reliability"]["rtx"]["pto"] = config.mux.reliability.rtx.pto;
+            mux["reliability"]["rtx"]["fast"] = config.mux.reliability.rtx.fast;
             mux["reliability"]["ack"]["delay"] = config.mux.reliability.ack.delay;
             mux["reliability"]["gap"]["timeout"] = config.mux.reliability.gap.timeout;
             mux["fec"]["enabled"] = config.mux.fec.enabled;

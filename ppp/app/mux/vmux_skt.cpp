@@ -239,6 +239,15 @@ namespace vmux {
      * @param value Positive to increase queued bytes, negative to decrease.
      * @return true if state update and optional signaling succeed.
      */
+    bool vmux_skt::post_flow_control(Byte state) noexcept {
+        // [state][version, network order]: older peers read only the first byte.
+        Byte frame[1 + sizeof(uint32_t)];
+        frame[0] = state;
+        const uint32_t version = htonl(++fc_tx_version_);
+        memcpy(frame + 1, &version, sizeof(version));
+        return mux_->post(vmux_net::cmd_acceleration, frame, (int)sizeof(frame), connection_id_);
+    }
+
     bool vmux_skt::rx_congestions(int64_t value) noexcept {
         if (value == 0) {
             return true;
@@ -252,28 +261,22 @@ namespace vmux {
             rx_congestions_ += value;
         }
         
-        if (rx_congestions_ <= 0) {
+        if (rx_congestions_ < 0) {
             rx_congestions_ = 0;
-            if (status_.rx_acceleration_) {
-                return true;
-            }
-            
-            Byte acceleration = TRUE;
+        }
+
+        // Stop the peer at the threshold and resume it at half (not at zero:
+        // waiting for a full drain idled the stream for a round trip each cycle).
+        switch (ppp::app::mux::MuxFlowControlNext(status_.rx_acceleration_, rx_congestions_, max_congestions)) {
+        case ppp::app::mux::MuxFlowControlAction::SendXoff:
+            status_.rx_acceleration_ = false;
+            return post_flow_control(FALSE);
+        case ppp::app::mux::MuxFlowControlAction::SendXon:
             status_.rx_acceleration_ = true;
-
-            return mux_->post(vmux_net::cmd_acceleration, &acceleration, sizeof(acceleration), connection_id_);
+            return post_flow_control(TRUE);
+        default:
+            return true;
         }
-
-        if (rx_congestions_ >= max_congestions) {
-            if (status_.rx_acceleration_) {
-                Byte acceleration = FALSE;
-                status_.rx_acceleration_ = false;
-
-                return mux_->post(vmux_net::cmd_acceleration, &acceleration, sizeof(acceleration), connection_id_);
-            }
-        }
-
-        return true;
     }
 
     /**
@@ -884,11 +887,26 @@ namespace vmux {
             return true;
         }
 
+        int read_size = vmux_net::max_buffers_size;
+        if (mux_->AppConfiguration->key.plaintext) {
+            read_size = std::min<int>(read_size, kPlaintextBase94MaxWriteSize - static_cast<int>(sizeof(vmux_net::vmux_hdr)));
+        }
+        int read_length = ppp::BufferSkateboarding(mux_->AppConfiguration->key.sb, read_size, vmux_net::max_buffers_size);
+
+        // Read straight into a frame buffer with room for the vmux header, so a
+        // large read becomes the wire frame without another 64 KiB copy.
+        std::shared_ptr<Byte> frame = mux_->make_byte_array(static_cast<int>(sizeof(vmux_net::vmux_hdr)) + read_length);
+        if (NULLPTR == frame) {
+            status_.forwarding_.store(FALSE);
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VmuxSocketConnectSendBufferAllocFailed);
+            return false;
+        }
+
         std::shared_ptr<vmux_skt> self = shared_from_this();
         auto reading_cb =
-            [self, this, tx_socket](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
+            [self, this, tx_socket, frame, read_length](const boost::system::error_code& ec, std::size_t bytes_transferred) noexcept {
                 vmux_post_exec(mux_->context_, mux_->strand_, 
-                    [self, this, ec, bytes_transferred]() noexcept {
+                    [self, this, ec, bytes_transferred, frame, read_length]() noexcept {
                         int location = TRUE; 
                         if (status_.forwarding_.compare_exchange_strong(location, FALSE)) {
                             active();
@@ -903,8 +921,7 @@ namespace vmux {
                                 close();
                                 return false;
                             }
-                            bool forwarding = 
-                                mux_->post(vmux_net::cmd_push, tx_buffer_.get(), bytes_transferred, connection_id_, status_.tx_acceleration_,
+                            auto on_posted =
                                     [self, this](bool successed) noexcept {
                                         if (successed) {
                                             if (forward_to_rx_socket()) {
@@ -914,7 +931,16 @@ namespace vmux {
                                         
                                         close();
                                         return false;
-                                    });
+                                    };
+                            // A read that filled less than half its buffer is copied into
+                            // an exact-size frame: the retransmit window counts frame
+                            // length, so keeping a mostly empty max-size buffer would let
+                            // real memory exceed the window by up to 16x.
+                            const int payload = static_cast<int>(bytes_transferred);
+                            const bool zero_copy = ppp::app::mux::MuxPushIsZeroCopy(payload, read_length, vmux_net::zero_copy_min_payload);
+                            bool forwarding = zero_copy
+                                ? mux_->post_frame(vmux_net::cmd_push, frame, payload, connection_id_, status_.tx_acceleration_, on_posted)
+                                : mux_->post(vmux_net::cmd_push, frame.get() + sizeof(vmux_net::vmux_hdr), payload, connection_id_, status_.tx_acceleration_, on_posted);
 
                             if (forwarding) {
                                 return true;
@@ -931,13 +957,7 @@ namespace vmux {
                     });
             };
         
-        int read_size = vmux_net::max_buffers_size;
-        if (mux_->AppConfiguration->key.plaintext) {
-            read_size = std::min<int>(read_size, kPlaintextBase94MaxWriteSize - static_cast<int>(sizeof(vmux_net::vmux_hdr)));
-        }
-
-        int bytes_transferred = ppp::BufferSkateboarding(mux_->AppConfiguration->key.sb, read_size, vmux_net::max_buffers_size);
-        vmux_skt_async_read_some(tx_socket, boost::asio::buffer(tx_buffer_.get(), bytes_transferred), reading_cb);
+        vmux_skt_async_read_some(tx_socket, boost::asio::buffer(frame.get() + sizeof(vmux_net::vmux_hdr), read_length), reading_cb);
         return true;
     }
 
@@ -946,6 +966,18 @@ namespace vmux {
      * @param acceleration true to continue active reads from local socket.
      * @return true when state transition is applied.
      */
+    bool vmux_skt::tx_acceleration(bool acceleration, bool has_version, uint32_t version) noexcept {
+        if (has_version) {
+            if (!ppp::app::mux::MuxFlowControlIsFresh(fc_rx_versioned_, fc_rx_version_, version)) {
+                // An older XON/XOFF overtook a newer one on another carrier.
+                return !status_.disposed_;
+            }
+            fc_rx_versioned_ = true;
+            fc_rx_version_ = version;
+        }
+        return tx_acceleration(acceleration);
+    }
+
     bool vmux_skt::tx_acceleration(bool acceleration) noexcept {
         if (status_.disposed_) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionDisposed);
