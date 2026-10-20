@@ -2,7 +2,7 @@
 
 > Status: Active
 > Type: Design
-> Last verified: 2026-10-17 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+> Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
 
 ## 实验性 runtime 执行域
 
@@ -18,7 +18,7 @@ carrier 进度膨胀并溢出 TUN 队列（P64 上传 TUN 丢包 1-4 万、重�
 720 压到约 340Mbit/s，因此 GSO 关闭时仍为 32MiB。显式设置 `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES` 始终优先。
 它增加一个 CPU 执行域，不代表单核性能资格。一个 runtime 实例存续期间须保持
 设置不变；此开关不表示默认值已改变或吞吐验收已通过。
-其他平台忽略此开关。
+其他平台忽略此开关。该实验执行域及其队列预算默认值，连同 direct bridge 测试稳定性修复，自 v2.1.9.0 起随正式发布提供。
 
 ## Windows / Android 构建支持
 

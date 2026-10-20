@@ -2,7 +2,7 @@
 
 > Status: Active
 > Type: Design
-> Last verified: 2026-10-18 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+> Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
 
 Rebase validation (2026-10-18): the new pin passes Linux product, contracts
 (188/188), assertion-enabled general tests (179/179), fault (20/20), and full
@@ -114,7 +114,9 @@ An explicit `OPENPPP2_XTCP_GLOBAL_QUEUE_BYTES` always wins.
 It adds a CPU execution domain and does not establish single-core performance.
 Keep the setting fixed for the lifetime of a runtime instance. No default
 change or throughput qualification is implied.
-Other platforms ignore this switch.
+Other platforms ignore this switch. This experimental execution context and
+its queue-budget default, together with the direct bridge test stability fix,
+first ship with release v2.1.9.0.
 
 ## Windows
 
