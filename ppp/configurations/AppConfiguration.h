@@ -189,8 +189,11 @@ namespace ppp {
                 struct {
                     bool                                                    enabled;        ///< QUIC-style reliability sub-protocol (ACK + fast retransmit + PTO); negotiated, falls back when the peer lacks it.
                     struct {
-                        int                                                 bytes;          ///< Session-wide retransmit buffer byte cap; strictly > 0.
+                        int                                                 bytes;          ///< Session-wide retransmit send window in unacked bytes (throughput <= window / RTT); strictly > 0.
+                        int                                                 flow_bytes;     ///< Per-flow retransmit send window under flow_v2 (clamped to bytes); strictly > 0.
                         int                                                 max_attempts;   ///< Per-frame retransmit attempts before flow reset / session rebuild; strictly > 0.
+                        bool                                                pto;            ///< Probe-timeout retransmission; default false: carriers are reliable streams, so a PTO only re-sends frames still queued behind a slow carrier.
+                        bool                                                fast;           ///< Dup-ACK fast retransmit; default false: cross-carrier reordering is not loss. Frames of an exited carrier are always re-injected.
                     }                                                       rtx;
                     struct {
                         int                                                 delay;          ///< Max delayed-ACK wait in milliseconds; strictly > 0.

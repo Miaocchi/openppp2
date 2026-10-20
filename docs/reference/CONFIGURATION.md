@@ -129,17 +129,20 @@ Whether MUX is used, and how many connections, is set by the client flag `--tun-
 | `inactive.timeout` | int (s) | `60` | Sub-connection idle timeout. |
 | `keep-alived` | int[2] (s) | `[0, 0]` | Keepalive range; negatives become 0. |
 | `congestions` | int (bytes) | `134217728` | Congestion window budget; `0` = unlimited; negatives or positives below 1 MiB fall back to the default. |
-| `flow.reorder.bytes` | int | `1048576` | Per-connection reorder buffer cap. |
-| `flow.reorder.timeout` | int (ms) | `400` | Per-connection gap wait timeout. |
-| `flow.session_reorder.bytes` | int | `16777216` | Session-wide reorder buffer cap. |
+| `flow.reorder.bytes` | int | `8388608` | Per-connection reorder buffer soft cap: above it the delivering carrier is paused (backpressure); only twice the cap resets the connection. |
+| `flow.reorder.timeout` | int (ms) | `400` | Gap wait timeout (per connection under flow_v2, session-wide under compat), counted from the last in-order progress. |
+| `flow.session_reorder.bytes` | int | `33554432` | Session-wide reorder buffer soft cap: above it the delivering carrier is paused; only twice the cap resets a connection (flow_v2) or rebuilds the session (compat). |
 | `flow.max_open` | int | `4096` | Maximum logical flows. |
 | `flow.unknown_cid.max` | int | `64` | Unknown flow-ID budget. |
 | `tx.queue.max` | int (frames) | `4096` | Transmit-queue high water; reads are throttled at this depth. |
 | `tx.queue.stall` | int (ms) | `8000` | Session is rebuilt if the queue stays backlogged this long. |
 | `tx.ctrl.budget_frames` | int | `32` | Control frames drained before data per turn. |
 | `reliability.enabled` | bool | `true` | Negotiate reliable delivery (retransmission). |
-| `reliability.rtx.bytes` | int | `8388608` | Retransmit buffer cap. |
+| `reliability.rtx.bytes` | int | `33554432` | Session retransmit send window (unacked bytes); frames wait in the queue when full, only twice this fails the session. Throughput is bounded by window / RTT. |
+| `reliability.rtx.flow_bytes` | int | `8388608` | Per-flow send window under flow_v2 (clamped to `reliability.rtx.bytes`); one connection is bounded by this / RTT. |
 | `reliability.rtx.max_attempts` | int | `8` | Max retransmissions per frame. |
+| `reliability.rtx.pto` | bool | `false` | Probe-timeout retransmission. Off by default: carriers are reliable streams, so a PTO mostly re-sends frames still queued behind a slow carrier. Unacked frames of a carrier that exits are always re-sent on the remaining carriers. |
+| `reliability.rtx.fast` | bool | `false` | Dup-ACK fast retransmit. Off by default: reordering across carriers is not loss. |
 | `reliability.ack.delay` | int (ms) | `10` | Max delayed-ACK wait. |
 | `reliability.gap.timeout` | int (ms) | `3000` | Gap timeout when reliability is negotiated. |
 | `fec.enabled` | bool | `false` | XOR forward error correction. |

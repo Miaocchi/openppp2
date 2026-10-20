@@ -419,8 +419,12 @@ namespace ppp {
             ppp::diagnostics::datapath_perf::Scope send_scope;
 
             auto complete_do_write_bytes_async_callback = [self, this, socket, context, strand, buffers, owner, packet_length, cb, send_scope]() noexcept {
+                // async_write is a composed operation that only references the socket and
+                // reads it again (executor, follow-up writes) until it completes. Dispose()
+                // drops socket_ while a write can still be in flight, so the completion must
+                // keep the socket alive (ASan: heap-use-after-free in write_op on carrier exit).
                 boost::asio::async_write(*socket, buffers,
-                    [self, this, context, strand, owner, packet_length, cb, send_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                    [self, this, socket, context, strand, owner, packet_length, cb, send_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
                         bool ok = ec == boost::system::errc::success;
                         if (ok) {
                             ppp::diagnostics::datapath_perf::RecordCarrierSend((int)sz, send_scope.Elapsed());

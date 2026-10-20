@@ -2526,6 +2526,14 @@ namespace ppp {
                                 // of the current scheduler preset. Whether it is *used* is decided
                                 // later by mode_requires_flow_v2 + peer intersection.
                                 Byte ordering_caps = (Byte)vmux::vmux_net::ordering_caps_flow_v2;
+                                // Separately ask for flow_v2 when this client's own preset needs
+                                // it (flow+turbo / balance / stripe): the server otherwise decides
+                                // from its own preset and may keep a compat global sequence space
+                                // under this client's multi-link competition.
+                                if (NULLPTR != configuration &&
+                                    vmux::vmux_net::mode_requires_flow_v2(mux->get_mode(), configuration->mux.turbo)) {
+                                    ordering_caps |= (Byte)vmux::vmux_net::ordering_caps_flow_v2_request;
+                                }
                                 // Advertise reliability / FEC when enabled locally; the server
                                 // intersects both ends and echoes the authoritative result.
                                 if (NULLPTR != configuration && configuration->mux.reliability.enabled) {

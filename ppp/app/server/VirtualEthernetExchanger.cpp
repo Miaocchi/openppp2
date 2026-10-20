@@ -1336,6 +1336,10 @@ namespace ppp {
                 // Capability is implementation-level (always true here), not "current mode".
                 bool local_supports_flow_v2 = true;
                 bool peer_supports_flow_v2 = (ordering_caps & vmux::vmux_net::ordering_caps_flow_v2) != 0;
+                // The client's own preset (flow+turbo / balance / stripe) needs per-flow
+                // ordering. Receiver ordering is shared by both ends, so honour it even
+                // when this server's preset alone would stay on compat ordering.
+                bool peer_requests_flow_v2 = (ordering_caps & vmux::vmux_net::ordering_caps_flow_v2_request) != 0;
                 // Reliability / FEC capabilities: usage is config-gated locally,
                 // and only takes effect when the peer advertises the bits too.
                 bool peer_supports_reliability = (ordering_caps & vmux::vmux_net::ordering_caps_reliability) != 0;
@@ -1345,7 +1349,7 @@ namespace ppp {
                 // Provisional agreed ordering; apply_negotiation is authoritative once mux exists.
                 bool turbo = NULLPTR != configuration && configuration->mux.turbo &&
                     effective_mux_mode == vmux::vmux_net::mux_mode_flow;
-                bool need_flow_v2 = vmux::vmux_net::mode_requires_flow_v2(effective_mux_mode, turbo);
+                bool need_flow_v2 = vmux::vmux_net::mode_requires_flow_v2(effective_mux_mode, turbo) || peer_requests_flow_v2;
                 vmux::vmux_net::receiver_ordering_mode agreed =
                     (need_flow_v2 && local_supports_flow_v2 && peer_supports_flow_v2)
                         ? vmux::vmux_net::ordering_flow_v2
@@ -1398,8 +1402,10 @@ namespace ppp {
                         // not on the wire, so the server cannot know it; raise the
                         // ceiling for any flow-mode session (the ceiling is only a
                         // safety cap — accepting the extra ConnectMux links is benign,
-                        // and a non-turbo client simply never sends them).
-                        if (mux_mode == vmux::vmux_net::mux_mode_flow) {
+                        // and a non-turbo client simply never sends them). A client that
+                        // requests flow_v2 may be a flow+turbo client facing a non-flow
+                        // server preset, so raise the ceiling for it as well.
+                        if (mux_mode == vmux::vmux_net::mux_mode_flow || peer_requests_flow_v2) {
                             uint32_t hard = (uint32_t)max_connections * (uint32_t)PPP_MUX_TURBO_FACTOR_MAX;
                             if (hard > UINT16_MAX) {
                                 hard = UINT16_MAX;
@@ -1409,7 +1415,8 @@ namespace ppp {
 
                         // Apply the effective scheduler and receiver ordering before establishment.
                         mux->apply_negotiation(local_supports_flow_v2, peer_supports_flow_v2,
-                            local_reliability, peer_supports_reliability, local_fec, peer_supports_fec);
+                            local_reliability, peer_supports_reliability, local_fec, peer_supports_fec,
+                            peer_requests_flow_v2);
                         agreed = mux->get_ordering_mode();
 
                         if (mux->update()) {
