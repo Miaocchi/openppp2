@@ -885,9 +885,12 @@ namespace ppp {
                         last_ = Executors::GetTickCount(); // update activity timestamp
                         reset_inactivity_timer();          // reset timer on read activity
 
-                        boost::asio::async_write(*local_socket_, boost::asio::buffer(remote_socket_buf_, by),
+                        // close() resets local_socket_ while this composed write may still be in
+                        // flight; the completion must keep the socket alive until write_op finishes.
+                        std::shared_ptr<boost::asio::ip::tcp::socket> local_socket = local_socket_;
+                        boost::asio::async_write(*local_socket, boost::asio::buffer(remote_socket_buf_, by),
                             boost::asio::bind_executor(strand_,
-                            [self, this](const boost::system::error_code& ec, uint32_t) noexcept {
+                            [self, this, local_socket](const boost::system::error_code& ec, uint32_t) noexcept {
                                 if (is_disposed()) {
                                     return;
                                 }
