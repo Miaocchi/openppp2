@@ -147,6 +147,8 @@ openppp2_add_cpp_test(xtcp_direct_bridge_policy_test SOURCES xtcp_direct_bridge_
 
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(spsc_handoff_test SOURCES spsc_handoff_test.cpp)
+target_link_libraries(spsc_handoff_test PRIVATE Threads::Threads)
 
 openppp2_add_cpp_test(network_recovery_journal_test
     SOURCES network_recovery_journal_test.cpp
