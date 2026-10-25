@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -22,7 +23,8 @@ public:
         : max_items_(static_cast<std::uint32_t>(max_items)),
           max_bytes_(static_cast<std::uint32_t>(max_bytes)) {}
 
-    bool TryAdmit(std::uint64_t generation, std::size_t bytes) noexcept {
+    bool TryAdmit(std::uint64_t generation, std::size_t bytes,
+        std::uint64_t* admitted_state = nullptr) noexcept {
         if (!running_.load(std::memory_order_acquire) ||
             !ready_.load(std::memory_order_acquire) || bytes == 0 ||
             generation == 0 || generation != generation_.load(std::memory_order_acquire) ||
@@ -44,6 +46,7 @@ public:
                 static_cast<std::uint64_t>(used_bytes + byte_delta);
             if (state_.compare_exchange_weak(current, updated,
                     std::memory_order_relaxed, std::memory_order_relaxed)) {
+                if (admitted_state) *admitted_state = updated;
                 return true;
             }
         }
@@ -78,8 +81,10 @@ public:
         }
     }
 
-    std::uint64_t Start() noexcept {
-        std::uint64_t generation = generation_.load(std::memory_order_relaxed) + 1;
+    // `after` lets an owner that rebuilds its budgets keep generations
+    // monotonic across restarts: the new generation is greater than both.
+    std::uint64_t Start(std::uint64_t after = 0) noexcept {
+        std::uint64_t generation = std::max(generation_.load(std::memory_order_relaxed), after) + 1;
         if (generation == 0) {
             ++generation;
         }

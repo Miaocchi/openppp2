@@ -477,6 +477,16 @@ Changes:
   stops. An existing lane then writes unmerged frames on its own fd, so a flow
   never changes queue.
 - `OPENPPP2_TAP_GSO_LANES_DISABLE=1` forces the shared path for comparison.
+- M3 opt-in switches (default off; unset keeps the behaviour above):
+  `OPENPPP2_XTCP_DIRECT_SPSC=1` moves the direct-upload data queue to a
+  fixed 4096-slot SPSC handoff (same caps and gather; ring allocation
+  failure keeps the relay path). `OPENPPP2_XTCP_AFFINITY=queues` with
+  `OPENPPP2_XTCP_SHARDS>1` and an exact `OPENPPP2_XTCP_IO_CPUS` map gives each
+  shard its own io_context and pinned worker, binds GSO lane i to shard i,
+  and stages lane reads (1024 items / 8 MiB) back to the TAP context for the
+  unchanged `OnInput`; it is rejected with SSMT and reported as unsupported
+  for one shard. `OPENPPP2_XTCP_AFFINITY_STRICT=1` refuses to start when a
+  pin fails.
 - The default `TunGsoCoalescer::kSegmentCap` is now 32 instead of 4.
   `OPENPPP2_TAP_GSO_SEGMENTS` (1-48) still overrides it, and
   `OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` still selects 48 when no explicit cap

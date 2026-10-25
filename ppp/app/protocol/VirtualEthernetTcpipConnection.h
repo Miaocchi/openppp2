@@ -15,6 +15,7 @@ namespace ppp::app::runtime { class XtcpDirectQueueTelemetry; }
 #include <ppp/net/Firewall.h>
 #include <ppp/transmissions/ITransmission.h>
 #include <ppp/app/protocol/XtcpDirectIo.h>
+#include <ppp/app/protocol/XtcpDirectUploadQueue.h>
 #include <ppp/app/protocol/DirectReadWaiterState.h>
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
@@ -345,10 +346,6 @@ namespace ppp {
                 Int128                                                          id_        = 0; ///< Logical connection identifier assigned at construction time.
                 std::shared_ptr<boost::asio::ip::tcp::socket>                   socket_;        ///< Local TCP socket bridged to the virtual Ethernet transmission.
                 ITransmissionPtr                                                transmission_; ///< Virtual Ethernet transmission channel used for protocol framing.
-                static constexpr size_t                                         kDirectQueueMaxPackets = 4096;
-                static constexpr size_t                                         kDirectQueueLowPackets = kDirectQueueMaxPackets / 2;
-                static constexpr size_t                                         kDirectQueueMaxBytes = 32 * 1024 * 1024;
-                static constexpr size_t                                         kDirectQueueLowBytes = kDirectQueueMaxBytes / 2;
                 static constexpr int                                            kDirectCloseDrainPollMilliseconds = 5;
                 enum class DirectSendCloseState : uint8_t {
                     Open,
@@ -357,13 +354,10 @@ namespace ppp {
                     Disposed,
                 };
                 std::mutex                                                      direct_sync_;
-                std::deque<std::shared_ptr<XtcpUploadChunk>>                      direct_upload_queue_;
-                size_t                                                          direct_upload_bytes_ = 0;
-                size_t                                                          direct_upload_packets_ = 0;
+                XtcpDirectUploadQueue                                           direct_upload_queue_{XtcpDirectUploadQueue::DefaultMode()};
                 bool                                                            direct_bridge_started_ = false;
                 bool                                                            direct_upload_writer_started_ = false;
                 DirectSendCloseState                                            direct_send_close_state_ = DirectSendCloseState::Open;
-                bool                                                            direct_upload_backpressured_ = false;
                 DirectReadHandler                                               direct_read_handler_;
                 DirectCloseHandler                                              direct_close_handler_;
                 DirectWritableHandler                                           direct_writable_handler_;

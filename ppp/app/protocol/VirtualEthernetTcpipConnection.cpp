@@ -655,21 +655,18 @@ namespace ppp {
                 std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
-                    abandoned_direct_bytes = direct_upload_bytes_;
-                    abandoned_direct_items = direct_upload_packets_;
+                    // Spsc: fence the lock-free producer before reading counters
+                    // or moving the telemetry it may use. No-op in deque mode.
+                    direct_upload_queue_.Abort();
                     telemetry = std::move(direct_queue_telemetry_);
                     direct_bridge_started_ = false;
                     direct_upload_writer_started_ = false;
                     direct_send_close_state_ = DirectSendCloseState::Disposed;
-                    if (direct_upload_backpressured_) {
-                        direct_upload_backpressured_ = false;
+                    if (direct_upload_queue_.Clear(abandoned_direct_bytes, abandoned_direct_items)) {
                         if (telemetry) {
                             telemetry->SetBackpressured(false);
                         }
                     }
-                    direct_upload_queue_.clear();
-                    direct_upload_bytes_ = 0;
-                    direct_upload_packets_ = 0;
                     direct_read_handler_ = nullptr;
                     close_handler = std::move(direct_close_handler_);
                     direct_writable_handler_ = nullptr;
@@ -1089,9 +1086,14 @@ namespace ppp {
                     if (disposed_ || !connected_ || !transmission_ || direct_bridge_started_) {
                         return false;
                     }
+                    if (!direct_upload_queue_.Open()) {
+                        // Opt-in SPSC ring allocation failed: keep the relay path.
+                        ppp::telemetry::Count("xtcp.direct.handoff_alloc_fallback", 1);
+                        return false;
+                    }
                     direct_bridge_started_ = true;
                     direct_send_close_state_ = DirectSendCloseState::Open;
-                    direct_upload_backpressured_ = false;
+                    direct_upload_queue_.ResetBackpressure();
                     direct_download_waiter_.Reset();
                     direct_read_handler_ = on_data;
                     direct_close_handler_ = on_close;
@@ -1107,6 +1109,7 @@ namespace ppp {
                     {
                         std::lock_guard<std::mutex> lock(direct_sync_);
                         direct_bridge_started_ = false;
+                        direct_upload_queue_.Abort();
                         direct_read_handler_ = nullptr;
                         direct_close_handler_ = nullptr;
                         direct_writable_handler_ = nullptr;
@@ -1128,7 +1131,29 @@ namespace ppp {
                     credit.Items() != 1 || disposed_ || !connected_) {
                     return DirectIoResult::Closed;
                 }
-                std::shared_ptr<XtcpUploadChunk> payload;
+                if (direct_upload_queue_.GetMode() == XtcpDirectUploadQueue::Mode::Spsc) {
+                    // Opt-in SPSC handoff: no direct_sync_ on the data path. The
+                    // ring is closed (RequestClose/Abort) under direct_sync_
+                    // whenever the bridge leaves the Open state, so a closed
+                    // ring is the authoritative state check here.
+                    const XtcpDirectUploadQueue::PushOutcome outcome = direct_upload_queue_.Push(
+                        data, length, std::move(credit),
+                        [this, length]() noexcept {
+                            AddDirectUploadQueueTelemetry(std::atomic_load_explicit(
+                                &direct_queue_telemetry_, std::memory_order_acquire), length);
+                        },
+                        [this]() noexcept {
+                            if (const auto telemetry = std::atomic_load_explicit(
+                                    &direct_queue_telemetry_, std::memory_order_acquire)) {
+                                telemetry->SetBackpressured(true);
+                            }
+                        });
+                    if (outcome.result == XtcpDirectResult::Accepted) {
+                        return DirectIoResult::Accepted;
+                    }
+                    return outcome.result == XtcpDirectResult::Backpressured
+                        ? DirectIoResult::Backpressured : DirectIoResult::Closed;
+                }
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
                     if (disposed_ || !connected_ || !transmission_ ||
@@ -1136,28 +1161,24 @@ namespace ppp {
                         direct_send_close_state_ != DirectSendCloseState::Open) {
                         return DirectIoResult::Closed;
                     }
-                    if (direct_upload_packets_ >= kDirectQueueMaxPackets ||
-                        length > kDirectQueueMaxBytes - direct_upload_bytes_) {
-                        if (!direct_upload_backpressured_) {
-                            direct_upload_backpressured_ = true;
-                            if (direct_queue_telemetry_) {
-                                direct_queue_telemetry_->SetBackpressured(true);
-                            }
-                        }
+                    // Both global credit and the per-flow queue cap are
+                    // secured before copying borrowed receive bytes.
+                    const XtcpDirectUploadQueue::PushOutcome outcome =
+                        direct_upload_queue_.Push(data, length, std::move(credit),
+                            [this, length]() noexcept {
+                                AddDirectUploadQueueTelemetry(direct_queue_telemetry_, length);
+                            },
+                            [this]() noexcept {
+                                if (direct_queue_telemetry_) {
+                                    direct_queue_telemetry_->SetBackpressured(true);
+                                }
+                            });
+                    if (outcome.result == XtcpDirectResult::Backpressured) {
                         return DirectIoResult::Backpressured;
                     }
-                    try {
-                        // Both global credit and the per-flow queue cap are
-                        // secured before copying borrowed receive bytes.
-                        payload = std::make_shared<XtcpUploadChunk>(data, length, std::move(credit));
-                        direct_upload_queue_.emplace_back(payload);
-                    }
-                    catch (...) {
+                    if (outcome.result != XtcpDirectResult::Accepted) {
                         return DirectIoResult::Closed;
                     }
-                    direct_upload_bytes_ += length;
-                    ++direct_upload_packets_;
-                    AddDirectUploadQueueTelemetry(direct_queue_telemetry_, length);
                 }
                 // The writer is started by FlushDirectPeerSend(), which the
                 // XTCP runtime calls once per ingress batch (or right after
@@ -1183,7 +1204,8 @@ namespace ppp {
                 const std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry>& telemetry) noexcept {
                 std::lock_guard<std::mutex> lock(direct_sync_);
                 if (direct_bridge_started_) {
-                    direct_queue_telemetry_ = telemetry;
+                    // Atomic store: the opt-in SPSC producer loads it without direct_sync_.
+                    std::atomic_store_explicit(&direct_queue_telemetry_, telemetry, std::memory_order_release);
                 }
             }
 
@@ -1204,10 +1226,13 @@ namespace ppp {
             bool VirtualEthernetTcpipConnection::StartDirectUploadWriterIfNeeded() noexcept {
                 {
                     std::lock_guard<std::mutex> lock(direct_sync_);
-                    if (direct_upload_queue_.empty() || direct_upload_writer_started_) {
+                    if (!direct_upload_queue_.HasPending() || direct_upload_writer_started_) {
                         return true;  // nothing to start, or the writer is running
                     }
                     direct_upload_writer_started_ = true;
+                    if (direct_upload_queue_.GetMode() == XtcpDirectUploadQueue::Mode::Spsc) {
+                        XtcpDirectUploadQueue::Global().handoff_wakes.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
                 if (StartDirectUploadWriter()) {
                     return true;
@@ -1259,7 +1284,7 @@ namespace ppp {
                     bool wait_for_gather = false;
                     {
                         std::lock_guard<std::mutex> lock(direct_sync_);
-                        if (direct_upload_queue_.empty()) {
+                        if (direct_upload_queue_.Empty()) {
                             if (direct_send_close_state_ == DirectSendCloseState::Draining) {
                                 direct_send_close_state_ = DirectSendCloseState::SendShutdown;
                                 shutdown_send = true;
@@ -1271,65 +1296,13 @@ namespace ppp {
                         else {
                             const bool queue_can_grow = gather_wait_ms > 0 && !gather_waited &&
                                 direct_send_close_state_ == DirectSendCloseState::Open &&
-                                direct_upload_bytes_ < gather_limit &&
-                                direct_upload_queue_.size() > 1 &&
-                                direct_upload_queue_.size() < 16;
+                                direct_upload_queue_.ShouldWaitForGather(gather_limit);
                             if (queue_can_grow) {
                                 wait_for_gather = true;
                             }
                             else {
                                 gather_waited = false;
-                                payload = direct_upload_queue_.front();
-                                payload_items = 1;
-                                if (gather_limit > 1 && payload->bytes.size() < gather_limit &&
-                                    direct_upload_queue_.size() > 1) {
-                                    std::size_t gathered_bytes = payload->bytes.size();
-                                    std::size_t gathered_items = 1;
-                                    for (; gathered_items < direct_upload_queue_.size(); ++gathered_items) {
-                                        const std::shared_ptr<XtcpUploadChunk>& candidate =
-                                            direct_upload_queue_[gathered_items];
-                                        if (!candidate || candidate->bytes.empty() ||
-                                            !payload->credit.SameBudget(candidate->credit) ||
-                                            candidate->bytes.size() > gather_limit - gathered_bytes) {
-                                            break;
-                                        }
-                                        gathered_bytes += candidate->bytes.size();
-                                    }
-                                    if (gathered_items > 1) {
-                                        try {
-                                            auto combined = std::make_shared<XtcpUploadChunk>();
-                                            combined->bytes.reserve(gathered_bytes);
-                                            for (std::size_t i = 0; i < gathered_items; ++i) {
-                                                const std::vector<Byte>& item =
-                                                    direct_upload_queue_[i]->bytes;
-                                                combined->bytes.insert(combined->bytes.end(), item.begin(), item.end());
-                                            }
-                                            // All allocations/copies succeeded. Transfer the
-                                            // admitted credit before removing original chunks;
-                                            // keep it through Write(y), including on close.
-                                            for (std::size_t i = 0; i < gathered_items; ++i) {
-                                                const bool merged = combined->credit.Merge(
-                                                    std::move(direct_upload_queue_[i]->credit));
-                                                assert(merged); // SameBudget was checked above under this lock.
-                                                (void)merged;
-                                            }
-                                            payload = std::move(combined);
-                                            payload_items = gathered_items;
-                                            for (std::size_t i = 0; i < gathered_items; ++i) {
-                                                direct_upload_queue_.pop_front();
-                                            }
-                                        }
-                                        catch (...) {
-                                            direct_upload_queue_.pop_front();
-                                        }
-                                    }
-                                    else {
-                                        direct_upload_queue_.pop_front();
-                                    }
-                                }
-                                else {
-                                    direct_upload_queue_.pop_front();
-                                }
+                                (void)direct_upload_queue_.DrainGather(gather_limit, payload, payload_items);
                             }
                         }
                     }
@@ -1394,14 +1367,8 @@ namespace ppp {
                     std::size_t completed_items = 0;
                     {
                         std::lock_guard<std::mutex> lock(direct_sync_);
-                        completed_bytes = std::min(payload->bytes.size(), direct_upload_bytes_);
-                        direct_upload_bytes_ -= completed_bytes;
-                        completed_items = std::min(payload_items, direct_upload_packets_);
-                        direct_upload_packets_ -= completed_items;
-                        if (sent && direct_upload_backpressured_ &&
-                            direct_upload_bytes_ <= kDirectQueueLowBytes &&
-                            direct_upload_packets_ <= kDirectQueueLowPackets) {
-                            direct_upload_backpressured_ = false;
+                        if (direct_upload_queue_.Release(payload->bytes.size(), payload_items, sent,
+                                completed_bytes, completed_items)) {
                             if (telemetry) {
                                 telemetry->SetBackpressured(false);
                             }
@@ -1559,6 +1526,7 @@ namespace ppp {
                     std::lock_guard<std::mutex> lock(direct_sync_);
                     close_handler = std::move(direct_close_handler_);
                     direct_bridge_started_ = false;
+                    direct_upload_queue_.Abort();
                     direct_read_handler_ = nullptr;
                     direct_writable_handler_ = nullptr;
                     download_waiter = direct_download_waiter_.Invalidate();
@@ -1582,6 +1550,7 @@ namespace ppp {
                         return;
                     }
                     direct_send_close_state_ = DirectSendCloseState::Draining;
+                    direct_upload_queue_.RequestClose();
                     if (!direct_upload_writer_started_) {
                         direct_upload_writer_started_ = true;
                         start_writer = true;
