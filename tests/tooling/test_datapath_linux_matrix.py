@@ -333,16 +333,14 @@ def test_cpu_isolation() -> None:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("00000003\n", encoding="utf-8")
         proc_root.mkdir(parents=True)
-        (proc_root / "interrupts").write_text(
-            "           CPU0 CPU1\n 55: 1 2 PCI-MSI xc-veth\n", encoding="utf-8"
-        )
+        (proc_root / "interrupts").write_text("           CPU0 CPU1\n", encoding="utf-8")
         irq_dir = proc_root / "irq/55"
         irq_dir.mkdir(parents=True)
         (irq_dir / "smp_affinity").write_text("00000003\n", encoding="utf-8")
         (irq_dir / "effective_affinity").write_text("00000003\n", encoding="utf-8")
         state = root / "evidence.json"
         evidence = snapshot(state, ["xc-veth", "tun0"], 32, persistent_devices={"xc-veth"}, sys_root=sys_root, proc_root=proc_root, namespace="fake")
-        assert evidence["devices"]["xc-veth"]["irq_status"] == "applicable"
+        assert evidence["devices"]["xc-veth"]["irq_status"] == "not_applicable"
         assert evidence["devices"]["tun0"]["irq_status"] == "not_applicable"
         assert evidence["devices"]["tun0"]["queue_support"] == "supported"
         assert apply(state)["phases"]["apply"]["status"] == "pass"

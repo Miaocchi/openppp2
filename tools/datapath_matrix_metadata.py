@@ -6,7 +6,37 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
+
+
+def check_isolation() -> None:
+    """Fail closed before the runner can create links or launch processes."""
+    root = Path(os.environ.get("OPENPPP2_M3_ISOLATION_ROOT", "/nonexistent"))
+    for kind in ("net", "mnt"):
+        initial = os.environ.get("OPENPPP2_M3_INITIAL_" + kind.upper())
+        if not initial or os.readlink("/proc/self/ns/" + kind) == initial:
+            raise SystemExit("runner requires run_m3_isolated.sh (fresh net and mount namespaces)")
+    for mountpoint, backing in (("/etc/netns", "etc-netns"), ("/run/netns", "run-netns")):
+        if not os.path.ismount(mountpoint) or not os.path.samefile(mountpoint, root / backing):
+            raise SystemExit("private namespace backing mount missing")
+    if not os.path.ismount("/sys"):
+        raise SystemExit("private sysfs mount missing")
+
+
+def runtime_policy_metadata(records: list[dict]) -> dict:
+    keys = ("shard_policy_requested", "shard_policy_reason", "shard_count", "worker_count",
+            "ingress_backend", "effective_cpus", "online_cpus", "quota_cpus", "allowed_cpus",
+            "cpu_affinity_known", "cpu_quota_known", "affinity_reason", "affinity_strict",
+            "affinity_pinned_workers", "worker_cpus", "worker_bindings")
+    samples = [record["xtcp"] for record in records if isinstance(record.get("xtcp"), dict)]
+    if not samples:
+        return {"status": "unavailable", "effective": None}
+    effective = {key: samples[-1].get(key) for key in keys}
+    status = "unavailable" if effective["shard_count"] is None else (
+        "reported" if all(effective[key] is not None for key in keys) else "partial")
+    return {"status": status,
+            "effective": effective}
 
 
 def _git(root: Path, *arguments: str) -> bytes:
@@ -181,6 +211,9 @@ def evaluate_qualification_status(records: list[dict], run_failed: bool = False)
 
 
 def main() -> None:
+    if sys.argv[1:] == ["--check-isolation"]:
+        check_isolation()
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--ppp-bin", type=Path, required=True)
