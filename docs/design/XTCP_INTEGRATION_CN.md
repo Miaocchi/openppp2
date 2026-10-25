@@ -425,8 +425,9 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0035-retry-ack-window-construction.patch`：ACK/窗口通告因 buffer 分配失败未能构造时，保留一个合并的待发义务并按 40ms 有界 deadline 重试，而不是清掉 delayed-ACK/resume 状态；保留 FIN/ECN/DSACK 语义，附 `test_ack_allocation`。见 §11.186。
 - 原 `0036-sack-blocks-fit-option-space.patch`（SACK 块数按剩余 option 空间计算）已由上游 liulilittle/xtcp#2 合入，本地文件已删除。见 §11.186、§11.187。
 - `0037-rcv-mss-immediate-ack.patch`：单个按序段的 payload 超过本端通告 MSS（1460）时立即 ACK（Linux `__tcp_ack_snd_check` 按字节判断 `rcv_nxt - rcv_wup > rcv_mss`），避免 GRO/LRO super-segment 被按段计数后走 40ms delayed ACK；附 `test_rcv_mss_ack`。编号跳过 0036 以免与历史引用冲突。见 §11.187。
+- `0038-kcc-cwnd-ack-aggregation-quantization.patch`：KCC v2 的 cwnd 目标只取 `cwnd_gain*max_bw*min_rtt`；在 tun 路径上，min_rtt 只有约 35-90us，而 ACK 是成批到达的。sndbuf=1MiB 时，P4/P16 DL 的 cwnd 塌到 2-12 包，DL 从约 1.9 跌到 0.85Gbps。本补丁按 Linux `bbr_set_cwnd` 加入 ack-aggregation（`extra_acked`）项和 quantization budget，并同步修改 `plugins/ref/kcc_core.c`。远端 A/B（1MiB、2 轮、20s）：P4 DL 0.89/0.84→2.11/2.19Gbps，P16 DL 0.79/0.89→1.88/1.83Gbps，P1 不变。1MiB P64 DL 卡死是另一个问题，本补丁不修复：xtcp 固定缓冲池耗尽后，入向 ACK 无法拷贝（`ingress_drop_reason.buffer`）。
 
-当前共 27 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037（0036 为已上游的历史编号，不复用）；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+当前共 28 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037、0038（0036 为已上游的历史编号，不复用）；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
 
 修改上游行为的唯一入口是该目录下的补丁；直接改解包树会在下次 prepare 时丢失。
 

@@ -91,8 +91,20 @@ and passes with it. This is an upstream receiver behavior: 0005 itself emits
 only segments no larger than the MSS. Final stack (27 patches): 243/244, with
 only `test_ts_ooo_drain` failing. See XTCP_INTEGRATION_CN.md §11.187.
 
-The current local series has 27 patches with stable, sparse IDs: 0001-0015,
-0023, 0025-0029, 0031-0035 and 0037 (0035: retry ACK/window construction after
+Patch 0038 (`0038-kcc-cwnd-ack-aggregation-quantization.patch`) restores cwnd
+headroom in KCC v2. Upstream KCC v2 caps cwnd at `cwnd_gain * max_bw * min_rtt`.
+On the OpenPPP2 tun path, min_rtt is about 35-90 us, but ACKs arrive in batches.
+With a 1 MiB snd_buf, P4/P16 DL cwnd collapsed to 2-12 packets: DL fell from
+about 1.9 to 0.85 Gbps. 0038 adds the Linux `bbr_set_cwnd` ack-aggregation
+term (`extra_acked`) and quantization budget to the cwnd target, and mirrors
+them in `plugins/ref/kcc_core.c`. Remote A/B (1 MiB, 2 passes, 20 s): P4 DL
+0.89/0.84 -> 2.11/2.19 Gbps and P16 DL 0.79/0.89 -> 1.88/1.83 Gbps; P1 is unchanged.
+The 1 MiB P64 DL wedge is a separate issue that 0038 does not fix: the fixed
+xtcp buffer pools are exhausted, and ingress ACK copies then fail
+(`ingress_drop_reason.buffer`).
+
+The current local series has 28 patches with stable, sparse IDs: 0001-0015,
+0023, 0025-0029, 0031-0035, 0037 and 0038 (0035: retry ACK/window construction after
 allocation failure; 0037: byte-based immediate ACK for super-segments; former
 0036, SACK blocks fit the option space, is upstream as liulilittle/xtcp#2 and
 its ID is not reused). Upstream absorbs former local 0016 (PSH tail),
