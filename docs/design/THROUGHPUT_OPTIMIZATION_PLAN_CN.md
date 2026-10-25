@@ -91,6 +91,29 @@
 - 此前只测 UL 的定向结果（P1 UL 1.12–1.20×）在本矩阵中得到复现。
 - 这仍是共享 VM 上的定向结论；严格 A 榜验收需隔离单核环境。
 
+#### 2.4.1 单连接下行上限的根因：XTCP snd_buf（2026-10-25/26）
+
+- 诊断（GSO-on DL P1，perf + 计数器）：客户端进程只用 0.33 核，不是 CPU 瓶颈；
+  直连桥下行块 16→32 KiB 只从 413 提到 424 Mbps，也不是块大小。生产默认不设
+  `OPENPPP2_XTCP_SNDBUF_BYTES`，xtcp 每连接 snd_buf 取上游默认 64 KiB，在途数据被
+  限制，约 410 Mbps 正好对应 64 KiB / ~1.2 ms。
+- snd_buf A/B（旧 xtcp 77d45585，3 轮，XTCP/native）：
+
+| snd_buf | DL P1 | DL P4 | DL P16 | DL P64 | UL P1 / P4 / P16 |
+| --- | --- | --- | --- | --- | --- |
+| 64 KiB | 0.22 | 0.72 | 0.9 | — | 1.12–1.17 / 1.04 / 0.95 |
+| 256 KiB | 0.56–0.65 | 1.09–1.23 | 1.08–1.20 | 1.36–1.46 | 1.14–1.22 / 1.05–1.15 / 0.95–1.03 |
+| 1 MiB | 0.92–0.99 | 1.15–1.18 | 1.06–1.15 | 3 轮中 1 轮卡死 | 1.00–1.15 / 0.96–1.05 / 0.96–0.99 |
+
+- xtcp 更新到上游 f71548f（#102）后，KCC v2 的 cwnd 目标缺少 Linux `bbr_set_cwnd`
+  的 ack-aggregation 与 quantization 余量，大 snd_buf 下多流 DL 减半；#106（补丁 0038）
+  已修复，P4/P16 DL 回到旧版水平。
+- 大 snd_buf × 多流的卡死根因：xtcp 全局固定缓冲池（约 36 MiB，无堆兜底）被发送缓冲
+  占满后，入向 ACK 因申请不到缓冲被丢弃，snd_buf 无法释放，形成死锁。默认 64 KiB 在
+  数百条满载流时同样可能触发，修复进行中（工作项 1.7）。
+- 结论：调大 snd_buf 默认值是 G1/G2 下行缺口的主要手段，前提是先修 1.7。上行
+  P4/P16 在各档 snd_buf 下都只有约 1.0×，不受 snd_buf 影响，需要单独工作项。
+
 ### 2.5 文档与代码不一致
 
 XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时默认尝试"，但
@@ -120,7 +143,8 @@ XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时�
 | 1.3 | `XTCP-GSO-STALL-001` 根因与修复 | M |
 | 1.4 | P64 DL server wedge；direct 路径间歇低值（resume_effective=0 的那一轮） | M |
 | 1.5 | 上游合并进展：liulilittle/xtcp#1 合入后，把补丁栈 rebase 到上游新版本，删除已合入的补丁 | S |
-| 1.6 | 单连接下行固定上限：GSO-on DL P1 XTCP 约 414 Mbps（native 0.22×，§2.4），定位瓶颈（直连桥下行块大小/在途数、receiver window、ACK 节奏）后再排 2.5 | M |
+| 1.6 | 单连接下行固定上限：GSO-on DL P1 XTCP 约 414 Mbps（native 0.22×，§2.4）。已定位为 xtcp snd_buf 默认 64 KiB（§2.4.1）；待 1.7 修复后调大默认值 | S |
+| 1.7 | xtcp 缓冲池耗尽死锁：池满后入向 ACK 被丢弃导致 snd_buf 永不释放（§2.4.1）；ACK/接收方向不得被发送缓冲饿死 | M |
 
 ### WS2 把处理单元做大（主要收益来源）
 
