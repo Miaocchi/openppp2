@@ -180,6 +180,13 @@ bool WaitFor(const std::function<bool()>& predicate, int timeout_ms = 5000) {
     return predicate();
 }
 
+std::shared_ptr<int> TrackRuntimeLifetime(const std::shared_ptr<std::atomic<bool>>& drained) {
+    return std::shared_ptr<int>(new int(0), [drained](int* token) noexcept {
+        delete token;
+        drained->store(true, std::memory_order_release);
+    });
+}
+
 // A half-close-aware loopback echo server: echoes bytes back, and when the
 // peer half-closes (read EOF) it shuts down its write side after every
 // received byte was echoed, then closes the socket - modelling the ppp-side
@@ -436,7 +443,7 @@ public:
             runtime_.reset();
             // Keep the owner context running until Stop's posted teardown and
             // cancellation handlers release Impl; stopping it first leaks a cycle.
-            CHECK(WaitFor([this]() { return runtime_lifetime_.expired(); }));
+            CHECK(WaitFor([this]() { return runtime_drained_->load(std::memory_order_acquire); }));
         }
         work_guard_.reset();
         context_->stop();
@@ -481,8 +488,8 @@ public:
         echo_ = std::make_shared<EchoServer>(separate_echo ? *echo_context_ : *context_, echo_port);
         echo_->Start();
         const auto listener_endpoint = echo_->Endpoint();
-        const auto lifetime = std::make_shared<int>(0);
-        runtime_lifetime_ = lifetime;
+        runtime_drained_ = std::make_shared<std::atomic<bool>>(false);
+        const auto lifetime = TrackRuntimeLifetime(runtime_drained_);
         runtime_ = std::make_shared<XtcpRuntime>(
             context_,
             [this, lifetime](std::shared_ptr<Byte>&& data, int length,
@@ -706,7 +713,7 @@ private:
     std::unique_ptr<WorkGuard> echo_guard_;
     std::thread echo_thread_;
     std::shared_ptr<XtcpRuntime> runtime_;
-    std::weak_ptr<int> runtime_lifetime_;
+    std::shared_ptr<std::atomic<bool>> runtime_drained_;
     std::mutex output_mutex_;
     std::deque<std::vector<Byte>> output_;
     std::mutex flows_mutex_;
@@ -1430,9 +1437,11 @@ void TestRejectedExternalAcceptOwnsBridgeFd() {
     std::atomic<int> received_fd{-1};
     std::atomic<int> replacement_fd{-1};
     std::atomic<bool> callback_done{false};
-    const std::shared_ptr<XtcpRuntime> runtime = std::make_shared<XtcpRuntime>(
+    const auto runtime_drained = std::make_shared<std::atomic<bool>>(false);
+    auto lifetime = TrackRuntimeLifetime(runtime_drained);
+    std::shared_ptr<XtcpRuntime> runtime = std::make_shared<XtcpRuntime>(
         context,
-        [](std::shared_ptr<Byte>&&, int,
+        [lifetime](std::shared_ptr<Byte>&&, int,
             std::optional<ppp::tap::TxGsoMetadata>) noexcept { return true; },
         []() noexcept { return boost::asio::ip::tcp::endpoint(); },
         [sentinel_source, &received_fd, &replacement_fd, &callback_done](
@@ -1450,6 +1459,7 @@ void TestRejectedExternalAcceptOwnsBridgeFd() {
             return false;
         },
         [](std::uint16_t, std::uint64_t) noexcept {});
+    lifetime.reset();
 
     const bool started = runtime->Start();
     CHECK(started);
@@ -1480,6 +1490,8 @@ void TestRejectedExternalAcceptOwnsBridgeFd() {
     }
 
     runtime->Stop();
+    runtime.reset();
+    CHECK(WaitFor([&]() { return runtime_drained->load(std::memory_order_acquire); }));
     work_guard.reset();
     context->stop();
     if (io_thread.joinable()) {

@@ -1768,6 +1768,9 @@
     <ClInclude Include="ppp\threading\SpscHandoff.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\app\client\xtcp\XtcpShardPolicy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\threading\SpinLock.h">
       <Filter>头文件</Filter>
     </ClInclude>

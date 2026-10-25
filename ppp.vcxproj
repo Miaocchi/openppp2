@@ -986,6 +986,7 @@
     <ClInclude Include="ppp\threading\BufferswapAllocator.h" />
     <ClInclude Include="ppp\threading\SpinLock.h" />
     <ClInclude Include="ppp\threading\SpscHandoff.h" />
+    <ClInclude Include="ppp\app\client\xtcp\XtcpShardPolicy.h" />
     <ClInclude Include="ppp\transmissions\ITransmissionQoS.h" />
     <ClInclude Include="ppp\transmissions\ITransmissionStatistics.h" />
     <ClInclude Include="ppp\collections\Dictionary.h" />

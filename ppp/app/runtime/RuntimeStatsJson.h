@@ -75,6 +75,57 @@ namespace ppp {
 
                 if (sample.has_xtcp) {
                     Json::Value xtcp(Json::objectValue);
+                    xtcp["shard_policy_requested"] = sample.xtcp.shard_policy_requested.c_str();
+                    xtcp["shard_policy_reason"] = sample.xtcp.shard_policy_reason.c_str();
+                    xtcp["shard_count"] = sample.xtcp.shard_count;
+                    xtcp["worker_count"] = sample.xtcp.worker_count;
+                    xtcp["ingress_backend"] = sample.xtcp.spsc_ingress ? "spsc-serialized-producer" : "vector";
+                    xtcp["effective_cpus"] = sample.xtcp.effective_cpus;
+                    xtcp["online_cpus"] = sample.xtcp.online_cpus;
+                    xtcp["quota_cpus"] = sample.xtcp.quota_cpus;
+                    xtcp["cpu_affinity_known"] = sample.xtcp.cpu_affinity_known;
+                    xtcp["cpu_quota_known"] = sample.xtcp.cpu_quota_known;
+                    xtcp["affinity_reason"] = sample.xtcp.affinity_reason.c_str();
+                    xtcp["affinity_strict"] = sample.xtcp.affinity_strict;
+                    xtcp["affinity_pinned_workers"] = sample.xtcp.affinity_pinned_workers;
+                    Json::Value allowed(Json::arrayValue), workers(Json::arrayValue), shards(Json::arrayValue);
+                    for (unsigned cpu : sample.xtcp.allowed_cpus) allowed.append(cpu);
+                    for (unsigned cpu : sample.xtcp.worker_cpus) workers.append(cpu);
+                    xtcp["allowed_cpus"] = std::move(allowed);
+                    xtcp["worker_cpus"] = std::move(workers);
+                    Json::Value bindings(Json::arrayValue);
+                    for (unsigned i = 0; i < sample.xtcp.worker_count && i < sample.xtcp.workers.size(); ++i) {
+                        Json::Value binding(Json::objectValue), mask(Json::arrayValue);
+                        binding["index"] = i;
+                        binding["tid"] = Json::UInt64(sample.xtcp.workers[i].tid);
+                        for (unsigned cpu : sample.xtcp.workers[i].effective_cpus) mask.append(cpu);
+                        binding["effective_cpus"] = std::move(mask);
+                        bindings.append(std::move(binding));
+                    }
+                    xtcp["worker_bindings"] = std::move(bindings);
+                    for (unsigned i = 0; i < sample.xtcp.shard_count && i < sample.xtcp.shards.size(); ++i) {
+                        const auto& shard = sample.xtcp.shards[i];
+                        Json::Value entry(Json::objectValue);
+                        entry["index"] = i;
+                        entry["enqueued"] = Json::UInt64(shard.enqueued);
+                        entry["dispatched"] = Json::UInt64(shard.dispatched);
+                        entry["dropped"] = Json::UInt64(shard.dropped);
+                        entry["bytes"] = Json::UInt64(shard.bytes);
+                        entry["queue_items"] = Json::UInt64(shard.queue_items);
+                        entry["queue_bytes"] = Json::UInt64(shard.queue_bytes);
+                        entry["items_highwater"] = Json::UInt64(shard.items_highwater);
+                        entry["bytes_highwater"] = Json::UInt64(shard.bytes_highwater);
+                        entry["wake_posts"] = Json::UInt64(shard.wake_posts);
+                        entry["wake_coalesces"] = Json::UInt64(shard.wake_coalesces);
+                        entry["quanta"] = Json::UInt64(shard.quanta);
+                        entry["flushes"] = Json::UInt64(shard.flushes);
+                        entry["active_flows"] = Json::UInt64(shard.active_flows);
+                        entry["data_flows"] = Json::UInt64(shard.data_flows);
+                        entry["upload_bytes"] = Json::UInt64(shard.upload_bytes);
+                        entry["download_bytes"] = Json::UInt64(shard.download_bytes);
+                        shards.append(std::move(entry));
+                    }
+                    xtcp["shards"] = std::move(shards);
                     xtcp["runtime_generation"] = Json::UInt64(sample.xtcp.runtime_generation);
                     xtcp["runtime_instance_id"] = Json::UInt64(sample.xtcp.runtime_instance_id);
                     xtcp["direct_bridge_starts"] = Json::UInt64(sample.xtcp.direct_bridge_starts);

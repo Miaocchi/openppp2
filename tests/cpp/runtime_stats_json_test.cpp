@@ -7,6 +7,29 @@
 
 namespace runtime = ppp::app::runtime;
 
+BOOST_AUTO_TEST_CASE(xtcp_startup_and_shard_metadata) {
+    runtime::RuntimeStatsSample sample;
+    sample.has_xtcp = true;
+    sample.xtcp.shard_count = 2;
+    sample.xtcp.worker_count = 2;
+    sample.xtcp.spsc_ingress = true;
+    sample.xtcp.shard_policy_requested = "auto";
+    sample.xtcp.shard_policy_reason = "auto-opt-in";
+    sample.xtcp.allowed_cpus = {1, 3, 5, 7};
+    sample.xtcp.worker_cpus = {1, 3};
+    sample.xtcp.shards[1].bytes = UINT64_C(9000000000);
+    Json::Value root;
+    Json::Reader reader;
+    const auto encoded = runtime::SerializeRuntimeStats(sample);
+    BOOST_REQUIRE(reader.parse(encoded.data(), encoded.data() + encoded.size(), root));
+    BOOST_TEST(root["xtcp"]["shard_count"].asUInt() == 2u);
+    BOOST_TEST(root["xtcp"]["worker_count"].asUInt() == 2u);
+    BOOST_TEST(root["xtcp"]["ingress_backend"].asString() == "spsc-serialized-producer");
+    BOOST_TEST(root["xtcp"]["shards"].size() == 2u);
+    BOOST_TEST(root["xtcp"]["shards"][1]["bytes"].asUInt64() == UINT64_C(9000000000));
+    BOOST_TEST(root["xtcp"]["worker_cpus"][1].asUInt() == 3u);
+}
+
 BOOST_AUTO_TEST_CASE(stats_json_preserves_v1_contract) {
     runtime::RuntimeStatsSample sample;
     sample.monotonic_ms = 8080123;
