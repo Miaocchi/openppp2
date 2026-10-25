@@ -847,6 +847,9 @@
     <ClInclude Include="ppp\tap\TapOutputLane.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\app\protocol\XtcpDirectUploadQueue.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\tap\TapOutputLanePolicy.h">
       <Filter>头文件</Filter>
     </ClInclude>
