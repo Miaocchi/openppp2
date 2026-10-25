@@ -314,23 +314,29 @@ void RacingProducers() {
 }
 
 void AbortIsIdempotentAndObservable() {
-    Queue endpoint(2, 91);
-    Item queued(7), output;
-    CHECK(endpoint.TryPush(std::move(queued)) == HandoffPush::Accepted);
-    endpoint.Abort();
-    endpoint.Abort();
-    CHECK(endpoint.GetState() == Queue::State::Closed);
-    CHECK(endpoint.Closing());
-    Item rejected(9);
-    CHECK(endpoint.TryPush(std::move(rejected)) == HandoffPush::Closed);
-    CHECK(!endpoint.Claim(91));
-    CHECK(!endpoint.ArmWait());
-    output.~Item();
-    new (&output) Item();
-    CHECK(Item::live == 2);
-    endpoint.~Queue();
-    new (&endpoint) Queue(2, 92);
-    CHECK(Item::live == 1);
+    const int baseline = Item::live.load();
+    {
+        Queue endpoint(2, 91);
+        {
+            Item queued(7);
+            CHECK(endpoint.TryPush(std::move(queued)) == HandoffPush::Accepted);
+        }
+        // The accepted item stays owned by the queue across Abort.
+        CHECK(Item::live == baseline + 1);
+        endpoint.Abort();
+        endpoint.Abort();
+        CHECK(endpoint.GetState() == Queue::State::Closed);
+        CHECK(endpoint.Closing());
+        Item rejected(9);
+        CHECK(endpoint.TryPush(std::move(rejected)) == HandoffPush::Closed);
+        CHECK(rejected.value && *rejected.value == 9);
+        CHECK(!endpoint.Claim(91));
+        CHECK(!endpoint.ArmWait());
+        CHECK(!endpoint.CommitWake());
+        CHECK(Item::live == baseline + 2);
+    }
+    // The quiescent owner's destructor reclaims the item Abort left queued.
+    CHECK(Item::live == baseline);
 }
 
 int main() {
