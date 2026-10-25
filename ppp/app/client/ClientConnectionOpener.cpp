@@ -212,6 +212,10 @@ namespace ppp {
                             owner_->SupportsTxGso(),
                             std::move(borrowed_output),
                             std::move(retained_output));
+                    if (NULLPTR != runtime) {
+                        // OPENPPP2_XTCP_AFFINITY=queues is rejected with SSMT.
+                        runtime->SetSsmtActive(owner_->Ssmt(NULLPTR) > 0);
+                    }
                     if (NULLPTR == runtime || !runtime->Start()) {
                         return ppp::diagnostics::SetLastError(
                             ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);

@@ -134,6 +134,8 @@ namespace ppp {
                 unsigned quota_cpus = 1, affinity_pinned_workers = 0;
                 bool cpu_affinity_known = false, cpu_quota_known = false, spsc_ingress = false;
                 bool affinity_strict = false;
+                std::string affinity_mode = "off"; /**< off | workers | queues (requested mode) */
+                bool queue_mode_active = false;    /**< Per-shard executors with pinned workers running */
                 std::vector<unsigned> allowed_cpus, worker_cpus;
                 std::array<Shard, 8> shards{};
                 std::array<Worker, 8> workers{};

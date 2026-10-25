@@ -85,6 +85,7 @@ inline bool ParseXtcpCpuList(const std::string& text, std::vector<unsigned>& res
 
 struct XtcpWorkerAffinity final {
     bool enabled = false;
+    bool queues = false; // Stage B: per-shard executor + pinned worker
     bool strict = false;
     bool valid = true;
     std::string reason = "off";
@@ -106,7 +107,14 @@ inline XtcpWorkerAffinity SelectXtcpWorkerAffinity(const std::string& mode,
         return result;
     }
     if (mode.empty() || mode == "off") return result;
-    result.valid = supported && mode == "workers" && workers != 0
+    result.queues = mode == "queues";
+    if (result.queues && supported && workers == 0) {
+        // A single shard has no per-shard executor to bind: report it as
+        // unsupported instead of pretending the worker is pinned.
+        result.reason = "queues-unsupported-single-shard";
+        return result;
+    }
+    result.valid = supported && (mode == "workers" || result.queues) && workers != 0
         && envelope.affinity_known && ParseXtcpCpuList(list, result.cpus)
         && result.cpus.size() == workers;
     if (result.valid) {
@@ -116,7 +124,7 @@ inline XtcpWorkerAffinity SelectXtcpWorkerAffinity(const std::string& mode,
         if (envelope.quota_known && workers > envelope.Effective()) result.valid = false;
     }
     result.enabled = result.valid;
-    result.reason = result.valid ? "workers" : "invalid-worker-map";
+    result.reason = result.valid ? mode : (result.queues ? "invalid-queue-map" : "invalid-worker-map");
     return result;
 }
 

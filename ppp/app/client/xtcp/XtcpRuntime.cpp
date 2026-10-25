@@ -258,6 +258,10 @@ XtcpRuntime::~XtcpRuntime() noexcept = default;
 bool XtcpRuntime::Start() noexcept { return false; }
 void XtcpRuntime::MarkReady() noexcept {}
 void XtcpRuntime::Stop() noexcept {}
+void XtcpRuntime::SetSsmtActive(bool) noexcept {}
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+void XtcpRuntime::FailWorkerStartForTesting(int) noexcept {}
+#endif
 bool XtcpRuntime::SubmitIPv4Tcp(const void*, int) noexcept { return false; }
 bool XtcpRuntime::IsReady() const noexcept { return false; }
 bool XtcpRuntime::IsRunning() const noexcept { return false; }
@@ -270,6 +274,9 @@ bool XtcpRuntime::EmitOutputForTesting(const std::shared_ptr<Byte>&, int,
 #else
 namespace {
 std::atomic<std::uint64_t> g_next_runtime_instance_id{0};
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+std::atomic<int> g_fail_worker_start_for_testing{-1};
+#endif
 
 std::uint64_t AllocateRuntimeInstanceId() noexcept {
     std::uint64_t last_issued = g_next_runtime_instance_id.load(std::memory_order_relaxed);
@@ -781,6 +788,9 @@ public:
         if (own_context_) {
             own_context_->stop();
         }
+        for (Shard& s : shards_) {
+            if (s.io) s.io->stop();
+        }
         for (std::thread& t : own_threads_) {
             if (t.joinable()) {
                 // Stop completion can release the last Impl reference from an
@@ -807,6 +817,12 @@ public:
         if (own_context_) {
             for (const auto& thread : own_threads_)
                 if (thread.joinable() && thread.get_id() == std::this_thread::get_id()) return false;
+            if (queue_mode_) {
+                // Queue mode: a previous Stop() already drained the runtime's own
+                // handlers; stop the per-shard executors so work owned by others
+                // (e.g. bound TAP lane reads) cannot block the join.
+                for (Shard& s : shards_) if (s.io) s.io->stop();
+            }
             for (auto& thread : own_threads_) if (thread.joinable()) thread.join();
             own_threads_.clear();
             // Strands must release their context services before the old pool.
@@ -963,13 +979,25 @@ public:
 #endif
         // Workers exist whenever the runtime owns its context: one per shard,
         // including the single PRIVATE_IO worker.
-        affinity_ = SelectXtcpWorkerAffinity(StartupEnv("OPENPPP2_XTCP_AFFINITY"),
+        const std::string affinity_mode = StartupEnv("OPENPPP2_XTCP_AFFINITY");
+        affinity_ = SelectXtcpWorkerAffinity(affinity_mode,
             StartupEnv("OPENPPP2_XTCP_IO_CPUS"), StartupEnv("OPENPPP2_XTCP_AFFINITY_STRICT"),
             (shard_count > 1 || private_io) ? shard_count : 0, cpu_inputs_, linux_desktop);
         if (shard_policy_.invalid || !affinity_.valid)
             std::fprintf(stderr, "[xtcp] startup policy: %s; affinity: %s\n",
                 shard_policy_.reason.c_str(), affinity_.reason.c_str());
         if (!affinity_.CanStart(true)) { lease_.reset(); return false; }
+        // Stage B opt-in: OPENPPP2_XTCP_AFFINITY=queues gives each shard its own
+        // io_context and one strictly pinned worker. Default/off/workers keep
+        // the shared pool unchanged.
+        queue_mode_ = affinity_.queues && affinity_.enabled;
+        if (affinity_.queues && ssmt_active_) {
+            affinity_.reason = "queues-rejected-ssmt";
+            std::fprintf(stderr, "[xtcp] OPENPPP2_XTCP_AFFINITY=queues cannot be combined with SSMT\n");
+            queue_mode_ = false;
+            lease_.reset();
+            return false;
+        }
         const char* cc_env = ::getenv("OPENPPP2_XTCP_CC");
 #if defined(_WIN32)
         // Windows 默认 cubic: kcc 依赖细粒度定时器驱动发送, Windows 定时器
@@ -1022,7 +1050,19 @@ public:
         for (std::size_t i = 0; i < shards_.size(); ++i) {
             Shard& s = shards_[i];
             s.index = i;
-            s.strand = std::make_shared<Strand>(context_->get_executor());
+            if (queue_mode_) {
+                // Shard 0 reuses own_context_ (runtime-wide timers stay there).
+                try {
+                    s.io = i == 0 ? own_context_ : std::make_shared<boost::asio::io_context>(1);
+                }
+                catch (...) {
+                    for (std::size_t j = 0; j < i; ++j) shards_[j].backend->Stop();
+                    shards_.clear();
+                    lease_.reset();
+                    return false;
+                }
+            }
+            s.strand = std::make_shared<Strand>(ShardContext(s)->get_executor());
             OutputHandler shard_output = counted_output_;
             BorrowedOutputHandler shard_borrowed_output = counted_borrowed_output_;
             RetainedOutputHandler shard_retained_output = counted_retained_output_;
@@ -1151,11 +1191,23 @@ public:
         worker_runtime_ = {};
         if (own_context_) {
             own_work_guard_.emplace(own_context_->get_executor());
+            for (Shard& s : shards_)
+                if (s.io && s.io != own_context_) s.io_guard.emplace(s.io->get_executor());
             bool pins_ok = true;
+            bool start_failed = false;
             for (int i = 0; i < shard_count; ++i) {
                 auto startup = std::make_shared<std::promise<bool>>();
                 auto started = startup->get_future();
-                own_threads_.emplace_back([this, own = own_context_, i, startup]() noexcept {
+                const std::shared_ptr<boost::asio::io_context> worker_context =
+                    queue_mode_ ? shards_[static_cast<std::size_t>(i)].io : own_context_;
+                try {
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+                    if (g_fail_worker_start_for_testing.load(std::memory_order_relaxed) == i) {
+                        g_fail_worker_start_for_testing.store(-1, std::memory_order_relaxed);
+                        throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+                    }
+#endif
+                own_threads_.emplace_back([this, own = worker_context, i, startup]() noexcept {
                     bool pinned = !affinity_.enabled;
 #if defined(__linux__) && !defined(__ANDROID__)
                     // 线程名用于 /proc thread dump 诊断 (测试目标不链 stdafx.cpp,
@@ -1191,7 +1243,34 @@ public:
                     startup->set_value(pinned);
                     own->run();
                 });
+                }
+                catch (...) {
+                    start_failed = true;
+                    break;
+                }
                 pins_ok = started.get() && pins_ok;
+            }
+            if (start_failed) {
+                // Partial startup: unwind only what exists. Started workers exit
+                // once their guards are released; nothing was posted yet.
+                affinity_.reason = "worker-start-failed";
+                std::fprintf(stderr, "[xtcp] worker thread start failed\n");
+                running_.store(false, std::memory_order_release);
+                for (Shard& s : shards_) {
+                    s.budget.Stop();
+                    if (s.spsc) s.spsc->Abort();
+                    s.backend->Stop();
+                    s.io_guard.reset();
+                }
+                own_work_guard_.reset();
+                for (auto& thread : own_threads_) if (thread.joinable()) thread.join();
+                own_threads_.clear();
+                for (Shard& s : shards_) {
+                    s.stack.reset();
+                    s.backend.reset();
+                }
+                lease_.reset();
+                return false;
             }
             if (!pins_ok) {
                 affinity_.reason = "pin-failed-degraded";
@@ -1202,6 +1281,7 @@ public:
                         s.budget.Stop();
                         if (s.spsc) s.spsc->Abort();
                         s.backend->Stop();
+                        s.io_guard.reset();
                     }
                     own_work_guard_.reset();
                     for (auto& thread : own_threads_) if (thread.joinable()) thread.join();
@@ -1500,6 +1580,8 @@ public:
         snapshot.allowed_cpus = cpu_inputs_.allowed;
         snapshot.worker_cpus = affinity_.cpus;
         snapshot.affinity_reason = affinity_.reason;
+        snapshot.affinity_mode = affinity_.queues ? "queues" : (affinity_.enabled ? "workers" : "off");
+        snapshot.queue_mode_active = queue_mode_ && running_.load(std::memory_order_acquire);
         snapshot.affinity_strict = affinity_.strict;
         snapshot.affinity_pinned_workers = affinity_pinned_.load(std::memory_order_relaxed);
         snapshot.workers = worker_runtime_;
@@ -2290,6 +2372,11 @@ private:
     using IngressHandoff = ppp::threading::SerializedSpscHandoff<HandoffItem>;
     struct Shard final {
         std::size_t index = 0;
+        // Queue mode only: this shard's own executor (declared before the
+        // strand/timers/flows that use it so it is destroyed after them).
+        std::shared_ptr<boost::asio::io_context> io;
+        std::optional<boost::asio::executor_work_guard<
+            boost::asio::io_context::executor_type>> io_guard;
         std::shared_ptr<Strand> strand;
         std::unique_ptr<XtcpNdiBackend> backend;
         std::unique_ptr<::xtcp::XtcpStack> stack;
@@ -2645,7 +2732,7 @@ private:
             (next_flow_generation_.fetch_add(1, std::memory_order_relaxed) + 1);
         std::shared_ptr<Flow> flow;
         try {
-            flow = std::make_shared<Flow>(context_, parsed.key, parsed.remote, parsed.local, flow_generation);
+            flow = std::make_shared<Flow>(ShardContext(s), parsed.key, parsed.remote, parsed.local, flow_generation);
         }
         catch (...) {
             return;
@@ -4664,7 +4751,7 @@ private:
         // shard and reused; make_shared per poll was a per-packet heap
         // allocation on bursts.
         if (!s.poll_timer) {
-            s.poll_timer = std::make_shared<boost::asio::steady_timer>(*context_);
+            s.poll_timer = std::make_shared<boost::asio::steady_timer>(*ShardContext(s));
         }
 #if defined(PPP_XTCP_HAS_TIMER_DEADLINE)
         s.poll_timer->expires_after(PollDelay(s));
@@ -4761,7 +4848,18 @@ private:
         // completion so their captures release Impl before the private pool
         // exits. Calling io_context::stop() here would strand those handlers.
         own_work_guard_.reset();
+        for (Shard& s : shards_) s.io_guard.reset();
         stopping_.store(false, std::memory_order_release);
+    }
+
+    const std::shared_ptr<boost::asio::io_context>& ShardContext(const Shard& s) const noexcept {
+        return s.io ? s.io : context_;
+    }
+
+public:
+    void SetSsmtActive(bool active) noexcept {
+        std::lock_guard<std::mutex> lock(state_sync_);
+        ssmt_active_ = active;
     }
 
 private:
@@ -4847,6 +4945,8 @@ private:
     XtcpCpuInputs cpu_inputs_;
     XtcpShardPolicy shard_policy_;
     XtcpWorkerAffinity affinity_;
+    bool queue_mode_ = false;
+    bool ssmt_active_ = false;
     std::atomic<unsigned> affinity_pinned_{0};
     std::array<ppp::app::runtime::RuntimeXtcpStats::Worker, 8> worker_runtime_{};
     std::atomic<std::uint32_t> next_external_port_{0};
@@ -4893,6 +4993,12 @@ XtcpRuntime::~XtcpRuntime() noexcept {
 bool XtcpRuntime::Start() noexcept { return impl_ && impl_->Start(); }
 void XtcpRuntime::MarkReady() noexcept { if (impl_) impl_->MarkReady(); }
 void XtcpRuntime::Stop() noexcept { if (impl_) impl_->Stop(); }
+void XtcpRuntime::SetSsmtActive(bool active) noexcept { if (impl_) impl_->SetSsmtActive(active); }
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+void XtcpRuntime::FailWorkerStartForTesting(int index) noexcept {
+    g_fail_worker_start_for_testing.store(index, std::memory_order_relaxed);
+}
+#endif
 bool XtcpRuntime::SubmitIPv4Tcp(const void* packet, int packet_length) noexcept {
     return impl_ && impl_->Submit(packet, packet_length);
 }

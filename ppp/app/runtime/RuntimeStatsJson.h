@@ -87,6 +87,8 @@ namespace ppp {
                     xtcp["cpu_quota_known"] = sample.xtcp.cpu_quota_known;
                     xtcp["affinity_reason"] = sample.xtcp.affinity_reason.c_str();
                     xtcp["affinity_strict"] = sample.xtcp.affinity_strict;
+                    xtcp["affinity_mode"] = sample.xtcp.affinity_mode.c_str();
+                    xtcp["queue_mode_active"] = sample.xtcp.queue_mode_active;
                     xtcp["affinity_pinned_workers"] = sample.xtcp.affinity_pinned_workers;
                     Json::Value allowed(Json::arrayValue), workers(Json::arrayValue), shards(Json::arrayValue);
                     for (unsigned cpu : sample.xtcp.allowed_cpus) allowed.append(cpu);

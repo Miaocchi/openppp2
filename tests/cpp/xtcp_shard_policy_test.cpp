@@ -33,7 +33,25 @@ int main() {
     CHECK(SelectXtcpWorkerAffinity("workers", "3,1", "1", 2, cpus, true).enabled);
     CHECK(!SelectXtcpWorkerAffinity("workers", "3,2", "1", 2, cpus, true).valid);
     CHECK(!SelectXtcpWorkerAffinity("workers", "3", "1", 2, cpus, true).valid);
-    CHECK(!SelectXtcpWorkerAffinity("queues", "3,1", "1", 2, cpus, true).valid);
+    {
+        auto queues = SelectXtcpWorkerAffinity("queues", "3,1", "1", 2, cpus, true);
+        CHECK(queues.valid && queues.enabled && queues.queues && queues.reason == "queues");
+        CHECK(queues.cpus.size() == 2 && queues.cpus[0] == 3 && queues.cpus[1] == 1);
+        CHECK(!queues.CanStart(false) && queues.CanStart(true)); // strict: every pin must succeed
+        auto degraded = SelectXtcpWorkerAffinity("queues", "3,1", "0", 2, cpus, true);
+        CHECK(degraded.CanStart(false));                        // non-strict: degraded start
+        // Strict map rules: count mismatch, duplicates, outside envelope, format, platform.
+        for (auto text : {"3", "3,1,5", "3,3", "3,2", "3,x", "", "3, 1"}) {
+            auto bad = SelectXtcpWorkerAffinity("queues", text, "1", 2, cpus, true);
+            CHECK(!bad.valid && !bad.enabled && bad.reason == "invalid-queue-map" && !bad.CanStart(true));
+        }
+        CHECK(!SelectXtcpWorkerAffinity("queues", "3,1", "1", 2, cpus, false).valid);
+        auto quota = cpus; quota.quota_cpus = 1;
+        CHECK(!SelectXtcpWorkerAffinity("queues", "3,1", "1", 2, quota, true).valid);
+        auto single = SelectXtcpWorkerAffinity("queues", "3", "1", 0, cpus, true);
+        CHECK(single.valid && !single.enabled && single.queues);
+        CHECK(single.reason == "queues-unsupported-single-shard");
+    }
     CHECK(!SelectXtcpWorkerAffinity("workers", "3,1", "1", 0, cpus, true).valid);
     CHECK(!SelectXtcpWorkerAffinity("workers", "3,1", "1", 2, cpus, false).valid);
     CHECK(!SelectXtcpWorkerAffinity("workers", "3,1", "true", 2, cpus, true).valid);

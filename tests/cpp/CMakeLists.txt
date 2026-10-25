@@ -232,6 +232,18 @@ if(ENABLE_XTCP_TESTS)
     target_link_libraries(xtcp_runtime_adapter_test PRIVATE
         xtcp_static Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 
+    openppp2_add_cpp_test(xtcp_queue_mode_lifecycle_test SOURCES
+        xtcp_queue_mode_lifecycle_test.cpp
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpNdiBackend.cpp"
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpPoolLease.cpp"
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpRuntime.cpp")
+    target_compile_definitions(xtcp_queue_mode_lifecycle_test PRIVATE
+        PPP_ENABLE_XTCP=1
+        PPP_XTCP_HAS_TIMER_DEADLINE=1
+        PPP_XTCP_RUNTIME_TESTING=1)
+    target_link_libraries(xtcp_queue_mode_lifecycle_test PRIVATE
+        xtcp_static Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+
     openppp2_add_cpp_test(xtcp_ndi_memory_probe SOURCES
         xtcp_ndi_memory_probe.cpp
         "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpNdiBackend.cpp")
