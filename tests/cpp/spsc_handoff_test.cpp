@@ -313,8 +313,28 @@ void RacingProducers() {
     CHECK(seen[0] == 3000 && seen[1] == 3000);
 }
 
+void AbortIsIdempotentAndObservable() {
+    Queue endpoint(2, 91);
+    Item queued(7), output;
+    CHECK(endpoint.TryPush(std::move(queued)) == HandoffPush::Accepted);
+    endpoint.Abort();
+    endpoint.Abort();
+    CHECK(endpoint.GetState() == Queue::State::Closed);
+    CHECK(endpoint.Closing());
+    Item rejected(9);
+    CHECK(endpoint.TryPush(std::move(rejected)) == HandoffPush::Closed);
+    CHECK(!endpoint.Claim(91));
+    CHECK(!endpoint.ArmWait());
+    output.~Item();
+    new (&output) Item();
+    CHECK(Item::live == 2);
+    endpoint.~Queue();
+    new (&endpoint) Queue(2, 92);
+    CHECK(Item::live == 1);
+}
+
 int main() {
-    Storage(); WakeInterleavings(); CloseAndFailure(); SerializedProducers(); ConcurrentAndFairness(); RacingProducers();
+    Storage(); WakeInterleavings(); CloseAndFailure(); SerializedProducers(); ConcurrentAndFairness(); RacingProducers(); AbortIsIdempotentAndObservable();
     CHECK(Item::live == 0);
-    std::puts("spsc_handoff_test: 6 groups passed");
+    std::puts("spsc_handoff_test: 7 groups passed");
 }

@@ -105,6 +105,11 @@ public:
         return CommitWake();
     }
     void Abort() noexcept {
+        // Abort is terminal and idempotent. closing_ is published before the
+        // Closed gate, so any thread observing Closed also observes closing_;
+        // a producer that only observes closing_ can no longer schedule work
+        // and can only fail CommitWake or observe Closed, without losing
+        // already-accepted items or duplicating scheduling.
         closing_.store(true, std::memory_order_release);
         gate_.exchange(State::Closed, std::memory_order_acq_rel);
     }
@@ -174,6 +179,8 @@ public:
         if (queue_.RequestClose()) PostOrAbort(post);
     }
     void Abort() noexcept {
+        // Serializing the adapter preserves the same closing-before-Closed
+        // ordering; repeated aborts converge to the terminal Closed state.
         std::lock_guard<std::mutex> lock(producer_);
         queue_.Abort();
     }
