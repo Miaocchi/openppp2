@@ -1197,6 +1197,23 @@ if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(policy_runtime_guard_test PRIVATE -fno-sanitize=vptr)
 endif()
 set_tests_properties(policy_runtime_guard_test PROPERTIES LABELS "routing-policy;offline")
+openppp2_add_cpp_test(mux_mode_configuration_test SOURCES
+    mux_mode_configuration_test.cpp
+    support/windows_composition_stub.cpp
+    support/policy_link_runtime_stub.cpp
+    support/socket_platform_guard_stub.cpp
+    "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
+    "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
+    ${OPENPPP2_POLICY_BASELINE_CONFIG_SOURCES})
+target_compile_options(mux_mode_configuration_test PRIVATE -ffunction-sections -fdata-sections)
+target_compile_definitions(mux_mode_configuration_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
+target_link_options(mux_mode_configuration_test PRIVATE -Wl,--gc-sections)
+target_link_libraries(mux_mode_configuration_test PRIVATE
+    boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(mux_mode_configuration_test PRIVATE -fno-sanitize=vptr)
+endif()
+set_tests_properties(mux_mode_configuration_test PROPERTIES LABELS "mux;offline")
 openppp2_add_cpp_test(policy_configuration_test SOURCES
     policy_configuration_test.cpp
     support/windows_composition_stub.cpp
