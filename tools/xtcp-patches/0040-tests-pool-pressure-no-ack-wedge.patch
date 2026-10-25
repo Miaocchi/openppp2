@@ -1,0 +1,205 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1724b93..77363e1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -350,6 +350,7 @@ if(XTCP_BUILD_TESTS)
+         test_qdisc_rate_bridge
+         test_qdisc_remove_flow
+         test_qdisc_batch
++        test_pool_pressure
+     )
+     if(UNIX AND NOT APPLE)
+         list(APPEND XTCP_TESTS test_interop_linux)
+diff --git a/tests/test_pool_pressure.cpp b/tests/test_pool_pressure.cpp
+new file mode 100644
+index 0000000..67f6d5b
+--- /dev/null
++++ b/tests/test_pool_pressure.cpp
+@@ -0,0 +1,187 @@
++/**
++ * @file test_pool_pressure.cpp
++ * @brief Global packet-pool pressure must not wedge ACK ingress.
++ *
++ * Regression for the OpenPPP2 P64 wedge: when active flows x snd_buf
++ * exceeded the fixed arena, unACKed transmit segments held every block,
++ * ingress (including the pure ACKs that would release them) could not
++ * allocate and was dropped, and nothing ever freed the pool again.
++ *
++ *  - tx_reserve: TxAcquireScope acquisitions stop at the tier reserve, so
++ *    ordinary (ingress/ACK) acquisitions still succeed afterwards.
++ *  - heap_overflow: with every tier empty, ordinary acquisitions are served
++ *    by the bounded heap overflow, deny at the cap, and give every byte
++ *    back on release.
++ *  - conn_wedge: many established connections queue far more retained send
++ *    data than the arena holds; transmit stops at the reserve (data stays
++ *    buffered), an ACK segment can still be allocated, delivered ACKs drain
++ *    the retransmission queues, buffered data flows again and every flow
++ *    finishes - no deadlock.
++ */
++
++#include <xtcp/buf/bufref.h>
++#include <xtcp/core/tcp.h>
++
++#include <chrono>
++#include <cstdio>
++#include <cstring>
++#include <memory>
++#include <vector>
++
++namespace {
++using namespace xtcp::core;
++int failures = 0;
++#define CHECK(x) do { if (!(x)) { ++failures; std::fprintf(stderr, "FAIL %d: %s\n", __LINE__, #x); } } while (0)
++
++void Put32(Byte* p, UInt32 n) {
++    p[0] = Byte(n >> 24); p[1] = Byte(n >> 16);
++    p[2] = Byte(n >> 8); p[3] = Byte(n);
++}
++
++UInt64 Now() {
++    return std::chrono::duration_cast<std::chrono::microseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++Endpoint EndpointAt(UInt32 ip, UInt16 port) {
++    Endpoint e; e.family = 4; e.addr[0] = ip; e.port = port; return e;
++}
++
++void TxReserve() {
++    const auto before = xtcp::buf::GetPoolPressureStats();
++    std::vector<xtcp::buf::BufRef> tx;
++    {
++        xtcp::buf::TxAcquireScope scope;
++        for (;;) {
++            auto ref = xtcp::buf::BufRef::Acquire(1500);
++            if (ref.IsEmpty()) break;
++            tx.push_back(std::move(ref));
++        }
++    }
++    const auto after = xtcp::buf::GetPoolPressureStats();
++    CHECK(!tx.empty());
++    CHECK(after.tx_deferrals > before.tx_deferrals);
++    CHECK(after.heap_overflow_acquires == before.heap_overflow_acquires);
++    // The reserve (1/8 of every fitting tier) is still there for ingress.
++    std::vector<xtcp::buf::BufRef> rx;
++    for (unsigned i = 0; i < 512; ++i) {
++        auto ref = xtcp::buf::BufRef::Acquire(60);
++        CHECK(!ref.IsEmpty());
++        rx.push_back(std::move(ref));
++    }
++    const auto end = xtcp::buf::GetPoolPressureStats();
++    CHECK(end.heap_overflow_acquires == before.heap_overflow_acquires);
++    std::printf("tx_reserve: tx_blocks=%zu rx_blocks=%zu deferrals=%llu\n", tx.size(), rx.size(),
++        static_cast<unsigned long long>(after.tx_deferrals - before.tx_deferrals));
++}
++
++void HeapOverflow() {
++    std::vector<xtcp::buf::BufRef> held;
++    for (;;) {
++        auto ref = xtcp::buf::BufRef::Acquire(60);
++        if (ref.IsEmpty()) break;
++        held.push_back(std::move(ref));
++    }
++    const auto full = xtcp::buf::GetPoolPressureStats();
++    CHECK(full.heap_overflow_acquires > 0);
++    CHECK(full.heap_overflow_denials > 0);
++    CHECK(full.heap_overflow_bytes <= xtcp::buf::kHeapOverflowCapBytes);
++    CHECK(full.heap_overflow_bytes + 2048 > xtcp::buf::kHeapOverflowCapBytes);
++    {
++        // Transmit data never takes heap overflow.
++        xtcp::buf::TxAcquireScope scope;
++        CHECK(xtcp::buf::BufRef::Acquire(60).IsEmpty());
++    }
++    held.clear();
++    const auto drained = xtcp::buf::GetPoolPressureStats();
++    CHECK(drained.heap_overflow_bytes == 0);
++    CHECK(!xtcp::buf::BufRef::Acquire(60).IsEmpty());
++    std::printf("heap_overflow: blocks=%zu peak=%llu\n", held.capacity(),
++        static_cast<unsigned long long>(full.heap_overflow_peak));
++}
++
++struct Flow {
++    std::unique_ptr<TcpConn> conn;
++    UInt32 sent = 0;
++};
++
++void Ack(TcpConn& c, UInt32 ack, UInt64 now) {
++    Byte p[20] = {};
++    p[0] = 0x07; p[1] = 0xd1; p[2] = 0x03; p[3] = 0xe9;
++    Put32(p + 4, 201); Put32(p + 8, ack);
++    p[12] = 0x50; p[13] = Byte(kFlagAck);
++    p[14] = 0xff; p[15] = 0xff;
++    c.OnSegment(p, sizeof(p), now);
++}
++
++void ConnWedge() {
++    constexpr unsigned kFlows = 1600;
++    constexpr UInt32 kTotal = 256 * 1024;
++    constexpr UInt32 kChunk = 16 * 1024;
++    std::vector<Byte> chunk(kChunk, 0x5a);
++    std::vector<Flow> flows(kFlows);
++    UInt64 now = Now();
++    for (unsigned i = 0; i < kFlows; ++i) {
++        flows[i].conn.reset(new TcpConn(TcpState::kEstablished, EndpointAt(0x0a000001, 1001),
++            EndpointAt(0x0a000002, 2001), 100, 200, [](xtcp::buf::BufRef&&) {}));
++        flows[i].conn->SetNodelay(true);
++        flows[i].conn->SetSndBuf(kTotal);
++        Ack(*flows[i].conn, flows[i].conn->SndNxt(), now);  // open the peer window
++    }
++    const auto before = xtcp::buf::GetPoolPressureStats();
++    auto pump = [&](Flow& f) {
++        while (f.sent < kTotal && f.conn->SendData(chunk.data(), kChunk, now)) f.sent += kChunk;
++    };
++    for (auto& f : flows) pump(f);
++    // Buffered ranges are emitted by the poll flush (ACK-clock refill);
++    // grow cwnd with a few full ACK rounds first so retention exceeds the arena.
++    for (unsigned r = 0; r < 6; ++r) {
++        now += 1000;
++        for (auto& f : flows) {
++            f.conn->OnPoll(now);
++            if (r < 5 && f.conn->SndUna() != f.conn->SndNxt()) Ack(*f.conn, f.conn->SndNxt(), now);
++            pump(f);
++        }
++    }
++    const auto loaded = xtcp::buf::GetPoolPressureStats();
++    // Transmit retention hit the reserve: deferrals, no heap overflow use.
++    CHECK(loaded.tx_deferrals > before.tx_deferrals);
++    CHECK(loaded.heap_overflow_acquires == before.heap_overflow_acquires);
++    // An ingress ACK buffer is still available from the pool reserve.
++    CHECK(!xtcp::buf::BufRef::Acquire(60).IsEmpty());
++    unsigned buffered = 0;
++    for (auto& f : flows) if (0 < f.conn->PendingSendBytes()) ++buffered;
++    CHECK(buffered > 0);
++
++    // Drive ACKs + polls until every flow has delivered everything.
++    unsigned rounds = 0;
++    bool done = false;
++    for (; rounds < 4000 && !done; ++rounds) {
++        now += 1000;
++        done = true;
++        for (auto& f : flows) {
++            if (f.conn->SndUna() != f.conn->SndNxt()) Ack(*f.conn, f.conn->SndNxt(), now);
++            f.conn->OnPoll(now);
++            pump(f);
++            if (f.sent < kTotal || 0 < f.conn->PendingSendBytes() ||
++                f.conn->SndUna() != f.conn->SndNxt()) done = false;
++        }
++    }
++    CHECK(done);
++    const auto end = xtcp::buf::GetPoolPressureStats();
++    CHECK(end.heap_overflow_bytes == 0);
++    std::printf("conn_wedge: flows=%u buffered_at_peak=%u rounds=%u deferrals=%llu heap_acq=%llu\n",
++        kFlows, buffered, rounds,
++        static_cast<unsigned long long>(end.tx_deferrals - before.tx_deferrals),
++        static_cast<unsigned long long>(end.heap_overflow_acquires - before.heap_overflow_acquires));
++}
++} // namespace
++
++int main() {
++    xtcp::buf::InitPools();
++    TxReserve();
++    HeapOverflow();
++    ConnWedge();
++    xtcp::buf::ShutdownPools();
++    return failures ? 1 : 0;
++}
