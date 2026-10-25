@@ -421,11 +421,12 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0031-fin-before-gap-ack.patch`：恢复本地 0005 之后的 FIN-first 顺序，保留两处上游 CLOSE-WAIT 通知，新增 16 场景 callback/close/wrap 回归；frontier 回归为 36 场景。
 - `0032-syn-options-running-offset.patch`：SYN option running offset 与布局测试。
 - `0033-payload-cap-and-nagle-use-option-aware-mss.patch`：按 option-aware MSS 限制 payload 并判断 Nagle gate。
-- `0034-tests-follow-patch-stack-semantics.patch`：保留八处本地语义测试适配，删除四处已由上游覆盖的 loss-helper 适配。
+- `0034-tests-follow-patch-stack-semantics.patch`：保留九处本地语义测试适配（含 `test_ecn_cc` 的 KCC ECE 契约断言，见 §11.187），删除四处已由上游覆盖的 loss-helper 适配。
 - `0035-retry-ack-window-construction.patch`：ACK/窗口通告因 buffer 分配失败未能构造时，保留一个合并的待发义务并按 40ms 有界 deadline 重试，而不是清掉 delayed-ACK/resume 状态；保留 FIN/ECN/DSACK 语义，附 `test_ack_allocation`。见 §11.186。
 - 原 `0036-sack-blocks-fit-option-space.patch`（SACK 块数按剩余 option 空间计算）已由上游 liulilittle/xtcp#2 合入，本地文件已删除。见 §11.186、§11.187。
+- `0037-rcv-mss-immediate-ack.patch`：单个按序段的 payload 超过本端通告 MSS（1460）时立即 ACK（Linux `__tcp_ack_snd_check` 按字节判断 `rcv_nxt - rcv_wup > rcv_mss`），避免 GRO/LRO super-segment 被按段计数后走 40ms delayed ACK；附 `test_rcv_mss_ack`。编号跳过 0036 以免与历史引用冲突。见 §11.187。
 
-当前共 26 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+当前共 27 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037（0036 为已上游的历史编号，不复用）；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
 
 修改上游行为的唯一入口是该目录下的补丁；直接改解包树会在下次 prepare 时丢失。
 
@@ -2512,4 +2513,10 @@ native 对照 N0 为 289.7 Mbps、0 零流。13 个 cell 的 host 指纹与清�
 
 改编：0004 保留上游 sendmsg 入口的 app-limited 标记；0012 的 rate-change 遥测改在 ACK flush 之后采样（上游已把 ACK flush 移到 CC hook 之后，audit D01），对应 `test_pacing_update` 期望由"0 个 flush 包"改为"至少 1 个"；0023 把上游新增的 app-limited 判断、ACK flush 与无 cookie fast-open 路径改为 offset 感知的 pending-send 访问；0026 中 KCC v2 不再按 round 聚合样本，`round_sample_*` 字段保留并恒为 0；0034 让上游新增的 Eifel/undo 测试按 TSopt 感知的 payload cap 发送，并把 `test_gro_rx`、`test_close_pending` 的迭代次数保护改为墙钟保护。
 
-离线测试（WSL GCC 12，Release，`XTCP_CHECKSUM_VALIDATE=ON`，ctest -j1）：上游 main 238/239，rebased 241/243。两者都失败 `test_ts_ooo_drain`（旧 pin+旧补丁栈同样失败，属上游/环境既有问题）。仅 rebased 失败 `test_ecn_cc` 的 KCC ECE 断言：0005 的突发 pacing 在固定虚拟时钟的 warmup 中改变了 KCC 带宽估计，ECE 后 cwnd 未下降（92→92，main 为 90→4）；未修改测试，需决策。`test_gro_rx` 暴露的现象值得关注：突发 tick 可把整窗作为一个 GRO super-segment 送达，xtcp 接收端按段计数而进入 40ms delayed ACK（Linux 会按字节立即 ACK），未做运行时验证。OpenPPP2 `ppp/app/client/xtcp/*.cpp` 对 rebased 头文件做了 Linux `-fsyntax-only` 检查并通过；Windows 路径、运行时与性能未验证。
+离线测试（WSL GCC 12，Release，`XTCP_CHECKSUM_VALIDATE=ON`，ctest -j1）：上游 main 238/239，rebased 241/243。两者都失败 `test_ts_ooo_drain`（旧 pin+旧补丁栈同样失败，属上游/环境既有问题）。仅 rebased 失败 `test_ecn_cc` 的 KCC ECE 断言：0005 的突发 pacing 在固定虚拟时钟的 warmup 中改变了 KCC 带宽估计，ECE 后 cwnd 未下降（92→92，main 为 90→4）；后续结论如下（2026-10-25）：
+
+- **`test_ecn_cc` 是测试假设问题，不是产品缺陷。** 在 main 上把最后一个 ACK 的 ECE 去掉，cwnd 同样是 90→4。这说明上游通过与 ECN 无关。固定虚拟时钟下，逐段 pacing 在 warmup 后每轮只能发一段，KCC 的 max-bw 窗口过期，BDP target 塌到 cwnd 下限。0005 每轮发出约 1ms quantum，带宽模型保持新鲜，cwnd 停在 BDP target。
+- **ECE 对 KCC 的预期效果本来有限。** 内核 BBR/KCC 对 ECE 的窗口效果只有 `tcp_enter_cwr` 调用透传型 `ssthresh` hook；`tcp_cong_control` 对 `cong_control` 算法会提前返回，不走 PRR。移植版唯一的效果是把 cwnd clamp 到该阈值；本例 DRAIN 设定的阈值为 178，大于 90，因此不降。
+- **0034 的测试调整。** 该断言改为固定随机种子的双连接对照：阈值非哨兵、ECE 后 cwnd ≤ 阈值、ECE 窗口 ≤ 无 ECE 窗口。CE 在突发 pacing 下确实降窗，仍由同文件 wire 级 CUBIC 用例覆盖。
+- **GRO 风险已确认并修复（0037）。** 0005 自身只发不超过 MSS 的段；但一个携带多个 MSS 的 GRO/LRO super-segment 确实只计为一段，会进入 40ms delayed ACK。`test_rcv_mss_ack` 修复前失败、修复后通过。
+- **最终测试结果。** 补丁栈从固定归档 `patch -p1 --fuzz=0` 重放后，全量 ctest 为 243/244，仅 `test_ts_ooo_drain` 失败（main 同样失败）。OpenPPP2 `ppp/app/client/xtcp/*.cpp` 对 rebased 头文件做了 Linux `-fsyntax-only` 检查并通过；Windows 路径、运行时与性能未验证。
