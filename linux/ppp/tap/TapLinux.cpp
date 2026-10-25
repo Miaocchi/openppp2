@@ -50,6 +50,7 @@
 #include <exception>
 
 #include <linux/ppp/tap/TapLinux.h>
+#include <ppp/tap/TapOutputLanePolicy.h>
 #include <ppp/ipv6/IPv6Packet.h>
 #include <ppp/tap/TunWriteError.h>
 
@@ -2444,8 +2445,8 @@ namespace ppp {
         }
 
         TapLinux::GsoOutputLane* TapLinux::CurrentGsoOutputLane() noexcept {
-            const int index = TapOutputLaneSlot();
-            if (!gso_lanes_enabled_ || index < 0 || index >= kMaxTapOutputLanes) {
+            const int index = SelectTapOutputLane(TapOutputLaneSlot(), gso_lanes_enabled_);
+            if (index < 0) {
                 return NULLPTR;
             }
             // An existing lane stays in use after the lanes are disabled: its

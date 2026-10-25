@@ -1059,6 +1059,7 @@
     <ClInclude Include="ppp\tap\ITap.h" />
     <ClInclude Include="ppp\tap\TxGsoMetadata.h" />
     <ClInclude Include="ppp\tap\TapOutputLane.h" />
+    <ClInclude Include="ppp\tap\TapOutputLanePolicy.h" />
     <ClCompile Include="windows\ppp\tap\TapWindows.cpp" />
     <ClInclude Include="ppp\threading\Timer.h" />
     <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h" />
