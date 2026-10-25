@@ -129,6 +129,10 @@ BOOST_AUTO_TEST_CASE(stats_json_emits_xtcp_block_when_present) {
     sample.xtcp.direct_download_rejected = 2;
     sample.xtcp.direct_upload_rejected = 3;
     sample.xtcp.direct_upload_queue_bytes = 32768;
+    sample.xtcp.direct_spsc_enabled = 1;
+    sample.xtcp.direct_handoff_full = 21;
+    sample.xtcp.direct_handoff_wakes = 22;
+    sample.xtcp.direct_handoff_alloc_fallback = 23;
     sample.xtcp.direct_upload_queue_items = 11;
     sample.xtcp.direct_upload_backpressured = 1;
     sample.xtcp.direct_upload_writer_active = 2;
@@ -184,6 +188,10 @@ BOOST_AUTO_TEST_CASE(stats_json_emits_xtcp_block_when_present) {
     BOOST_TEST(xtcp["direct_download_rejected"].asUInt64() == 2u);
     BOOST_TEST(xtcp["direct_upload_rejected"].asUInt64() == 3u);
     BOOST_TEST(xtcp["direct_upload_queue_bytes"].asUInt64() == 32768u);
+    BOOST_TEST(xtcp["direct_spsc_enabled"].asUInt64() == 1u);
+    BOOST_TEST(xtcp["direct_handoff_full"].asUInt64() == 21u);
+    BOOST_TEST(xtcp["direct_handoff_wakes"].asUInt64() == 22u);
+    BOOST_TEST(xtcp["direct_handoff_alloc_fallback"].asUInt64() == 23u);
     BOOST_TEST(xtcp["upload_budget_bytes"].asUInt64() == 4096u);
     BOOST_TEST(xtcp["upload_budget_items"].asUInt64() == 3u);
     BOOST_TEST(xtcp["upload_budget_max_bytes"].asUInt64() == 32u * 1024u * 1024u);

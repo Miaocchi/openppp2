@@ -179,6 +179,10 @@ namespace ppp {
                 std::uint64_t direct_download_rejected = 0;/**< Direct second-leg chunks rejected by runtime budget */
                 std::uint64_t direct_upload_rejected = 0; /**< XTCP receive chunks rejected by local/global direct upload admission */
                 std::uint64_t direct_upload_queue_bytes = 0; /**< Gauge: direct upload bytes queued/in flight */
+                std::uint64_t direct_spsc_enabled = 0; /**< 1 when OPENPPP2_XTCP_DIRECT_SPSC=1 selects the SPSC direct-upload handoff */
+                std::uint64_t direct_handoff_full = 0; /**< Process-wide: SPSC direct-upload ring reported full */
+                std::uint64_t direct_handoff_wakes = 0; /**< Process-wide: SPSC direct-upload writer starts */
+                std::uint64_t direct_handoff_alloc_fallback = 0; /**< Process-wide: SPSC ring allocation failures that kept the relay path */
                 std::uint64_t upload_budget_bytes = 0; /**< Reserved upload payload, connector + direct, including in-flight owners */
                 std::uint64_t upload_budget_items = 0;
                 std::uint64_t upload_budget_max_bytes = 0;

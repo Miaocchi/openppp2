@@ -354,7 +354,7 @@ namespace ppp {
                     Disposed,
                 };
                 std::mutex                                                      direct_sync_;
-                XtcpDirectUploadQueue                                           direct_upload_queue_;
+                XtcpDirectUploadQueue                                           direct_upload_queue_{XtcpDirectUploadQueue::DefaultMode()};
                 bool                                                            direct_bridge_started_ = false;
                 bool                                                            direct_upload_writer_started_ = false;
                 DirectSendCloseState                                            direct_send_close_state_ = DirectSendCloseState::Open;

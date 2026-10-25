@@ -22,6 +22,7 @@
 #include <ppp/app/client/xtcp/XtcpPoolLease.h>
 #include <ppp/app/client/xtcp/XtcpRuntimePolicy.h>
 #include <ppp/app/client/xtcp/XtcpShardPolicy.h>
+#include <ppp/app/protocol/XtcpDirectUploadQueue.h>
 #include <ppp/threading/SpscHandoff.h>
 #include <ppp/tap/TapOutputLane.h>
 
@@ -1602,6 +1603,14 @@ public:
             snapshot.direct_upload_backpressured = direct_queue.backpressured;
             snapshot.direct_upload_writer_active = direct_queue.writer_active;
             snapshot.direct_upload_writer_progress_age_ms = direct_queue.writer_progress_age_ms;
+        }
+        {
+            using DirectQueue = ppp::app::protocol::XtcpDirectUploadQueue;
+            DirectQueue::Counters& handoff = DirectQueue::Global();
+            snapshot.direct_spsc_enabled = DirectQueue::SpscEnabledFromEnvironment() ? 1 : 0;
+            snapshot.direct_handoff_full = handoff.handoff_full.load(std::memory_order_relaxed);
+            snapshot.direct_handoff_wakes = handoff.handoff_wakes.load(std::memory_order_relaxed);
+            snapshot.direct_handoff_alloc_fallback = handoff.alloc_fallback.load(std::memory_order_relaxed);
         }
         snapshot.second_leg_close_requested =
             stats_.second_leg_close_requested.load(std::memory_order_relaxed);

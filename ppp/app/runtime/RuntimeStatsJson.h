@@ -178,6 +178,11 @@ namespace ppp {
                     xtcp["direct_upload_rejected"] = Json::UInt64(sample.xtcp.direct_upload_rejected);
                     xtcp["direct_upload_queue_bytes"] =
                         Json::UInt64(sample.xtcp.direct_upload_queue_bytes);
+                    xtcp["direct_spsc_enabled"] = Json::UInt64(sample.xtcp.direct_spsc_enabled);
+                    xtcp["direct_handoff_full"] = Json::UInt64(sample.xtcp.direct_handoff_full);
+                    xtcp["direct_handoff_wakes"] = Json::UInt64(sample.xtcp.direct_handoff_wakes);
+                    xtcp["direct_handoff_alloc_fallback"] =
+                        Json::UInt64(sample.xtcp.direct_handoff_alloc_fallback);
                     xtcp["upload_budget_bytes"] = Json::UInt64(sample.xtcp.upload_budget_bytes);
                     xtcp["upload_budget_items"] = Json::UInt64(sample.xtcp.upload_budget_items);
                     xtcp["upload_budget_max_bytes"] = Json::UInt64(sample.xtcp.upload_budget_max_bytes);

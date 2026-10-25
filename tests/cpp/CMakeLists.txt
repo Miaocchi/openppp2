@@ -149,6 +149,8 @@ openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cp
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
 openppp2_add_cpp_test(spsc_handoff_test SOURCES spsc_handoff_test.cpp)
 target_link_libraries(spsc_handoff_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(xtcp_direct_handoff_test SOURCES xtcp_direct_handoff_test.cpp)
+target_link_libraries(xtcp_direct_handoff_test PRIVATE Threads::Threads)
 openppp2_add_cpp_test(tap_output_lane_test SOURCES tap_output_lane_test.cpp)
 target_link_libraries(tap_output_lane_test PRIVATE Threads::Threads)
 openppp2_add_cpp_test(xtcp_shard_policy_test SOURCES xtcp_shard_policy_test.cpp)
