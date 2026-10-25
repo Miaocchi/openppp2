@@ -22,7 +22,8 @@ public:
         : max_items_(static_cast<std::uint32_t>(max_items)),
           max_bytes_(static_cast<std::uint32_t>(max_bytes)) {}
 
-    bool TryAdmit(std::uint64_t generation, std::size_t bytes) noexcept {
+    bool TryAdmit(std::uint64_t generation, std::size_t bytes,
+        std::uint64_t* admitted_state = nullptr) noexcept {
         if (!running_.load(std::memory_order_acquire) ||
             !ready_.load(std::memory_order_acquire) || bytes == 0 ||
             generation == 0 || generation != generation_.load(std::memory_order_acquire) ||
@@ -44,6 +45,7 @@ public:
                 static_cast<std::uint64_t>(used_bytes + byte_delta);
             if (state_.compare_exchange_weak(current, updated,
                     std::memory_order_relaxed, std::memory_order_relaxed)) {
+                if (admitted_state) *admitted_state = updated;
                 return true;
             }
         }

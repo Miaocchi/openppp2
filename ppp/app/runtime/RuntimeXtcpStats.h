@@ -4,6 +4,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <array>
+#include <string>
+#include <vector>
 
 namespace ppp {
     namespace app {
@@ -116,6 +119,24 @@ namespace ppp {
              *        since the current runtime generation started.
              */
             struct RuntimeXtcpStats final {
+                struct Worker final {
+                    std::uint64_t tid = 0;
+                    std::vector<unsigned> effective_cpus;
+                };
+                struct Shard final {
+                    std::uint64_t enqueued = 0, dispatched = 0, dropped = 0, bytes = 0;
+                    std::uint64_t queue_items = 0, queue_bytes = 0, items_highwater = 0, bytes_highwater = 0;
+                    std::uint64_t wake_posts = 0, wake_coalesces = 0, quanta = 0, flushes = 0;
+                    std::uint64_t active_flows = 0, data_flows = 0, upload_bytes = 0, download_bytes = 0;
+                };
+                std::string shard_policy_requested, shard_policy_reason, affinity_reason;
+                unsigned shard_count = 1, worker_count = 0, effective_cpus = 1, online_cpus = 1;
+                unsigned quota_cpus = 1, affinity_pinned_workers = 0;
+                bool cpu_affinity_known = false, cpu_quota_known = false, spsc_ingress = false;
+                bool affinity_strict = false;
+                std::vector<unsigned> allowed_cpus, worker_cpus;
+                std::array<Shard, 8> shards{};
+                std::array<Worker, 8> workers{};
                 std::uint64_t runtime_generation = 0;     /**< Current XTCP runtime generation */
                 std::uint64_t runtime_instance_id = 0;    /**< Unique latest successful XTCP start identity */
                 std::uint64_t direct_bridge_starts = 0;   /**< Successfully activated direct bridges */

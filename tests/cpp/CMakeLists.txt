@@ -144,6 +144,9 @@ endfunction()
 
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(spsc_handoff_test SOURCES spsc_handoff_test.cpp)
+target_link_libraries(spsc_handoff_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(xtcp_shard_policy_test SOURCES xtcp_shard_policy_test.cpp)
 
 openppp2_add_cpp_test(network_recovery_journal_test
     SOURCES network_recovery_journal_test.cpp
@@ -175,6 +178,13 @@ if(ENABLE_XTCP_TESTS)
     add_subdirectory("${XTCP_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/xtcp" EXCLUDE_FROM_ALL)
     if(NOT TARGET xtcp_static)
         message(FATAL_ERROR "XTCP source tree did not define the required xtcp_static target")
+    endif()
+    if(ENABLE_TSAN)
+        target_compile_options(xtcp_static PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(xtcp_static INTERFACE -fsanitize=thread)
+    elseif(ENABLE_SANITIZERS)
+        target_compile_options(xtcp_static PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(xtcp_static INTERFACE -fsanitize=address,undefined)
     endif()
 
     foreach(_xtcp_test

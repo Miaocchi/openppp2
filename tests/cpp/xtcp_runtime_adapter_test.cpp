@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <thread>
 
 namespace {
 std::shared_ptr<Byte> MakeTestBuffer(const Byte* bytes, std::size_t length) noexcept {
@@ -600,6 +601,76 @@ void TestRuntimeRepeatedStartStop() {
     runtime->Stop();
     context->run_for(std::chrono::milliseconds(10));
 }
+
+void TestSpscIngressLifecycle() {
+    const char* previous = std::getenv("OPENPPP2_XTCP_SPSC_INGRESS");
+    const std::string saved = previous ? previous : "";
+    const char* shards = std::getenv("OPENPPP2_XTCP_SHARDS");
+    const std::string saved_shards = shards ? shards : "";
+    setenv("OPENPPP2_XTCP_SPSC_INGRESS", "1", 1);
+    setenv("OPENPPP2_XTCP_SHARDS", "1", 1);
+    auto context = std::make_shared<boost::asio::io_context>();
+    using Runtime = ppp::app::client::xtcp::XtcpRuntime;
+    auto runtime = std::make_shared<Runtime>(context, Runtime::OutputHandler{},
+        Runtime::ListenerEndpointHandler{}, Runtime::ExternalAcceptHandler{}, Runtime::ExternalCancelHandler{});
+    CHECK(runtime->Start());
+    runtime->MarkReady();
+    CHECK(runtime->SnapshotStats().spsc_ingress);
+    // Invalid L3 packets are deliberately routed to shard zero and discarded by
+    // production validation. They exercise handoff without creating any socket.
+    const unsigned char packet[40] = {};
+    std::vector<unsigned char> gro(3000, 0);
+    gro[0] = 0x45; gro[2] = 0x0b; gro[3] = 0xb8; gro[9] = 6;
+    gro[20] = 0x12; gro[21] = 0x34; gro[22] = 0x56; gro[23] = 0x78;
+    gro[32] = 0x50; gro[33] = 0x10; // ACK only: no new second-leg connection
+    // Three MSS chunks cannot fit into the last two slots. All credits and
+    // packets remain with the caller until the whole batch can be admitted.
+    for (unsigned i = 0; i < 1022; ++i) CHECK(runtime->SubmitIPv4Tcp(packet, sizeof(packet)));
+    CHECK(!runtime->SubmitIPv4Tcp(gro.data(), static_cast<int>(gro.size())));
+    CHECK(runtime->SnapshotStats().shards[0].queue_items == 1022);
+    CHECK(runtime->SnapshotStats().ingress_dropped == 1);
+    context->run_for(std::chrono::milliseconds(20));
+    CHECK(runtime->SubmitIPv4Tcp(gro.data(), static_cast<int>(gro.size())));
+    CHECK(runtime->SnapshotStats().shards[0].queue_items == 3);
+    context->run_for(std::chrono::milliseconds(20));
+    auto before = runtime->SnapshotStats();
+    std::atomic<unsigned> accepted{0};
+    auto producer = [&] {
+        for (unsigned i = 0; i < 700; ++i)
+            if (runtime->SubmitIPv4Tcp(packet, sizeof(packet))) ++accepted;
+    };
+    std::thread first(producer), second(producer);
+    first.join(); second.join();
+    CHECK(accepted == 1024);
+    auto snapshot = runtime->SnapshotStats();
+    CHECK(snapshot.shards[0].queue_items == 1024);
+    CHECK(snapshot.shards[0].items_highwater == 1024);
+    CHECK(snapshot.shards[0].bytes_highwater == 1024 * sizeof(packet));
+    CHECK(snapshot.shards[0].wake_posts == before.shards[0].wake_posts + 1);
+    context->run_for(std::chrono::milliseconds(20));
+    snapshot = runtime->SnapshotStats();
+    CHECK(snapshot.shards[0].dispatched == before.shards[0].dispatched + accepted);
+    CHECK(snapshot.shards[0].queue_items == 0 && snapshot.shards[0].queue_bytes == 0);
+    CHECK(snapshot.shards[0].quanta >= 16);
+    // Stop with accepted work still queued, then restart while old captures are
+    // retained by the context. Old callbacks must not claim the new endpoint.
+    CHECK(runtime->SubmitIPv4Tcp(packet, sizeof(packet)));
+    runtime->Stop();
+    context->run_for(std::chrono::milliseconds(10));
+    context->restart();
+    CHECK(runtime->Start());
+    runtime->MarkReady();
+    CHECK(runtime->SubmitIPv4Tcp(packet, sizeof(packet)));
+    context->run_for(std::chrono::milliseconds(10));
+    snapshot = runtime->SnapshotStats();
+    CHECK(snapshot.shards[0].queue_items == 0);
+    runtime->Stop();
+    context->run_for(std::chrono::milliseconds(10));
+    if (saved.empty()) unsetenv("OPENPPP2_XTCP_SPSC_INGRESS");
+    else setenv("OPENPPP2_XTCP_SPSC_INGRESS", saved.c_str(), 1);
+    if (saved_shards.empty()) unsetenv("OPENPPP2_XTCP_SHARDS");
+    else setenv("OPENPPP2_XTCP_SHARDS", saved_shards.c_str(), 1);
+}
 } // namespace
 
 int main() {
@@ -617,6 +688,7 @@ int main() {
     xtcp::buf::ShutdownPools();
     TestRuntimeRejectsNullContext();
     TestRuntimeRepeatedStartStop();
+    TestSpscIngressLifecycle();
 
     if (failures != 0) {
         std::fprintf(stderr, "xtcp_runtime_adapter_test: %d failure(s)\n", failures);
