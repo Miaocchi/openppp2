@@ -29,11 +29,10 @@
           */
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -334,6 +334,56 @@
-             TimePoint NextAckTime() const noexcept {
+@@ -374,6 +374,56 @@
                  std::lock_guard<std::recursive_mutex> scope(syncobj_);
                  return ack_deadline_;
-+            }
+             }
 +            /**
 +             * @brief Earliest armed timer deadline (steady-clock microseconds,
 +             *        the PollAckTimers clock).
@@ -83,17 +82,16 @@
 +                    return 0;  // buffered sends ride the next sweep
 +                }
 +                return next;
-             }
-
++            }
+ 
              /**
+              * @brief Enables TCP-MD5 (RFC 2385) with the given key.
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1795,6 +1795,42 @@
-             DrainTxQdisc(now);
-         }
+@@ -1801,6 +1801,42 @@
          return sent;
-+    }
-+
+     }
+ 
 +    UInt64 XtcpStack::NextTimerDeadlineUs() noexcept {
 +        UInt64 next = kNoTimerDeadline;
 +        const core::TimePoint pacing = qdisc_next_pacing_.load(std::memory_order_relaxed);
@@ -128,6 +126,8 @@
 +            }
 +        }
 +        return next;
-     }
-
++    }
++
      UInt64 XtcpStack::ConnTimeWaitDeadline(UInt64 conn_id) const noexcept {
+         Shard* shard = ShardOf(conn_id);
+         std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);

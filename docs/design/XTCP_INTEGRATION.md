@@ -54,13 +54,30 @@ campaign have not been re-run with 0036. See XTCP_INTEGRATION_CN.md §11.186.
 XTCP is opt-in on Windows and Android. Linux desktop retains its current
 default. All platforms use the pinned source in `third-party/xtcp` and the
 same production target settings from the root CMake build (revision
-`77d455853b2c63442ecb182e94354b89de81e3e8`). The verified archive SHA256 is
-`dc78c701a1936f720a718e19e89814f6113590c01169b58f32b7f45f6adaf550`.
+`f71548f3664740bf87b40bf0b226d2ee315109a8`). The verified archive SHA256 is
+`ff0a0a6021abeeadc84337992d765a02eee57dfb3e3ed7ef7e8f3bb22e08656e`.
 
-The current local series has 27 patches with stable, sparse IDs: 0001-0015,
-0023, 0025-0029 and 0031-0036 (0035: retry ACK/window construction after
-allocation failure; 0036: SACK blocks fit the option space, pending upstream as
-liulilittle/xtcp#2). Upstream absorbs former local 0016 (PSH tail),
+Rebase onto upstream f71548f (2026-10-25): upstream added KCC v2
+(kernel-faithful delivery/recovery), CA state-machine, RACK/SACK/undo/RTO
+fixes, O(1) pipe queries and SIMD copy+checksum, and merged former local 0036
+(liulilittle/xtcp#2), whose patch file is removed. The remaining 26 patches
+keep their IDs. Adapted during the rebase: 0004 (keeps upstream's
+app-limited marking at the send entry), 0012 (rate-change telemetry is now
+sampled after the ACK flush, which upstream moved behind the CC hook), 0023
+(offset-aware pending-send accessors in the new upstream app-limited check,
+ACK flush and fast-open paths), 0026 (KCC v2 no longer aggregates per-round
+samples; `round_sample_*` telemetry fields stay and report 0) and 0034 (new
+upstream tests follow the timestamp-aware payload cap and burst pacing).
+Offline ctest (WSL GCC 12, Release, checksum validation, -j1): upstream main
+238/239, rebased 241/243. Both fail `test_ts_ooo_drain` (also failing on the
+old pin). Only the rebased tree fails the KCC ECE assertion in `test_ecn_cc`
+(0005 burst pacing changes the virtual-clock warm-up); it is left unchanged
+pending a decision. See XTCP_INTEGRATION_CN.md §11.187.
+
+The current local series has 26 patches with stable, sparse IDs: 0001-0015,
+0023, 0025-0029 and 0031-0035 (0035: retry ACK/window construction after
+allocation failure; former 0036, SACK blocks fit the option space, is upstream
+as liulilittle/xtcp#2). Upstream absorbs former local 0016 (PSH tail),
 0017 (loss-test helpers), 0018-0022 (KCC), 0024 (pool counts), and 0030
 (duplicate-ACK classification). Their local patch files are removed; this
 rebase introduces no new KCC policy, pool sizing, bridge or GSO defaults.

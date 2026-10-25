@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REVISION="77d455853b2c63442ecb182e94354b89de81e3e8"
-ARCHIVE_SHA256="dc78c701a1936f720a718e19e89814f6113590c01169b58f32b7f45f6adaf550"
+REVISION="f71548f3664740bf87b40bf0b226d2ee315109a8"
+ARCHIVE_SHA256="ff0a0a6021abeeadc84337992d765a02eee57dfb3e3ed7ef7e8f3bb22e08656e"
 SOURCE_URL="https://github.com/liulilittle/xtcp/archive/${REVISION}.tar.gz"
 DESTINATION="${XTCP_SOURCE_DIR:-${ROOT}/third-party/xtcp}"
 MARKER="${DESTINATION}/.openppp2-xtcp-revision"

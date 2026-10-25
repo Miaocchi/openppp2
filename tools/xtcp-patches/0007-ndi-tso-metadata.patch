@@ -51,26 +51,6 @@
           */
          struct Packet {
              Byte*       data     = NULLPTR;  /**< Packet buffer (borrowed or owned.payload) */
---- a/src/core/tcp_fsm.cpp
-+++ b/src/core/tcp_fsm.cpp
-@@ -2955,11 +2955,12 @@
-                 // bytes ahead of it, a clean send window, cwnd and pacing
-                 // clock, and the pool must hold the super-segment (its max
-                 // class is 32KB; anything bigger falls back to buffering).
--                // TSO can retain a super-segment only when its hardware MSS
--                // is already the safe queue payload cap; otherwise enqueue
--                // ordinary capped segments so a later RTO rebuild is safe.
--                const bool tso_direct = tso_tx_ && payload_cap == peer_mss_ &&
--                    pending_send_.empty() && retrans_queue_.empty() && !fast_recovery_ &&
-+                // The NDI metadata carries DataPayloadCap() as the exact GSO
-+                // payload size. This remains safe when timestamps reduce the
-+                // cap below PeerMss(): a later fresh-TS RTO rebuild uses the
-+                // same cap and still fits the path MTU.
-+                const bool tso_direct = tso_tx_ && pending_send_.empty() &&
-+                    retrans_queue_.empty() && !fast_recovery_ &&
-                     inflight + len <= snd_wnd_ &&
-                     inflight + len <= cwnd_bytes &&
-                     (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
 @@ -499,6 +499,7 @@
@@ -102,6 +82,26 @@
              ndi::Packet out;
              out.data = packet.Data();
              out.len = packet.Len();
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -4636,11 +4636,12 @@
+                 // bytes ahead of it, a clean send window, cwnd and pacing
+                 // clock, and the pool must hold the super-segment (its max
+                 // class is 32KB; anything bigger falls back to buffering).
+-                // TSO can retain a super-segment only when its hardware MSS
+-                // is already the safe queue payload cap; otherwise enqueue
+-                // ordinary capped segments so a later RTO rebuild is safe.
+-                const bool tso_direct = tso_tx_ && payload_cap == peer_mss_ &&
+-                    pending_send_.empty() && retrans_queue_.empty() && !fast_recovery_ &&
++                // The NDI metadata carries DataPayloadCap() as the exact GSO
++                // payload size. This remains safe when timestamps reduce the
++                // cap below PeerMss(): a later fresh-TS RTO rebuild uses the
++                // same cap and still fits the path MTU.
++                const bool tso_direct = tso_tx_ && pending_send_.empty() &&
++                    retrans_queue_.empty() && !fast_recovery_ &&
+                     inflight + len <= snd_wnd_ &&
+                     inflight + len <= cwnd_bytes &&
+                     (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
 --- a/tests/test_tso_tx.cpp
 +++ b/tests/test_tso_tx.cpp
 @@ -13,6 +13,7 @@

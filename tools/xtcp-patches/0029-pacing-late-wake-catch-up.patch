@@ -1,6 +1,6 @@
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -3705,7 +3705,24 @@
+@@ -5412,7 +5412,24 @@
                      if (quantum > UINT64_C(64) * 1024) {
                          quantum = UINT64_C(64) * 1024;
                      }

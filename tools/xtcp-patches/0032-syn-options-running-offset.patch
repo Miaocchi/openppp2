@@ -1,6 +1,6 @@
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -188,6 +188,7 @@
+@@ -190,6 +190,7 @@
          test_ooo_capacity
          test_ooo_frontier
          test_options
@@ -10,7 +10,7 @@
          test_syncookie_flood
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -480,34 +480,45 @@
+@@ -595,34 +595,45 @@
                  t[17] = 0x00;
                  t[18] = 0x00;
                  t[19] = 0x00;  // urgent pointer

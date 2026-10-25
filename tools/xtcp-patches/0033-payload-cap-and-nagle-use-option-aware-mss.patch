@@ -1,9 +1,10 @@
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
-@@ -448,6 +448,20 @@
+@@ -471,6 +471,20 @@
+             }
              return it->second->conn->PeerMss();
          }
-         /**
++        /**
 +         * @brief Largest data payload a segment of this connection carries:
 +         *        the effective MSS minus the option space it reserves
 +         *        (timestamps or TCP-MD5). 0 for an unknown connection.
@@ -17,13 +18,12 @@
 +            }
 +            return it->second->conn->DataPayloadCap();
 +        }
-+        /**
+         /**
           * @brief Number of unacknowledged segments on a connection
           *        (diagnostics / tests: the TSO-direct gate requires an
-          *        empty retransmission queue).
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -593,13 +593,21 @@
+@@ -632,13 +632,21 @@
               *       but reserves the option space a later fresh-TS RTO rebuild
               *       needs. MD5 and timestamps are mutually exclusive on this
               *       stack, so MD5 retains its larger 20-byte reservation.
@@ -49,7 +49,7 @@
              void SetUserMss(UInt32 mss) noexcept { user_mss_ = mss; }
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -3202,7 +3202,11 @@
+@@ -4824,7 +4824,11 @@
              // flight - gating on any nonzero inflight strands small sends
              // behind a 1-byte persist probe or a drained pipe (RFC 1122
              // 4.2.3.4: transmit immediately when inflight < MSS).

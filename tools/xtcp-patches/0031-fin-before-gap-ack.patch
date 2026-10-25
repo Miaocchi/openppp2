@@ -1,7 +1,7 @@
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -108,6 +108,7 @@
-
+ 
      set(XTCP_TESTS
          test_smoke
 +        test_fin_state_callbacks
@@ -10,7 +10,7 @@
          test_bufref
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -5024,10 +5024,19 @@
+@@ -6987,10 +6987,19 @@
                                  SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
                                  Transition(TcpState::kCloseWait);
                                  NotifyStateChanged();  // peer half-closed: the app must see it
@@ -31,7 +31,7 @@
                              // Gap filled: ACK immediately (the sender's fast
                              // retransmit / RACK recovery waits on this
                              // cumulative ACK); the ACK covers any previously
-@@ -5036,10 +5045,6 @@
+@@ -6999,10 +7008,6 @@
                              ack_pending_ = false;
                              ack_count_ = 0;
                              ack_deadline_ = 0;

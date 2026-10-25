@@ -1,3 +1,137 @@
+--- a/tests/test_cc_kcc.cpp
++++ b/tests/test_cc_kcc.cpp
+@@ -1549,12 +1549,15 @@
+             777, our_syn_ts, false, 0, 0, true);
+         conn.OnSegment(synack.data(), static_cast<UInt32>(synack.size()), now);
+         CHECK(xtcp::core::TcpState::kEstablished == conn.State());
++        // Data segments carry DataPayloadCap() bytes (the cap reserves the
++        // timestamp option space), so whole-segment sends use that size.
++        const UInt32 kSeg = conn.DataPayloadCap();
+ 
+         for (UInt32 i = 0; i < 6; ++i) {
+-            std::vector<Byte> buf(kMss, 0x41);
+-            CHECK(conn.SendData(buf.data(), kMss, now));
++            std::vector<Byte> buf(kSeg, 0x41);
++            CHECK(conn.SendData(buf.data(), kSeg, now));
+         }
+-        CHECK(6 * kMss == conn.SndInflight());
++        CHECK(6 * kSeg == conn.SndInflight());
+         // RTO: retransmits the front with a fresh TSval.
+         now += 3000000;
+         conn.OnRetransmitTimer(now);
+@@ -1565,7 +1568,7 @@
+         // Cumulative ACK for the retransmitted segment, echoing a NEWER TSval
+         // (data sent after the RTO) -> real loss, no undo.
+         now += 20000;
+-        const UInt32 ack = conn.SndUna() + kMss;
++        const UInt32 ack = conn.SndUna() + kSeg;
+         const std::vector<Byte> a = BuildSegTs(
+             40000, 443, 201, ack, xtcp::core::kFlagAck, 65535, 888, rto_ts + 1000);
+         conn.OnSegment(a.data(), static_cast<UInt32>(a.size()), now);
+@@ -1605,10 +1608,13 @@
+             777, our_syn_ts, false, 0, 0, true);
+         conn.OnSegment(synack.data(), static_cast<UInt32>(synack.size()), now);
+         CHECK(xtcp::core::TcpState::kEstablished == conn.State());
++        // Data segments carry DataPayloadCap() bytes (the cap reserves the
++        // timestamp option space), so whole-segment sends use that size.
++        const UInt32 kSeg = conn.DataPayloadCap();
+ 
+         for (UInt32 i = 0; i < 10; ++i) {
+-            std::vector<Byte> buf(kMss, 0x41);
+-            CHECK(conn.SendData(buf.data(), kMss, now));
++            std::vector<Byte> buf(kSeg, 0x41);
++            CHECK(conn.SendData(buf.data(), kSeg, now));
+         }
+         const UInt32 cwnd_pre = conn.Cwnd();
+         // RTO #1, then an ACK echoing an OLDER TSval -> spurious -> undo.
+@@ -1617,7 +1623,7 @@
+         const UInt32 rto_ts = TsvalOf(tx.back());
+         CHECK(0 != rto_ts);
+         now += 20000;
+-        const UInt32 ack1 = conn.SndUna() + kMss;
++        const UInt32 ack1 = conn.SndUna() + kSeg;
+         const std::vector<Byte> a1 = BuildSegTs(
+             40000, 443, 201, ack1, xtcp::core::kFlagAck, 65535, 888, rto_ts - 1);
+         conn.OnSegment(a1.data(), static_cast<UInt32>(a1.size()), now);
+--- a/tests/test_close_pending.cpp
++++ b/tests/test_close_pending.cpp
+@@ -8,9 +8,11 @@
+ #include <xtcp/core/stack.h>
+ #include <xtcp/ndi/manual.h>
+ 
++#include <chrono>
+ #include <cstdio>
+ #include <cstring>
+ #include <string>
++#include <thread>
+ 
+ static int g_failures = 0;
+ 
+@@ -101,8 +103,16 @@
+         }
+         // Close immediately: any still-buffered bytes must go out first.
+         stack_a.Close(conn);
+-        for (UInt32 i = 0; i < 500 && received.size() < kTotal; ++i) {
++        // Wall-clock drain: with burst-driven pacing (patch 0005) the tail can
++        // wait on a pacing tick or the peer's delayed ACK, which a
++        // fast-spinning iteration budget may not cover.
++        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
++        while (received.size() < kTotal && std::chrono::steady_clock::now() < deadline) {
++            const std::size_t before = received.size();
+             Pump(backend_a, backend_b, stack_a, stack_b);
++            if (before == received.size()) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(1));
++            }
+         }
+ 
+         CHECK(kTotal == received.size());
+--- a/tests/test_gro_rx.cpp
++++ b/tests/test_gro_rx.cpp
+@@ -15,8 +15,10 @@
+ #include <xtcp/ndi/manual.h>
+ 
+ #include <atomic>
++#include <chrono>
+ #include <cstdio>
+ #include <cstring>
++#include <thread>
+ #include <vector>
+ 
+ static int g_failures = 0;
+@@ -284,17 +286,31 @@
+         const UInt32 kTotal = 256 * 1024;
+         std::vector<Byte> payload(kTotal, 0x5A);
+         UInt32 sent = 0;
+-        for (UInt32 i = 0; i < 20000 && sent < kTotal; ++i) {
++        // Wall-clock guards, not iteration counts: with burst-driven pacing
++        // (patch 0005) one tick can release the whole window as a single GRO
++        // super-segment, which the receiver answers with a delayed ACK; a
++        // fast-spinning iteration budget can expire before that timer fires.
++        const auto send_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
++        while (sent < kTotal && std::chrono::steady_clock::now() < send_deadline) {
+             if (stack_a.Send(conn, payload.data() + sent, 1024)) {
+                 sent += 1024;
+                 continue;  // keep bursting until the cwnd/window blocks
+             }
++            const UInt64 before = recv_bytes.load();
+             pump();  // drain the burst through the GRO pump
++            if (before == recv_bytes.load()) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(1));
++            }
+         }
+         // Final drain: the retained runs (a pool-blocked flush) and the
+         // peer's last segments only make it out when the pump runs again.
+-        for (UInt32 i = 0; i < 500 && recv_bytes.load() < kTotal; ++i) {
++        const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
++        while (recv_bytes.load() < kTotal && std::chrono::steady_clock::now() < drain_deadline) {
++            const UInt64 before = recv_bytes.load();
+             pump();
++            if (before == recv_bytes.load()) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(1));
++            }
+         }
+         CHECK(kTotal == recv_bytes.load());
+ 
 --- a/tests/test_icmp_spoof.cpp
 +++ b/tests/test_icmp_spoof.cpp
 @@ -175,7 +175,8 @@
@@ -7,7 +141,7 @@
 -        CHECK(1460 == g_tx_payload_max);  // full-size segments before PMTU
 +        // Full-size segments before PMTU (the cap reserves timestamp space).
 +        CHECK(stack_a.ConnPayloadCap(conn) == g_tx_payload_max);
-
+ 
          BuildIcmpFragNeeded(icmp, local.addr[0], local.port, remote.addr[0], remote.port, 576);
          InjectIcmp(stack_a, icmp, 68);
 --- a/tests/test_ooo_capacity.cpp
@@ -62,7 +196,7 @@
 +    CHECK(after.ooo_bytes == 0);
 +    CHECK(2 == delivered);
 +    CHECK(!conn.ResumeReceive());  // nothing left to resume
-
+ 
      xtcp::core::TcpConn compat(
          xtcp::core::TcpState::kEstablished, local, remote, iss + 1, irs + 1, MakeSink(log));
 -    compat.SetRecvHandler([](const Byte*, UInt32) { return false; });
@@ -84,7 +218,7 @@
                       (unsigned long long)full_max);
 -        CHECK(1460 == full_max);
 +        CHECK(stack_a.ConnPayloadCap(conn) == full_max);  // timestamp-aware full segment
-
+ 
          // ICMP frag-needed lowers the MSS; the re-probe interval is set
          // BEFORE the reduction so the new interval governs the scheduled
 @@ -189,7 +189,7 @@
@@ -93,12 +227,12 @@
                       (unsigned long long)restored_max);
 -        CHECK(1460 == restored_max);
 +        CHECK(stack_a.ConnPayloadCap(conn) == restored_max);
-
+ 
          for (UInt32 i = 0; i < 200 && bytes_recv < 3 * sizeof(payload); ++i) {
              Pump(backend_a, backend_b, stack_a, stack_b);
 --- a/tests/test_rack.cpp
 +++ b/tests/test_rack.cpp
-@@ -181,11 +181,15 @@
+@@ -192,11 +192,15 @@
          // ssthresh, then congestion avoidance adds one per cwnd-bytes - a
          // 12KB burst reaches only ~5. Send a longer clean burst so the
          // window covers the six-frame reorder probe below.
@@ -117,7 +251,7 @@
              } else {
                  pump();
              }
-@@ -208,15 +212,15 @@
+@@ -219,15 +223,15 @@
          sent = 0;
          // Six full-MSS sends (no Nagle on full segments) with pacing waits -
          // all six frames sit DIRECT in A's backend for the reorder.
@@ -137,7 +271,7 @@
          // Deliver the first four in order, then reorder the last two (the
          // 6th before the 5th - a network reorder, not loss). Both reordered
          // frames reach the receiver in the SAME pump round, so the
-@@ -238,7 +242,7 @@
+@@ -249,7 +253,7 @@
          CHECK(0 != flen[0] && 0 != flen[1]);
          backend_b.Inject(frames[1], flen[1], 0x0800);  // 6th first
          backend_b.Inject(frames[0], flen[0], 0x0800);  // 5th second
@@ -166,7 +300,7 @@
 +                expected_windows.push_back((262144 - k * seg) >> 7);
 +            }
 +        };
-
+ 
              for (UInt32 round = 0; round < 2000; ++round) {
                  bool moved = false;
 @@ -127,6 +141,7 @@
@@ -187,15 +321,15 @@
                          }
 --- a/tests/test_stack.cpp
 +++ b/tests/test_stack.cpp
-@@ -10,9 +10,21 @@
+@@ -10,10 +10,22 @@
  #include <cstdio>
  #include <cstring>
  #include <string>
 +#include <chrono>
  #include <thread>
-
+ 
  static int g_failures = 0;
-+
+ 
 +// PSH is advisory (it marks only the end of a buffered range); payload
 +// length identifies data segments.
 +static bool HasTcpPayload(const Byte* packet, UInt32 length) {
@@ -206,9 +340,10 @@
 +    return ip_hlen >= 20 && tcp_hlen >= 20 && ip_total >= ip_hlen + tcp_hlen &&
 +           ip_total > ip_hlen + tcp_hlen;
 +}
-
++
  #define CHECK(cond)                                                      \
      do {                                                                 \
+         if (!(cond)) {                                                   \
 @@ -149,11 +161,16 @@
          stack_b.PollAckTimers();
          stack_a.PollAckTimers();
@@ -226,7 +361,7 @@
 +        stack_a.PollAckTimers();
 +        std::this_thread::sleep_for(std::chrono::milliseconds(1));
      }
-
+ 
      CHECK(kTotal == received.size());
 @@ -705,13 +722,19 @@
      Byte out[65536];
@@ -256,7 +391,7 @@
 @@ -186,6 +186,10 @@
              return true;
          });
-
+ 
 +        // tsecr of every timestamped B->A segment. A gap-filling segment is
 +        // ACKed immediately, so pump() forwards that ACK before the caller
 +        // can poll B's queue; record it here.
@@ -286,7 +421,7 @@
 @@ -282,25 +291,19 @@
          }
          CHECK(1 + 2 * kPayload == b_recv.load());  // probe + both segments delivered
-
+ 
 -        // The server's ACK must echo tsecr == kTs2 (the drained segment
 -        // advanced TsRecent). delayed-ACK (40ms) needs real time.
 +        // The server's first ACK after the drain must echo tsecr == kTs2
@@ -308,12 +443,11 @@
 -            if (!ack_seen) {
 -                pump();
 -                std::this_thread::sleep_for(std::chrono::milliseconds(1));
--            }
 +            if (!b_ecrs.empty()) {
 +                ack_ecr = b_ecrs.front();
 +                ack_seen = true;
 +                break;
-+            }
+             }
 +            pump();
 +            std::this_thread::sleep_for(std::chrono::milliseconds(1));
          }
@@ -324,7 +458,7 @@
 @@ -151,9 +151,10 @@
          }
          CHECK(xtcp::core::TcpState::kEstablished == stack_a.ConnectionState(conn));
-
+ 
 -        // Custom TCP_MAXSEG must drive the emitted GSO size; timestamps are
 -        // negotiated, but the 1400-byte user ceiling is already below the
 -        // timestamp-safe 1448-byte path cap.
@@ -352,7 +486,7 @@
 +        CHECK(stack_a.ConnPayloadCap(conn) == backend_a.rejected_meta.gso_size);
          CHECK(1400 == backend_a.rejected_meta.mss);
          CHECK(24 == backend_a.rejected_meta.segs);
-
+ 
 @@ -271,7 +272,7 @@
          CHECK(buffered_tso.direct_outstanding > direct_tso.direct_outstanding);
          CHECK(0 < buffered_tso.flush_candidates);

@@ -28,7 +28,7 @@ Windows 使用 Wintun L3 数据路径；传统 TapWindows L2 适配器当前不�
 
 ### Windows 数据面与离线验证（2026-10-17）
 
-Windows XTCP 仅支持 x64、Wintun L3 和内部 loopback TCP 桥。当前固定依赖为 `third-party/xtcp` 的 revision `77d455853b2c63442ecb182e94354b89de81e3e8`，归档 SHA256 为 `dc78c701a1936f720a718e19e89814f6113590c01169b58f32b7f45f6adaf550`。在 VS x64 开发者环境中构建：
+Windows XTCP 仅支持 x64、Wintun L3 和内部 loopback TCP 桥。当前固定依赖为 `third-party/xtcp` 的 revision `f71548f3664740bf87b40bf0b226d2ee315109a8`，归档 SHA256 为 `ff0a0a6021abeeadc84337992d765a02eee57dfb3e3ed7ef7e8f3bb22e08656e`（见 §11.187）。在 VS x64 开发者环境中构建：
 
 ```bat
 bash tools/prepare_xtcp.sh
@@ -423,9 +423,9 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0033-payload-cap-and-nagle-use-option-aware-mss.patch`：按 option-aware MSS 限制 payload 并判断 Nagle gate。
 - `0034-tests-follow-patch-stack-semantics.patch`：保留八处本地语义测试适配，删除四处已由上游覆盖的 loss-helper 适配。
 - `0035-retry-ack-window-construction.patch`：ACK/窗口通告因 buffer 分配失败未能构造时，保留一个合并的待发义务并按 40ms 有界 deadline 重试，而不是清掉 delayed-ACK/resume 状态；保留 FIN/ECN/DSACK 语义，附 `test_ack_allocation`。见 §11.186。
-- `0036-sack-blocks-fit-option-space.patch`：SACK 块数按剩余 40 字节 option 空间计算（带 TSopt 最多 3 块，带 MD5 最多 2 块），修复 TCP header 超过 60 字节导致 data offset 回绕、对端丢弃 ACK 的上游缺陷；附 `test_sack_option_budget`。已提交上游 liulilittle/xtcp#2，合入后删除。见 §11.186。
+- 原 `0036-sack-blocks-fit-option-space.patch`（SACK 块数按剩余 option 空间计算）已由上游 liulilittle/xtcp#2 合入，本地文件已删除。见 §11.186、§11.187。
 
-当前共 27 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0036；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+当前共 26 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
 
 修改上游行为的唯一入口是该目录下的补丁；直接改解包树会在下次 prepare 时丢失。
 
@@ -2505,3 +2505,11 @@ native 对照 N0 为 289.7 Mbps、0 零流。13 个 cell 的 host 指纹与清�
 1. X02 第 2 轮仍有 1 条零流（该轮 584.7 Mbps），机制未定位。
 2. 修复后聚合吞吐下降 8–13%：此前卡死的流退出竞争，剩余流丢包更少；修复后 64 条流全部参与竞争，重传从约 9–11 万次增至约 15 万次（X01）。X01 B2 约为 native 的 0.86×。需要按逐流公平性和总吞吐联合评估，而不是只看聚合值。
 3. 以上为共享 VM 的方向性证据，每格 3 轮；P16/P64 DL、GSO-on 与 stall 专场尚未在 B2 上复跑。
+
+### 11.187 固定上游迁移到 f71548f（2026-10-25）
+
+固定上游更新为 `f71548f3664740bf87b40bf0b226d2ee315109a8`，归档 SHA256 为 `ff0a0a6021abeeadc84337992d765a02eee57dfb3e3ed7ef7e8f3bb22e08656e`。上游新增 KCC v2（kernel-faithful delivery/recovery）、CA 状态机、RACK/SACK/undo/RTO 修复、O(1) pipe 查询与 SIMD copy+checksum，并合入原本地 0036（liulilittle/xtcp#2），该补丁文件删除；其余 26 个补丁保持编号。
+
+改编：0004 保留上游 sendmsg 入口的 app-limited 标记；0012 的 rate-change 遥测改在 ACK flush 之后采样（上游已把 ACK flush 移到 CC hook 之后，audit D01），对应 `test_pacing_update` 期望由"0 个 flush 包"改为"至少 1 个"；0023 把上游新增的 app-limited 判断、ACK flush 与无 cookie fast-open 路径改为 offset 感知的 pending-send 访问；0026 中 KCC v2 不再按 round 聚合样本，`round_sample_*` 字段保留并恒为 0；0034 让上游新增的 Eifel/undo 测试按 TSopt 感知的 payload cap 发送，并把 `test_gro_rx`、`test_close_pending` 的迭代次数保护改为墙钟保护。
+
+离线测试（WSL GCC 12，Release，`XTCP_CHECKSUM_VALIDATE=ON`，ctest -j1）：上游 main 238/239，rebased 241/243。两者都失败 `test_ts_ooo_drain`（旧 pin+旧补丁栈同样失败，属上游/环境既有问题）。仅 rebased 失败 `test_ecn_cc` 的 KCC ECE 断言：0005 的突发 pacing 在固定虚拟时钟的 warmup 中改变了 KCC 带宽估计，ECE 后 cwnd 未下降（92→92，main 为 90→4）；未修改测试，需决策。`test_gro_rx` 暴露的现象值得关注：突发 tick 可把整窗作为一个 GRO super-segment 送达，xtcp 接收端按段计数而进入 40ms delayed ACK（Linux 会按字节立即 ACK），未做运行时验证。OpenPPP2 `ppp/app/client/xtcp/*.cpp` 对 rebased 头文件做了 Linux `-fsyntax-only` 检查并通过；Windows 路径、运行时与性能未验证。
