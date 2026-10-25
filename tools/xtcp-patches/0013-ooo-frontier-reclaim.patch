@@ -1,6 +1,6 @@
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -4752,7 +4752,7 @@
+@@ -6715,7 +6715,7 @@
                          // ACK here would stall every loss recovery.
                          bool drained_gap = false;
                          while (!ooo_.empty()) {

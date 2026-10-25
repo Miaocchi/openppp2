@@ -1,0 +1,209 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -243,6 +243,7 @@
+         test_mss_zero
+         test_ecn_bidi
+         test_ecn_cc
++        test_rcv_mss_ack
+         test_ecn_cwr
+         test_retries_cap
+         test_window_sndwl
+--- a/src/core/tcp_fsm.cpp
++++ b/src/core/tcp_fsm.cpp
+@@ -64,6 +64,9 @@
+             constexpr UInt32 kDefaultWindow = 65535;
+             constexpr UInt32 kMaxDataRetries = 15;  // Linux tcp_retries2 equivalent
+             constexpr UInt32 kDelayedAckMs = 40;  // RFC 1122 delayed-ACK timer
++            // MSS carried in our SYN/SYN+ACK MSS option (0x05B4); the upper
++            // bound of the kernel's icsk_ack.rcv_mss estimate (advmss).
++            constexpr UInt32 kAdvertisedMss = 1460;
+             // RFC 7323 s5.5: after this much idle time (24 days) the peer's
+             // millisecond clock may have wrapped - the PAWS check is relaxed
+             // (the sequence-number checks still bound the segment). Linux:
+@@ -7063,7 +7066,16 @@
+                         } else {
+                             ack_pending_ = true;
+                             ++ack_count_;
+-                            if (2 <= ack_count_) { SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
++                            // Linux __tcp_ack_snd_check: ACK at once when
++                            // more than one full-sized segment (rcv_mss) is
++                            // unacknowledged - BYTES, not segment count. A
++                            // GRO/LRO super-segment covering several MSS
++                            // arrives as ONE segment and must not wait for
++                            // the 40 ms delayed-ACK timer. rcv_mss is bounded
++                            // by our advertised MSS (kAdvertisedMss, the SYN
++                            // MSS option), so "payload > advertised MSS"
++                            // implies "more than one full-sized segment".
++                            if (2 <= ack_count_ || payload_len > kAdvertisedMss) { SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
+                                 ack_pending_ = false;
+                                 ack_count_ = 0;
+                                 ack_deadline_ = 0;
+--- /dev/null
++++ b/tests/test_rcv_mss_ack.cpp
+@@ -0,0 +1,166 @@
++/**
++ * @file test_rcv_mss_ack.cpp
++ * @brief Receiver ACK decision is byte-based for coalesced segments.
++ *
++ * Linux __tcp_ack_snd_check (tcp_input.c) sends an immediate ACK when more
++ * than one full-sized segment (icsk_ack.rcv_mss) is unacknowledged:
++ *
++ *     if (((tp->rcv_nxt - tp->rcv_wup) > inet_csk(sk)->icsk_ack.rcv_mss &&
++ *          __tcp_select_window(sk) >= tp->rcv_wnd) || ...)
++ *             tcp_send_ack(sk);
++ *
++ * A GRO/LRO super-segment (or a TSO burst delivered unsplit over a virtual
++ * link) carries many MSS worth of payload in ONE OnSegment call. The port
++ * counted SEGMENTS (ack every 2nd), so such a super-segment took the 40 ms
++ * delayed-ACK path although it covers several full-sized segments - the
++ * sender's ACK clock then stalls for a delayed-ACK period per burst.
++ *
++ * A single sub-MSS / full-sized segment must still be delayed (quick-ACK
++ * semantics unchanged).
++ */
++
++#include <xtcp/core/stack.h>
++#include <xtcp/buf/bufref.h>
++
++#include <cstdio>
++#include <cstring>
++#include <vector>
++
++static int g_failures = 0;
++
++#define CHECK(cond)                                                       \
++    do {                                                                  \
++        if (!(cond)) {                                                    \
++            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
++            ++g_failures;                                                 \
++        }                                                                 \
++    } while (0)
++
++static constexpr UInt32 kMss = 1460;
++
++static void Put32(Byte* p, UInt32 v) {
++    p[0] = static_cast<Byte>(v >> 24);
++    p[1] = static_cast<Byte>(v >> 16);
++    p[2] = static_cast<Byte>(v >> 8);
++    p[3] = static_cast<Byte>(v & 0xFF);
++}
++
++static UInt32 Get32(const Byte* p) {
++    return (static_cast<UInt32>(p[0]) << 24) | (static_cast<UInt32>(p[1]) << 16) |
++           (static_cast<UInt32>(p[2]) << 8) | static_cast<UInt32>(p[3]);
++}
++
++/** Raw TCP segment (TcpConn::OnSegment takes the TCP header + payload). */
++static std::vector<Byte> Seg(UInt32 seq, UInt32 ack, UInt16 flags, UInt32 payload_len,
++                             bool mss_opt = false) {
++    const UInt32 opt = mss_opt ? 4u : 0u;
++    std::vector<Byte> seg(20 + opt + payload_len, 0x5A);
++    Byte* t = seg.data();
++    t[0] = 0x9C; t[1] = 0x40;   // sport 40000
++    t[2] = 0x01; t[3] = 0xBB;   // dport 443
++    Put32(t + 4, seq);
++    Put32(t + 8, ack);
++    t[12] = static_cast<Byte>(((20 + opt) / 4) << 4);
++    t[13] = static_cast<Byte>(flags);
++    t[14] = 0xFF; t[15] = 0xFF;
++    t[16] = 0; t[17] = 0; t[18] = 0; t[19] = 0;
++    if (mss_opt) {
++        t[20] = 2; t[21] = 4;
++        t[22] = static_cast<Byte>(kMss >> 8); t[23] = static_cast<Byte>(kMss & 0xFF);
++    }
++    return seg;
++}
++
++static xtcp::core::Endpoint LocalEp() {
++    xtcp::core::Endpoint e;
++    e.family = 4;
++    e.addr[0] = 0x0A000001;
++    e.port = 443;
++    return e;
++}
++
++static xtcp::core::Endpoint RemoteEp() {
++    xtcp::core::Endpoint e;
++    e.family = 4;
++    e.addr[0] = 0xC0A80102;
++    e.port = 40000;
++    return e;
++}
++
++struct Harness {
++    std::vector<xtcp::buf::BufRef> tx;
++    xtcp::core::TcpConn conn;
++    xtcp::core::TimePoint now = 1000;
++    UInt64 delivered = 0;
++
++    Harness()
++        : conn(xtcp::core::TcpState::kSynSent, LocalEp(), RemoteEp(), 100, 200,
++               [this](xtcp::buf::BufRef&& p) { tx.push_back(std::move(p)); }) {
++        conn.SetRecvHandler([this](const Byte*, UInt32 len) {
++            delivered += len;
++            return true;
++        });
++        conn.SendSyn();
++        const std::vector<Byte> synack = Seg(500, 101,
++            static_cast<UInt16>(xtcp::core::kFlagSyn | xtcp::core::kFlagAck), 0, true);
++        conn.OnSegment(synack.data(), static_cast<UInt32>(synack.size()), now);
++        tx.clear();
++    }
++
++    void Data(UInt32 len) {
++        const std::vector<Byte> seg = Seg(conn.RcvNxt(), 101, xtcp::core::kFlagAck, len);
++        conn.OnSegment(seg.data(), static_cast<UInt32>(seg.size()), now);
++    }
++
++    /** ACK number of the newest emitted packet (IPv4 + TCP), 0 when none. */
++    UInt32 LastAck() const {
++        if (tx.empty()) {
++            return 0;
++        }
++        const Byte* p = tx.back().Data();
++        const UInt32 ihl = static_cast<UInt32>(p[0] & 0x0F) * 4u;
++        return Get32(p + ihl + 8);
++    }
++};
++
++/** One coalesced super-segment of 4 full segments: ACK immediately. */
++static void TestSuperSegmentAcksImmediately() {
++    Harness h;
++    CHECK(xtcp::core::TcpState::kEstablished == h.conn.State());
++    h.Data(4 * kMss);
++    CHECK(4 * kMss == h.delivered);
++    std::fprintf(stderr, "[rcv_mss_ack] super-segment: tx=%zu ack=%u rcv_nxt=%u\n",
++                 h.tx.size(), h.LastAck(), h.conn.RcvNxt());
++    CHECK(1 == h.tx.size());                    // red: 0 (40 ms delayed ACK)
++    CHECK(h.conn.RcvNxt() == h.LastAck());
++}
++
++/** A single full-sized segment keeps the delayed-ACK behaviour. */
++static void TestSingleSegmentStillDelayed() {
++    Harness h;
++    h.Data(kMss);
++    CHECK(kMss == h.delivered);
++    CHECK(0 == h.tx.size());
++    // The second full-sized segment completes the "ack every other" rule.
++    h.Data(kMss);
++    CHECK(1 == h.tx.size());
++    CHECK(h.conn.RcvNxt() == h.LastAck());
++}
++
++/** A small segment after a delayed one: two segments, existing rule ACKs. */
++static void TestSmallSegmentDelayed() {
++    Harness h;
++    h.Data(100);
++    CHECK(0 == h.tx.size());
++}
++
++int main() {
++    xtcp::buf::InitPools();
++    TestSuperSegmentAcksImmediately();
++    TestSingleSegmentStillDelayed();
++    TestSmallSegmentDelayed();
++    xtcp::buf::ShutdownPools();
++    std::fprintf(stderr, g_failures ? "RCV_MSS_ACK: FAILED (%d)\n" : "RCV_MSS_ACK: ALL PASSED\n",
++                 g_failures);
++    return g_failures ? 1 : 0;
++}

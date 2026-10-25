@@ -1,6 +1,6 @@
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -518,7 +518,22 @@
+@@ -557,7 +557,22 @@
                      // buffer. Other armed timers (persist/RTO/...) still win
                      // when earlier.
                      if (0 < cc_.pacing_rate && 0 != pacing_deadline_) {
@@ -29,7 +29,7 @@
 @@ -150,6 +150,29 @@
      CHECK(0 == conn->PendingSendBytes());  // the probe byte is gone too
  }
-
+ 
 +static void TestFullWindowSuppressesPacingWake() {
 +    TxLog log;
 +    auto conn = MakeConn(log);

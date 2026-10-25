@@ -54,13 +54,48 @@ campaign have not been re-run with 0036. See XTCP_INTEGRATION_CN.md §11.186.
 XTCP is opt-in on Windows and Android. Linux desktop retains its current
 default. All platforms use the pinned source in `third-party/xtcp` and the
 same production target settings from the root CMake build (revision
-`77d455853b2c63442ecb182e94354b89de81e3e8`). The verified archive SHA256 is
-`dc78c701a1936f720a718e19e89814f6113590c01169b58f32b7f45f6adaf550`.
+`f71548f3664740bf87b40bf0b226d2ee315109a8`). The verified archive SHA256 is
+`ff0a0a6021abeeadc84337992d765a02eee57dfb3e3ed7ef7e8f3bb22e08656e`.
+
+Rebase onto upstream f71548f (2026-10-25): upstream added KCC v2
+(kernel-faithful delivery/recovery), CA state-machine, RACK/SACK/undo/RTO
+fixes, O(1) pipe queries and SIMD copy+checksum, and merged former local 0036
+(liulilittle/xtcp#2), whose patch file is removed. The remaining 26 patches
+keep their IDs. Adapted during the rebase: 0004 (keeps upstream's
+app-limited marking at the send entry), 0012 (rate-change telemetry is now
+sampled after the ACK flush, which upstream moved behind the CC hook), 0023
+(offset-aware pending-send accessors in the new upstream app-limited check,
+ACK flush and fast-open paths), 0026 (KCC v2 no longer aggregates per-round
+samples; `round_sample_*` telemetry fields stay and report 0) and 0034 (new
+upstream tests follow the timestamp-aware payload cap and burst pacing).
+Offline ctest (WSL GCC 12, Release, checksum validation, -j1): upstream main
+238/239, rebased 241/243. Both fail `test_ts_ooo_drain` (also failing on the
+old pin). The rebased tree initially failed the KCC ECE assertion in
+`test_ecn_cc`. Investigation showed that upstream passed only by coincidence. Under
+the frozen virtual clock, per-segment pacing sends one segment per round after
+warm-up. KCC's max-bandwidth filter then ages out and cwnd falls to the floor
+(90 -> 4) on the same ACK *without* ECE as well. With 0005 burst pacing, the
+bandwidth model stays fresh and cwnd stays at the BDP target. Kernel BBR/KCC has
+no ECN window response beyond `tcp_enter_cwr` running the pass-through
+`ssthresh` hook (`tcp_cong_control` returns early for `cong_control`), so the
+port's only effect is the clamp to that threshold (178 > 90 here). 0034 now
+asserts that contract with seeded twin runs: the threshold is real, cwnd <=
+threshold after the ECE ACK, and the ECE window is <= the plain-ACK window. The
+wire-level CUBIC case still proves that a CE mark cuts cwnd under burst pacing.
+New patch 0037 (`0037-rcv-mss-immediate-ack.patch`) makes the receiver ACK at
+once when one in-order segment carries more than the advertised MSS (1460).
+This matches Linux `__tcp_ack_snd_check`, whose `rcv_nxt - rcv_wup > rcv_mss`
+test counts bytes. Before 0037, a GRO/LRO super-segment counted as one segment
+and waited for the 40 ms delayed ACK. `test_rcv_mss_ack` fails without the fix
+and passes with it. This is an upstream receiver behavior: 0005 itself emits
+only segments no larger than the MSS. Final stack (27 patches): 243/244, with
+only `test_ts_ooo_drain` failing. See XTCP_INTEGRATION_CN.md §11.187.
 
 The current local series has 27 patches with stable, sparse IDs: 0001-0015,
-0023, 0025-0029 and 0031-0036 (0035: retry ACK/window construction after
-allocation failure; 0036: SACK blocks fit the option space, pending upstream as
-liulilittle/xtcp#2). Upstream absorbs former local 0016 (PSH tail),
+0023, 0025-0029, 0031-0035 and 0037 (0035: retry ACK/window construction after
+allocation failure; 0037: byte-based immediate ACK for super-segments; former
+0036, SACK blocks fit the option space, is upstream as liulilittle/xtcp#2 and
+its ID is not reused). Upstream absorbs former local 0016 (PSH tail),
 0017 (loss-test helpers), 0018-0022 (KCC), 0024 (pool counts), and 0030
 (duplicate-ACK classification). Their local patch files are removed; this
 rebase introduces no new KCC policy, pool sizing, bridge or GSO defaults.
@@ -71,7 +106,8 @@ rejected receive-callback/resume scenario. Patches 0014/0015 preserve
 backpressured OOO and in-order frontier data. Patch 0031 preserves both
 upstream CLOSE-WAIT notifications while restoring FIN-first ordering after
 0005; its focused regression covers 16 callback/close/wrap scenarios.
-Patch 0034 retains eight local-semantic test adaptations. Patch 0027 only
+Patch 0034 retains nine local-semantic test adaptations (including the
+`test_ecn_cc` KCC ECE contract). Patch 0027 only
 needs a context repair during this rebase; its behavior is unchanged.
 Historical revisions, binary hashes and measurements below retain their
 original provenance. See the separately dated migration record in

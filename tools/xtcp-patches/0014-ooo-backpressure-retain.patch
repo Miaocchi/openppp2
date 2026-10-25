@@ -1,6 +1,6 @@
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1440,6 +1440,7 @@
+@@ -1444,6 +1444,7 @@
          UInt64 conn_id, core::ReceiveStateSnapshot* state) noexcept {
          Shard* shard = ShardOf(conn_id);
          std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
@@ -8,7 +8,7 @@
          auto it = shard->conns_.find(conn_id);
          if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
              if (NULLPTR != state) {
-@@ -1448,6 +1449,14 @@
+@@ -1452,6 +1453,14 @@
              return core::ReceiveResumeResult::kConnectionMissing;
          }
          const core::ReceiveResumeResult result = it->second->conn->ResumeReceiveDetailed();
@@ -25,7 +25,7 @@
          }
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -1804,13 +1804,13 @@
+@@ -2315,13 +2315,13 @@
                              ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
                      }
                      if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
@@ -43,7 +43,7 @@
                          break;
                      }
                      if (TcpState::kClosed == state_) {
-@@ -1871,14 +1871,12 @@
+@@ -2382,14 +2382,12 @@
                              const UInt32 prev_drain = rcv_nxt_;
                              rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback
                              if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
@@ -61,8 +61,8 @@
                                  break;
                              }
                              if (TcpState::kClosed == state_) {
-@@ -3987,6 +3985,9 @@
-
+@@ -5881,6 +5879,9 @@
+ 
          ReceiveResumeResult TcpConn::ResumeReceiveDetailed() noexcept {
              std::lock_guard<std::recursive_mutex> scope(syncobj_);
 +            if (TcpState::kClosed == state_) {
@@ -71,7 +71,7 @@
              if (!rcv_blocked_) {
                  return ReceiveResumeResult::kNotBlocked;
              }
-@@ -3994,10 +3995,72 @@
+@@ -5888,10 +5889,72 @@
              ack_pending_ = false;
              ack_count_ = 0;
              ack_deadline_ = 0;
@@ -144,9 +144,9 @@
 -                : ReceiveResumeResult::kResumed;
 +                ? ReceiveResumeResult::kReceiveWindowFull : ReceiveResumeResult::kResumed;
          }
-
+ 
          void TcpConn::SendSyn() noexcept {
-@@ -4771,15 +4834,12 @@
+@@ -6734,15 +6797,12 @@
                                  ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
                              }
                              if (!seg.data.empty() && recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
@@ -165,7 +165,7 @@
                                  break;
                              }
                              if (TcpState::kEstablished != state_) {
-@@ -4896,12 +4956,11 @@
+@@ -6859,12 +6919,11 @@
                                      const UInt32 prev_os = rcv_nxt_;
                                      rcv_nxt_ += static_cast<UInt32>(os.data.size());  // advance before callback
                                      if (!os.data.empty() && recv_cb_ && !recv_cb_(os.data.data(), static_cast<UInt32>(os.data.size()))) {
@@ -180,12 +180,6 @@
                                          break;
                                      }
                                      if (TcpState::kEstablished != state_) {
-@@ -5370,5 +5429,3 @@
-         }
-     }
- }
--
--
 --- a/tests/test_ooo_frontier.cpp
 +++ b/tests/test_ooo_frontier.cpp
 @@ -71,9 +71,9 @@
@@ -193,10 +187,10 @@
          CHECK(conn.RcvNxt() == irs + 1 + 2000);
          CHECK(conn.ReceiveState().rcv_blocked);
 -        CHECK(conn.ReceiveState().ooo_bytes == 0);
+-        CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
 +        CHECK(conn.ReceiveState().ooo_bytes == 2000);
-+        reject_tail = false;
-         CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
--        reject_tail = false;
+         reject_tail = false;
++        CHECK(conn.ResumeReceiveDetailed() == ReceiveResumeResult::kResumed);
          inject(2000, 2000);
          expected = 4000;
          break;

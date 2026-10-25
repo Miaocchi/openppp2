@@ -17,10 +17,11 @@
           * @param name Registered algorithm name; NULLPTR/empty = Reno.
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -82,6 +82,33 @@
+@@ -120,6 +120,33 @@
+             kTimeWait    = 10,
          };
-
-         /**
+ 
++        /**
 +         * @brief Why SendData last rejected application data.
 +         */
 +        enum class SendAdmissionReason : Byte {
@@ -47,11 +48,10 @@
 +            TimePoint pacing_deadline = 0;
 +        };
 +
-+        /**
+         /**
           * @brief TCP flags (RFC 793).
           */
-         enum TcpFlag : UInt16 {
-@@ -237,6 +264,11 @@
+@@ -276,6 +303,11 @@
   *         (full Linux send semantics).
               */
              bool SendData(const Byte* data, UInt32 len, TimePoint now) noexcept;
@@ -63,7 +63,7 @@
              /**
               * @brief Re-sends buffered data after a window update.
               * @param now Monotonic time.
-@@ -1045,6 +1077,7 @@
+@@ -1296,6 +1328,7 @@
              static constexpr UInt32 kDefaultSndBuf = 65536;  /**< 64 KiB per-conn quota */
              UInt32      snd_buf_ = kDefaultSndBuf;
              std::vector<Byte> pending_send_;  /**< App data queued while SYN/SYN+ACK is in flight (full client semantics) */
@@ -73,12 +73,10 @@
              RecvCallback recv_cb_;
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1417,6 +1417,16 @@
-         }
-         MarkSweep(*shard);  // SendData may arm RTO / buffered data
+@@ -1423,6 +1423,16 @@
          return it->second->conn->SendData(data, len, GetTickUs());
-+    }
-+
+     }
+ 
 +    bool XtcpStack::ConnLastSendAdmission(
 +        UInt64 conn_id, core::SendAdmissionSnapshot& out) const noexcept {
 +        out = {};
@@ -87,15 +85,17 @@
 +        auto it = shard->conns_.find(conn_id);
 +        return it != shard->conns_.end() && NULLPTR != it->second->conn &&
 +            it->second->conn->LastSendAdmission(out);
-     }
-
++    }
++
      bool XtcpStack::SetCongestionControl(UInt64 conn_id, const char* name) noexcept {
+         Shard* shard = ShardOf(conn_id);
+         std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -2935,8 +2935,31 @@
-             return (inflight > sacked) ? (inflight - sacked + retrans) : retrans;
+@@ -4548,8 +4548,31 @@
+                 : pipe_retrans_bytes_;
          }
-
+ 
 +        bool TcpConn::LastSendAdmission(SendAdmissionSnapshot& out) const noexcept {
 +            std::lock_guard<std::recursive_mutex> scope(syncobj_);
 +            out = last_send_admission_;
@@ -124,7 +124,7 @@
              if (0 == len) {
                  return true;
              }
-@@ -2945,7 +2968,7 @@
+@@ -4558,7 +4581,7 @@
              // the connection reaches Established.
              if (TcpState::kSynSent == state_ || TcpState::kSynRcvd == state_) {
                  if (snd_buf_ < pending_send_.size() + len) {
@@ -133,7 +133,7 @@
                  }
                  pending_send_.insert(pending_send_.end(), data, data + len);
                  timers_dirty_.store(true, std::memory_order_relaxed);
-@@ -2955,7 +2978,7 @@
+@@ -4568,7 +4591,7 @@
              // its send side) the application may still send data. Established
              // is the normal send state.
              if (TcpState::kEstablished != state_ && TcpState::kCloseWait != state_) {
@@ -141,8 +141,8 @@
 +                return reject(SendAdmissionReason::kNonSendableState);
              }
              const UInt32 inflight = snd_nxt_ - snd_una_;
-             // Segment at the source: one application send may exceed the MSS,
-@@ -2970,7 +2993,7 @@
+             // Kernel tcp_rate_check_app_limited runs at the sendmsg entry,
+@@ -4590,7 +4613,7 @@
              const UInt64 cwnd_bytes = static_cast<UInt64>(cc_.snd_cwnd) * peer_mss_;
              if (len > payload_cap) {
                  if (snd_buf_ < pending_send_.size() + len + inflight) {
@@ -151,7 +151,7 @@
                  }
                  // TSO direct-send (backends with kCapTsoTx): hand the whole
                  // super-segment to the NIC in ONE Tx instead of buffering
-@@ -3044,7 +3067,7 @@
+@@ -4664,7 +4687,7 @@
              if (!pending_send_.empty() || inflight + len > limit || pipe_gated || nagle ||
                  (0 < cc_.pacing_rate && now < pacing_deadline_)) {
                  if (snd_buf_ < pending_send_.size() + len + inflight) {
@@ -160,7 +160,7 @@
                  }
                  pending_send_.insert(pending_send_.end(), data, data + len);
                  timers_dirty_.store(true, std::memory_order_relaxed);
-@@ -3061,7 +3084,7 @@
+@@ -4681,7 +4704,7 @@
              // buffered bytes (pending + inflight + this send <= snd_buf_),
              // otherwise buffering bypasses the per-connection quota.
              if (snd_buf_ < pending_send_.size() + len + inflight) {
@@ -188,7 +188,7 @@
 +    CHECK(snapshot.snd_buf == 16384);
      std::fprintf(stderr, "[sndbuf] direct-FSM quota enforced\n");
  }
-
+ 
 @@ -118,6 +129,11 @@
      std::vector<Byte> chunk(16384, 0x5D);
      CHECK(stack_a.Send(conn, chunk.data(), 16384));
@@ -198,6 +198,6 @@
 +    CHECK(snapshot.reason == xtcp::core::SendAdmissionReason::kSndBufQuota);
 +    CHECK(snapshot.attempted_len == 16384);
 +    CHECK(snapshot.snd_buf == 16384);
-
+ 
      // Drain: the flush + ACK clock free the quota and the full stream lands.
      UInt32 sent = 16384, guard = 0;
