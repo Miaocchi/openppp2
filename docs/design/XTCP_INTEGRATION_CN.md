@@ -607,6 +607,7 @@ payload_cap = effective_l3_mtu - actual_ipv4_header_length - actual_tcp_header_l
 - `TapLinux` 首次见到某个 lane 时，为它打开一个独立的 `IFF_MULTI_QUEUE` queue fd，并配一个独立的合并器、hold 定时器和读循环。lane 之间不共享锁。每个 queue fd 都有读循环，因为内核 tun automq 会把一条流的回程包导向最后写这条流的 queue。
 - lane 创建失败时，只有该 shard 回退到原共享路径。切到 SSMT 或出错时，先 flush 所有 lane 再停止合并；已有 lane 之后改为不合并直写，仍用自己的 fd，因此流不会换 queue。
 - `OPENPPP2_TAP_GSO_LANES_DISABLE=1` 可强制回到共享路径，用于对照。
+- M3 opt-in 开关（默认关闭；不设置时行为同上）：`OPENPPP2_XTCP_DIRECT_SPSC=1` 把 direct-upload 数据队列换成固定 4096 槽的 SPSC handoff（上限与 gather 不变；环分配失败时保留 relay 路径）。`OPENPPP2_XTCP_AFFINITY=queues` 配合 `OPENPPP2_XTCP_SHARDS>1` 与数量精确的 `OPENPPP2_XTCP_IO_CPUS`，为每个 shard 建独立 io_context 和绑核 worker，把 GSO lane i 绑到 shard i，并把 lane 读到的包经有界暂存（1024 条 / 8 MiB）交回 TAP context 执行原 `OnInput`；与 SSMT 同开时启动失败，单 shard 记为 unsupported。`OPENPPP2_XTCP_AFFINITY_STRICT=1` 时任一绑核失败即拒绝启动。
 - `TunGsoCoalescer::kSegmentCap` 默认值从 4 改为 32。`OPENPPP2_TAP_GSO_SEGMENTS`（1–48）仍可覆盖；`OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` 在未显式设置时仍用 48。`tun_gso_output_probe` 的 production builder 契约固定在 cap 4 运行。
 
 **验证**（WSL2 Debian，三端独立 netns，XTCP，每格 2 轮×15s+2s，单位 Mbps，中位数）：

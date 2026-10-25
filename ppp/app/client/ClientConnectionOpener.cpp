@@ -212,10 +212,30 @@ namespace ppp {
                             owner_->SupportsTxGso(),
                             std::move(borrowed_output),
                             std::move(retained_output));
+                    if (NULLPTR != runtime) {
+                        // OPENPPP2_XTCP_AFFINITY=queues is rejected with SSMT.
+                        runtime->SetSsmtActive(owner_->Ssmt(NULLPTR) > 0);
+                    }
                     if (NULLPTR == runtime || !runtime->Start()) {
                         return ppp::diagnostics::SetLastError(
                             ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);
                     }
+#if defined(_LINUX)
+                    if (runtime->SnapshotStats().queue_mode_active) {
+                        // Opt-in queue mode: bind GSO output lanes (created on
+                        // first shard output, after this point) to the shard
+                        // executors. Default modes never register a provider.
+                        if (const std::shared_ptr<ppp::tap::TapLinux> linux_tap =
+                                std::dynamic_pointer_cast<ppp::tap::TapLinux>(owner_->GetTap())) {
+                            const std::weak_ptr<xtcp::XtcpRuntime> weak_runtime = runtime;
+                            linux_tap->SetOutputLaneBindingProvider(
+                                [weak_runtime](int lane, ppp::tap::TapLaneBinding& binding) noexcept {
+                                    const std::shared_ptr<xtcp::XtcpRuntime> current = weak_runtime.lock();
+                                    return current && current->GetLaneBinding(lane, binding);
+                                });
+                        }
+                    }
+#endif
                     owner_->xtcp_runtime_ = std::move(runtime);
 #else
                     return ppp::diagnostics::SetLastError(

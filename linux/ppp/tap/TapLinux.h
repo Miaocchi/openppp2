@@ -9,6 +9,8 @@
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/net/native/rib.h>
 #include <ppp/tap/TapOutputLane.h>
+#include <ppp/tap/TapLaneBinding.h>
+#include <ppp/tap/TapLaneEnvelopeQueue.h>
 #include <linux/ppp/tap/TapGsoCoalescer.h>
 
 namespace ppp
@@ -87,6 +89,10 @@ namespace ppp
             bool                                                                    Ssmt() noexcept { return tun_ssmt_fds_size_ > 0; }
             bool                                                                    Ssmt(const std::shared_ptr<boost::asio::io_context>& context) noexcept;
             bool                                                                    GetRuntimeStats(ppp::tap::TapRuntimeStats& stats) const noexcept;
+            // Opt-in XTCP queue mode: GSO output lanes created after this call
+            // run their descriptor/hold timer/read loop on the provided shard
+            // executor and stage reads back to the TAP context for OnInput.
+            void                                                                    SetOutputLaneBindingProvider(TapLaneBindingProvider provider) noexcept;
 
         public: 
             virtual bool                                                            Output(const std::shared_ptr<Byte>& packet, int packet_size) noexcept override;
@@ -180,6 +186,8 @@ namespace ppp
             void                                                                    ArmLaneHoldTimerLocked(GsoOutputLane& lane) noexcept;
             void                                                                    CancelLaneHoldTimerLocked(GsoOutputLane& lane) noexcept;
             void                                                                    LaneReadLoop(GsoOutputLane* lane) noexcept;
+            void                                                                    StageLaneEnvelope(GsoOutputLane* lane, const Byte* packet, int length) noexcept;
+            void                                                                    DrainLaneEnvelopes() noexcept;
             void                                                                    DisableGsoOutputLanes(TunGsoCoalescer::FlushReason reason, bool close) noexcept;
 
         private:    
@@ -216,6 +224,9 @@ namespace ppp
             std::atomic<uint32_t>                                                   gso_lanes_failed_{0};
             std::array<std::atomic<GsoOutputLane*>, kMaxTapOutputLanes>             gso_lanes_{};
             std::array<std::unique_ptr<GsoOutputLane>, kMaxTapOutputLanes>          gso_lane_owners_;
+            TapLaneBindingProvider                                                  lane_binding_provider_;   // guarded by gso_lanes_mutex_
+            std::shared_ptr<TapLaneEnvelopeQueue>                                   lane_envelopes_;          // atomic_load/atomic_store
+            std::atomic<uint64_t>                                                   bound_output_lanes_{0};
         };
     }
 }

@@ -147,6 +147,15 @@ openppp2_add_cpp_test(xtcp_direct_bridge_policy_test SOURCES xtcp_direct_bridge_
 
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(spsc_handoff_test SOURCES spsc_handoff_test.cpp)
+target_link_libraries(spsc_handoff_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(xtcp_direct_handoff_test SOURCES xtcp_direct_handoff_test.cpp)
+target_link_libraries(xtcp_direct_handoff_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(tap_output_lane_test SOURCES tap_output_lane_test.cpp)
+target_link_libraries(tap_output_lane_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(tap_lane_envelope_handoff_test SOURCES tap_lane_envelope_handoff_test.cpp)
+target_link_libraries(tap_lane_envelope_handoff_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(xtcp_shard_policy_test SOURCES xtcp_shard_policy_test.cpp)
 
 openppp2_add_cpp_test(network_recovery_journal_test
     SOURCES network_recovery_journal_test.cpp
@@ -178,6 +187,13 @@ if(ENABLE_XTCP_TESTS)
     add_subdirectory("${XTCP_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/xtcp" EXCLUDE_FROM_ALL)
     if(NOT TARGET xtcp_static)
         message(FATAL_ERROR "XTCP source tree did not define the required xtcp_static target")
+    endif()
+    if(ENABLE_TSAN)
+        target_compile_options(xtcp_static PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(xtcp_static INTERFACE -fsanitize=thread)
+    elseif(ENABLE_SANITIZERS)
+        target_compile_options(xtcp_static PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(xtcp_static INTERFACE -fsanitize=address,undefined)
     endif()
 
     foreach(_xtcp_test
@@ -216,6 +232,18 @@ if(ENABLE_XTCP_TESTS)
         PPP_XTCP_HAS_TIMER_DEADLINE=1
         PPP_XTCP_RUNTIME_TESTING=1)
     target_link_libraries(xtcp_runtime_adapter_test PRIVATE
+        xtcp_static Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+
+    openppp2_add_cpp_test(xtcp_queue_mode_lifecycle_test SOURCES
+        xtcp_queue_mode_lifecycle_test.cpp
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpNdiBackend.cpp"
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpPoolLease.cpp"
+        "${OPENPPP2_ROOT}/ppp/app/client/xtcp/XtcpRuntime.cpp")
+    target_compile_definitions(xtcp_queue_mode_lifecycle_test PRIVATE
+        PPP_ENABLE_XTCP=1
+        PPP_XTCP_HAS_TIMER_DEADLINE=1
+        PPP_XTCP_RUNTIME_TESTING=1)
+    target_link_libraries(xtcp_queue_mode_lifecycle_test PRIVATE
         xtcp_static Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 
     openppp2_add_cpp_test(xtcp_ndi_memory_probe SOURCES

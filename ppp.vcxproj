@@ -985,6 +985,8 @@
     <ClInclude Include="ppp\threading\BufferblockAllocator.h" />
     <ClInclude Include="ppp\threading\BufferswapAllocator.h" />
     <ClInclude Include="ppp\threading\SpinLock.h" />
+    <ClInclude Include="ppp\threading\SpscHandoff.h" />
+    <ClInclude Include="ppp\app\client\xtcp\XtcpShardPolicy.h" />
     <ClInclude Include="ppp\transmissions\ITransmissionQoS.h" />
     <ClInclude Include="ppp\transmissions\ITransmissionStatistics.h" />
     <ClInclude Include="ppp\collections\Dictionary.h" />
@@ -1057,6 +1059,10 @@
     <ClInclude Include="ppp\tap\ITap.h" />
     <ClInclude Include="ppp\tap\TxGsoMetadata.h" />
     <ClInclude Include="ppp\tap\TapOutputLane.h" />
+    <ClInclude Include="ppp\tap\TapLaneEnvelopeQueue.h" />
+    <ClInclude Include="ppp\tap\TapLaneBinding.h" />
+    <ClInclude Include="ppp\app\protocol\XtcpDirectUploadQueue.h" />
+    <ClInclude Include="ppp\tap\TapOutputLanePolicy.h" />
     <ClCompile Include="windows\ppp\tap\TapWindows.cpp" />
     <ClInclude Include="ppp\threading\Timer.h" />
     <ClInclude Include="ppp\net\asio\IAsynchronousWriteIoQueue.h" />
