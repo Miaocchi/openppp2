@@ -1009,7 +1009,16 @@ public:
         static constexpr const char* kDefaultCc = "kcc";
 #endif
         const char* cc = (cc_env != nullptr && cc_env[0] != '\0') ? cc_env : kDefaultCc;
+        // Linux desktop/server: 1 MiB per-connection snd_buf quota. The upstream
+        // 64 KiB default capped single-flow DL near 410 Mbps (THROUGHPUT plan
+        // §2.4.1); the pool reserve (patch 0039) keeps many busy flows from
+        // starving ACK ingress. Other platforms keep the upstream default until
+        // they have their own measurements. This is a quota, not preallocation.
+#if defined(__linux__) && !defined(__ANDROID__)
+        unsigned long long sndbuf_value = 1024ull * 1024ull;
+#else
         unsigned long long sndbuf_value = 0;
+#endif
         {
             const char* profile = ::getenv("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE");
             if (profile != nullptr && profile[0] == '1' && profile[1] == '\0') {

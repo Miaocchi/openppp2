@@ -477,6 +477,11 @@ Changes:
   stops. An existing lane then writes unmerged frames on its own fd, so a flow
   never changes queue.
 - `OPENPPP2_TAP_GSO_LANES_DISABLE=1` forces the shared path for comparison.
+- Default XTCP per-connection snd_buf: 1 MiB on Linux desktop/server (a quota, not
+  preallocated); other platforms keep the upstream 64 KiB. `OPENPPP2_XTCP_SNDBUF_BYTES`
+  and `OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` still take precedence. At 64 KiB single-flow DL
+  was capped near 410 Mbps (0.22x native); at 1 MiB it is ~0.95x. Patch 0039's pool reserve
+  keeps many busy flows from starving ACK ingress.
 - M3 opt-in switches (default off; unset keeps the behaviour above):
   `OPENPPP2_XTCP_DIRECT_SPSC=1` moves the direct-upload data queue to a
   fixed 4096-slot SPSC handoff (same caps and gather; ring allocation
