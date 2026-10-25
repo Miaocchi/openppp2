@@ -99,12 +99,51 @@ about 1.9 to 0.85 Gbps. 0038 adds the Linux `bbr_set_cwnd` ack-aggregation
 term (`extra_acked`) and quantization budget to the cwnd target, and mirrors
 them in `plugins/ref/kcc_core.c`. Remote A/B (1 MiB, 2 passes, 20 s): P4 DL
 0.89/0.84 -> 2.11/2.19 Gbps and P16 DL 0.79/0.89 -> 1.88/1.83 Gbps; P1 is unchanged.
-The 1 MiB P64 DL wedge is a separate issue that 0038 does not fix: the fixed
-xtcp buffer pools are exhausted, and ingress ACK copies then fail
-(`ingress_drop_reason.buffer`).
+The 1 MiB P64 DL wedge was a separate issue that 0038 does not fix; 0039
+fixes it. The fixed xtcp packet pool (2K x 8192 + 4K x 4096 + 32K x 128,
+about 36 MiB) was shared by unACKed transmit retention and by ingress. When
+active flows x snd_buf exceeded it (64 x 1 MiB; with the 64 KiB default,
+about 500 or more busy flows), retention took every block. Ingress copies in
+`XtcpRuntime::Submit`, including the pure ACKs that would free retention, then
+failed (`ingress_drop_reason.buffer`). All flows stayed blocked on
+`sndbuf_quota` and the tunnel never recovered.
 
-The current local series has 28 patches with stable, sparse IDs: 0001-0015,
-0023, 0025-0029, 0031-0035, 0037 and 0038 (0035: retry ACK/window construction after
+Patch 0039 (`0039-pool-tx-reserve-and-bounded-heap-overflow.patch`) splits
+the pool, much as the kernel separates `tcp_memory_pressure` /
+`sk_wmem_schedule` from receive:
+
+- New data segments (SendData direct path and FlushPendingSend) are built
+  inside `buf::TxAcquireScope`. In that scope a tier at or below 1/8 of its
+  blocks is skipped and the heap overflow is never used. A denied segment
+  stays in `pending_send_` (bounded by snd_buf), and the dirty poll flushes
+  it after ACKs free blocks.
+- Every other acquisition (ingress, ACKs, control segments,
+  retransmissions and MTU splits) still uses the full pool. When every
+  fitting tier is empty, it gets a block from a bounded heap overflow
+  (`kHeapOverflowCapBytes` = 8 MiB in total, blocks freed on release).
+- `buf::GetPoolPressureStats()` reports TX deferrals and overflow
+  acquires, denials, current bytes and peak.
+
+Nothing changes while every tier is above its reserve. OpenPPP2 code is
+unchanged.
+
+Patch 0040 adds `test_pool_pressure`. It checks three things: TX stops at the
+reserve and ordinary acquisitions still succeed; the overflow is capped, never
+used by TX, and fully returned; and 1600 connections retaining more than the
+arena still get ACK buffers and all finish. Full ctest: 244/245 locally and
+remotely, with only `test_ts_ooo_drain` failing (pre-existing).
+`test_sack_gap_edge` is timing-flaky on the base stack as well. Its
+pool-pressure counters stay at zero, so the new gate never fires there.
+
+Remote A/B against the #106 binary: 1 MiB P64 DL passed 3/3 (1345, 1481 and
+1181 Mbps; zero-rate flows 0; `ingress_dropped` 0). The old binary hit the
+watchdog. 2 MiB P64 DL passed at 1384 Mbps. P1/P4/P16 DL+UL at 1 MiB and
+64 KiB, 2 alternating passes, stayed within noise. 64 KiB P64 UL hits the
+iperf watchdog on both old and new binaries, so it predates this change.
+See XTCP_INTEGRATION_CN.md §11.188 for the table and residual risks.
+
+The current local series has 30 patches with stable, sparse IDs: 0001-0015,
+0023, 0025-0029, 0031-0035 and 0037-0040 (0035: retry ACK/window construction after
 allocation failure; 0037: byte-based immediate ACK for super-segments; former
 0036, SACK blocks fit the option space, is upstream as liulilittle/xtcp#2 and
 its ID is not reused). Upstream absorbs former local 0016 (PSH tail),

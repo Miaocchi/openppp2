@@ -425,9 +425,11 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0035-retry-ack-window-construction.patch`：ACK/窗口通告因 buffer 分配失败未能构造时，保留一个合并的待发义务并按 40ms 有界 deadline 重试，而不是清掉 delayed-ACK/resume 状态；保留 FIN/ECN/DSACK 语义，附 `test_ack_allocation`。见 §11.186。
 - 原 `0036-sack-blocks-fit-option-space.patch`（SACK 块数按剩余 option 空间计算）已由上游 liulilittle/xtcp#2 合入，本地文件已删除。见 §11.186、§11.187。
 - `0037-rcv-mss-immediate-ack.patch`：单个按序段的 payload 超过本端通告 MSS（1460）时立即 ACK（Linux `__tcp_ack_snd_check` 按字节判断 `rcv_nxt - rcv_wup > rcv_mss`），避免 GRO/LRO super-segment 被按段计数后走 40ms delayed ACK；附 `test_rcv_mss_ack`。编号跳过 0036 以免与历史引用冲突。见 §11.187。
-- `0038-kcc-cwnd-ack-aggregation-quantization.patch`：KCC v2 的 cwnd 目标只取 `cwnd_gain*max_bw*min_rtt`；在 tun 路径上，min_rtt 只有约 35-90us，而 ACK 是成批到达的。sndbuf=1MiB 时，P4/P16 DL 的 cwnd 塌到 2-12 包，DL 从约 1.9 跌到 0.85Gbps。本补丁按 Linux `bbr_set_cwnd` 加入 ack-aggregation（`extra_acked`）项和 quantization budget，并同步修改 `plugins/ref/kcc_core.c`。远端 A/B（1MiB、2 轮、20s）：P4 DL 0.89/0.84→2.11/2.19Gbps，P16 DL 0.79/0.89→1.88/1.83Gbps，P1 不变。1MiB P64 DL 卡死是另一个问题，本补丁不修复：xtcp 固定缓冲池耗尽后，入向 ACK 无法拷贝（`ingress_drop_reason.buffer`）。
+- `0038-kcc-cwnd-ack-aggregation-quantization.patch`：KCC v2 的 cwnd 目标只取 `cwnd_gain*max_bw*min_rtt`；在 tun 路径上，min_rtt 只有约 35-90us，而 ACK 是成批到达的。sndbuf=1MiB 时，P4/P16 DL 的 cwnd 塌到 2-12 包，DL 从约 1.9 跌到 0.85Gbps。本补丁按 Linux `bbr_set_cwnd` 加入 ack-aggregation（`extra_acked`）项和 quantization budget，并同步修改 `plugins/ref/kcc_core.c`。远端 A/B（1MiB、2 轮、20s）：P4 DL 0.89/0.84→2.11/2.19Gbps，P16 DL 0.79/0.89→1.88/1.83Gbps，P1 不变。1MiB P64 DL 卡死是另一个问题，本补丁不修复，由 0039 修复（见下）。
+- `0039-pool-tx-reserve-and-bounded-heap-overflow.patch`：修复 1MiB P64 DL 卡死。原因是固定 packet pool（约 36MiB）同时承载未确认发送数据的保留和入向包。flows×snd_buf 超过 pool 后，入向 ACK 无法拷贝，发送缓冲无法释放，隧道永久卡死。本补丁按内核 `tcp_memory_pressure`/`sk_wmem_schedule` 的思路拆分：新数据段在 `buf::TxAcquireScope` 中分配，不得把任一 tier 用到 1/8 余量以下，也不得使用 heap overflow；被拒的段留在 `pending_send_`（仍受 snd_buf 限制），由 dirty poll 在 ACK 释放块后重发。其余分配（入向、ACK、控制段、重传）照常使用整个 pool；所有 tier 都空时，从总量 8MiB 的有界 heap overflow 分配。`buf::GetPoolPressureStats()` 提供遥测。pool 未进入余量区时行为不变。详见 §11.188。
+- `0040-tests-pool-pressure-no-ack-wedge.patch`：新增 `test_pool_pressure`，覆盖 TX 余量、heap overflow 上限与归还，以及 1600 连接保留量超过 arena 时 ACK 仍可分配且全部完成。
 
-当前共 28 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037、0038（0036 为已上游的历史编号，不复用）；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+当前共 30 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037-0040（0036 为已上游的历史编号，不复用）；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
 
 修改上游行为的唯一入口是该目录下的补丁；直接改解包树会在下次 prepare 时丢失。
 
@@ -2521,3 +2523,40 @@ native 对照 N0 为 289.7 Mbps、0 零流。13 个 cell 的 host 指纹与清�
 - **0034 的测试调整。** 该断言改为固定随机种子的双连接对照：阈值非哨兵、ECE 后 cwnd ≤ 阈值、ECE 窗口 ≤ 无 ECE 窗口。CE 在突发 pacing 下确实降窗，仍由同文件 wire 级 CUBIC 用例覆盖。
 - **GRO 风险已确认并修复（0037）。** 0005 自身只发不超过 MSS 的段；但一个携带多个 MSS 的 GRO/LRO super-segment 确实只计为一段，会进入 40ms delayed ACK。`test_rcv_mss_ack` 修复前失败、修复后通过。
 - **最终测试结果。** 补丁栈从固定归档 `patch -p1 --fuzz=0` 重放后，全量 ctest 为 243/244，仅 `test_ts_ooo_drain` 失败（main 同样失败）。OpenPPP2 `ppp/app/client/xtcp/*.cpp` 对 rebased 头文件做了 Linux `-fsyntax-only` 检查并通过；Windows 路径、运行时与性能未验证。
+
+### 11.188 固定 packet pool 耗尽导致 P64 DL 卡死：TX 余量 + 有界 heap overflow（2026-10-26）
+
+**根因。** xtcp 全局 packet pool 为固定 arena（2K×8192 + 4K×4096 + 32K×128，约 36MiB），没有 heap 回退。未确认发送段（retrans_queue）持有 pool 块直到被 ACK，入向包（`XtcpRuntime::Submit` 的 `BufRef::Acquire`）也从同一 pool 分配。活跃流数×snd_buf 超过 pool 后（64×1MiB；默认 64KiB 时约 500 条以上忙流），发送保留占满全部块，入向分配失败。纯 ACK 也被丢弃（`ingress_drop_reason.buffer`），发送缓冲永远无法释放：admission.blocked=64，cwnd→2，只剩 RTO 重传，隧道永久停滞。调大 `OPENPPP2_XTCP_INGRESS_ITEMS` 无效。
+
+**修复（0039，xtcp 内，OpenPPP2 代码不变）。** 按内核 `tcp_memory_pressure`/`sk_wmem_schedule` 的思路，把“新发送数据”和其余分配分开：
+- SendData 直发路径和 FlushPendingSend 在 `buf::TxAcquireScope`（线程局部，只包住构包调用）中分配新数据段。scope 内 tier 空闲块 ≤ 容量 1/8 时跳过该 tier，且不使用 heap overflow。被拒的段留在 `pending_send_`，仍受 snd_buf 限制；连接保持 dirty，poll 在 ACK 释放块后重发。
+- 入向、ACK、控制段、重传、MTU 拆分仍使用整个 pool。所有适配 tier 都空时，退到有界 heap overflow（总量 `kHeapOverflowCapBytes`=8MiB，块逐个 malloc，释放即 free）作为最后防线，内存不会无界增长。
+- 遥测：`buf::GetPoolPressureStats()`（tx_deferrals、heap_overflow_acquires/denials/bytes/peak）。
+- pool 未进入余量区时行为完全不变。本地 `test_sack_gap_edge` 中压力计数恒为 0，未触发新门控。
+
+选择理由：只做 heap 回退时，发送保留同样会耗尽 heap 上限，卡死只是推迟；只在 OpenPPP2 为纯 ACK 预留缓冲时，xtcp 内部其他入向/控制路径（GRO、重传构包）仍可能饿死。在 xtcp 分配层用“发送让出余量”从源头限制发送保留，再用有界 heap 兜底，两者结合最稳健。
+
+**测试。** 0040 新增 `test_pool_pressure`：TX scope 止于余量，之后普通分配仍成功；heap overflow 有上限、TX 不使用、释放后归零；1600 条连接的发送保留超过 arena 时，ACK 缓冲仍可分配，全部流传完。全量 ctest 本地与远端均为 244/245，仅 `test_ts_ooo_drain` 失败（既有）。`test_sack_gap_edge` 是既有的时序型 flaky（重传计数阈值），基线栈同样会失败（同机 80 次：基线 7、新版 13）。
+
+**远端 A/B**（共享 VM、KCC、GSO on、direct bridge、20s，单轮/单元；old = #106 binary `/home/ppp-m2/sndfix/bin/ppp`，new = 本分支）。单位 Mbps，两轮交替顺序：
+
+| snd_buf | 单元 | old 轮1/轮2 | new 轮1/轮2 |
+|---|---|---|---|
+| 1MiB | P64 DL | 卡死（watchdog 52s，与 #106 诊断一致） | 1345 / 1481 / 1181（3 轮，全部 pass，零速流 0，ingress_dropped 0） |
+| 2MiB | P64 DL | — | 1384（pass，ingress_dropped 0） |
+| 1MiB | P1 DL / UL | 1685/1694 · 1207/1235 | 1697/1684 · 1222/1205 |
+| 1MiB | P4 DL / UL | 2088/2109 · 1049/1084 | 2163/1920 · 1075/1068 |
+| 1MiB | P16 DL / UL | 1833/1802 · 979/1015 | 1783/1805 · 991/983 |
+| 64KiB | P1 DL / UL | 394/401 · 1177/1198 | 399/397 · 1212/1209 |
+| 64KiB | P4 DL / UL | 1160/1119 · 1075/1069 | 1123/1118 · 1072/1057 |
+| 64KiB | P16 DL / UL | 1446/1478 · 972/1007 | 1447/1477 · 969/990 |
+| 64KiB | P64 DL | — | 1244（pass） |
+| 64KiB | P64 UL | watchdog 2/2 | watchdog 3/3 |
+
+P1/P4/P16 在噪声范围内无回归（单轮差异最大为 1MiB P4 DL 轮2 的 -9%，轮1 为 +4%）。
+
+**残留风险。**
+- 64KiB P64 UL 在 old/new 上都会触发 iperf watchdog（各 2/2 与 3/3）：65 条流全部关闭、无零速流，最后几秒仍有吞吐，表现为收尾阶段超时，与本修复无关，另行跟踪。
+- 余量按全局空闲链计数，不含线程缓存（每线程 ≤16/8 块），只会偏保守。
+- heap overflow 被入向数据长期占用（如应用不读、OOO 大量保留）时，8MiB 上限仍会耗尽。此时退化为旧行为（入向丢包），但发送侧已不会再占用余量。
+- 1MiB/2MiB 下 P64 DL 聚合吞吐低于 P16（发送在余量处排队等待 ACK），属于预期的平滑降级，不再卡死。
