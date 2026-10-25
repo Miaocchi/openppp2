@@ -790,8 +790,11 @@ namespace ppp {
         }
 
         struct TapLinux::GsoOutputLane final {
-            GsoOutputLane(TapLinux* tap, boost::asio::io_context& context, int queue_fd) noexcept
-                : fd(queue_fd)
+            GsoOutputLane(TapLinux* tap, boost::asio::io_context& context, int queue_fd, int lane_index,
+                std::shared_ptr<boost::asio::io_context> bound) noexcept
+                : bound_context(std::move(bound))
+                , index(lane_index)
+                , fd(queue_fd)
                 , hold_timer(context)
                 , coalescer([this, tap](const uint8_t* frame, size_t frame_size) noexcept {
                         return tap->WriteTunFrame(fd, frame, frame_size);
@@ -801,6 +804,11 @@ namespace ppp {
                     }, TapGsoPshBoundaryRequested(), TapGsoRetainedWritevRequested()) {
             }
 
+            // Queue mode: the shard executor owning this lane's asio objects.
+            // Declared first so it outlives the timer and descriptor below.
+            std::shared_ptr<boost::asio::io_context>                                bound_context;
+            std::shared_ptr<TapLaneEnvelopeQueue>                                   envelopes;
+            int                                                                     index           = -1;
             std::mutex                                                              mutex;
             int                                                                     fd              = -1;
             bool                                                                    merge_active    = true;
@@ -838,7 +846,26 @@ namespace ppp {
             stats.direct_gso_packets = direct_gso_packets_.load(std::memory_order_relaxed);
             stats.direct_gso_bytes = direct_gso_bytes_.load(std::memory_order_relaxed);
             stats.direct_gso_rejected = direct_gso_rejected_.load(std::memory_order_relaxed);
+            stats.bound_output_lanes = bound_output_lanes_.load(std::memory_order_relaxed);
+            if (const std::shared_ptr<TapLaneEnvelopeQueue> envelopes = std::atomic_load(&lane_envelopes_)) {
+                const TapLaneEnvelopeQueue::Snapshot snapshot = envelopes->GetSnapshot();
+                stats.lane_envelope_accepted = snapshot.accepted;
+                stats.lane_envelope_full_drops = snapshot.full_drops;
+            }
             return true;
+        }
+
+        void TapLinux::SetOutputLaneBindingProvider(TapLaneBindingProvider provider) noexcept {
+            std::lock_guard<std::mutex> lanes_lock(gso_lanes_mutex_);
+            try {
+                if (provider && !std::atomic_load(&lane_envelopes_)) {
+                    std::atomic_store(&lane_envelopes_, std::make_shared<TapLaneEnvelopeQueue>());
+                }
+                lane_binding_provider_ = std::move(provider);
+            }
+            catch (...) {
+                lane_binding_provider_ = nullptr;
+            }
         }
 
         int TapLinux::OpenDriver(const char* ifrName) noexcept {
@@ -1879,6 +1906,9 @@ namespace ppp {
             }
 
             DisableGsoOutputLanes(TunGsoCoalescer::FlushReason::Terminate, true);
+            if (const std::shared_ptr<TapLaneEnvelopeQueue> envelopes = std::atomic_load(&lane_envelopes_)) {
+                envelopes->Close(); // drop staged reads; in-flight credit completes normally
+            }
 
             stl::remove_reference<decltype(tun_ssmt_sds_)>::type tun_ssmt_sds;
             if (Ssmt()) {
@@ -2487,17 +2517,31 @@ namespace ppp {
             if (NULLPTR == context) {
                 return fail();
             }
+            // Opt-in queue mode: own the lane on the shard executor. Without a
+            // provider (default) the lane stays on the TAP context.
+            std::shared_ptr<boost::asio::io_context> bound;
+            std::shared_ptr<TapLaneEnvelopeQueue> envelopes = std::atomic_load(&lane_envelopes_);
+            if (lane_binding_provider_ && envelopes) {
+                TapLaneBinding binding;
+                if (lane_binding_provider_(index, binding) && binding.context) {
+                    bound = std::move(binding.context);
+                }
+            }
+            boost::asio::io_context& lane_context = bound ? *bound : *context;
             const int fd = OpenSecondaryQueue();
             if (fd == -1) {
                 return fail();
             }
-            std::unique_ptr<GsoOutputLane> lane(new (std::nothrow) GsoOutputLane(this, *context, fd));
+            std::unique_ptr<GsoOutputLane> lane(new (std::nothrow) GsoOutputLane(this, lane_context, fd, index, bound));
             if (!lane) {
                 ::close(fd);
                 return fail();
             }
             lane->read_buffer = make_shared_alloc<Byte>(read_capacity_);
-            lane->sd = make_shared_object<boost::asio::posix::stream_descriptor>(*context, fd);
+            lane->sd = make_shared_object<boost::asio::posix::stream_descriptor>(lane_context, fd);
+            if (bound) {
+                lane->envelopes = envelopes;
+            }
             if (NULLPTR == lane->read_buffer || NULLPTR == lane->sd) {
                 if (lane->sd) {
                     Socket::Closestream(lane->sd);
@@ -2524,6 +2568,19 @@ namespace ppp {
 
             // The queue must be read: the kernel steers the lane's return
             // traffic here, and unread packets would be dropped.
+            if (bound) {
+                bound_output_lanes_.fetch_add(1, std::memory_order_relaxed);
+                ppp::telemetry::Count("tap.gso_lane.bound", 1);
+                // Weak capture: the shard executor may outlive or stop before
+                // the TAP; neither may keep the other alive through a handler.
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                boost::asio::post(lane_context, [weak, this, raw]() noexcept {
+                    if (const std::shared_ptr<ITap> self = weak.lock()) {
+                        LaneReadLoop(raw);
+                    }
+                });
+                return raw;
+            }
             std::shared_ptr<ITap> self = shared_from_this();
             boost::asio::post(*context, [self, this, raw]() noexcept {
                 LaneReadLoop(raw);
@@ -2541,6 +2598,30 @@ namespace ppp {
                 return;
             }
 
+            if (lane->bound_context) {
+                // Queue mode: read on the shard worker, copy the envelope, then
+                // re-arm; OnInput keeps running on the TAP context.
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                sd->async_read_some(boost::asio::buffer(buffer.get(), read_capacity_),
+                    [weak, this, lane, sd, buffer](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                        if (ec == boost::system::errc::operation_canceled) {
+                            return;
+                        }
+                        const std::shared_ptr<ITap> self = weak.lock();
+                        if (NULLPTR == self) {
+                            return;
+                        }
+                        const int length = std::max<int>(ec ? -1 : sz, -1);
+                        if (length > 0) {
+                            ppp::diagnostics::datapath_perf::RecordTunRead(length);
+                            StageLaneEnvelope(lane, buffer.get(), length);
+                        }
+                        if (disposed_.load() == FALSE) {
+                            LaneReadLoop(lane);
+                        }
+                    });
+                return;
+            }
             std::shared_ptr<ITap> self = shared_from_this();
             sd->async_read_some(boost::asio::buffer(buffer.get(), read_capacity_),
                 [self, this, lane, sd, buffer](const boost::system::error_code& ec, std::size_t sz) noexcept {
@@ -2559,13 +2640,105 @@ namespace ppp {
                 });
         }
 
+        void TapLinux::StageLaneEnvelope(GsoOutputLane* lane, const Byte* packet, int length) noexcept {
+            const std::shared_ptr<TapLaneEnvelopeQueue>& envelopes = lane->envelopes;
+            if (NULLPTR == envelopes || length <= 0) {
+                return;
+            }
+            std::shared_ptr<Byte> copy = make_shared_alloc<Byte>(length);
+            if (NULLPTR == copy) {
+                ppp::telemetry::Count("tap.lane_envelope.alloc_drops", 1);
+                return;
+            }
+            memcpy(copy.get(), packet, static_cast<size_t>(length));
+            switch (envelopes->Push(lane->index, std::move(copy), static_cast<std::size_t>(length))) {
+            case TapLaneEnvelopeQueue::PushResult::AcceptedPostDrain: {
+                std::shared_ptr<boost::asio::io_context> context = GetContext();
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                bool posted = false;
+                if (NULLPTR != context) {
+                    try {
+                        boost::asio::post(*context, [weak, this]() noexcept {
+                            if (const std::shared_ptr<ITap> self = weak.lock()) {
+                                DrainLaneEnvelopes();
+                            }
+                        });
+                        posted = true;
+                    }
+                    catch (...) {
+                    }
+                }
+                if (!posted) {
+                    // No consumer can run: stop staging instead of filling silently.
+                    envelopes->Close();
+                }
+                break;
+            }
+            case TapLaneEnvelopeQueue::PushResult::Full:
+                ppp::telemetry::Count("tap.lane_envelope.full_drops", 1);
+                break;
+            default:
+                break;
+            }
+        }
+
+        void TapLinux::DrainLaneEnvelopes() noexcept {
+            const std::shared_ptr<TapLaneEnvelopeQueue> envelopes = std::atomic_load(&lane_envelopes_);
+            if (NULLPTR == envelopes) {
+                return;
+            }
+            static constexpr int kDrainBatch = 64;
+            for (int i = 0; i < kDrainBatch; ++i) {
+                TapLaneEnvelopeQueue::Envelope envelope;
+                if (!envelopes->Pop(envelope)) {
+                    break;
+                }
+                if (disposed_.load() == FALSE) {
+                    // Original owner and order: OnInput and every policy check
+                    // run on the TAP context exactly as for a TAP-context read.
+                    PacketInputEventArgs event{ envelope.data.get(), static_cast<int>(envelope.length) };
+                    OnInput(event);
+                }
+                envelopes->Complete(envelope); // credit held until OnInput returned
+            }
+            if (envelopes->EndDrain()) {
+                std::shared_ptr<boost::asio::io_context> context = GetContext();
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                if (NULLPTR != context) {
+                    boost::asio::post(*context, [weak, this]() noexcept {
+                        if (const std::shared_ptr<ITap> self = weak.lock()) {
+                            DrainLaneEnvelopes();
+                        }
+                    });
+                }
+            }
+        }
+
         void TapLinux::ArmLaneHoldTimerLocked(GsoOutputLane& lane) noexcept {
             if (lane.timer_armed || !lane.merge_active) return;
             lane.timer_armed = true;
             const uint64_t generation = ++lane.timer_generation;
             lane.hold_timer.expires_after(std::chrono::nanoseconds(lane.coalescer.hold_ns()));
-            std::shared_ptr<ITap> self = shared_from_this();
             GsoOutputLane* target = &lane;
+            if (lane.bound_context) {
+                // Queue mode: weak capture so a stopped shard executor cannot
+                // keep the TAP alive through a pending timer handler.
+                const std::weak_ptr<ITap> weak = shared_from_this();
+                lane.hold_timer.async_wait([weak, this, target, generation](const boost::system::error_code& ec) noexcept {
+                    const std::shared_ptr<ITap> self = weak.lock();
+                    if (NULLPTR == self) return;
+                    std::lock_guard<std::mutex> lock(target->mutex);
+                    if (generation != target->timer_generation) return;
+                    target->timer_armed = false;
+                    if (ec || !target->merge_active || target->fd < 0 || disposed_.load() != FALSE) return;
+                    if (!target->coalescer.FlushExpired()) {
+                        target->merge_active = false;
+                        FailTunWrite(TunWriteFailureSource::GsoHoldTimerFlush);
+                    }
+                });
+                return;
+            }
+            std::shared_ptr<ITap> self = shared_from_this();
             lane.hold_timer.async_wait([self, this, target, generation](const boost::system::error_code& ec) noexcept {
                 std::lock_guard<std::mutex> lock(target->mutex);
                 if (generation != target->timer_generation) return;
@@ -2605,7 +2778,23 @@ namespace ppp {
                 if (close && lane->fd >= 0) {
                     lane->fd = -1;
                     ppp::telemetry::Count("tap.gso_lane.close", 1);
-                    Socket::Closestream(lane->sd);
+                    if (lane->bound_context && !lane->bound_context->stopped()) {
+                        // Close on the owner executor so the descriptor is never
+                        // torn down concurrently with its in-flight read.
+                        std::shared_ptr<boost::asio::posix::stream_descriptor> sd = lane->sd;
+                        try {
+                            boost::asio::post(*lane->bound_context, [sd]() noexcept {
+                                std::shared_ptr<boost::asio::posix::stream_descriptor> owned = sd;
+                                Socket::Closestream(owned);
+                            });
+                        }
+                        catch (...) {
+                            Socket::Closestream(lane->sd);
+                        }
+                    }
+                    else {
+                        Socket::Closestream(lane->sd);
+                    }
                 }
             }
         }

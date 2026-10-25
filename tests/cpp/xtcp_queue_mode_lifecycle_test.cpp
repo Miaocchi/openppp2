@@ -6,6 +6,7 @@
 #include <xtcp/buf/bufref.h>
 
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -162,6 +163,38 @@ void RestartStaleCallbacks() {
     CHECK(CompletesWithin([&runtime]() { runtime.reset(); }, std::chrono::seconds(10)));
 }
 
+// The last runtime reference is dropped on a shard worker: the destructor
+// must not join its own thread (it detaches it) and must not deadlock.
+void StopFromOwnWorker() {
+    if (AllowedCpus().size() < 2) return;
+    const std::string cpus = CpuList(2);
+    ScopedEnv e1("OPENPPP2_XTCP_SHARDS", "2");
+    ScopedEnv e2("OPENPPP2_XTCP_AFFINITY", "queues");
+    ScopedEnv e3("OPENPPP2_XTCP_IO_CPUS", cpus.c_str());
+    ScopedEnv e4("OPENPPP2_XTCP_AFFINITY_STRICT", "0");
+    auto context = std::make_shared<boost::asio::io_context>();
+    auto runtime = MakeRuntime(context);
+    CHECK(runtime->Start());
+    ppp::tap::TapLaneBinding binding;
+    CHECK(!runtime->GetLaneBinding(2, binding));
+    CHECK(!runtime->GetLaneBinding(-1, binding));
+    CHECK(runtime->GetLaneBinding(1, binding) && binding.context);
+    std::shared_ptr<boost::asio::io_context> worker = std::move(binding.context);
+    auto done = std::make_shared<std::promise<void>>();
+    auto finished = done->get_future();
+    auto holder = std::make_shared<std::shared_ptr<Runtime>>(std::move(runtime));
+    boost::asio::post(*worker, [holder, done]() {
+        (*holder)->Stop();
+        ppp::tap::TapLaneBinding after;
+        if ((*holder)->GetLaneBinding(1, after)) ++failures; // bindings cleared on Stop
+        holder->reset();
+        done->set_value();
+    });
+    holder.reset();
+    CHECK(finished.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+    worker.reset();
+}
+
 void SsmtQueueModeRejected() {
     ScopedEnv e1("OPENPPP2_XTCP_SHARDS", "2");
     ScopedEnv e2("OPENPPP2_XTCP_AFFINITY", "queues");
@@ -204,6 +237,7 @@ int main() {
     QueueModeStartStop(4);
     PartialStartupUnwind();
     RestartStaleCallbacks();
+    StopFromOwnWorker();
     SsmtQueueModeRejected();
     Shards1QueueModeUnsupported();
     xtcp::buf::ShutdownPools();

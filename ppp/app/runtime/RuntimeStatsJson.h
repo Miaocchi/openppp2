@@ -70,6 +70,9 @@ namespace ppp {
                     tap_linux["direct_gso_packets"] = Json::UInt64(sample.tap_linux.direct_gso_packets);
                     tap_linux["direct_gso_bytes"] = Json::UInt64(sample.tap_linux.direct_gso_bytes);
                     tap_linux["direct_gso_rejected"] = Json::UInt64(sample.tap_linux.direct_gso_rejected);
+                    tap_linux["bound_output_lanes"] = Json::UInt64(sample.tap_linux.bound_output_lanes);
+                    tap_linux["lane_envelope_accepted"] = Json::UInt64(sample.tap_linux.lane_envelope_accepted);
+                    tap_linux["lane_envelope_full_drops"] = Json::UInt64(sample.tap_linux.lane_envelope_full_drops);
                     root["tap_linux"] = std::move(tap_linux);
                 }
 

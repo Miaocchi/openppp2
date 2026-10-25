@@ -1059,6 +1059,8 @@
     <ClInclude Include="ppp\tap\ITap.h" />
     <ClInclude Include="ppp\tap\TxGsoMetadata.h" />
     <ClInclude Include="ppp\tap\TapOutputLane.h" />
+    <ClInclude Include="ppp\tap\TapLaneEnvelopeQueue.h" />
+    <ClInclude Include="ppp\tap\TapLaneBinding.h" />
     <ClInclude Include="ppp\app\protocol\XtcpDirectUploadQueue.h" />
     <ClInclude Include="ppp\tap\TapOutputLanePolicy.h" />
     <ClCompile Include="windows\ppp\tap\TapWindows.cpp" />

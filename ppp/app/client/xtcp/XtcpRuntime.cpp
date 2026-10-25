@@ -259,6 +259,7 @@ bool XtcpRuntime::Start() noexcept { return false; }
 void XtcpRuntime::MarkReady() noexcept {}
 void XtcpRuntime::Stop() noexcept {}
 void XtcpRuntime::SetSsmtActive(bool) noexcept {}
+bool XtcpRuntime::GetLaneBinding(int, ppp::tap::TapLaneBinding&) const noexcept { return false; }
 #if defined(PPP_XTCP_RUNTIME_TESTING)
 void XtcpRuntime::FailWorkerStartForTesting(int) noexcept {}
 #endif
@@ -1305,8 +1306,21 @@ public:
         for (Shard& s : shards_) {
             SchedulePoll(s, generation_.load(std::memory_order_acquire));
         }
+        if (queue_mode_) {
+            std::lock_guard<std::mutex> bindings(lane_binding_sync_);
+            lane_bindings_.clear();
+            for (const Shard& s : shards_) lane_bindings_.push_back(s.io);
+        }
         runtime_instance_id_.store(AllocateRuntimeInstanceId(), std::memory_order_release);
         return true;
+    }
+
+    bool GetLaneBinding(int lane, ppp::tap::TapLaneBinding& binding) const noexcept {
+        // Called by the TAP while it creates an output lane; never takes state_sync_.
+        std::lock_guard<std::mutex> bindings(lane_binding_sync_);
+        if (lane < 0 || static_cast<std::size_t>(lane) >= lane_bindings_.size()) return false;
+        binding.context = lane_bindings_[static_cast<std::size_t>(lane)];
+        return binding.context != nullptr;
     }
 
 #if defined(PPP_XTCP_RUNTIME_TESTING)
@@ -1351,6 +1365,8 @@ public:
                 if (const auto queue = std::atomic_load(&s.spsc)) queue->Abort();
                 s.budget.Stop();
             }
+            std::lock_guard<std::mutex> bindings(lane_binding_sync_);
+            lane_bindings_.clear(); // lanes created later fall back to the TAP context
         }
         if (shards_.empty()) {
             DoStopFinalize();
@@ -4947,6 +4963,8 @@ private:
     XtcpWorkerAffinity affinity_;
     bool queue_mode_ = false;
     bool ssmt_active_ = false;
+    mutable std::mutex lane_binding_sync_;
+    std::vector<std::shared_ptr<boost::asio::io_context>> lane_bindings_;
     std::atomic<unsigned> affinity_pinned_{0};
     std::array<ppp::app::runtime::RuntimeXtcpStats::Worker, 8> worker_runtime_{};
     std::atomic<std::uint32_t> next_external_port_{0};
@@ -4994,6 +5012,9 @@ bool XtcpRuntime::Start() noexcept { return impl_ && impl_->Start(); }
 void XtcpRuntime::MarkReady() noexcept { if (impl_) impl_->MarkReady(); }
 void XtcpRuntime::Stop() noexcept { if (impl_) impl_->Stop(); }
 void XtcpRuntime::SetSsmtActive(bool active) noexcept { if (impl_) impl_->SetSsmtActive(active); }
+bool XtcpRuntime::GetLaneBinding(int lane, ppp::tap::TapLaneBinding& binding) const noexcept {
+    return impl_ && impl_->GetLaneBinding(lane, binding);
+}
 #if defined(PPP_XTCP_RUNTIME_TESTING)
 void XtcpRuntime::FailWorkerStartForTesting(int index) noexcept {
     g_fail_worker_start_for_testing.store(index, std::memory_order_relaxed);

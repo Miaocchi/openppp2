@@ -153,6 +153,8 @@ openppp2_add_cpp_test(xtcp_direct_handoff_test SOURCES xtcp_direct_handoff_test.
 target_link_libraries(xtcp_direct_handoff_test PRIVATE Threads::Threads)
 openppp2_add_cpp_test(tap_output_lane_test SOURCES tap_output_lane_test.cpp)
 target_link_libraries(tap_output_lane_test PRIVATE Threads::Threads)
+openppp2_add_cpp_test(tap_lane_envelope_handoff_test SOURCES tap_lane_envelope_handoff_test.cpp)
+target_link_libraries(tap_lane_envelope_handoff_test PRIVATE Threads::Threads)
 openppp2_add_cpp_test(xtcp_shard_policy_test SOURCES xtcp_shard_policy_test.cpp)
 
 openppp2_add_cpp_test(network_recovery_journal_test

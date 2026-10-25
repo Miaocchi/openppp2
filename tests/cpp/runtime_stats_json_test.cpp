@@ -250,6 +250,9 @@ BOOST_AUTO_TEST_CASE(stats_json_emits_tcp_stack_and_active_linux_tap_blocks) {
     sample.tap_linux.direct_gso_packets = 17;
     sample.tap_linux.direct_gso_bytes = 262144;
     sample.tap_linux.direct_gso_rejected = 1;
+    sample.tap_linux.bound_output_lanes = 2;
+    sample.tap_linux.lane_envelope_accepted = 31;
+    sample.tap_linux.lane_envelope_full_drops = 4;
 
     const std::string encoded = runtime::SerializeRuntimeStats(sample);
     Json::Value root;
@@ -265,4 +268,7 @@ BOOST_AUTO_TEST_CASE(stats_json_emits_tcp_stack_and_active_linux_tap_blocks) {
     BOOST_TEST(root["tap_linux"]["direct_gso_packets"].asUInt64() == 17u);
     BOOST_TEST(root["tap_linux"]["direct_gso_bytes"].asUInt64() == 262144u);
     BOOST_TEST(root["tap_linux"]["direct_gso_rejected"].asUInt64() == 1u);
+    BOOST_TEST(root["tap_linux"]["bound_output_lanes"].asUInt64() == 2u);
+    BOOST_TEST(root["tap_linux"]["lane_envelope_accepted"].asUInt64() == 31u);
+    BOOST_TEST(root["tap_linux"]["lane_envelope_full_drops"].asUInt64() == 4u);
 }

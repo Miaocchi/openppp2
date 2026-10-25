@@ -2,6 +2,7 @@
 
 #include <ppp/app/client/xtcp/XtcpFirstLegHooks.h>
 #include <ppp/app/runtime/RuntimeXtcpStats.h>
+#include <ppp/tap/TapLaneBinding.h>
 #include <ppp/tap/TxGsoMetadata.h>
 #include <ppp/tap/RetainedPacketOwner.h>
 
@@ -116,6 +117,10 @@ public:
     // Must be called before Start(): OPENPPP2_XTCP_AFFINITY=queues is rejected
     // while the TAP runs SSMT workers.
     void SetSsmtActive(bool active) noexcept;
+    // Queue mode only: the executor that owns shard `lane`, for binding the
+    // TAP's GSO output lane `lane` (lane index == shard index, not a kernel
+    // rx/tx queue number). Returns false outside a running queue mode.
+    bool GetLaneBinding(int lane, ppp::tap::TapLaneBinding& binding) const noexcept;
     bool SubmitIPv4Tcp(const void* packet, int packet_length) noexcept;
     bool IsReady() const noexcept;
     bool IsRunning() const noexcept;
