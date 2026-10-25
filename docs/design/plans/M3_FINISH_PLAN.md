@@ -1,5 +1,9 @@
 # M3 A 阶段剩余工作实施计划（Codex，workspace-write）
 
+> Status: Implemented (A-stage) / plan snapshot
+> Type: Plan
+> Last verified: 2026-10-25
+
 工作树：openppp2-m3，分支 `perf/m3-multicore`，基线 `b35d862b`（WIP 快照）。
 权威设计：`M3_PLAN.md` §3.3–3.4、§5.1、§7.2–7.3、§8.A、§9；遵守 `AGENTS.md`、`.codex-brief-m3a.md`、`.codex-brief-m3a2.md`。
 

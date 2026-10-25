@@ -399,7 +399,12 @@ def fold(lines):
         xtcp = sample.get("xtcp")
         assert xtcp is not None, f"stats line without xtcp block: {line!r}"
         for key, value in xtcp.items():
-            agg[key] = max(agg.get(key, 0), value)
+            # Only numeric counters fold by max; labels (affinity_mode) and
+            # per-shard arrays are kept as the latest sample.
+            if isinstance(value, (int, float)) and not isinstance(agg.get(key, 0), (str, list, dict)):
+                agg[key] = max(agg.get(key, 0), value)
+            else:
+                agg[key] = value
     return agg
 
 lines, agg, last_err = [], {}, "stats file missing"

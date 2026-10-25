@@ -1,5 +1,9 @@
 # M3 Plan: In-Stack Large Segments and Multi-Core
 
+> Status: Implemented (A-stage) / plan snapshot
+> Type: Plan
+> Last verified: 2026-10-18
+
 Planning snapshot: 2026-10-18. No implementation, build, throughput measurement,
 or commit is part of this planning task. The next implementation agent should
 work through section 8 in order; proposed APIs, files, switches, and thresholds
