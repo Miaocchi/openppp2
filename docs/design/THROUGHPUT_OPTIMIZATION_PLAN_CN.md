@@ -114,6 +114,52 @@
 - 结论：调大 snd_buf 默认值是 G1/G2 下行缺口的主要手段，前提是先修 1.7。上行
   P4/P16 在各档 snd_buf 下都只有约 1.0×，不受 snd_buf 影响，需要单独工作项。
 
+#### 2.4.2 M3 B 段测量（2026-10-26）
+
+环境：远端共享宿主（56 vCPU，2 NUMA），`origin/main` add77894 + 本分支 runner 改动，
+binary sha256 `a8568046…`；所有命令都经 `tools/run_m3_isolated.sh`；GSO on cap32、memory
+bridge on、AES-256-CFB、KCC、snd_buf 用产品默认（Linux 1 MiB）、GRO 12288、gather
+65536/1 ms。多核用 `client-cpuset` 5 个 CPU（36,39,40,46,50），IO_CPUS 取后 4 个
+（2 shard 取 39,40）；单核用 CPU 36。配对 native，30 s，2 轮 ABBA 交错。数据在远端
+`/home/ppp-m2/m3b-20261026/`（`gates/`、`runs/m3b/`、`summarize.py`）。
+
+**正确性门禁**：`xtcp_tap_netns_e2e.sh`（echo、半关闭、RST、churn×512、netem、60 s soak、
+回滚）在 baseline、s4+SPSC+DIRECT_SPSC、s4+SPSC+workers、s4+SPSC+queues+DIRECT_SPSC 四组
+全部通过，stats-json 确认 shard/worker/亲和/direct_spsc 生效值。stall 压力（queues+direct
+P16 DL 10×10 s、P64 DL 5×、UL P16 5×；workers P16 DL 5×）共 25 格全部 PASS，无 watchdog、
+无零速流、netns 清理干净；qualification 仅因该门禁未开 `--process-perf-stat` 缺进程核数而记
+fail，与功能无关。
+
+**A/B（XTCP Mbps，两轮均值；括号内为相对 baseline）**：
+
+| 配置 | DL P1 | DL P4 | DL P16 | DL P64 | UL P1 | UL P4 | UL P16 | 进程核数 DL P16 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline（全关，1 shard） | 1801 | 1583 | 1740 | 1818* | 1453 | 1389 | 918 | 0.99 |
+| s2+SPSC | 1516 (0.84) | 2176 (1.37) | 2187 (1.26) | 2143 (1.18) | 1475 (1.02) | 1521 (1.09) | 1458 (1.59) | 1.90 |
+| s4+SPSC | 1356 (0.75) | 2195 (1.39) | 2193 (1.26) | 2132 (1.17) | 1444 (0.99) | 1509 (1.09) | 1376 (1.50) | 2.36 |
+| s4+SPSC+workers | 1349 (0.75) | 2215 (1.40) | 2201 (1.26) | 2135 (1.17) | 1460 (1.00) | 1509 (1.09) | 1241 (1.35) | 2.36 |
+| s4+SPSC+queues | 1671 (0.93) | 2190 (1.38) | 2185 (1.26) | 2140 (1.18) | 1127 (0.78) | 1346 (0.97) | 1057 (1.15) | 1.67 |
+| s4+SPSC+queues+DIRECT_SPSC | 1659 (0.92) | 2167 (1.37) | 2196 (1.26) | 2119 (1.17) | 1258 (0.87) | 1441 (1.04) | 1068 (1.16) | 1.68 |
+| s2+SPSC+queues+DIRECT_SPSC | 1664 (0.92) | 2155 (1.36) | 2177 (1.25) | 2144 (1.18) | 1250 (0.86) | 1480 (1.07) | 1137 (1.24) | 1.58 |
+
+\* baseline DL P64 两轮分别有 7、8 条零速流（p10 0 Mbps），qualification fail；所有多 shard
+配置 P64 无零速流（p10 约 33 Mbps）。native 同期为 DL 1690/1694/1534/1351、UL 1310/1294/1126。
+
+单核（client-single-core，P1）：baseline DL 1788 / UL 1234；s4+SPSC DL 1081（0.60）/ UL 1089
+（0.88）；s4+SPSC+DIRECT_SPSC DL 1072（0.60）/ UL 1108（0.90）。
+
+**结论**：
+- 多流 DL 在 2 shard 时提升 1.18–1.40×，4 shard 与 2 shard 持平（约 2.2 Gbps 平台，进程只用
+  1.6–2.4 核，瓶颈不在客户端核数），B 榜"随核数扩展"只到 2 核，未达到 4 核 2× 目标。
+  多 shard 消除了 baseline P64 DL 的零速流饿死。
+- 单连接 DL 无改善且回退：非 queues 模式 P1 DL −16%~−25%，queues 模式 −7%~−8%，单核下
+  −40%。M3"单连接 DL 提升可复现"未达成。
+- workers 亲和与无亲和差别在噪声内；queues 模式降低 CPU（DL P16 6.3 vs 8.8 ns/B）且减轻
+  P1 DL 回退，但 UL 回退 13%–22%。DIRECT_SPSC 无可测收益，仅在 queues 下略缓解 UL。
+- 建议：Linux 默认不变（shards 不设=1、其余开关关闭）。多流服务场景若接受 P1 DL 回退，
+  可显式开 `OPENPPP2_XTCP_SHARDS=2` + `SPSC_INGRESS=1`；queues/workers/DIRECT_SPSC 保持
+  opt-in。M3 记为 WS3 完成、验收未达成；baseline P64 零速流需单独排查。
+
 ### 2.5 文档与代码不一致
 
 XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时默认尝试"，但
@@ -201,7 +247,7 @@ XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时�
 | M0 度量就绪 | 0.1–0.5、1.1、3.1、3.2 | C0/C1/C2/C7 可跑；CI 冒烟上线；xtcp 上游测试在 CI 里跑；FIN bug 修复有测试 |
 | M1 正确性清零 | 1.2–1.5 | 本地补丁栈下 xtcp 上游测试全过；GSO-on full matrix 无 stall、无 wedge |
 | M2 Linux 大单元 | 2.1、2.2、4.1、4.2 | A 榜 native D0 P1 ≥ 2×；GSO 合并默认开启；XTCP 全矩阵 ≥ 1.2× native |
-| M3 栈内大段与多核 | 2.3–2.5、3.3–3.5 | B 榜随核数扩展；单连接 DL 吞吐提升可复现 |
+| M3 栈内大段与多核 | 2.3–2.5、3.3–3.5 | B 榜随核数扩展；单连接 DL 吞吐提升可复现（2026-10-26 B 段：WS3 开关已合入，验收未达成，见 §2.4.2） |
 | M4 Windows/Android | WS5、WS6、2.6 | 两个平台都有真机配对基线，主要瓶颈有剖析数据支撑 |
 | M5 流水线（视数据决定） | 3.6、4.3、4.4 | 只在 C 榜显示单线程到顶时启动 |
 
