@@ -142,14 +142,22 @@ watchdog. 2 MiB P64 DL passed at 1384 Mbps. P1/P4/P16 DL+UL at 1 MiB and
 iperf watchdog on both old and new binaries, so it predates this change.
 See XTCP_INTEGRATION_CN.md §11.188 for the table and residual risks.
 
-The current local series has 30 patches with stable, sparse IDs: 0001-0015,
-0023, 0025-0029, 0031-0035 and 0037-0040 (0035: retry ACK/window construction after
+The current local series has 31 patches with stable, sparse IDs: 0001-0015,
+0023, 0025-0029, 0031-0035 and 0037-0041 (0035: retry ACK/window construction after
 allocation failure; 0037: byte-based immediate ACK for super-segments; former
 0036, SACK blocks fit the option space, is upstream as liulilittle/xtcp#2 and
 its ID is not reused). Upstream absorbs former local 0016 (PSH tail),
 0017 (loss-test helpers), 0018-0022 (KCC), 0024 (pool counts), and 0030
 (duplicate-ACK classification). Their local patch files are removed; this
 rebase introduces no new KCC policy, pool sizing, bridge or GSO defaults.
+
+Patch 0041 aligns `test_sack_gap_edge` with the 1448-byte timestamp-aware
+payload cap and makes its loss injector track every first-sent byte range, so
+retransmissions do not change the drop cadence. The two-gap profile checks the
+actual retransmitted ranges against observed SACK blocks instead of inferring
+them from the aggregate retransmit counter. It also derives `test_ts_ooo_drain`
+timestamps from the live handshake to avoid PAWS rejecting stale synthetic
+TSvals.
 
 Upstream owns OOO frontier reclamation. Residual 0013 retains
 `drained_gap |= TrimOooToFrontier()` for the local ACK integration and the

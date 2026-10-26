@@ -173,26 +173,7 @@ namespace ssea
             _mm_storeu_si128(reinterpret_cast<__m128i*>(p + i), _mm_xor_si128(v, k));
         }
 
-        // Scalar tail: exact copy of the reference word/half/byte logic.
-        int rem = length - i;
-        int32_t* p32 = reinterpret_cast<int32_t*>(p + i);
-        while (rem >= 4)
-        {
-            *p32 = *p32 ^ kf;
-            p32++;
-            rem -= 4;
-        }
-        int16_t* p16 = reinterpret_cast<int16_t*>(p32);
-        if (rem >= 2)
-        {
-            *p16 = static_cast<int16_t>(*p16 ^ kf);
-            p16++;
-        }
-        int8_t* p8 = reinterpret_cast<int8_t*>(p16);
-        if (rem & 1)
-        {
-            *p8 = static_cast<int8_t>(*p8 ^ kf);
-        }
+        masked_xor_fixed_scalar_tail(p + i, length - i, kf);
 
         return true;
 #else
@@ -241,7 +222,7 @@ namespace ssea
 
         // Scalar semantics: the first word uses random_next(seed) - update once
         // before the loop; every word afterwards advances the chain once.
-        kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
+        kf = random_next_from_key_scalar(kf);
 
         int i = 0;
         for (; i + 16 <= length; i += 16)
@@ -250,45 +231,18 @@ namespace ssea
             ks[0] = kf;                                          // word 4m+0: key from the pre-loop update
             for (int w = 1; w < 4; w++)
             {
-                kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
+                kf = random_next_from_key_scalar(kf);
                 ks[w] = kf;
             }
-            kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));  // key for word 4m+4
+            kf = random_next_from_key_scalar(kf);  // key for word 4m+4
 
             __m128i kv = _mm_set_epi32(ks[3], ks[2], ks[1], ks[0]);
             __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i));
             _mm_storeu_si128(reinterpret_cast<__m128i*>(p + i), _mm_xor_si128(v, kv));
         }
 
-        // Remaining full words (0..3): scalar, kf already holds the next key.
-        // Byte offsets are arbitrary here, so words go through memcpy rather
-        // than misaligned int32_t/int16_t dereferences (UB; same codegen on x86).
-        uint8_t* q = p + i;
-        const uint8_t* end = static_cast<const uint8_t*>(max);
-        while (q + 4 <= end)
-        {
-            int32_t w;
-            std::memcpy(&w, q, sizeof(w));
-            w ^= kf;
-            std::memcpy(q, &w, sizeof(w));
-            q += 4;
-            kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
-        }
-
-        // Tail 2/1 bytes: use the current key WITHOUT advancing (scalar semantics).
-        if (q + 2 <= end)
-        {
-            int16_t h;
-            std::memcpy(&h, q, sizeof(h));
-            h = static_cast<int16_t>(h ^ kf);
-            std::memcpy(q, &h, sizeof(h));
-            q += 2;
-        }
-        int8_t* p8 = reinterpret_cast<int8_t*>(q);
-        if (p8 < reinterpret_cast<int8_t*>(const_cast<uint8_t*>(static_cast<const uint8_t*>(max))))
-        {
-            *p8 = static_cast<int8_t>(*p8 ^ kf);
-        }
+        // The scalar tail keeps the word/half/byte key-advance semantics.
+        masked_xor_random_next_scalar_tail(p + i, length - i, kf);
 
         return true;
 #else

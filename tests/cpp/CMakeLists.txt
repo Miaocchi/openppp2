@@ -1069,6 +1069,18 @@ openppp2_add_cpp_test(random_test SOURCES
     support/random_test_stubs.cpp
     "${OPENPPP2_ROOT}/ppp/Random.cpp")
 target_link_libraries(random_test PRIVATE Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+openppp2_add_cpp_test(ssea_misaligned_tail_test SOURCES
+    ssea_misaligned_tail_test.cpp
+    ssea_misaligned_tail_sse.cpp
+    ssea_misaligned_tail_avx2.cpp)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i[3-6]86|X86)$")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set_source_files_properties(ssea_misaligned_tail_sse.cpp PROPERTIES COMPILE_OPTIONS "-msse3")
+        set_source_files_properties(ssea_misaligned_tail_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
+    elseif(MSVC)
+        set_source_files_properties(ssea_misaligned_tail_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+    endif()
+endif()
 openppp2_add_cpp_test(spinlock_test SOURCES
     spinlock_test.cpp
     support/spinlock_test_stubs.cpp
@@ -1077,6 +1089,9 @@ openppp2_add_cpp_test(spinlock_test SOURCES
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
 target_link_libraries(spinlock_test PRIVATE Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+# This test deliberately saturates eight busy-spinning workers. Run it alone so
+# unrelated CTest jobs cannot turn scheduler contention into a timeout.
+set_tests_properties(spinlock_test PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
 openppp2_add_cpp_test(asynchronous_write_io_queue_test SOURCES
     asynchronous_write_io_queue_test.cpp
     support/yield_context_test_stubs.cpp
