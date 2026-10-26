@@ -2,7 +2,7 @@
 
 > Status: Draft / plan
 > Type: Plan
-> Last verified: 2026-10-25（§2.4 最终矩阵来自 d4fcdb6f；其余证据来自 88e0a77b 与 PR #90 分支）
+> Last verified: 2026-10-26（§2.4 历史矩阵 d4fcdb6f；新基线与诊断 add77894）
 > Tracking: Miaocchi/openppp2#91
 
 本文把已有的性能证据整理成一份可执行的优化计划。度量口径沿用
@@ -16,7 +16,7 @@
 | 编号 | 目标 | 榜 | 现状 |
 | --- | --- | --- | --- |
 | G1 | Linux native D0 P1 单核吞吐翻倍以上 | A | 基线约 0.3 Gbps；GSO-on UL 实测 822 Mbps（default-off） |
-| G2 | XTCP 在 A 榜全矩阵（P1/P4/P16 × UL/DL）稳定达到 native 的 1.2 倍 | A | 2026-10-25 最终矩阵未达成：GSO-on UL 0.94–1.17×，DL P1 仅 0.22×（§2.4） |
+| G2 | XTCP 在 A 榜全矩阵（P1/P4/P16 × UL/DL）稳定达到 native 的 1.2 倍 | A | 2026-10-26 当前 main 三轮复测未达成：六组均未每轮达到 1.2×；UL P4/P16 为 0.945–0.991× / 0.913–0.923×（§2.4.2） |
 | G3 | 多核场景按核数扩展，单连接不因跨线程唤醒退化 | B | shard 默认 1；跨线程逐段唤醒 |
 | G4 | Windows、Android 有可复现的真机基线，并找到各自的主要瓶颈 | A/B | 只有回环组件基准；没有真机矩阵 |
 | G5 | 每项优化都不降低正确性：xtcp 上游测试全过，Route3 qualification 全过 | — | 本地补丁栈让 13–15 个 xtcp 测试失败 |
@@ -55,7 +55,9 @@
 内核回环在组件基准里约 9 Gbps，是内核内存拷贝的速度，不是 OpenPPP2 能达到的上限，
 不作为目标值。产品目标以 A/B 榜的 native 同机配对为准。
 
-### 2.4 M2 最终矩阵（2026-10-25，A 榜定向）
+### 2.4 M2 矩阵与瓶颈（A 榜定向）
+
+以下先保留 2026-10-25 的历史矩阵；当前 main 的复测与上行诊断见 §2.4.2。
 
 冻结二进制：`d4fcdb6f`（clean，SHA-256 `7767443b…`），远端共享 VM（Xeon E5-2680 v4），
 隔离 netns，客户端单核绑定。参数：gather 65536 / wait 1 ms、memory bridge on、
@@ -108,11 +110,139 @@
 - xtcp 更新到上游 f71548f（#102）后，KCC v2 的 cwnd 目标缺少 Linux `bbr_set_cwnd`
   的 ack-aggregation 与 quantization 余量，大 snd_buf 下多流 DL 减半；#106（补丁 0038）
   已修复，P4/P16 DL 回到旧版水平。
-- 大 snd_buf × 多流的卡死根因：xtcp 全局固定缓冲池（约 36 MiB，无堆兜底）被发送缓冲
+- 大 snd_buf × 多流的卡死根因：xtcp 全局固定缓冲池（约 36 MiB，修复前无堆兜底）被发送缓冲
   占满后，入向 ACK 因申请不到缓冲被丢弃，snd_buf 无法释放，形成死锁。默认 64 KiB 在
-  数百条满载流时同样可能触发，修复进行中（工作项 1.7）。
-- 结论：调大 snd_buf 默认值是 G1/G2 下行缺口的主要手段，前提是先修 1.7。上行
+  数百条满载流时同样可能触发。#108 的 0039/0040 已用 TX 余量与有界 heap overflow
+  修复（集成说明 §11.188），#109 已把 Linux 默认 snd_buf 调为 1 MiB。
+- 结论：调大 snd_buf 默认值是 G1/G2 下行缺口的主要手段，1.7 的前置修复已经合入。上行
   P4/P16 在各档 snd_buf 下都只有约 1.0×，不受 snd_buf 影响，需要单独工作项。
+
+#### 2.4.2 当前 main 复测与上行多流归因（2026-10-26）
+
+冻结产品源码 `add778946e268ad765a284b682dda02a5cba1b85`；新构建二进制 SHA-256
+为 `6c6b7e327b7d64a06ab7e5edd0159cc6a72d52f824645fdb10f916bbf1965363`。
+使用固定上游 f71548f、0038/0039/0040、Linux snd_buf 1 MiB；M3 开关全部保持关闭，
+shards=1、客户端与 iperf 同绑 CPU 49、GSO on、cap32、KCC、AES-256-CFB、
+direct memory bridge、gather=65536、wait=1 ms。构建与测量均持共享锁；测量经过
+空闲检查，外层独立 network/mount namespace，内层三端 netns。
+
+远端本次证据根目录记为 `W=/home/ppp-m2/m2b-20261026`。`m2b-source.tgz`、
+`binary.sha256`、`frozen-source.json` 与每组的 `provenance.json` 保存冻结证据。
+产品源码未改；测量工具先修复同文件系统 bind mount 被 `os.path.ismount()` 误拒绝的问题，
+改读 `/proc/self/mountinfo`，继续核对 backing 目录身份。初次启动前拒绝记录保留在
+`W/runs/`、`W/runs-isolated/`；实际测量位于 `W/runs-v3/`。
+包装器在 Popen 时调整方向和 snd_buf，`provenance.args` 保留 measure 的原始模板；
+实际参数以 `matrix/ordered-runs.json` 和 `matrix-metadata.txt` 为准。
+早期诊断沿用已有 `ordered-runner.py` 的公共 perf 缓存配置
+`/home/ppp-m2/source/build/private/m2/perf-cache`，存在新目录以外的缓存写入可能，
+这是本次执行偏差。AES-128 对照及后续报告改用本次专用 `W/ordered-runner.py` 与
+`W/perf.config`，公共缓存没有清理。
+
+**新基线：30 秒正式区间、omit=2 秒、三轮交错。** 每轮依次测 UL P1/P4/P16、
+DL P1/P4/P16、DL P64；第一、三轮 native 在前，第二轮 XTCP 在前。结果根目录为
+`W/runs-v3/baseline/pass-{1,2,3}/`，分组名为 `ul-p1-4-16`、`dl-p1-4-16`、
+`dl-p64`，每格保存 `matrix/round-1/{stack}-gso-on-p{P}-{direction}/result.json`。
+吞吐列是各栈三轮的中位数（Mbps），比值列是当轮 XTCP/native，不是两个中位数之比。
+
+| 方向 / P | native 中位数 | XTCP 中位数 | 第 1 轮比值 | 第 2 轮比值 | 第 3 轮比值 | 每轮 ≥1.2× |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| UL / 1 | 1124.60 | 1230.94 | 1.095 | 1.072 | 1.090 | 否 |
+| UL / 4 | 1083.59 | 1070.41 | 0.991 | 0.991 | 0.945 | 否 |
+| UL / 16 | 1099.58 | 1012.98 | 0.921 | 0.923 | 0.913 | 否 |
+| DL / 1 | 1811.82 | 1715.20 | 0.954 | 0.953 | 0.917 | 否 |
+| DL / 4 | 1744.60 | 2138.17 | 1.134 | 1.226 | 1.246 | 否 |
+| DL / 16 | 1739.22 | 1837.05 | 1.067 | 1.050 | 1.051 | 否 |
+| DL / 64 | 944.60 | 1249.25 | 1.019 | 1.323 | 1.384 | 否 |
+
+`W/summary.json` 保留逐轮原值，`W/audit.json` 核验 42 格 result/qualification 全部
+pass、零速流为 0、9 组冻结/监测/清理通过，并核对实际 argv 与 M3 关闭状态。
+另有 20 格定向诊断通过，放宽 watchdog 仍失败的 `p64-long` 现场单独保留。
+G2 **未达成**：必选六组均未每轮达到 1.2×；DL P4 仅第二、三轮达标，补充项 DL P64
+也仅第二、三轮达标。DL P1 已不再受历史 64 KiB snd_buf 的约 350 Mbps 上限限制，
+但比值仍低于 1。DL P64 的 native 三轮为 1522.65 / 944.60 / 891.68 Mbps，存在明显
+波动；三轮未重现 pool 耗尽或零速流，不代表长期稳定性验收。共享 VM 即使使用测量锁
+和空闲检查也不能完全消除宿主调度影响；本轮提供方向性证据，不替代独占机器的 A 榜验收。
+
+**20 秒定向诊断。** `W/runs-v3/diagnostic/base/matrix/round-1/` 中 native/XTCP
+P4/P16 四格均 pass、零速流为 0：
+
+| P | native Mbps | XTCP Mbps | XTCP/native | XTCP PPP 核数 | 同核 iperf 核数 | 所选核心忙碌率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 1090.40 | 1027.19 | 0.942 | 0.848 | 0.108 | 97.9% |
+| 16 | 1078.26 | 988.59 | 0.917 | 0.866 | 0.107 | 98.5% |
+
+- 核心容量基本用尽，不能把 PPP 未独占 1.0 核误判成窗口瓶颈：iperf 与 PPP 本来就共用
+  一核。`cpu-process-perf.csv`、`cpu-iperf-perf.csv`、`cpu-*-proc-stat.txt`、
+  `result.json` 给出上述数值。`client-ss-tin-samples.txt` 保存 TCP_INFO 独立采样。
+- `stats.ndjson` 中两格 upload budget reject、direct upload backpressure、ingress drop
+  均为 0，预算上限仍为 32 MiB；这组没有触发 #100 的预算限制。direct accepted
+  bytes/chunks 的全程平均块长约 9 KiB，逐块分配、校验和与 ACK 等固定成本仍存在。
+- `cpu-process-perf.data` 的 49 Hz CPU 样本中，AES-256-CFB 加密占 XTCP P4/P16
+  的 33.80%/33.66%，native 为 33.90%/34.20%；它是共同的大头，不能单独解释
+  XTCP/native 的缺口。XTCP 的 checksum 类符号约 4%，另有协议栈、分配、引用计数与
+  mutex 成本。原始报告为 `W/perf-{native,xtcp}-gso-on-p{4,16}-ul.txt`；样本量仅
+  约 800/格，百分比是定向证据，不能据此宣称精确的 C4/C5/C6 保留率。
+
+**单变量 A/B（每方案 20 秒、单轮，单位 Mbps）。** 路径为
+`W/runs-v3/diagnostic/{base,gather-off,wait-off,aes128}/matrix/round-1/`；16 格均
+result/qualification pass、零速流为 0，冻结与清理通过。
+
+| 方案 | native P4 | XTCP P4 | 比值 | native P16 | XTCP P16 | 比值 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 默认 gather / wait / AES-256 | 1090.40 | 1027.19 | 0.942 | 1078.26 | 988.59 | 0.917 |
+| gather=1（不聚合） | 1077.99 | 762.53 | 0.707 | 1066.47 | 791.50 | 0.742 |
+| gather=65536，wait=0 | 1097.18 | 927.46 | 0.845 | 1075.46 | 956.32 | 0.889 |
+| 仅改为 AES-128-CFB | 1218.73 | 1155.53 | 0.948 | 1178.19 | 1051.76 | 0.893 |
+
+- 关闭 gather 后 XTCP P4/P16 吞吐下降 25.8%/19.9%，关闭等待下降 9.7%/3.3%。
+  `datapath-client.jsonl` 中全程 carrier bytes/send_calls 显示，默认平均写入约
+  42,969/33,072 B，wait=0 降到 23,818/22,927 B，不聚合降到约 9 KiB。
+  对照 native 默认约 43,658/43,580 B。多流时逐流聚合变小，放大 carrier、分配与唤醒
+  的固定成本；目前 gather 和 1 ms 等待确实有收益，不应关闭。
+- AES-128 使 XTCP P4/P16 增加 12.5%/6.4%，native 同时增加 11.8%/9.3%；比值没有
+  接近 1.2。加密是共同的 CPU 大头，更换密码套件不是 G2 修复。
+- 默认诊断的 PPP CPU 成本：native P4/P16 为 6.50/6.83 ns/B，XTCP 为 6.66/7.19
+  ns/B；同核 iperf 占用也更高。P4 的聚合大小已接近 native，仍有差距，不能把全部
+  差距归因于 gather。已确定上限在单核 CPU 容量，尚未把剩余差距收敛为一个可修复的
+  函数。下一步是按每字节成本拆分协议栈/校验和/分配和 carrier，加密考虑跨流批量；
+  C4/C5/C6 完整分层与长期/损伤验收仍待做。
+
+以上为单轮筛选，不是新默认值的稳定性验收；本次不修改产品 C++、密码套件或 M3 默认值。
+
+#### 2.4.3 P64 UL watchdog：iperf 周期统计阻塞结束计时（2026-10-26）
+
+旧现场根目录 `/home/ppp-m2/runs/poolfix/new-p64-64k-ul-a/` 的
+`matrix/round-1/xtcp-gso-on-p64-ul/timeout-diagnostics/` 中 iperf 主线程为 D，
+连接仍为 ESTAB，接收端超时前仍有流量；19 个正式区间跨约 48.66 秒，不能因为清理后
+`flows_closed=65` 就归因为 FIN 收尾。
+
+新 native 对照 `W/runs-v3/diagnostic/p64-long/` 把 watchdog 从 52 秒放宽到 150 秒，
+仍在约 59 秒后以控制消息 Broken pipe 失败。独立采样的
+`iperf-kernel-stacks.ndjson` 多次捕获主线程
+`getsockopt(TCP_INFO) → tcp_get_info → __lock_sock`。iperf 3.18 的
+`iperf_stats_callback` 遍历所有流同步查询 TCP_INFO；client 主循环先运行这些 timer
+callback 再检查结束条件。同核 64 个发送线程下，统计的 socket 锁等待拖延结束计时。
+源码证据为 ESnet iperf 3.18 的
+[iperf_api.c](https://github.com/esnet/iperf/blob/3.18/src/iperf_api.c)、
+[iperf_client_api.c](https://github.com/esnet/iperf/blob/3.18/src/iperf_client_api.c)，以及 Linux
+v6.12 [tcp.c](https://github.com/torvalds/linux/blob/v6.12/net/ipv4/tcp.c)，本次下载副本保存在 W 中。
+
+单变量对照 `W/runs-v3/diagnostic/p64-i0/` 仅给 client 加 `--interval 0`：20 秒正式
+区间、原 52 秒 watchdog，native 970.24 Mbps、XTCP 878.07 Mbps，两格均 pass、
+64 条流全部非零，清理与冻结校验通过。该失败的直接机制是 harness 使用 iperf 周期
+统计的方式；没有证据把这一次超时归为产品 FIN/close 缺陷，也不能据此消除所有历史
+P64 产品问题。
+
+runner 因而只对 `client-single-core × UL × P>=64` 使用 `--interval 0`，在 dry-run、
+metadata 与 result JSON 记录 `iperf_report_interval`。其他格继续每秒统计，最终逐流
+统计仍保留；该组合不再有 iperf 每秒区间，诊断时沿用 stats/ss 独立采样。
+
+正式修改复测位于 `W/runs-v3/diagnostic/p64-fixed/`：同一产品二进制，20 秒、52 秒
+watchdog，native 982.57 Mbps、XTCP 889.89 Mbps，两格 result/qualification 均 pass，
+64 条流全部非零，实际正式区间 20.10/19.85 秒，metadata/result 的 interval 均为 0；
+冻结与 netns 清理通过。工具源码及指纹为 `W/src-fixed/`、`W/frozen-source-fixed.json`、
+`W/harness-fixed.diff`。本地 planner/CPU 合同、冻结清单测试、bind mount 回归通过，
+远端 bind mount 隔离冒烟与拒绝未隔离运行的回归通过；没有修改产品 C++ 默认行为。
 
 ### 2.5 文档与代码不一致
 
@@ -143,8 +273,10 @@ XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时�
 | 1.3 | `XTCP-GSO-STALL-001` 根因与修复 | M |
 | 1.4 | P64 DL server wedge；direct 路径间歇低值（resume_effective=0 的那一轮） | M |
 | 1.5 | 上游合并进展：liulilittle/xtcp#1 合入后，把补丁栈 rebase 到上游新版本，删除已合入的补丁 | S |
-| 1.6 | 单连接下行固定上限：GSO-on DL P1 XTCP 约 414 Mbps（native 0.22×，§2.4）。已定位为 xtcp snd_buf 默认 64 KiB（§2.4.1）；待 1.7 修复后调大默认值 | S |
-| 1.7 | xtcp 缓冲池耗尽死锁：池满后入向 ACK 被丢弃导致 snd_buf 永不释放（§2.4.1）；ACK/接收方向不得被发送缓冲饿死 | M |
+| 1.6 | 单连接下行固定上限已定位为 snd_buf 64 KiB；#109 已把 Linux 默认值调为 1 MiB，配套 1.7 已合入；当前矩阵见 §2.4.2 | S |
+| 1.7 | 缓冲池耗尽死锁已由 #108 的 0039/0040 修复（TX 余量 + 有界 heap overflow，集成说明 §11.188）；继续监测高并发压力 | M |
+| 1.8 | P64 UL watchdog 已定位为 iperf 3.18 同核发送时的 TCP_INFO 统计阻塞；runner 对应组合关闭周期统计，保留逐流结果（§2.4.3） | S |
+| 1.9 | UL P4/P16 的 G2 缺口：单核 CPU 基本饱和，预算未触顶；继续降低加密、逐块处理与 carrier 成本（§2.4.2） | M |
 
 ### WS2 把处理单元做大（主要收益来源）
 
@@ -172,8 +304,8 @@ XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时�
 
 | 项 | 内容 | 量 |
 | --- | --- | --- |
-| 4.1 | 测量 C4/C5/C6 三档，量化 exchanger/carrier、mux、加密各自的保留率 | S |
-| 4.2 | 上行 gather 晋升：60 KiB gather 在单轮筛选中 P1/P4/P16 达到 1.21–1.26×，但三轮复测 P1 不稳；查清不稳原因 | M |
+| 4.1 | C4/C5/C6 完整保留率仍待测；本次 perf 定位 AES-256 加密约占 PPP 样本 34%，AES-128 配对没有消除 G2 差距（§2.4.2） | S |
+| 4.2 | 当前 gather=65536 / wait=1 ms 已有效：关闭聚合 P4/P16 降约 26%/20%，关闭等待降约 10%/3%；继续查逐流聚合与每块固定成本，保持当前默认（§2.4.2） | M |
 | 4.3 | 批量加密：一次处理多个帧，复用已做的 AES-NI 4 路交织 | M |
 | 4.4 | 发送零拷贝：帧头和载荷用 writev 拼接，去掉一次复制 | M |
 

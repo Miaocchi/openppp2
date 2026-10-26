@@ -135,6 +135,27 @@ def test_tcp_info_sampling_planner_flag() -> None:
     assert field(lines[0], "tcp_info_sampling") == "true"
 
 
+def test_high_parallel_upload_report_interval() -> None:
+    cpu = str(min(os.sched_getaffinity(0)))
+    lines = plan("--stacks", "native,xtcp", "--parallel", "16,64,128",
+                 "--directions", "ul,dl", "--cpu-profile", "client-single-core",
+                 "--affinity-cpus", cpu)
+    for line in lines:
+        expected = "0" if field(line, "direction") == "ul" and int(field(line, "parallel_flows")) >= 64 else "1"
+        assert field(line, "iperf_report_interval") == expected
+    for line in plan("--parallel", "64", "--directions", "ul,dl"):
+        assert field(line, "iperf_report_interval") == "1"
+    # Exercise the actual argv construction without starting iperf or PPP.
+    source = RUNNER.read_text()
+    command = next(line.strip() for line in source.splitlines() if "local -a iperf_args=" in line)
+    command = command.replace("local -a", "declare -a", 1)
+    result = subprocess.run(["bash", "-c", "target_ip=192.0.2.2; iperf_port=5201; p=64; DURATION=20; OMIT=2; iperf_interval=0; " + command + '; printf "%s\\n" "${iperf_args[@]}"'],
+                            check=True, capture_output=True, text=True)
+    args = result.stdout.splitlines()
+    assert args[args.index("--interval") + 1] == "0"
+    assert args[args.index("-P") + 1] == "64"
+
+
 def test_veth_gso_planner_flag() -> None:
     lines = plan(
         "--stacks", "xtcp", "--parallel", "1", "--directions", "dl",
@@ -640,6 +661,7 @@ def main() -> None:
     invalid("--xtcp-direct-upload-gather-wait-ms", "3")
     test_runner_help()
     test_tcp_info_sampling_planner_flag()
+    test_high_parallel_upload_report_interval()
     test_veth_gso_planner_flag()
     test_performance_gate()
     test_matrix_qualification_aggregates_every_cpu_profile()
