@@ -121,6 +121,26 @@ class Prerequisites(unittest.TestCase):
         self.assertEqual(policy["effective"]["shard_policy_requested"], "auto")
         self.assertEqual(policy["effective"]["worker_bindings"][0]["tid"], 123)
 
+    def test_same_filesystem_bind_mount_isolation(self):
+        env = {"OPENPPP2_M3_ISOLATION_ROOT": "/private",
+               "OPENPPP2_M3_INITIAL_NET": "host-net",
+               "OPENPPP2_M3_INITIAL_MNT": "host-mnt"}
+        mounts = ("10 1 8:1 /private/etc-netns /etc/netns rw - ext4 /dev/sda1 rw\n"
+                  "11 1 8:1 /private/run-netns /run/netns rw - ext4 /dev/sda1 rw\n")
+        with patch.dict(os.environ, env, clear=True), \
+             patch("os.readlink", return_value="isolated"), \
+             patch("os.path.realpath", side_effect=lambda path: path), \
+             patch("os.path.ismount", side_effect=lambda path: path == "/sys"), \
+             patch("os.path.samefile", return_value=True), \
+             patch.object(Path, "read_text", return_value=mounts):
+            check_isolation()
+            with patch.object(Path, "read_text", return_value=mounts.splitlines()[0]):
+                with self.assertRaisesRegex(SystemExit, "backing mount missing"):
+                    check_isolation()
+            with patch("os.path.samefile", return_value=False):
+                with self.assertRaisesRegex(SystemExit, "backing mount missing"):
+                    check_isolation()
+
     def test_wrapper_mocked_mount_order_and_failure(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "build/m3") as directory:
             root = Path(directory)

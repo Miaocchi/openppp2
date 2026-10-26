@@ -612,7 +612,7 @@ payload_cap = effective_l3_mtu - actual_ipv4_header_length - actual_tcp_header_l
 - `OPENPPP2_TAP_GSO_LANES_DISABLE=1` 可强制回到共享路径，用于对照。
 - XTCP 每连接 snd_buf 默认值：Linux 桌面/服务器为 1 MiB（配额，不预分配），其他平台仍用上游 64 KiB。`OPENPPP2_XTCP_SNDBUF_BYTES` 与 `OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` 仍优先。依据：64 KiB 时单流 DL 约 410 Mbps（native 0.22×），1 MiB 时约 0.95×；大量满载流由补丁 0039 的池余量保证 ACK 入向不被饿死（见吞吐计划 §2.4.1）。
 - M3 opt-in 开关（默认关闭；不设置时行为同上）：`OPENPPP2_XTCP_DIRECT_SPSC=1` 把 direct-upload 数据队列换成固定 4096 槽的 SPSC handoff（上限与 gather 不变；环分配失败时保留 relay 路径）。`OPENPPP2_XTCP_AFFINITY=queues` 配合 `OPENPPP2_XTCP_SHARDS>1` 与数量精确的 `OPENPPP2_XTCP_IO_CPUS`，为每个 shard 建独立 io_context 和绑核 worker，把 GSO lane i 绑到 shard i，并把 lane 读到的包经有界暂存（1024 条 / 8 MiB）交回 TAP context 执行原 `OnInput`；与 SSMT 同开时启动失败，单 shard 记为 unsupported。`OPENPPP2_XTCP_AFFINITY_STRICT=1` 时任一绑核失败即拒绝启动。
-- M3 B 段测量（2026-10-26，远端共享宿主，配对 native，30 s×2 轮 ABBA）：2 shard + SPSC ingress 使多流 DL 提升 1.18–1.40×、UL P16 提升 1.59×，但约 2.2 Gbps 封顶（4 shard 无额外收益），单流 DL 回退 16%–25%（单核 40%）。queues 模式降低每字节 CPU、把 P1 DL 回退减半，但 UL 回退 13%–22%；workers 亲和与 DIRECT_SPSC 无可测收益。默认值不变。单 shard baseline 的 P64 DL 每轮出现 7–8 条零速流。详见吞吐计划 §2.4.2。
+- M3 B 段测量（2026-10-26，远端共享宿主，配对 native，30 s×2 轮 ABBA）：2 shard + SPSC ingress 使多流 DL 提升 1.18–1.40×、UL P16 提升 1.59×，但约 2.2 Gbps 封顶（4 shard 无额外收益），单流 DL 回退 16%–25%（单核 40%）。queues 模式降低每字节 CPU、把 P1 DL 回退减半，但 UL 回退 13%–22%；workers 亲和与 DIRECT_SPSC 无可测收益。默认值不变。单 shard baseline 的 P64 DL 每轮出现 7–8 条零速流。详见吞吐计划 §2.4.4。
 - `TunGsoCoalescer::kSegmentCap` 默认值从 4 改为 32。`OPENPPP2_TAP_GSO_SEGMENTS`（1–48）仍可覆盖；`OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` 在未显式设置时仍用 48。`tun_gso_output_probe` 的 production builder 契约固定在 cap 4 运行。
 
 **验证**（WSL2 Debian，三端独立 netns，XTCP，每格 2 轮×15s+2s，单位 Mbps，中位数）：
