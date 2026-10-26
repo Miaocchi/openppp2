@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from datapath_matrix_metadata import check_isolation, runtime_policy_metadata
+from datapath_matrix_metadata import check_isolation, is_mountpoint, runtime_policy_metadata
 from datapath_m3_manifest import campaign
 from datapath_cpu_isolation import apply, readback, restore, snapshot
 
@@ -74,6 +74,14 @@ class Prerequisites(unittest.TestCase):
             evidence = json.loads(output.read_text())
             self.assertEqual(evidence["allowed_cpus"], [cpu])
             self.assertEqual(evidence["pid"], int(result.stdout))
+
+    def test_mountpoint_detects_same_filesystem_bind_mount(self):
+        with tempfile.TemporaryDirectory() as directory:
+            info = Path(directory) / "mountinfo"
+            info.write_text("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n"
+                            "2 1 8:1 /home/x/etc-netns /etc/netns rw - ext4 /dev/sda1 rw\n")
+            self.assertTrue(is_mountpoint("/etc/netns", str(info)))
+            self.assertFalse(is_mountpoint("/etc/netns-not-mounted", str(info)))
 
     def test_isolation_fails_before_mutation(self):
         with patch.dict(os.environ, {}, clear=True):
