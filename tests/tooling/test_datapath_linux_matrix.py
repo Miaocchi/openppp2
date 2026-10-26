@@ -89,6 +89,9 @@ def test_runner_help() -> None:
     invalid("--xtcp-shard-route", "source-port-bit6")
     invalid("--xtcp-shards", "1", "--xtcp-shard-route", "source-port-bit6")
     invalid("--xtcp-direct-download-chunk-bytes", "65536")
+    invalid("--xtcp-direct-spsc", "2")
+    invalid("--xtcp-affinity", "pinned")
+    invalid("--xtcp-affinity", "queues")
     valid_route = subprocess.run(
         [str(RUNNER), "--artifacts", "/tmp/datapath-matrix-plan", "--dry-run",
          "--stacks", "xtcp", "--parallel", "16", "--directions", "dl",
@@ -652,3 +655,15 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def test_runner_m3_queue_and_direct_spsc_policy() -> None:
+    cpus = sorted(os.sched_getaffinity(0))
+    cpu_list = ",".join(str(cpu) for cpu in cpus[:2])
+    lines = plan("--stacks", "xtcp", "--tap-gso", "on", "--parallel", "16", "--directions", "dl",
+                 "--xtcp-shards", "2", "--xtcp-affinity", "queues", "--xtcp-direct-spsc", "1",
+                 "--cpu-profile", "client-cpuset", "--affinity-cpus", cpu_list)
+    assert field(lines[0], "xtcp_affinity") == "queues"
+    assert field(lines[0], "xtcp_direct_spsc") == "1"
+    default = plan("--stacks", "xtcp", "--tap-gso", "on", "--parallel", "1", "--directions", "dl")
+    assert field(default[0], "xtcp_direct_spsc") == "unset"

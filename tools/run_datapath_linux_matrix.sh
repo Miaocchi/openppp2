@@ -26,11 +26,13 @@ XTCP_SPSC_INGRESS=""
 XTCP_AFFINITY=""
 XTCP_IO_CPUS=""
 XTCP_AFFINITY_STRICT=""
+XTCP_DIRECT_SPSC=""
 XTCP_AUTO_SHARDS=""
 POLICY_UNSET=(-u OPENPPP2_XTCP_SHARDS -u OPENPPP2_XTCP_SPSC_INGRESS
   -u OPENPPP2_XTCP_AFFINITY -u OPENPPP2_XTCP_IO_CPUS
   -u OPENPPP2_XTCP_AFFINITY_STRICT -u OPENPPP2_XTCP_AUTO_SHARDS
-  -u OPENPPP2_XTCP_SHARD_ROUTE -u OPENPPP2_TAP_LANE_RX_CPUS)
+  -u OPENPPP2_XTCP_SHARD_ROUTE -u OPENPPP2_TAP_LANE_RX_CPUS
+  -u OPENPPP2_XTCP_DIRECT_SPSC)
 XTCP_SHARD_ROUTE=""
 XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES=""
 XTCP_SEND_RETRY_US=""
@@ -99,9 +101,10 @@ IRQ affinity writes are prohibited. M3 can explicitly disable kernel steering.
   --xtcp-cc NAME             XTCP congestion control (kcc/bbr/cubic/reno; default kcc)
   --xtcp-shards POLICY       auto|unset|1..8 (unset omits the environment variable)
   --xtcp-spsc-ingress VALUE  0|1|unset
-  --xtcp-affinity VALUE      off|workers|unset
+  --xtcp-affinity VALUE      off|workers|queues|unset
   --xtcp-io-cpus LIST        Ordered worker CPU IDs, or unset
   --xtcp-affinity-strict VALUE 0|1|unset
+  --xtcp-direct-spsc VALUE   0|1|unset (client OPENPPP2_XTCP_DIRECT_SPSC)
   --xtcp-auto-shards VALUE   0|1|unset (0 disables auto policy)
   --xtcp-shard-route NAME    Opt-in 2-shard route: source-port-bit6|source-port-xor-1-2-8
   --xtcp-direct-download-chunk-bytes BYTES  XTCP direct-download single flight: 16384|32768
@@ -167,6 +170,7 @@ while (($#)); do
     --xtcp-affinity) need_value "$@"; XTCP_AFFINITY="$2"; shift 2 ;;
     --xtcp-io-cpus) need_value "$@"; XTCP_IO_CPUS="$2"; shift 2 ;;
     --xtcp-affinity-strict) need_value "$@"; XTCP_AFFINITY_STRICT="$2"; shift 2 ;;
+    --xtcp-direct-spsc) need_value "$@"; XTCP_DIRECT_SPSC="$2"; shift 2 ;;
     --xtcp-auto-shards) need_value "$@"; XTCP_AUTO_SHARDS="$2"; shift 2 ;;
     --xtcp-shard-route) need_value "$@"; XTCP_SHARD_ROUTE="$2"; shift 2 ;;
     --xtcp-direct-download-chunk-bytes) need_value "$@"; XTCP_DIRECT_DOWNLOAD_CHUNK_BYTES="$2"; shift 2 ;;
@@ -196,10 +200,10 @@ done
 [[ -n "$ARTIFACT_DIR" ]] || { echo "--artifacts is required" >&2; exit 2; }
 [[ "$KERNEL_STEERING" == on || "$KERNEL_STEERING" == off ]] || { echo "--kernel-steering must be on or off" >&2; exit 2; }
 [[ -z "$XTCP_SHARDS" || "$XTCP_SHARDS" =~ ^(auto|unset|[1-8])$ ]] || { echo "--xtcp-shards must be auto|unset|1..8" >&2; exit 2; }
-for policy_value in "$XTCP_SPSC_INGRESS" "$XTCP_AFFINITY_STRICT" "$XTCP_AUTO_SHARDS"; do
+for policy_value in "$XTCP_SPSC_INGRESS" "$XTCP_AFFINITY_STRICT" "$XTCP_AUTO_SHARDS" "$XTCP_DIRECT_SPSC"; do
   [[ -z "$policy_value" || "$policy_value" =~ ^(0|1|unset)$ ]] || { echo "policy boolean must be 0|1|unset" >&2; exit 2; }
 done
-[[ -z "$XTCP_AFFINITY" || "$XTCP_AFFINITY" =~ ^(off|workers|unset)$ ]] || { echo "--xtcp-affinity must be off|workers|unset" >&2; exit 2; }
+[[ -z "$XTCP_AFFINITY" || "$XTCP_AFFINITY" =~ ^(off|workers|queues|unset)$ ]] || { echo "--xtcp-affinity must be off|workers|queues|unset" >&2; exit 2; }
 if [[ -n "$XTCP_IO_CPUS" && "$XTCP_IO_CPUS" != unset ]]; then
   [[ "$XTCP_IO_CPUS" =~ ^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*))*$ ]] || { echo "invalid ordered worker CPU list" >&2; exit 2; }
   IFS=, read -r -a worker_cpus <<<"$XTCP_IO_CPUS"
@@ -210,7 +214,7 @@ if [[ -n "$XTCP_IO_CPUS" && "$XTCP_IO_CPUS" != unset ]]; then
   done
 fi
 POLICY_ENV=()
-for policy_name in SHARDS SPSC_INGRESS AFFINITY IO_CPUS AFFINITY_STRICT AUTO_SHARDS; do
+for policy_name in SHARDS SPSC_INGRESS AFFINITY IO_CPUS AFFINITY_STRICT AUTO_SHARDS DIRECT_SPSC; do
   policy_variable="XTCP_${policy_name}"
   policy_value="${!policy_variable}"
   [[ -z "$policy_value" || "$policy_value" == unset ]] || POLICY_ENV+=("OPENPPP2_XTCP_${policy_name}=$policy_value")
@@ -275,8 +279,8 @@ cpu_in_kernel_list() {
 }
 
 CPU_LIST=()
-if [[ "$XTCP_AFFINITY" == workers && "$CPU_PROFILE" != client-cpuset ]]; then
-  echo '--xtcp-affinity workers requires --cpu-profile client-cpuset' >&2
+if [[ ( "$XTCP_AFFINITY" == workers || "$XTCP_AFFINITY" == queues ) && "$CPU_PROFILE" != client-cpuset ]]; then
+  echo '--xtcp-affinity workers|queues requires --cpu-profile client-cpuset' >&2
   exit 2
 fi
 case "$CPU_PROFILE" in
@@ -348,8 +352,8 @@ if [[ "$DRY_RUN" == true ]]; then
           mode_slot=$(( (mode_index + round - 1) % ${#MODE_LIST[@]} ))
           mode="${MODE_LIST[$mode_slot]}"
           IFS=/ read -r stack tap_gso <<<"$mode"
-          printf 'xtcp_shards_requested=%s xtcp_spsc_ingress=%s xtcp_affinity=%s xtcp_io_cpus=%s xtcp_affinity_strict=%s xtcp_auto_shards=%s startup_cpu_envelope=%s irq_writes=disabled kernel_steering=%s ' \
-            "${XTCP_SHARDS:-unset}" "${XTCP_SPSC_INGRESS:-unset}" "${XTCP_AFFINITY:-unset}" "${XTCP_IO_CPUS:-unset}" "${XTCP_AFFINITY_STRICT:-unset}" "${XTCP_AUTO_SHARDS:-unset}" "${AFFINITY_CPUS:-inherited}" "$KERNEL_STEERING"
+          printf 'xtcp_shards_requested=%s xtcp_spsc_ingress=%s xtcp_affinity=%s xtcp_io_cpus=%s xtcp_affinity_strict=%s xtcp_auto_shards=%s xtcp_direct_spsc=%s startup_cpu_envelope=%s irq_writes=disabled kernel_steering=%s ' \
+            "${XTCP_SHARDS:-unset}" "${XTCP_SPSC_INGRESS:-unset}" "${XTCP_AFFINITY:-unset}" "${XTCP_IO_CPUS:-unset}" "${XTCP_AFFINITY_STRICT:-unset}" "${XTCP_AUTO_SHARDS:-unset}" "${XTCP_DIRECT_SPSC:-unset}" "${AFFINITY_CPUS:-inherited}" "$KERNEL_STEERING"
           printf 'round=%s stack=%s tap_gso=%s parallel_flows=%s direction=%s transport_cipher=%s cpu_profile=%s affinity_cpus=%s xtcp_memory_bridge=%s xtcp_memory_bridge_override=%s xtcp_ndi_tso_tx=%s xtcp_tap_gso_psh_boundary=%s xtcp_tap_gso_retained_writev=%s xtcp_direct_upload_gather_bytes=%s xtcp_direct_upload_gather_wait_ms=%s tcp_info_sampling=%s veth_gso_mode=%s paired_performance_gate=%s paired_performance_threshold=%s cell_path=round-%s/%s-gso-%s-p%s-%s\n' \
             "$round" "$stack" "$tap_gso" "$p" "$direction" "$TRANSPORT_CIPHER" "$CPU_PROFILE" "${AFFINITY_CPUS:-none}" "$XTCP_MEMORY_BRIDGE_EFFECTIVE" "$XTCP_MEMORY_BRIDGE" "$XTCP_NDI_TSO_TX" "$XTCP_TAP_GSO_PSH_BOUNDARY" "$XTCP_TAP_GSO_RETAINED_WRITEV" "${XTCP_DIRECT_UPLOAD_GATHER_BYTES:-default}" "${XTCP_DIRECT_UPLOAD_GATHER_WAIT_MS:-1}" "$TCP_INFO_SAMPLING" "$VETH_GSO_MODE" "$PAIRED_PERFORMANCE_GATE" "$PAIRED_PERFORMANCE_THRESHOLD" "$round" "$stack" "$tap_gso" "$p" "$direction"
         done
@@ -388,8 +392,8 @@ printf 'xtcp_shard_route=%s\n' "${XTCP_SHARD_ROUTE:-tuple-hash}" >>"$ARTIFACT_DI
 printf 'xtcp_direct_download_chunk_bytes=%s\n' "$XTCP_DIRECT_DOWNLOAD_CHUNK_EFFECTIVE" >>"$ARTIFACT_DIR/matrix-metadata.txt"
 printf 'xtcp_dl_gso_perf_profile=%s\n' "$XTCP_DL_GSO_PROFILE_ENABLED" >>"$ARTIFACT_DIR/matrix-metadata.txt"
 printf 'veth_gso_mode=%s\n' "$VETH_GSO_MODE" >>"$ARTIFACT_DIR/matrix-metadata.txt"
-printf 'xtcp_shards_requested=%s\nxtcp_spsc_ingress=%s\nxtcp_affinity=%s\nxtcp_io_cpus=%s\nxtcp_affinity_strict=%s\nxtcp_auto_shards=%s\nstartup_cpu_envelope=%s\nirq_writes=disabled\nkernel_steering=%s\n' \
-  "${XTCP_SHARDS:-unset}" "${XTCP_SPSC_INGRESS:-unset}" "${XTCP_AFFINITY:-unset}" "${XTCP_IO_CPUS:-unset}" "${XTCP_AFFINITY_STRICT:-unset}" "${XTCP_AUTO_SHARDS:-unset}" "${AFFINITY_CPUS:-inherited}" "$KERNEL_STEERING" >>"$ARTIFACT_DIR/matrix-metadata.txt"
+printf 'xtcp_shards_requested=%s\nxtcp_spsc_ingress=%s\nxtcp_affinity=%s\nxtcp_io_cpus=%s\nxtcp_affinity_strict=%s\nxtcp_auto_shards=%s\nxtcp_direct_spsc=%s\nstartup_cpu_envelope=%s\nirq_writes=disabled\nkernel_steering=%s\n' \
+  "${XTCP_SHARDS:-unset}" "${XTCP_SPSC_INGRESS:-unset}" "${XTCP_AFFINITY:-unset}" "${XTCP_IO_CPUS:-unset}" "${XTCP_AFFINITY_STRICT:-unset}" "${XTCP_AUTO_SHARDS:-unset}" "${XTCP_DIRECT_SPSC:-unset}" "${AFFINITY_CPUS:-inherited}" "$KERNEL_STEERING" >>"$ARTIFACT_DIR/matrix-metadata.txt"
 
 run_cell() (
   set -euo pipefail
