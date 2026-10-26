@@ -78,6 +78,7 @@ IRQ affinity writes are prohibited. M3 can explicitly disable kernel steering.
   --duration SEC             iperf3 formal duration (default: 10)
   --omit SEC                 iperf3 warm-up omit (default: 2)
   --iperf-timeout SEC        Per-cell iperf watchdog; default duration + omit + 30
+                             Same-core UL P>=64 disables periodic iperf statistics
   --client-concurrent N      OpenPPP2 client.concurrent; default: 1
   --tap-gso LIST             off,on list (default: off)
   --xtcp-tap-gso-psh-boundary MODE  XTCP client PSH GSO boundary: off|on (default: off)
@@ -330,6 +331,16 @@ list_contains() {
   return 1
 }
 
+iperf_report_interval() {
+  # iperf 3.18 gathers TCP_INFO synchronously on its main thread. With many
+  # same-core senders, socket-lock waits can delay the end timer past watchdog.
+  if [[ "$CPU_PROFILE" == client-single-core && "$1" == ul ]] && (( 10#$2 >= 64 )); then
+    printf '0'
+  else
+    printf '1'
+  fi
+}
+
 CANONICAL_MODES=(native/off lwip/off xtcp/off native/on lwip/on xtcp/on)
 MODE_LIST=()
 for mode in "${CANONICAL_MODES[@]}"; do
@@ -348,6 +359,7 @@ if [[ "$DRY_RUN" == true ]]; then
           mode_slot=$(( (mode_index + round - 1) % ${#MODE_LIST[@]} ))
           mode="${MODE_LIST[$mode_slot]}"
           IFS=/ read -r stack tap_gso <<<"$mode"
+          printf 'iperf_report_interval=%s ' "$(iperf_report_interval "$direction" "$p")"
           printf 'xtcp_shards_requested=%s xtcp_spsc_ingress=%s xtcp_affinity=%s xtcp_io_cpus=%s xtcp_affinity_strict=%s xtcp_auto_shards=%s startup_cpu_envelope=%s irq_writes=disabled kernel_steering=%s ' \
             "${XTCP_SHARDS:-unset}" "${XTCP_SPSC_INGRESS:-unset}" "${XTCP_AFFINITY:-unset}" "${XTCP_IO_CPUS:-unset}" "${XTCP_AFFINITY_STRICT:-unset}" "${XTCP_AUTO_SHARDS:-unset}" "${AFFINITY_CPUS:-inherited}" "$KERNEL_STEERING"
           printf 'round=%s stack=%s tap_gso=%s parallel_flows=%s direction=%s transport_cipher=%s cpu_profile=%s affinity_cpus=%s xtcp_memory_bridge=%s xtcp_memory_bridge_override=%s xtcp_ndi_tso_tx=%s xtcp_tap_gso_psh_boundary=%s xtcp_tap_gso_retained_writev=%s xtcp_direct_upload_gather_bytes=%s xtcp_direct_upload_gather_wait_ms=%s tcp_info_sampling=%s veth_gso_mode=%s paired_performance_gate=%s paired_performance_threshold=%s cell_path=round-%s/%s-gso-%s-p%s-%s\n' \
@@ -898,7 +910,10 @@ PY
   printf 'xtcp_tun_csum_partial=%s\n' "$([[ "$XTCP_TUN_CSUM_PARTIAL" == true && "$stack" == xtcp && "$tap_gso" == on ]] && echo true || echo false)" >>"$state_dir/metadata.txt"
   printf 'process_perf_record=%s\n' "$PROCESS_PERF_RECORD" >>"$state_dir/metadata.txt"
 
-  local -a iperf_args=(-c "$target_ip" -p "$iperf_port" -P "$p" -t "$DURATION" -O "$OMIT" --json)
+  local iperf_interval
+  iperf_interval="$(iperf_report_interval "$direction" "$p")"
+  printf 'iperf_report_interval=%s\n' "$iperf_interval" >>"$state_dir/metadata.txt"
+  local -a iperf_args=(-c "$target_ip" -p "$iperf_port" -P "$p" -t "$DURATION" -O "$OMIT" --json --interval "$iperf_interval")
   local iperf_status=0
   [[ "$direction" == dl ]] && iperf_args+=(-R)
   ip netns exec "$ns_c" "${iperf_cpu_prefix[@]}" iperf3 "${iperf_args[@]}" >"$state_dir/iperf-${direction}-p${p}.json" 2>&1 &
@@ -1089,6 +1104,7 @@ result = {
     "transport_cipher": transport_cipher,
     "parallel_flows": p, "direction": direction,
     "iperf_json": iperf_path.name, "goodput_bps": aggregate["bits_per_second"],
+    "iperf_report_interval": iperf.get("start", {}).get("test_start", {}).get("interval"),
     "retransmits": aggregate.get("retransmits"), "flow_bps": flow_bps,
     "fairness": {"min_bps": min_bps, "p10_bps": percentile(flow_bps, .10), "p50_bps": percentile(flow_bps, .50), "p90_bps": percentile(flow_bps, .90), "max_bps": max_bps, "max_min_ratio": max_min_ratio, "zero_rate_flows": zero_rate_flows},
     "runtime_stats": stats,
