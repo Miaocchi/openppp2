@@ -444,6 +444,67 @@ BOOST_AUTO_TEST_CASE(tcp_child_send_half_close_preserves_receive) {
     context->poll();
 }
 
+// Server-side per-flow relays opt into receive half-close: a client upload
+// FIN must not dispose the carrier (the relay still has echo/response bytes to
+// send back). Without the opt-in a server carrier keeps its abortive EOF.
+namespace {
+// Exposes the carrier read entry the protocol layer uses (QoS path, which
+// disposes the carrier on a failed read unless receive half-close applies).
+class ProbeTcpTransmission final : public transmissions::ITcpipTransmission {
+public:
+    using transmissions::ITcpipTransmission::ITcpipTransmission;
+    using transmissions::ITcpipTransmission::DoReadBytes;
+};
+}
+
+BOOST_AUTO_TEST_CASE(tcp_server_receive_half_close_is_opt_in) {
+    for (const bool opt_in : { false, true }) {
+        auto context = std::make_shared<asio::io_context>();
+        auto strand = std::make_shared<FakeTransmission::StrandPtr::element_type>(
+            asio::make_strand(*context));
+        auto configuration = std::make_shared<ppp::configurations::AppConfiguration>();
+        std::vector<std::shared_ptr<tcp::socket>> peers;
+        auto server = std::make_shared<ProbeTcpTransmission>(
+            context, strand, ConnectedSocket(context, peers), configuration,
+            transmissions::TcpTransmissionRole::Server);
+        const auto peer = peers.front();
+        BOOST_TEST(!server->SupportsSendHalfClose());
+        if (opt_in) {
+            BOOST_TEST(server->EnableReceiveHalfClose());
+        }
+
+        boost::system::error_code ec;
+        peer->shutdown(tcp::socket::shutdown_send, ec);
+        BOOST_TEST(!ec);
+        bool eof_read = false;
+        BOOST_REQUIRE(ppp::coroutines::YieldContext::Spawn(
+            nullptr, *context, strand.get(),
+            [&](ppp::coroutines::YieldContext& y) noexcept {
+                eof_read = !server->DoReadBytes(y, 1);
+            }));
+        context->restart();
+        context->run();
+        BOOST_TEST(eof_read);
+        BOOST_TEST(server->IsReceiveClosed() == opt_in);
+
+        // The peer observes the carrier's send side: still open after an
+        // opted-in half-close, closed (EOF) after the default abortive path.
+        peer->non_blocking(true);
+        std::array<char, 1> probe{};
+        peer->read_some(asio::buffer(probe), ec);
+        if (opt_in) {
+            BOOST_TEST(ec == asio::error::would_block);
+        }
+        else {
+            BOOST_TEST((ec == asio::error::eof || ec == asio::error::connection_reset));
+        }
+
+        server->Dispose();
+        context->restart();
+        context->poll();
+    }
+}
+
 BOOST_AUTO_TEST_CASE(tcp_read_ahead_preserves_byte_stream) {
     auto context = std::make_shared<asio::io_context>();
     auto strand = std::make_shared<FakeTransmission::StrandPtr::element_type>(

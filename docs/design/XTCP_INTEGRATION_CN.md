@@ -633,6 +633,32 @@ payload_cap = effective_l3_mtu - actual_ipv4_header_length - actual_tcp_header_l
 
 workers 模式的 half-close 失败在两组 CPU 映射下均出现，但仅在 server 重启/reconnect 阶段开启时复现；同一 worker 配置不重启服务端时通过。这是独立的重连回归信号，根因尚未确定。它不是 stale lane callback 的证据：workers 模式没有将 lane 绑定到 shard，而 queue 模式重连用例中的所有 lane reader 都保持工作。由于生产路径没有保留 TAP 时单独 Stop/Start runtime，本次未直接测试该非生产生命周期。包含失败轮次的原始产物保存在 `/home/ppp-m2/luna6-20261026/artifacts/`。
 
+#### 重连后 half-close 数据丢失：根因与修复（2026-10-26）
+
+**状态：已修复。** 失败的是客户端发起的 half-close 检查（`sendall(128 KiB)` 后 `shutdown(SHUT_WR)`）。观察到的两种特征分别来自两个独立的数据面缺陷；两者都不是测试工具伪影（检查端等待 EOF/RST，echo 服务自行记录字节数），也都不涉及上一会话的残留状态，重连阶段只是改变了时序。两种机制都与配置无关；默认配置（1 shard、无 M3 开关）在本轮从未失败（任何修复前 5 次，仅服务端修复时 17 次），但走的是同一段 relay 与切分代码。
+
+1. **上传被截断（服务端）。** 开启 `XTCP_E2E_PCAP=1` 后，客户端 TUN 捕获显示 XTCP 已 ACK 全部 131072 字节和 FIN，服务端日志也显示 131072 字节已写入目标 socket，但目标 veth 捕获显示服务端 PPP 在发出 122951 字节后发送了 **RST**（echo 应用只读到 108039）。收到载体 EOF（客户端 direct bridge 的 `ShutdownSend`）时，`ForwardTransmissionToSocket` 直接释放桥接并关闭目标 socket，而此时 echo 回包仍未读取；Linux 对带未读数据的 `close()` 回 RST 并丢弃尚未发出的发送队列。QoS 读路径（`ITransmissionQoS::DoReadBytes`）也在该 EOF 上释放服务端载体，回程同样无法继续。
+   修复：服务端逐流 relay 为原始 TCP 载体开启接收方向 half-close（`ITransmission::EnableReceiveHalfClose`；`ITcpipTransmission` 在干净 FIN 时设置 `IsReceiveClosed()` 而不再释放）。relay 在所有已转发写入完成后对目标 socket 执行 `shutdown(SHUT_WR)`，并保持 socket->载体方向继续转发，直到目标关闭；对端永不关闭时由连接端口老化兜底。WebSocket/TLS 载体与 mux 链路行为不变。
+2. **单字节缺失（客户端）。** 仅在实验机使用的 XTCP 接收回调追踪显示：流偏移 108765 处一个 12236 字节的块交付时 `RCV.NXT` 比块尾多 1，随后在 CLOSE-WAIT 中交付的尾块从 121002 而不是 121001 开始。客户端内核向 TUN 交付了一个 `[108765, 131072)+FIN` 超帧；`XtcpRuntime.cpp` 的 `GsoSplit` 把 TCP flags 复制到每个分片，第一个分片因此带 FIN。XTCP 在流中间消费了 FIN、进入 CLOSE-WAIT，并把真实尾段的首字节当作已接收数据裁掉。记录到的所有缺失偏移（112172、116657、121001、121427、122960）都是此类分片边界。
+   修复：`XtcpGsoSplitSegmentFlags` 只在最后一个分片保留 FIN/PSH/URG，只在第一个分片保留 CWR（RFC 793/1122，与 Linux `tcp_gso_segment` 一致）。
+
+回归测试：`xtcp_runtime_adapter_test` 跨序号回绕切分一个 FIN|PSH 超帧，检查只有最后一个分片带 FIN/PSH；`transport_auth_lifecycle_test` 在 QoS 读路径上检查接收 half-close 的显式开启。两者在去掉对应修复时失败，在普通、ASan/UBSan 和 TSan 构建中通过。
+
+重连 E2E（实验机 netns，开启重连阶段，512 churn，5 s soak）：
+
+| 模式 | 修复前 | 仅服务端修复（`v2`、`dg`） | 最终（`v3`） |
+| --- | --- | --- | --- |
+| 默认（1 shard） | 5/5（开启捕获） | 11/11 | 6/6 |
+| `off`，4 shards | 2/5（此前运行），7/8 | 11/11 | 6/6 |
+| `workers`，4 shards，严格 CPU `8-11` | 1/5（此前运行） | 11/11 | 6/6 |
+| `queues`，4 shards，`TAP_GSO_MERGE=1` | 5/5（此前运行） | 9/11（两次在 121001 单字节缺失） | 16/16 |
+
+最终构建每轮都在 EOF 前完整收到 131072 字节回显；服务端修复前回显会在随机前缀处中断。
+
+`OnState` 投递到 strand 前同时捕获 `Flow` 及 runtime/flow generation，执行前若身份已失效则丢弃回调（`IsCurrentXtcpFlowCallback`）。这是针对 `connection_id` 复用的生命周期加固，不是数据丢失的原因。
+
+产物：`/home/ppp-m2/claude-reconnect-20261026/art/`（`off4p-01`：RST 捕获；`dg-queues4-02`：交付追踪；`v3-*`：最终构建）。
+
 **验证**（WSL2 Debian，三端独立 netns，XTCP，每格 2 轮×15s+2s，单位 Mbps，中位数）：
 
 | P / 方向 | 1 shard GSO off | 1 shard cap 4 | 1 shard cap 32 | 1 shard cap 48 | 2 shard GSO off | 2 shard cap 4 | 2 shard cap 32 | 2 shard cap 48 |

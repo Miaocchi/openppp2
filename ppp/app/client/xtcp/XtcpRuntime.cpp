@@ -627,6 +627,10 @@ std::size_t GsoSplit(const uint8_t* frame, std::size_t length,
         t[5] = static_cast<uint8_t>(seq >> 16);
         t[6] = static_cast<uint8_t>(seq >> 8);
         t[7] = static_cast<uint8_t>(seq);
+        t[13] = XtcpGsoSplitSegmentFlags(tcp[13], k, count);
+        if ((t[13] & 0x20) == 0) {
+            t[18] = 0; t[19] = 0;  // urgent pointer only with URG
+        }
         t[16] = 0; t[17] = 0;
         uint32_t partial = GsoChecksumRaw(w + 12, 8);
         // 伪首部 (协议=6, TCP 长度) 按 BE16 字对求和。
@@ -640,6 +644,17 @@ std::size_t GsoSplit(const uint8_t* frame, std::size_t length,
     }
     return count;
 }
+
+#if defined(PPP_XTCP_RUNTIME_TESTING)
+} // namespace
+
+std::size_t GsoSplitForTesting(const uint8_t* frame, std::size_t length,
+    std::size_t target_mtu, ::xtcp::buf::BufRef* out, std::size_t out_cap) noexcept {
+    return GsoSplit(frame, length, target_mtu, out, out_cap);
+}
+
+namespace {
+#endif
 
 boost::asio::ip::address_v4 ToAddress(std::uint32_t network_address) noexcept {
     return boost::asio::ip::address_v4(IPv4AddressBytes(network_address));
@@ -3071,25 +3086,29 @@ private:
             state != ::xtcp::core::TcpState::kTimeWait) {
             return;
         }
+        const std::shared_ptr<Flow> flow = FindConnection(s, connection_id);
+        if (!flow) {
+            return;
+        }
         const std::shared_ptr<Impl> self = shared_from_this();
-        const std::uint64_t runtime_generation = Generation();
-        boost::asio::post(*s.strand, [self, &s, connection_id, state, runtime_generation]() noexcept {
-            if (!self->IsCurrent(runtime_generation)) {
+        const XtcpFlowCallbackIdentity identity{Generation(), flow->generation};
+        boost::asio::post(*s.strand, [self, &s, flow, connection_id, state, identity]() noexcept {
+            if (!IsCurrentXtcpFlowCallback(identity, self->Generation(), flow->generation) ||
+                flow->connection_id != connection_id ||
+                !self->IsFlowCurrent(flow, identity.runtime_generation)) {
                 return;
             }
-            if (const std::shared_ptr<Flow> flow = self->FindConnection(s, connection_id)) {
-                if (state == ::xtcp::core::TcpState::kCloseWait) {
-                    flow->first_leg_eof = true;
-                    if (flow->direct_bridge) {
-                        self->RequestSecondLegClose(flow);
-                    }
-                    else {
-                        self->MaybeShutdownConnectorSend(flow, runtime_generation);
-                    }
+            if (state == ::xtcp::core::TcpState::kCloseWait) {
+                flow->first_leg_eof = true;
+                if (flow->direct_bridge) {
+                    self->RequestSecondLegClose(flow);
                 }
                 else {
-                    self->CloseFlow(flow, false);
+                    self->MaybeShutdownConnectorSend(flow, identity.runtime_generation);
                 }
+            }
+            else {
+                self->CloseFlow(flow, false);
             }
             self->KickPoll(s);
         });

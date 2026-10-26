@@ -102,6 +102,15 @@ namespace ppp {
             public:
                 /** @brief Checks whether the bridge is currently linked. @return True when not disposed and connected. @note Lightweight state check. */
                 bool                                                            IsLinked()          noexcept { return !disposed_ && connected_; }
+                /**
+                 * @brief Relays a clean carrier FIN as a TCP half-close of the local socket.
+                 * @return true when the carrier supports receive half-close.
+                 * @note Server-side per-flow relays call this before Run(). Without it a
+                 *       client upload half-close disposed the bridge and closed the target
+                 *       socket while echo/response bytes were unread, so the kernel sent RST
+                 *       and discarded upload bytes still queued for the target.
+                 */
+                bool                                                            EnableReceiveHalfCloseRelay() noexcept;
                 /** @brief Gets a shared self-reference. @return Shared pointer to current object. @note Requires object ownership by `shared_ptr`. */
                 std::shared_ptr<VirtualEthernetTcpipConnection>                 GetReference()      noexcept { return shared_from_this(); }
                 /** @brief Gets IO context. @return Context shared pointer. @note No ownership transfer. */
@@ -249,6 +258,7 @@ namespace ppp {
                  * @note Loop ends on read/write failure or disposal.
                  */
                 bool                                                            ForwardTransmissionToSocket(YieldContext& y) noexcept;
+                bool                                                            RelayReceiveHalfClose(YieldContext& y) noexcept;
                 bool                                                            RunDirectUpload(YieldContext& y) noexcept;
                 bool                                                            RunDirectDownload(YieldContext& y) noexcept;
                 bool                                                            StartDirectUploadWriter() noexcept;
@@ -347,6 +357,8 @@ namespace ppp {
                 std::shared_ptr<boost::asio::ip::tcp::socket>                   socket_;        ///< Local TCP socket bridged to the virtual Ethernet transmission.
                 ITransmissionPtr                                                transmission_; ///< Virtual Ethernet transmission channel used for protocol framing.
                 static constexpr int                                            kDirectCloseDrainPollMilliseconds = 5;
+                static constexpr int                                            kHalfClosePollMilliseconds = 20;
+                std::atomic<bool>                                               receive_half_close_relay_ = { false };
                 enum class DirectSendCloseState : uint8_t {
                     Open,
                     Draining,
