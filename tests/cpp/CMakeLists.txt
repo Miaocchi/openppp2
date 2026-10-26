@@ -409,6 +409,7 @@ openppp2_add_cpp_test(transport_auth_configuration_test SOURCES
     "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
     "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
     "${OPENPPP2_ROOT}/common/chnroutes2/chnroutes2.cpp"
+    support/chnroutes2_download_link_stubs.cpp
     "${OPENPPP2_ROOT}/common/json/src/json_reader.cpp"
     "${OPENPPP2_ROOT}/common/json/src/json_value.cpp"
     "${OPENPPP2_ROOT}/common/json/src/json_writer.cpp")
@@ -429,6 +430,11 @@ openppp2_add_cpp_test(vmux_reliability_config_test SOURCES
 target_compile_options(vmux_reliability_config_test PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(vmux_reliability_config_test PRIVATE -Wl,--gc-sections)
 target_link_libraries(vmux_reliability_config_test PRIVATE boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # Partial-link fixture: allocator/transport RTTI key functions are not
+    # linked, so the vptr check cannot reference their typeinfo.
+    target_compile_options(vmux_reliability_config_test PRIVATE -fno-sanitize=vptr)
+endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     target_compile_definitions(vmux_reliability_config_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
 endif()
@@ -544,6 +550,11 @@ target_compile_definitions(transport_auth_handshake_capability_test PRIVATE
     OPENPPP2_TEST_PRIVATE_KEY="${OPENPPP2_ROOT}/starrylink.net.key")
 target_link_libraries(transport_auth_handshake_capability_test PRIVATE
     boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # Partial-link fixture: allocator/transport RTTI key functions are not
+    # linked, so the vptr check cannot reference their typeinfo.
+    target_compile_options(transport_auth_handshake_capability_test PRIVATE -fno-sanitize=vptr)
+endif()
 openppp2_add_cpp_test(session_resume_establish_transaction_wss_test SOURCES
     session_resume_establish_transaction_wss_test.cpp
     support/session_resume_production_wss_test_stubs.cpp
@@ -597,6 +608,11 @@ target_compile_definitions(session_resume_establish_transaction_wss_test PRIVATE
     OPENPPP2_TEST_PRIVATE_KEY="${OPENPPP2_ROOT}/starrylink.net.key")
 target_link_libraries(session_resume_establish_transaction_wss_test PRIVATE
     boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # Partial-link fixture: allocator/transport RTTI key functions are not
+    # linked, so the vptr check cannot reference their typeinfo.
+    target_compile_options(session_resume_establish_transaction_wss_test PRIVATE -fno-sanitize=vptr)
+endif()
 openppp2_add_cpp_test(runtime_snapshot_publisher_test SOURCES
     runtime_snapshot_publisher_test.cpp)
 openppp2_add_cpp_test(vmux_runtime_state_test SOURCES
@@ -1433,6 +1449,7 @@ openppp2_add_cpp_test(policy_tunnel_update_connector_test SOURCES
     "${OPENPPP2_ROOT}/ppp/cryptography/ssea.cpp"
     "${OPENPPP2_ROOT}/common/aesni/aes.cpp"
     "${OPENPPP2_ROOT}/common/chnroutes2/chnroutes2.cpp"
+    support/chnroutes2_download_link_stubs.cpp
     "${OPENPPP2_ROOT}/ppp/dns/DnsUdpFlowRegistry.cpp"
     "${OPENPPP2_ROOT}/ppp/threading/BufferswapAllocator.cpp"
     "${OPENPPP2_ROOT}/ppp/threading/BufferblockAllocator.cpp"
@@ -1469,6 +1486,11 @@ endif()
 target_link_options(policy_tunnel_update_connector_test PRIVATE -Wl,--gc-sections)
 target_link_libraries(policy_tunnel_update_connector_test PRIVATE
     boost_filesystem boost_context openppp2_policy_test_core)
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    # Partial-link fixture: allocator/transport RTTI key functions are not
+    # linked, so the vptr check cannot reference their typeinfo.
+    target_compile_options(policy_tunnel_update_connector_test PRIVATE -fno-sanitize=vptr)
+endif()
 set_tests_properties(policy_tunnel_update_connector_test PROPERTIES LABELS "routing-policy;offline")
 openppp2_add_cpp_test(mta_handoff_telemetry_test SOURCES
     mta_handoff_telemetry_test.cpp)
