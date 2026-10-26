@@ -261,22 +261,30 @@ namespace ssea
         }
 
         // Remaining full words (0..3): scalar, kf already holds the next key.
-        int32_t* p32 = reinterpret_cast<int32_t*>(p + i);
-        while (reinterpret_cast<const uint8_t*>(p32 + 1) <= static_cast<const uint8_t*>(max))
+        // Byte offsets are arbitrary here, so words go through memcpy rather
+        // than misaligned int32_t/int16_t dereferences (UB; same codegen on x86).
+        uint8_t* q = p + i;
+        const uint8_t* end = static_cast<const uint8_t*>(max);
+        while (q + 4 <= end)
         {
-            *p32 = *p32 ^ kf;
-            p32++;
+            int32_t w;
+            std::memcpy(&w, q, sizeof(w));
+            w ^= kf;
+            std::memcpy(q, &w, sizeof(w));
+            q += 4;
             kf = random_next_scalar(reinterpret_cast<unsigned int*>(&kf));
         }
 
         // Tail 2/1 bytes: use the current key WITHOUT advancing (scalar semantics).
-        int16_t* p16 = reinterpret_cast<int16_t*>(p32);
-        if (reinterpret_cast<const uint8_t*>(p16 + 1) <= static_cast<const uint8_t*>(max))
+        if (q + 2 <= end)
         {
-            *p16 = static_cast<int16_t>(*p16 ^ kf);
-            p16++;
+            int16_t h;
+            std::memcpy(&h, q, sizeof(h));
+            h = static_cast<int16_t>(h ^ kf);
+            std::memcpy(q, &h, sizeof(h));
+            q += 2;
         }
-        int8_t* p8 = reinterpret_cast<int8_t*>(p16);
+        int8_t* p8 = reinterpret_cast<int8_t*>(q);
         if (p8 < reinterpret_cast<int8_t*>(const_cast<uint8_t*>(static_cast<const uint8_t*>(max))))
         {
             *p8 = static_cast<int8_t>(*p8 ^ kf);

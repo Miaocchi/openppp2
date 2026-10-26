@@ -102,11 +102,11 @@ namespace vmux {
              * @param seq1 Left sequence number.
              * @param seq2 Right sequence number.
              * @return true when @p seq1 is considered before @p seq2.
-             * @details Uses signed subtraction on explicitly-cast values to
-             * avoid implementation-defined behavior during wrap handling.
+             * @details Subtracts in uint32_t (well-defined wrap) and reads the
+             * difference as signed, as TCP's before() does.
              */
             static constexpr bool                                                   before(uint32_t seq1, uint32_t seq2) noexcept {
-                return static_cast<int32_t>(seq1) - static_cast<int32_t>(seq2) < 0;
+                return static_cast<int32_t>(seq1 - seq2) < 0;
             }
 
             /**
