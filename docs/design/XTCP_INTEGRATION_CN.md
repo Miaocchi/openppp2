@@ -614,6 +614,25 @@ payload_cap = effective_l3_mtu - actual_ipv4_header_length - actual_tcp_header_l
 - M3 opt-in 开关（默认关闭；不设置时行为同上）：`OPENPPP2_XTCP_DIRECT_SPSC=1` 把 direct-upload 数据队列换成固定 4096 槽的 SPSC handoff（上限与 gather 不变；环分配失败时保留 relay 路径）。`OPENPPP2_XTCP_AFFINITY=queues` 配合 `OPENPPP2_XTCP_SHARDS>1` 与数量精确的 `OPENPPP2_XTCP_IO_CPUS`，为每个 shard 建独立 io_context 和绑核 worker，把 GSO lane i 绑到 shard i，并把 lane 读到的包经有界暂存（1024 条 / 8 MiB）交回 TAP context 执行原 `OnInput`；与 SSMT 同开时启动失败，单 shard 记为 unsupported。`OPENPPP2_XTCP_AFFINITY_STRICT=1` 时任一绑核失败即拒绝启动。
 - `TunGsoCoalescer::kSegmentCap` 默认值从 4 改为 32。`OPENPPP2_TAP_GSO_SEGMENTS`（1–48）仍可覆盖；`OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` 在未显式设置时仍用 48。`tun_gso_output_probe` 的 production builder 契约固定在 cap 4 运行。
 
+#### M3 队列模式的重连生命周期（2026-10-26）
+
+`ClientConnectionOpener::Open` 为已挂接的 TAP 创建并启动一个 `XtcpRuntime`，随后注册 lane 绑定 provider。`VEthernetExchanger` 的重连循环只替换 carrier/session 状态，不会停止或重建 XTCP runtime 或 TAP。Runtime Stop 由 switcher teardown 执行，并与 TAP 一同释放。因此当前版本的生产重连路径不会出现“保留 TAP、单独重启 runtime”。
+
+若未来调用方加入这种生命周期，仍有潜在问题：`TapLinux::CreateGsoOutputLane` 仅在 lane 首次创建时查询 provider；lane 会持有原 shard 的 `io_context`、descriptor、timer 和读循环。XTCP Stop/Start 会创建新 shard context，却不会重新绑定这些已有 TAP lane。下方 netns 重连检查会在同一 PPP 进程和 TAP 中验证生产 carrier 重连，检查双向多流流量、runtime identity 和绑定 lane 数保持不变；它不声称覆盖保留 TAP 时直接调用 runtime Stop/Start。
+
+实验室在 revision `add778946e268ad765a284b682dda02a5cba1b85` 构建，启用 `OPENPPP2_TAP_GSO_MERGE=1`，使用严格绑核映射、512 条 churn 流和 5–10 秒 soak。结果如下：
+
+| 模式 | 重连 / lane 结果 | 完整 E2E |
+| --- | --- | --- |
+| `queues`，2 shards，CPU `0,1` | reconnect 通过；runtime ID 保持 1；2/2 lane 已绑定；两个 shard 均有流量 | 通过，含 netem 与 rollback |
+| `queues`，4 shards，CPU `0,1,2,3` | reconnect 通过；runtime ID 保持 1；4/4 lane 已绑定；所有 shard 均有流量 | 通过，含 netem 与 rollback |
+| `workers`，4 shards，严格 CPU `0,1,2,3` | reconnect 与之后 128 条双向流通过；runtime ID 保持 1 | 失败：half-close 完整性检查（一次服务端只收到 106215/131072 bytes，另一次为 131071；第三次发现回显数据前缀损坏） |
+| `workers`，4 shards，严格 CPU `8,9,10,11` | reconnect 与之后 128 条双向流通过；runtime ID 保持 1 | 失败：half-close 完整性检查 |
+| `workers`，4 shards，严格 CPU `8,9,10,11`，不重启服务端 | 不适用 | 通过；跳过 netem |
+| `off`，4 shards，不设置 CPU map | reconnect 通过；runtime ID 保持 1 | 通过，含 netem 与 rollback |
+
+workers 模式的 half-close 失败在两组 CPU 映射下均出现，但仅在 server 重启/reconnect 阶段开启时复现；同一 worker 配置不重启服务端时通过。这是独立的重连回归信号，根因尚未确定。它不是 stale lane callback 的证据：workers 模式没有将 lane 绑定到 shard，而 queue 模式重连用例中的所有 lane reader 都保持工作。由于生产路径没有保留 TAP 时单独 Stop/Start runtime，本次未直接测试该非生产生命周期。包含失败轮次的原始产物保存在 `/home/ppp-m2/luna6-20261026/artifacts/`。
+
 **验证**（WSL2 Debian，三端独立 netns，XTCP，每格 2 轮×15s+2s，单位 Mbps，中位数）：
 
 | P / 方向 | 1 shard GSO off | 1 shard cap 4 | 1 shard cap 32 | 1 shard cap 48 | 2 shard GSO off | 2 shard cap 4 | 2 shard cap 32 | 2 shard cap 48 |

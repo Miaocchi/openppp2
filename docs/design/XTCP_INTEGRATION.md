@@ -498,6 +498,46 @@ Changes:
   is set. The production-builder contract in `tun_gso_output_probe` pins
   cap 4.
 
+#### M3 queue-mode reconnect lifecycle (2026-10-26)
+
+`ClientConnectionOpener::Open` creates and starts one `XtcpRuntime` for the
+switcher's attached TAP, then registers the lane-binding provider. The
+`VEthernetExchanger` reconnect loop replaces carrier/session state in place;
+it does not stop or recreate the XTCP runtime or TAP. Runtime stop is performed
+by switcher teardown, alongside TAP disposal. Therefore a runtime restart
+without TAP rebuild is not a production reconnect path in this revision.
+
+There is still a lifecycle hazard if a future caller adds that sequence:
+`TapLinux::CreateGsoOutputLane` asks the provider only when a lane is first
+created, and the lane retains its shard `io_context`, descriptor, timer and read
+loop. An XTCP Stop/Start would build new shard contexts without rebinding those
+existing TAP lanes. The netns reconnect check below exercises the production
+carrier reconnect with the same PPP process and TAP, and checks bidirectional
+multi-flow traffic plus stable runtime identity and bound-lane count. It does
+not claim to exercise a direct runtime Stop/Start while retaining the TAP.
+
+The isolated lab build at `add778946e268ad765a284b682dda02a5cba1b85` used
+`OPENPPP2_TAP_GSO_MERGE=1`, strict affinity maps, 512 churn flows, and a 10 s
+or 5 s soak. Results:
+
+| Mode | Restart / lane result | Full E2E |
+| --- | --- | --- |
+| `queues`, 2 shards, CPUs `0,1` | reconnect passed; runtime ID stayed 1; 2/2 bound lanes; both shards received traffic | PASS, including netem and rollback |
+| `queues`, 4 shards, CPUs `0,1,2,3` | reconnect passed; runtime ID stayed 1; 4/4 bound lanes; all shards received traffic | PASS, including netem and rollback |
+| `workers`, 4 shards, strict CPUs `0,1,2,3` | reconnect and 128 post-reconnect bidirectional flows passed; runtime ID stayed 1 | FAIL: half-close integrity (server saw 106215/131072 bytes once, 131071 another time; a third run detected corrupted echo data) |
+| `workers`, 4 shards, strict CPUs `8,9,10,11` | reconnect and 128 post-reconnect bidirectional flows passed; runtime ID stayed 1 | FAIL: half-close integrity check |
+| `workers`, 4 shards, strict CPUs `8,9,10,11`, no server restart | not applicable | PASS; netem skipped |
+| `off`, 4 shards, no CPU map | reconnect passed; runtime ID stayed 1 | PASS, including netem and rollback |
+
+The workers-mode half-close failure reproduced with two CPU maps only when the
+server restart/reconnect phase was enabled; without that phase the same worker
+configuration passed. This is a separate reconnect regression signal and its
+cause is not established here. It is not evidence of stale lane callbacks:
+workers mode bound no lane to a shard, and the queue-mode reconnect cells kept
+all lane readers active. No direct runtime Stop/Start-with-live-TAP test was
+run because that lifecycle is absent from production. Artifacts, including
+failed runs, are retained under `/home/ppp-m2/luna6-20261026/artifacts/`.
+
 WSL2 Debian, three isolated netns, XTCP, 2 rounds of 15 s plus 2 s per cell,
 median Mbps:
 
