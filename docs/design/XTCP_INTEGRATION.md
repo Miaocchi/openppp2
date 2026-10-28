@@ -492,6 +492,13 @@ Changes:
   unchanged `OnInput`; it is rejected with SSMT and reported as unsupported
   for one shard. `OPENPPP2_XTCP_AFFINITY_STRICT=1` refuses to start when a
   pin fails.
+- M3 B-stage measurement (2026-10-26, shared remote host, paired native, 30 s x2 ABBA):
+  2 shards + SPSC ingress lift multi-flow DL 1.18-1.40x and UL P16 1.59x but plateau
+  at ~2.2 Gbps (4 shards add nothing) and regress single-flow DL 16-25% (40% on one
+  core). Queue mode cuts CPU per byte and halves the P1 DL loss but regresses UL
+  13-22%; worker affinity and DIRECT_SPSC show no measurable gain. Defaults stay
+  unchanged. Single-shard baseline P64 DL showed 7-8 zero-rate flows per run.
+  Details: THROUGHPUT_OPTIMIZATION_PLAN_CN.md section 2.4.4.
 - The default `TunGsoCoalescer::kSegmentCap` is now 32 instead of 4.
   `OPENPPP2_TAP_GSO_SEGMENTS` (1-48) still overrides it, and
   `OPENPPP2_XTCP_DL_GSO_PERF_PROFILE=1` still selects 48 when no explicit cap

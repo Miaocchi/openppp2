@@ -5,10 +5,27 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+def is_mountpoint(path: str, mountinfo: str = "/proc/self/mountinfo") -> bool:
+    """True when PATH is a mount point, including a same-filesystem bind mount.
+
+    os.path.ismount() compares st_dev with the parent and misses a bind mount
+    whose source lives on the same filesystem (e.g. /etc/netns backed by a
+    directory under /home on the root filesystem)."""
+    target = os.path.realpath(path)
+    try:
+        lines = Path(mountinfo).read_text().splitlines()
+    except OSError:
+        return os.path.ismount(path)
+    for line in lines:
+        fields = line.split()
+        if len(fields) > 4 and fields[4].encode().decode("unicode_escape") == target:
+            return True
+    return os.path.ismount(path)
 
 
 def check_isolation() -> None:
@@ -18,15 +35,10 @@ def check_isolation() -> None:
         initial = os.environ.get("OPENPPP2_M3_INITIAL_" + kind.upper())
         if not initial or os.readlink("/proc/self/ns/" + kind) == initial:
             raise SystemExit("runner requires run_m3_isolated.sh (fresh net and mount namespaces)")
-    # ismount() cannot recognize bind mounts on the same filesystem.
-    mountpoints = {
-        re.sub(r"\\(040|011|012|134)", lambda match: chr(int(match[1], 8)), line.split()[4])
-        for line in Path("/proc/self/mountinfo").read_text().splitlines()
-    }
     for mountpoint, backing in (("/etc/netns", "etc-netns"), ("/run/netns", "run-netns")):
-        if os.path.realpath(mountpoint) not in mountpoints or not os.path.samefile(mountpoint, root / backing):
+        if not is_mountpoint(mountpoint) or not os.path.samefile(mountpoint, root / backing):
             raise SystemExit("private namespace backing mount missing")
-    if not os.path.ismount("/sys"):
+    if not is_mountpoint("/sys"):
         raise SystemExit("private sysfs mount missing")
 
 
