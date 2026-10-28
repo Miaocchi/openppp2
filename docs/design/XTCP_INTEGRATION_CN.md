@@ -430,7 +430,7 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0040-tests-pool-pressure-no-ack-wedge.patch`：新增 `test_pool_pressure`，覆盖 TX 余量、heap overflow 上限与归还，以及 1600 连接保留量超过 arena 时 ACK 仍可分配且全部完成。
 - `0041-tests-sack-gap-and-timestamp-paws.patch`：SACK 丢包测试按带时间戳的 1448 字节 payload cap 对齐，记录所有首次发送区间，避免重传改变丢包节奏；两处丢包直接检查实际重传区间与已观察到的 SACK block。时间戳 OOO 测试从真实握手 TSval 派生合成值，避免 PAWS 丢弃过旧的注入包。
 
-当前共 33 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037-0043（0036 为已上游的历史编号，不复用）；0041/0043 的逐流饥饿修复和测试见 §11.189。不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+当前共 33 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037-0043（0036 为已上游的历史编号，不复用）；0042/0043 的逐流饥饿修复和测试见 §11.189。不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
 
 修改上游行为的唯一入口是该目录下的补丁；直接改解包树会在下次 prepare 时丢失。
 
