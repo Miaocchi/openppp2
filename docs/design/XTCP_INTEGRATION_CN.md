@@ -2573,6 +2573,8 @@ native 对照 N0 为 289.7 Mbps、0 零流。13 个 cell 的 host 指纹与清�
 - **GRO 风险已确认并修复（0037）。** 0005 自身只发不超过 MSS 的段；但一个携带多个 MSS 的 GRO/LRO super-segment 确实只计为一段，会进入 40ms delayed ACK。`test_rcv_mss_ack` 修复前失败、修复后通过。
 - **最终测试结果。** 补丁栈从固定归档 `patch -p1 --fuzz=0` 重放后，全量 ctest 为 243/244，仅 `test_ts_ooo_drain` 失败（main 同样失败）。OpenPPP2 `ppp/app/client/xtcp/*.cpp` 对 rebased 头文件做了 Linux `-fsyntax-only` 检查并通过；Windows 路径、运行时与性能未验证。
 
+以上是 0044 前的历史行为；新增 KCC ECN 响应及强化后的测试见 §11.190。
+
 ### 11.188 固定 packet pool 耗尽导致 P64 DL 卡死：TX 余量 + 有界 heap overflow（2026-10-26）
 
 **根因。** xtcp 全局 packet pool 为固定 arena（2K×8192 + 4K×4096 + 32K×128，约 36MiB），没有 heap 回退。未确认发送段（retrans_queue）持有 pool 块直到被 ACK，入向包（`XtcpRuntime::Submit` 的 `BufRef::Acquire`）也从同一 pool 分配。活跃流数×snd_buf 超过 pool 后（64×1MiB；默认 64KiB 时约 500 条以上忙流），发送保留占满全部块，入向分配失败。纯 ACK 也被丢弃（`ingress_drop_reason.buffer`），发送缓冲永远无法释放：admission.blocked=64，cwnd→2，只剩 RTO 重传，隧道永久停滞。调大 `OPENPPP2_XTCP_INGRESS_ITEMS` 无效。
@@ -2719,3 +2721,82 @@ main runner，`source-manifest-fixed15.json` 及 XTCP patch stamp 标识候选�
 验证日志位于 `validation/`，本地日志也保留在 `/tmp/starve-xtcp/`。GitHub clone
 失败后使用已授权的冻结 Git 归档传输后备方案。未修改宿主网络设置；本轮未验证
 Windows 和移动端运行时。
+
+### 11.190 KCC 的 BBRv2 风格 ECN 响应（0044，2026-10-29）
+
+**根因。** 原 KCC 没有 ECE 标记计数、alpha 或 inflight 上限；FSM 的 CWR
+仅调用透传 ssthresh，并不保证收紧 KCC 的模型窗口。旧 `test_ecn_cc` 的
+非严格双连接比较只能证明不增窗，无法证明 ECN 真正产生响应。
+
+**设计。** `0044-kcc-bbr2-ecn-response.patch` 为 rate sample 增加协商 ECN
+标记及 ECE ACK 所确认的累计已交付包数。FSM 按新交付包数计数，包含 SACK、
+首个 sample 和同一时刻合并的 ACK；重复 ACK 不增加标记计数。KCC 在现有
+packet-timed round 边界计算比例，按 Google Linux BBRv2 的 Q8 公式
+`alpha = (240 * alpha >> 8) + (16 * fraction >> 8)` 更新；gain=1/16，
+初值 256。轮次标记率严格超过 50% 时，用
+`1 - ((alpha * 85) >> 8) / 256` 收紧 inflight_hi 与带宽探测上限；100%
+标记首次把 100 包限制到 66 包，非 Reno 对半减窗，窗口下限仍为 4 包。
+收紧后停止向上探测，STARTUP 经 DRAIN 退出；后续无高标记的 PROBE_UP
+轮次逐包恢复探测上限。普通及 idle-restart pacing 都遵守带宽上限。
+未协商 ECN 时跳过该模型；无标记时上限保持无限。丢包及恢复 hook 未修改。
+
+依据：[Google BBRv2 tcp_bbr2.c](https://github.com/google/bbr/blob/v2alpha/net/ipv4/tcp_bbr2.c)
+的 `bbr2_update_ecn_alpha` 与 `bbr2_adapt_lower_bounds`。这里移植估计器、
+比例收紧及有界再探测到现有 KCC 周期；BBRv2 的 alpha/factor 原作用于
+inflight_lo，本任务按要求作用于 inflight_hi/带宽上限，并未完整替换成 BBRv2
+状态机。接收端仍为 RFC3168 sticky ECE/CWR，因此统计的是 ECE ACK 所确认的
+包比例，不是路由器逐包 CE 的精确比例；DCTCP CE 状态切换回显、RTT eligibility
+策略和完整 BBRv2 状态机不在本补丁范围内。
+
+**测试范围。** 强化原 `test_ecn_cc`，检查 0%、10%、50%、100%、未协商 ECN、
+同轮不重复收紧、下一轮 EWMA 和连续无标记后衰减至零；精确 50% 不触发。
+FSM 同种子对照要求整轮 ECE 后窗口严格小于无 ECE；未协商连接的 ECE 与
+普通 ACK 结果相同。另检查首个 sample、同一时刻混合 ECE ACK 和重复 ACK
+计数；原 CUBIC wire 测试继续保留。未增加或占用 0045+ 编号。
+
+**离线验证。** 最终补丁栈共 34 个补丁，对固定归档全新解压后逐个
+`patch -p1 --fuzz=0` 成功，结果与候选源码逐文件一致。Release、
+`XTCP_BUILD_TESTS=ON`、`XTCP_CHECKSUM_VALIDATE=ON` 的完整 XTCP CTest：
+实验机 GCC 14 **245/245**，74.87 秒。现有 0041 已修复 PAWS 测试时间戳，
+故本轮 `test_ts_ooo_drain` 也通过。
+实验机默认配置的 `tests/cpp`（保留断言）**191/191**，48.08 秒；没有为本补丁
+启用额外的特权网络 E2E。续跑未在本机编译或运行测试，核验了中断前远端
+日志、最终 0044 的 SHA256 和实际受测源码；补丁 SHA256 为
+`12699428021e98e33d9a59754bf7c45d2f405e5a81d4b4b25b6b04bcda705605`。
+
+**默认配置 A/B。** 中断前实验机矩阵已经完成，续跑重新汇总全部结果。
+control 为任务起点冻结基线 `bfd5b88101943ba370bb9f04858af54787a5a461`，
+candidate 仅增加 0044；本地 `main` 引用较旧，故这里明确使用冻结提交识别
+对照，未宣称对比续跑时的其他远端分支。两份源码清单差异仅为 0044、
+它修改的六个 XTCP 文件及 patch stamp。
+通过 `/home/ppp-m2/measure.py` 的 `measurement_guard` 和 `run` 执行，
+第一轮 control→candidate，第二轮 candidate→control；每个 cell 30 秒、
+omit 2 秒，DL/UL × P1/P16/P64 × 两轮，共 24 个 cell。
+默认单 shard、KCC、GSO on、memory bridge on、upload gather 65536/1ms，
+sndbuf 不覆盖默认值；双方使用相同五 CPU cpuset。外层独立 net/mount namespace
+隔离测量网络，`--kernel-steering off` 禁止修改宿主 IRQ/RPS/XPS。
+
+单位 Mbps；变化为两轮算术均值之比：
+
+| 方向/并发 | control 第1/2轮 | 0044 第1/2轮 | 均值变化 |
+|---|---:|---:|---:|
+| DL P1 | 1741.441 / 1720.575 | 1762.726 / 1779.222 | +2.31% |
+| DL P16 | 1736.336 / 1740.467 | 1724.039 / 1704.846 | -1.38% |
+| DL P64 | 1877.081 / 1844.505 | 1867.932 / 1861.735 | +0.22% |
+| UL P1 | 1420.588 / 1457.079 | 1407.856 / 1456.794 | -0.45% |
+| UL P16 | 800.954 / 995.479 | 981.890 / 965.153 | +8.38% |
+| UL P64 | 562.433 / 533.418 | 545.904 / 527.055 | -2.09% |
+
+24/24 均 pass，零速流为 0，runtime_faults 为空，退出状态为 0，
+namespace cleanup 和监控完整性检查均通过。未发现明显的默认路径吞吐回退；
+共享主机且仅两轮，不能据此证明统计意义上的性能等价或将 UL P16 增益归因于补丁。
+默认集成没有调用 `SetDefaultEcn(true)`，XTCP 不协商 ECN；未注入 CE，
+也没有逐包 ECE 抓包证据。因此该 A/B 验证默认非 ECN 路径，已协商但零标记
+路径由单测覆盖；真实交换机标记下的 ECN 收敛、公平性和恢复速度尚未实机验证。
+Windows、移动端及 sanitizer 未验证。
+
+远端原始证据保留在 `/home/ppp-m2/ecn-20261029-0044/` 的 `ctest.log`、
+`ctest-cpp.log`、`campaign.log`、`report.json` 和 `runs/`。续跑在新目录
+`/home/ppp-m2/ecn-0044-resume-20261029-tZ2hqy/` 重新准备源码并用
+`patch -p1 --fuzz=0` 重放；核对其与受测源码一致。本任务构建目录已清理，
+日志和冻结源码保留；未提交或推送。
