@@ -114,7 +114,7 @@ IRQ affinity writes are prohibited. M3 can explicitly disable kernel steering.
   --tap-gso-hold-us USEC     TAP GSO hold window (10..1000; default 100)
   --xtcp-gso-rx VALUE        XTCP GSO receive override
   --xtcp-unix-bridge VALUE   XTCP Unix bridge override
-  --xtcp-sndbuf BYTES        XTCP per-conn send buffer (bytes; default 64K upstream)
+  --xtcp-sndbuf BYTES        XTCP per-conn send buffer (bytes; default 1 MiB)
   --xtcp-memory-bridge       Enable the opt-in single-owner userspace bridge
   --xtcp-no-memory-bridge    Disable the XTCP single-owner userspace bridge (default runtime behavior is enabled)
   --xtcp-ndi-tso-tx         Enable the opt-in NDI TSO transmit capability

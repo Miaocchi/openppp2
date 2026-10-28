@@ -20,6 +20,22 @@ If you are writing a configuration for the first time, start with [Writing the c
 
 The file must be strict JSON (no comments, no trailing commas).
 
+## XTCP runtime tuning
+
+When the client selects `--tcp-stack=xtcp` in a build with XTCP enabled, the
+runtime uses a 1 MiB per-connection `snd_buf` quota on Linux, Windows x64, and
+Android. It is a quota, not memory preallocated for every connection. macOS and
+iOS do not currently support XTCP builds. This setting is not an
+`appsettings.json` field; set the process environment before starting `ppp`:
+
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `OPENPPP2_XTCP_SNDBUF_BYTES` | 1 MiB | Explicit send-buffer quota in bytes (values below 1024 are ignored). This overrides the default and throughput profile. |
+| `OPENPPP2_XTCP_DL_GSO_PERF_PROFILE` | unset | Exact value `1` selects a 2 MiB quota when `OPENPPP2_XTCP_SNDBUF_BYTES` is unset or invalid. |
+
+The 1 MiB default follows the Linux tuning introduced by #109 and applies to
+all platforms that currently support XTCP. The profile remains opt-in.
+
 ## 2. Which side uses what
 
 | Block | Server | Client | Notes |

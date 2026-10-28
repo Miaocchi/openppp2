@@ -67,7 +67,7 @@ Server listeners, address pools, IPv6, and the rest live in the configuration fi
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--tcp-stack=native\|lwip\|xtcp` | `native` (`lwip` on Windows without the Wintun driver) | TCP stack. `xtcp` works only when enabled at build time; otherwise startup fails. |
+| `--tcp-stack=native\|lwip\|xtcp` | `native` (`lwip` on Windows without the Wintun driver) | TCP stack. `xtcp` works only when enabled at build time; otherwise startup fails. XTCP uses a 1 MiB per-connection send-buffer quota by default; see [configuration reference](CONFIGURATION.md#xtcp-runtime-tuning). |
 | `--lwip=yes\|no` | same as above | Legacy switch, equivalent to `--tcp-stack=lwip`. |
 | `--tun-mux=<connections>` | `0` | Parallel MUX connections; 0 = MUX off. |
 | `--tun-mux-acceleration=<0-3>` | `0` | MUX acceleration mode; values above 3 become 0. |

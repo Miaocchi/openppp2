@@ -1024,16 +1024,11 @@ public:
         static constexpr const char* kDefaultCc = "kcc";
 #endif
         const char* cc = (cc_env != nullptr && cc_env[0] != '\0') ? cc_env : kDefaultCc;
-        // Linux desktop/server: 1 MiB per-connection snd_buf quota. The upstream
-        // 64 KiB default capped single-flow DL near 410 Mbps (THROUGHPUT plan
-        // §2.4.1); the pool reserve (patch 0039) keeps many busy flows from
-        // starving ACK ingress. Other platforms keep the upstream default until
-        // they have their own measurements. This is a quota, not preallocation.
-#if defined(__linux__) && !defined(__ANDROID__)
+        // All platforms: 1 MiB per-connection snd_buf quota. The upstream 64 KiB
+        // default capped single-flow DL near 410 Mbps (THROUGHPUT plan §2.4.1);
+        // the pool reserve (patch 0039) keeps many busy flows from starving ACK
+        // ingress. This is a quota, not preallocation.
         unsigned long long sndbuf_value = 1024ull * 1024ull;
-#else
-        unsigned long long sndbuf_value = 0;
-#endif
         {
             const char* profile = ::getenv("OPENPPP2_XTCP_DL_GSO_PERF_PROFILE");
             if (profile != nullptr && profile[0] == '1' && profile[1] == '\0') {
@@ -1141,7 +1136,7 @@ public:
             // 拥塞控制可选 (XTCP-CC-SELECT-001): 默认 KCC (上游默认, 开发者维护)。
             // env 可切 bbr/cubic/reno (0005 修复后 KCC 追平 CUBIC, 恢复默认)。
             s.stack->SetDefaultCongestionControl(cc);
-            // KCC snd_buf 实验 (XTCP-KCC-SNDBUF-001): env 可调, 默认不设 (=上游 64K)。
+            // snd_buf defaults to 1 MiB on supported platforms; env/profile can override it.
             if (sndbuf_value != 0) {
                 s.stack->SetSndBuf(static_cast<UInt32>(sndbuf_value));
             }
