@@ -343,8 +343,8 @@ private network/mount namespaces and host kernel steering disabled. Task build
 directories were removed; logs and frozen sources were retained. Windows,
 mobile and sanitizer validation were not performed. No commit or push was made.
 
-The current local series has 34 patches with stable, sparse IDs: 0001-0015,
-0023, 0025-0029, 0031-0035 and 0037-0044 (0035: retry ACK/window construction after
+The current local series has 38 patches with stable, sparse IDs: 0001-0015,
+0023, 0025-0029, 0031-0035 and 0037-0048 (0035: retry ACK/window construction after
 allocation failure; 0037: byte-based immediate ACK for super-segments; former
 0036, SACK blocks fit the option space, is upstream as liulilittle/xtcp#2 and
 its ID is not reused). Upstream absorbs former local 0016 (PSH tail),
@@ -359,6 +359,91 @@ actual retransmitted ranges against observed SACK blocks instead of inferring
 them from the aggregate retransmit counter. It also derives `test_ts_ooo_drain`
 timestamps from the live handshake to avoid PAWS rejecting stale synthetic
 TSvals.
+
+### Timestamp drain and TSan follow-up (0045-0048)
+
+The original upstream `f71548f` OOO timestamp test injects fixed TSvals
+`0x10000001/2`. On a sufficiently advanced monotonic clock these precede the
+handshake timestamp in TCP serial arithmetic, so PAWS correctly drops the
+synthetic data. On the lab host, the upstream test failed three assertions;
+using the live timestamp derivation already present in 0041 passed against
+the unchanged upstream library.
+The pre-0045 patch series' unchanged OOO test passed 30 consecutive runs.
+Thus the reported vendored failure was not reproduced with a fresh
+extraction of that series. The upstream library also passed 30 consecutive
+runs with the pre-0045 fixture (0034 ACK capture and 0041 clock derivation).
+
+0045 also fixes the fixture's ACK capture: record the probe's ACK inside the
+pump instead of separately draining the same queue, track ACK presence rather
+than treating sequence zero as invalid, and use the established peer ACK
+number. After switching to synthetic peer data, do not forward its ACKs into
+the real sender, which never sent those bytes. The checked receive callback
+allows explicit application backpressure.
+
+The old assertion itself concealed a stack bug: draining cached OOO data
+replaced TS.Recent with that data's timestamp. A newer retransmission filling
+the hole could therefore be followed by a backwards PAWS anchor and acceptance
+of stale data. [RFC 7323 section 4.3(C)](https://www.rfc-editor.org/rfc/rfc7323.html#section-4.3)
+requires echoing the hole-filler's timestamp. Linux v6.6
+[`tcp_replace_ts_recent` and `tcp_ofo_queue`](https://github.com/torvalds/linux/blob/v6.6/net/ipv4/tcp_input.c)
+likewise anchor on reception, not cached-data delivery. 0046 preserves that
+anchor through established/closing drains and ResumeReceive, and applies the
+arrival update to closing states as well, including timestamped pure FINs.
+The regression also rejects a stale pure FIN and checks the valid FIN's
+timestamp echo in both connection states. It does not redesign unrelated
+delayed-ACK timestamp selection. The new regression checks both the echo and
+PAWS rejection in Established and FIN-WAIT-2, with and without backpressure:
+all four cases fail four assertions against the old library (16 total,
+including pure FIN checks) and pass after 0046.
+
+The pre-0047 TSan control failed all three selected fixture tests: one map
+data race and lock-order inversions in both fake NIC tests. 0047 fixes the
+test data race (`crc_b.size()` read concurrently with the pump's map
+insertion) and makes the single-thread
+TSO/backpressure fake NICs queue accepted packets until the pump delivers
+them, following `test_tx_retry_mpsc`. Synchronous cross-stack delivery had
+created reverse lock-order graphs. No additional TSan suppression is added;
+TSO, rejection, metadata, and byte-delivery assertions remain enabled.
+
+This fixture change exposed a real TX routing bug: `ShardOfPacket`, called by
+`RetryBatchSharded` for outgoing qdisc/DMA rejections, reversed the wire tuple
+as if it were receiving. 0048 uses source=local, destination=remote. The
+regression checks 64 IPv4 plus 64 IPv6 flows against their connection-ID shard
+(113/128 mismatched before the fix) and retains the backpressure fixture's
+attribution check through final delivery. This changes retry placement, not
+the RX lookup, shard count, or congestion-control policy.
+
+Final 0045-0048 validation (2026-10-29) ran only on the shared lab host:
+Debian Linux 6.12.73 / GCC 14.2, `vm.mmap_rnd_bits=28`. Normal XTCP CTest
+passed 245/245 in each of three full rounds of the final source, including
+pure FIN (plus one passing round before that addition). Fully instrumented
+XTCP TSan passed 245/245 without warnings; `test_shard`,
+`test_conn_churn_threads`, `test_thread_data`,
+`test_thread_send_abort`, and `test_tx_retry_mpsc` each passed five TSan runs
+(25 invocations). All 37 patches apply in order with `patch -p1 --fuzz=0` to
+a fresh prepare extraction, whose sources match the tested tree. ECN 0044 was
+not present and is not included in that verification.
+
+The modified standalone C++ TSan script passed 201/201 targets with XTCP
+enabled, followed by five runs each of the six M3 targets listed in the
+testing guide (30 invocations). Its build used `-O1 -g1 -DNDEBUG`; the XTCP
+suite used the normal RelWithDebInfo flags. The existing libcrypto suppression
+was retained for C++ tests; no new suppression was added, and the XTCP suite
+used none. All acceptance sanitizer runs used `setarch -R`.
+
+The startup diagnostic ran the current SPSC test five times in each of four
+PIE/non-PIE and ASLR on/off combinations: all 20 invocations passed all seven
+groups on this lab host. This does not reproduce the older WSL startup
+failure. Local read-only inspection confirmed WSL2 6.6.87.2 with
+`vm.mmap_rnd_bits=32` and ASLR enabled; no local build, test, or sanitizer
+was run during this resume. No host sysctl was changed. Logs and commands
+are retained locally under `build/private/ts-ooo-tsan-20261029/`; all build
+directories created by this task on the lab host were removed afterward.
+
+See [the TSan workflow](../development/TESTING.md#threadsanitizer) for both
+instrumented suites and the WSL ASLR startup diagnosis. These are isolated
+unit tests; no VPN client, privileged network E2E, lab throughput measurement,
+Windows or mobile runtime was exercised.
 
 Upstream owns OOO frontier reclamation. Residual 0013 retains
 `drained_gap |= TrimOooToFrontier()` for the local ACK integration and the

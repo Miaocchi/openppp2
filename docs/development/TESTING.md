@@ -159,6 +159,45 @@ CXX=clang++ scripts/run-cpp-tsan-tests.sh
 
 The script configures the complete standalone C++ suite in `build/test-tsan` with `ENABLE_TSAN=ON`, then builds and runs every registered CTest target. TSan is mutually exclusive with `ENABLE_SANITIZERS` (ASan/UBSan), requires a compiler with a working ThreadSanitizer runtime, and does not build the root native executable. Use `CXX=g++` when the local Clang TSan runtime is unavailable. Every standalone test registered through `openppp2_add_cpp_test()` has a 120-second watchdog so a deadlock fails instead of hanging CI.
 
+On Linux the script re-executes with `setarch "$(uname -m)" -R` unless
+`ADDR_NO_RANDOMIZE` is already set. High-entropy ASLR (observed with
+`vm.mmap_rnd_bits=32` on WSL2) can put PIE or shared libraries in TSan's reserved
+address ranges and fail before `main` with `unexpected memory mapping`.
+Disabling PIE alone does not control shared-library placement. This changes
+only the test process tree, never host sysctls. `setarch` (util-linux) and
+permission to set this personality flag are required; containers that deny it
+fail with a diagnostic. Startup failures must not be retried until they pass.
+
+Use `TSAN_BUILD_DIR` for a separate build tree, `CMAKE_BUILD_PARALLEL_LEVEL` to
+bound build jobs, and extra script arguments for CMake options:
+
+```bash
+TSAN_BUILD_DIR=/tmp/cpp-tsan CMAKE_BUILD_PARALLEL_LEVEL=8 CXX=g++ \
+  sh scripts/run-cpp-tsan-tests.sh -DENABLE_XTCP_TESTS=ON \
+  -DXTCP_SOURCE_DIR=/path/to/prepared/xtcp -DCMAKE_BUILD_TYPE=RelWithDebInfo
+```
+
+For the vendored XTCP suite itself, instrument both its library and tests:
+
+```bash
+cmake -S /path/to/prepared/xtcp -B /tmp/xtcp-tsan -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DXTCP_CHECKSUM_VALIDATE=ON \
+  -DXTCP_SANITIZE=OFF -DXTCP_BUILD_TESTS=ON \
+  -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
+  -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+cmake --build /tmp/xtcp-tsan --parallel 8
+TSAN_OPTIONS='halt_on_error=0 exitcode=66' setarch "$(uname -m)" -R \
+  ctest --test-dir /tmp/xtcp-tsan --output-on-failure --timeout 120
+```
+
+M3 concurrency coverage includes `spsc_handoff_test`, `xtcp_direct_handoff_test`,
+`tap_output_lane_test`, `tap_lane_envelope_handoff_test`,
+`xtcp_queue_mode_lifecycle_test`, and `xtcp_shard_policy_test`; XTCP adds
+`test_shard`, `test_thread_data`,
+`test_thread_send_abort`, and `test_conn_churn_threads`. The shard-policy test
+checks selection rules, not concurrent runtime execution. TSan success covers
+the exercised offline paths, not a live VPN session.
+
 Key deterministic concurrency tests in this batch are `yield_context_test`, `spinlock_test`, `asynchronous_write_io_queue_test`, `dns_udp_relay_test`, `client_datagram_port_manager_test`, `protector_network_request_test`, `transmission_qos_concurrency_test`, `vdns_request_lifecycle_test`, `mapping_port_connect_reentrancy_test`, and `dns_controller_test`.
 
 ## Runtime contract prerequisite
