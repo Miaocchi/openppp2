@@ -428,8 +428,9 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0038-kcc-cwnd-ack-aggregation-quantization.patch`：KCC v2 的 cwnd 目标只取 `cwnd_gain*max_bw*min_rtt`；在 tun 路径上，min_rtt 只有约 35-90us，而 ACK 是成批到达的。sndbuf=1MiB 时，P4/P16 DL 的 cwnd 塌到 2-12 包，DL 从约 1.9 跌到 0.85Gbps。本补丁按 Linux `bbr_set_cwnd` 加入 ack-aggregation（`extra_acked`）项和 quantization budget，并同步修改 `plugins/ref/kcc_core.c`。远端 A/B（1MiB、2 轮、20s）：P4 DL 0.89/0.84→2.11/2.19Gbps，P16 DL 0.79/0.89→1.88/1.83Gbps，P1 不变。1MiB P64 DL 卡死是另一个问题，本补丁不修复，由 0039 修复（见下）。
 - `0039-pool-tx-reserve-and-bounded-heap-overflow.patch`：修复 1MiB P64 DL 卡死。原因是固定 packet pool（约 36MiB）同时承载未确认发送数据的保留和入向包。flows×snd_buf 超过 pool 后，入向 ACK 无法拷贝，发送缓冲无法释放，隧道永久卡死。本补丁按内核 `tcp_memory_pressure`/`sk_wmem_schedule` 的思路拆分：新数据段在 `buf::TxAcquireScope` 中分配，不得把任一 tier 用到 1/8 余量以下，也不得使用 heap overflow；被拒的段留在 `pending_send_`（仍受 snd_buf 限制），由 dirty poll 在 ACK 释放块后重发。其余分配（入向、ACK、控制段、重传）照常使用整个 pool；所有 tier 都空时，从总量 8MiB 的有界 heap overflow 分配。`buf::GetPoolPressureStats()` 提供遥测。pool 未进入余量区时行为不变。详见 §11.188。
 - `0040-tests-pool-pressure-no-ack-wedge.patch`：新增 `test_pool_pressure`，覆盖 TX 余量、heap overflow 上限与归还，以及 1600 连接保留量超过 arena 时 ACK 仍可分配且全部完成。
+- `0041-tests-sack-gap-and-timestamp-paws.patch`：SACK 丢包测试按带时间戳的 1448 字节 payload cap 对齐，记录所有首次发送区间，避免重传改变丢包节奏；两处丢包直接检查实际重传区间与已观察到的 SACK block。时间戳 OOO 测试从真实握手 TSval 派生合成值，避免 PAWS 丢弃过旧的注入包。
 
-当前共 30 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037-0040（0036 为已上游的历史编号，不复用）；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+当前共 31 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037-0041（0036 为已上游的历史编号，不复用）；不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
 
 修改上游行为的唯一入口是该目录下的补丁；直接改解包树会在下次 prepare 时丢失。
 
