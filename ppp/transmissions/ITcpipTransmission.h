@@ -62,6 +62,8 @@ namespace ppp {
             bool                                                                                ShutdownSend() noexcept override;
             /** @brief Reports a clean TCP peer FIN observed by ReadBytes. */
             bool                                                                                IsReceiveClosed() const noexcept override;
+            /** @brief Keeps the carrier alive on a clean peer FIN (any role); see ITransmission. */
+            bool                                                                                EnableReceiveHalfClose() noexcept override;
             /**
              * @brief Reads an exact number of bytes from the socket.
              * @param y Coroutine yield context.
@@ -123,6 +125,8 @@ namespace ppp {
             std::atomic<bool>                                                                   send_shutdown_ = { false };
             /** @brief Receive direction saw a clean peer FIN rather than a transport failure. */
             std::atomic<bool>                                                                   receive_closed_ = { false };
+            /** @brief Owner opted into receive half-close (server-side per-flow relay). */
+            std::atomic<bool>                                                                   receive_half_close_ = { false };
             /** @brief Owned connected TCP socket. */
             std::shared_ptr<boost::asio::ip::tcp::socket>                                       socket_;
             /**

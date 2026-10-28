@@ -513,6 +513,113 @@ Changes:
   is set. The production-builder contract in `tun_gso_output_probe` pins
   cap 4.
 
+#### M3 queue-mode reconnect lifecycle (2026-10-26)
+
+`ClientConnectionOpener::Open` creates and starts one `XtcpRuntime` for the
+switcher's attached TAP, then registers the lane-binding provider. The
+`VEthernetExchanger` reconnect loop replaces carrier/session state in place;
+it does not stop or recreate the XTCP runtime or TAP. Runtime stop is performed
+by switcher teardown, alongside TAP disposal. Therefore a runtime restart
+without TAP rebuild is not a production reconnect path in this revision.
+
+There is still a lifecycle hazard if a future caller adds that sequence:
+`TapLinux::CreateGsoOutputLane` asks the provider only when a lane is first
+created, and the lane retains its shard `io_context`, descriptor, timer and read
+loop. An XTCP Stop/Start would build new shard contexts without rebinding those
+existing TAP lanes. The netns reconnect check below exercises the production
+carrier reconnect with the same PPP process and TAP, and checks bidirectional
+multi-flow traffic plus stable runtime identity and bound-lane count. It does
+not claim to exercise a direct runtime Stop/Start while retaining the TAP.
+
+The isolated lab build at `add778946e268ad765a284b682dda02a5cba1b85` used
+`OPENPPP2_TAP_GSO_MERGE=1`, strict affinity maps, 512 churn flows, and a 10 s
+or 5 s soak. Results:
+
+| Mode | Restart / lane result | Full E2E |
+| --- | --- | --- |
+| `queues`, 2 shards, CPUs `0,1` | reconnect passed; runtime ID stayed 1; 2/2 bound lanes; both shards received traffic | PASS, including netem and rollback |
+| `queues`, 4 shards, CPUs `0,1,2,3` | reconnect passed; runtime ID stayed 1; 4/4 bound lanes; all shards received traffic | PASS, including netem and rollback |
+| `workers`, 4 shards, strict CPUs `0,1,2,3` | reconnect and 128 post-reconnect bidirectional flows passed; runtime ID stayed 1 | FAIL: half-close integrity (server saw 106215/131072 bytes once, 131071 another time; a third run detected corrupted echo data) |
+| `workers`, 4 shards, strict CPUs `8,9,10,11` | reconnect and 128 post-reconnect bidirectional flows passed; runtime ID stayed 1 | FAIL: half-close integrity check |
+| `workers`, 4 shards, strict CPUs `8,9,10,11`, no server restart | not applicable | PASS; netem skipped |
+| `off`, 4 shards, no CPU map | reconnect passed; runtime ID stayed 1 | PASS, including netem and rollback |
+
+The workers-mode half-close failure reproduced with two CPU maps only when the
+server restart/reconnect phase was enabled; without that phase the same worker
+configuration passed. This is a separate reconnect regression signal and its
+cause is not established here. It is not evidence of stale lane callbacks:
+workers mode bound no lane to a shard, and the queue-mode reconnect cells kept
+all lane readers active. No direct runtime Stop/Start-with-live-TAP test was
+run because that lifecycle is absent from production. Artifacts, including
+failed runs, are retained under `/home/ppp-m2/luna6-20261026/artifacts/`.
+
+#### Reconnect half-close data loss: root causes and fix (2026-10-26)
+
+**Status: fixed.** The failing check was the client-initiated half-close
+(`sendall(128 KiB)` + `shutdown(SHUT_WR)`). Two independent data-path bugs
+produced the two observed signatures; neither is a harness artifact (the
+checker waits for EOF/RST and the echo service logs its own byte count) and
+neither involves stale state from the previous session. The reconnect phase
+only changed timing. Both mechanisms are configuration independent; the
+default configuration (1 shard, no M3 switches) never failed in this
+campaign (5 runs before any fix, 17 with only the server-side change), but it
+runs the same relay and split code.
+
+1. **Truncated upload (server side).** With `XTCP_E2E_PCAP=1` the client TUN
+   capture shows XTCP ACKing all 131072 bytes plus FIN, and the server log
+   shows all 131072 bytes written into the target socket, yet the target veth
+   capture shows the server PPP sending **RST** after 122951 bytes (the echo
+   app had read 108039). On carrier EOF (the client direct bridge's
+   `ShutdownSend`), `ForwardTransmissionToSocket` disposed the bridge and
+   closed the target socket while echo bytes sat unread; Linux answers
+   `close()` with unread data by sending RST and discarding the unsent send
+   queue. The QoS read path (`ITransmissionQoS::DoReadBytes`) also disposed
+   the server carrier on that EOF, so nothing could flow back.
+   Fix: the server per-flow relay opts its raw TCP carrier into receive
+   half-close (`ITransmission::EnableReceiveHalfClose`; `ITcpipTransmission`
+   then marks `IsReceiveClosed()` on a clean FIN instead of disposing). The
+   relay half-closes the target socket after every forwarded write completed
+   and keeps the socket->carrier pump running until the target closes; owner
+   port aging bounds a peer that never closes. WebSocket/TLS carriers and mux
+   links are unchanged.
+2. **One-byte deletion (client side).** A lab-only delivery trace in the XTCP
+   receive callback showed a 12236-byte chunk at stream offset 108765 delivered
+   with `RCV.NXT` one past its end, followed in CLOSE-WAIT by the tail chunk
+   starting at 121002 instead of 121001. The client kernel had handed the TUN
+   one super-frame `[108765, 131072)+FIN`; `GsoSplit` in `XtcpRuntime.cpp`
+   copied the TCP flags into every split, so the first split carried FIN. XTCP
+   consumed the FIN mid-stream, entered CLOSE-WAIT and trimmed the first byte
+   of the real tail as already received. All recorded deletion offsets
+   (112172, 116657, 121001, 121427, 122960) are split boundaries of that kind.
+   Fix: `XtcpGsoSplitSegmentFlags` keeps FIN/PSH/URG on the last split only
+   and CWR on the first (RFC 793/1122, Linux `tcp_gso_segment`).
+
+Regression tests: `xtcp_runtime_adapter_test` splits a FIN|PSH super-frame
+across the sequence wrap and checks that only the last split carries FIN/PSH;
+`transport_auth_lifecycle_test` checks the receive half-close opt-in on the QoS
+read path. Both fail without their fix and pass under normal, ASan/UBSan and
+TSan builds.
+
+Reconnect E2E (lab netns, reconnect phase on, 512 churn, 5 s soak):
+
+| Mode | Before fix | Server fix only (`v2`, `dg`) | Final (`v3`) |
+| --- | --- | --- | --- |
+| default (1 shard) | 5/5 (pcap on) | 11/11 | 6/6 |
+| `off`, 4 shards | 2/5 (earlier run), 7/8 | 11/11 | 6/6 |
+| `workers`, 4 shards, strict CPUs `8-11` | 1/5 (earlier run) | 11/11 | 6/6 |
+| `queues`, 4 shards, `TAP_GSO_MERGE=1` | 5/5 (earlier run) | 9/11 (two one-byte deletions at 121001) | 16/16 |
+
+Every final run drained the full 131072-byte echo before EOF; before the
+server fix the drain stopped at a random prefix.
+
+The `OnState` strand handoff also captures the `Flow` and its runtime/flow
+generation before posting and rejects the callback if that identity is no
+longer current (`IsCurrentXtcpFlowCallback`). This is lifecycle hardening
+against `connection_id` reuse, not a cause of the data loss.
+
+Artifacts: `/home/ppp-m2/claude-reconnect-20261026/art/` (`off4p-01`: RST
+capture; `dg-queues4-02`: delivery trace; `v3-*`: final build).
+
 WSL2 Debian, three isolated netns, XTCP, 2 rounds of 15 s plus 2 s per cell,
 median Mbps:
 

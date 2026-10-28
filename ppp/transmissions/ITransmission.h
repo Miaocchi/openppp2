@@ -181,6 +181,13 @@ namespace ppp {
             virtual bool                                                                            ShutdownSend() noexcept { return false; }
             /** @brief Reports a clean peer close of the carrier receive direction. */
             virtual bool                                                                            IsReceiveClosed() const noexcept { return false; }
+            /**
+             * @brief Opts a per-flow carrier into receive half-close: a clean peer FIN
+             *        marks IsReceiveClosed() instead of disposing, so the owner can keep
+             *        sending (graceful TCP half-close relay).
+             * @return true when the carrier supports it.
+             */
+            virtual bool                                                                            EnableReceiveHalfClose() noexcept { return false; }
             /** @brief Identifies the installed authenticated carrier mechanism. */
             virtual AuthenticatedCarrierMethod                                                      GetAuthenticatedCarrierMethod() const noexcept;
             /** @brief Reports current lifecycle-valid authenticated carrier availability. */

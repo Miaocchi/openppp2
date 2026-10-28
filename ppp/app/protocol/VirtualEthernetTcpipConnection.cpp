@@ -999,6 +999,19 @@ namespace ppp {
                     int packet_length = 0;
                     std::shared_ptr<Byte> packet = transmission->Read(y, packet_length);
                     if (NULLPTR == packet || packet_length < 1) {
+                        if (receive_half_close_relay_.load() && !disposed_ && transmission->IsReceiveClosed()) {
+                            // Clean carrier FIN: every forwarded write already completed,
+                            // so half-close the local socket and keep the socket->carrier
+                            // pump running until the local peer closes (it disposes us).
+                            ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                                "tcpip",
+                                "transmission->socket half-close packets=%d bytes=%lld",
+                                packets_to_socket,
+                                bytes_to_socket);
+                            RelayReceiveHalfClose(y);
+                            stop_logged = true;
+                            break;
+                        }
                         stop_logged = true;
                         ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
                             "tcpip",
@@ -1071,6 +1084,49 @@ namespace ppp {
 
                 Dispose();
                 return any;
+            }
+
+            bool VirtualEthernetTcpipConnection::EnableReceiveHalfCloseRelay() noexcept {
+                ITransmissionPtr transmission = transmission_;
+                if (NULLPTR == transmission || !transmission->EnableReceiveHalfClose()) {
+                    return false;
+                }
+                receive_half_close_relay_.store(true);
+                return true;
+            }
+
+            bool VirtualEthernetTcpipConnection::RelayReceiveHalfClose(YieldContext& y) noexcept {
+                std::shared_ptr<boost::asio::ip::tcp::socket> socket = socket_;
+                if (NULLPTR == socket || disposed_) {
+                    return false;
+                }
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+                bool ok = false;
+                boost::asio::dispatch(socket->get_executor(),
+                    [this, socket, anchor, &ok]() noexcept {
+                        boost::system::error_code ec;
+                        if (!disposed_ && socket->is_open()) {
+                            socket->shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+                            ok = !ec;
+                        }
+                        anchor.R();
+                    });
+                y.Suspend(anchor);
+                if (!ok) {
+                    return false;
+                }
+                ppp::telemetry::Count("tcpip.receive_half_close.relayed", 1);
+                // The socket->carrier pump ends the bridge on local EOF/error or a
+                // failed carrier write; owner aging bounds a peer that never closes.
+                while (!disposed_) {
+                    if (!ppp::coroutines::asio::async_sleep(y, kHalfClosePollMilliseconds)) {
+                        break;
+                    }
+                }
+                return true;
             }
 
             bool VirtualEthernetTcpipConnection::StartDirectBridge(

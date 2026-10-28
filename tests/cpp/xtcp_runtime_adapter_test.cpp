@@ -20,6 +20,11 @@ std::shared_ptr<Byte> MakeTestBuffer(const Byte* bytes, std::size_t length) noex
 }
 }
 
+namespace ppp::app::client::xtcp {
+std::size_t GsoSplitForTesting(const uint8_t* frame, std::size_t length,
+    std::size_t target_mtu, ::xtcp::buf::BufRef* out, std::size_t out_cap) noexcept;
+}
+
 namespace {
 int failures = 0;
 
@@ -60,6 +65,77 @@ void TestIngressCapsStopAndGeneration() {
     CHECK(!budget.IsReady());
     budget.MarkReady(second);
     CHECK(budget.IsReady());
+}
+
+void TestFlowCallbackIdentity() {
+    using ppp::app::client::xtcp::IsCurrentXtcpFlowCallback;
+    using ppp::app::client::xtcp::XtcpFlowCallbackIdentity;
+    const XtcpFlowCallbackIdentity queued_old_event{7, 41};
+    CHECK(IsCurrentXtcpFlowCallback(queued_old_event, 7, 41));
+    CHECK(!IsCurrentXtcpFlowCallback(queued_old_event, 7, 42));
+    CHECK(!IsCurrentXtcpFlowCallback(queued_old_event, 8, 41));
+}
+
+void TestGsoSplitFlagPlacement() {
+    using ppp::app::client::xtcp::XtcpGsoSplitSegmentFlags;
+    constexpr std::uint8_t kFinPshAckCwr = 0x01 | 0x08 | 0x10 | 0x80;
+    CHECK(XtcpGsoSplitSegmentFlags(kFinPshAckCwr, 0, 3) == (0x10 | 0x80));
+    CHECK(XtcpGsoSplitSegmentFlags(kFinPshAckCwr, 1, 3) == 0x10);
+    CHECK(XtcpGsoSplitSegmentFlags(kFinPshAckCwr, 2, 3) == (0x01 | 0x08 | 0x10));
+    CHECK(XtcpGsoSplitSegmentFlags(kFinPshAckCwr, 0, 1) == kFinPshAckCwr);
+
+    // A client half-close can reach the TUN as one super-frame carrying the
+    // data tail plus FIN. Only the last split may carry FIN; otherwise the
+    // stack consumes FIN mid-stream and trims a byte of the next split.
+    constexpr std::size_t kPayload = 3000;
+    std::vector<std::uint8_t> frame(40 + kPayload);
+    frame[0] = 0x45;
+    frame[2] = static_cast<std::uint8_t>(frame.size() >> 8);
+    frame[3] = static_cast<std::uint8_t>(frame.size());
+    frame[8] = 64;
+    frame[9] = 6;
+    const std::uint8_t src[4] = { 10, 0, 0, 2 };
+    const std::uint8_t dst[4] = { 192, 0, 2, 2 };
+    std::memcpy(&frame[12], src, 4);
+    std::memcpy(&frame[16], dst, 4);
+    std::uint8_t* tcp = &frame[20];
+    tcp[0] = 0xC3; tcp[1] = 0x50;  // 50000
+    tcp[2] = 0x4D; tcp[3] = 0x54;  // 19796
+    const std::uint32_t seq0 = 0xFFFFF000u;  // crosses the 2^32 wrap
+    tcp[4] = static_cast<std::uint8_t>(seq0 >> 24);
+    tcp[5] = static_cast<std::uint8_t>(seq0 >> 16);
+    tcp[6] = static_cast<std::uint8_t>(seq0 >> 8);
+    tcp[7] = static_cast<std::uint8_t>(seq0);
+    tcp[12] = 5 << 4;
+    tcp[13] = 0x01 | 0x08 | 0x10;  // FIN|PSH|ACK
+    tcp[14] = 0xFF; tcp[15] = 0xFF;
+    for (std::size_t i = 0; i < kPayload; ++i) {
+        frame[40 + i] = static_cast<std::uint8_t>(i);
+    }
+    ::xtcp::buf::BufRef parts[8];
+    const std::size_t count = ppp::app::client::xtcp::GsoSplitForTesting(
+        frame.data(), frame.size(), 1500, parts, 8);
+    CHECK(count == 3);
+    std::size_t carried = 0;
+    std::size_t fins = 0;
+    for (std::size_t k = 0; k < count; ++k) {
+        const std::uint8_t* w = parts[k].Data();
+        const std::uint8_t* t = w + 20;
+        const std::uint32_t seq = (static_cast<std::uint32_t>(t[4]) << 24) |
+            (static_cast<std::uint32_t>(t[5]) << 16) |
+            (static_cast<std::uint32_t>(t[6]) << 8) | t[7];
+        CHECK(seq == static_cast<std::uint32_t>(seq0 + carried));
+        const bool last = k + 1 == count;
+        CHECK(((t[13] & 0x01) != 0) == last);
+        CHECK(((t[13] & 0x08) != 0) == last);
+        CHECK((t[13] & 0x10) != 0);
+        fins += (t[13] & 0x01) != 0 ? 1u : 0u;
+        const std::size_t payload = parts[k].Len() - 40;
+        CHECK(w[40] == static_cast<std::uint8_t>(carried));
+        carried += payload;
+    }
+    CHECK(carried == kPayload);
+    CHECK(fins == 1);
 }
 
 void TestExternalLoopbackGate() {
@@ -733,6 +809,8 @@ int main() {
     xtcp::buf::InitPools();
     TestConsumePolicy();
     TestIngressCapsStopAndGeneration();
+    TestFlowCallbackIdentity();
+    TestGsoSplitFlagPlacement();
     TestExternalLoopbackGate();
     TestIPv4PolicyHelpers();
     TestProductionNdiOwnership();

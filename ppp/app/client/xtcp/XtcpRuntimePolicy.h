@@ -8,6 +8,41 @@
 
 namespace ppp::app::client::xtcp {
 
+// TCP flags of segment `index` (0-based) out of `count` when an ingress
+// super-frame is split. RFC 793/1122 (and Linux tcp_gso_segment): FIN, PSH and
+// URG belong to the final segment only, CWR to the first. Copying FIN onto an
+// earlier split made the stack consume the peer FIN mid-stream, enter
+// CLOSE-WAIT and then trim the first byte of the real tail segment as "old"
+// (one-byte deletion in the upload stream after a half-close).
+constexpr std::uint8_t XtcpGsoSplitSegmentFlags(
+    std::uint8_t flags, std::size_t index, std::size_t count) noexcept {
+    constexpr std::uint8_t kFin = 0x01;
+    constexpr std::uint8_t kPsh = 0x08;
+    constexpr std::uint8_t kUrg = 0x20;
+    constexpr std::uint8_t kCwr = 0x80;
+    if (index + 1 < count) {
+        flags = static_cast<std::uint8_t>(flags & ~(kFin | kPsh | kUrg));
+    }
+    if (index != 0) {
+        flags = static_cast<std::uint8_t>(flags & ~kCwr);
+    }
+    return flags;
+}
+
+struct XtcpFlowCallbackIdentity final {
+    std::uint64_t runtime_generation = 0;
+    std::uint64_t flow_generation = 0;
+};
+
+constexpr bool IsCurrentXtcpFlowCallback(
+    const XtcpFlowCallbackIdentity& identity,
+    std::uint64_t runtime_generation,
+    std::uint64_t flow_generation) noexcept {
+    return identity.runtime_generation != 0 && identity.flow_generation != 0 &&
+        identity.runtime_generation == runtime_generation &&
+        identity.flow_generation == flow_generation;
+}
+
 // Ingress admission budget (XTCP-STRAND-DISPATCH-001 lock-free rework).
 // Hot paths (TryAdmit/Release) run on the packet-ingress and strand threads
 // per packet: they are lock-free CAS on a single state word so the two

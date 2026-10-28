@@ -178,6 +178,11 @@ namespace ppp {
             return receive_closed_.load();
         }
 
+        bool ITcpipTransmission::EnableReceiveHalfClose() noexcept {
+            receive_half_close_.store(true);
+            return true;
+        }
+
         /**
          * @brief Reads bytes through the QoS-managed path.
          * @param y Coroutine yield context.
@@ -190,7 +195,30 @@ namespace ppp {
             }
 
             auto self = shared_from_this();
-            return ITransmissionQoS::DoReadBytes(y, length, self, *this, this->QoS);
+            if (!receive_half_close_.load()) {
+                return ITransmissionQoS::DoReadBytes(y, length, self, *this, this->QoS);
+            }
+
+            // Receive half-close opt-in: same QoS read as ITransmissionQoS::DoReadBytes,
+            // but a clean peer FIN leaves the carrier alive so its owner can still send.
+            if (length < 1) {
+                return NULLPTR;
+            }
+            std::shared_ptr<ITransmissionQoS> qos = this->QoS;
+            std::shared_ptr<Byte> packet;
+            if (NULLPTR != qos) {
+                packet = qos->ReadBytes(y, length,
+                    [self, this, qos](YieldContext& y, int* length) noexcept {
+                        return ReadBytes(y, *length);
+                    });
+            }
+            else {
+                packet = ReadBytes(y, length);
+            }
+            if (NULLPTR == packet && !receive_closed_.load()) {
+                Dispose();
+            }
+            return packet;
         }
 
         /**
@@ -333,7 +361,7 @@ namespace ppp {
             bool ok = !read_ec && bytes_transferred == (std::size_t)length;
             if (!ok) {
                 if (read_ec == boost::asio::error::eof &&
-                    role_ == TcpTransmissionRole::Child) {
+                    (role_ == TcpTransmissionRole::Child || receive_half_close_.load())) {
                     receive_closed_.store(true);
                     ppp::telemetry::Count("tcpip.receive_eof.child", 1);
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketReadFailed, NULLPTR);
