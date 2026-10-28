@@ -20,6 +20,21 @@
 
 JSON 必须是标准 JSON（不能有注释、不能有尾逗号）。
 
+## XTCP 运行时调优
+
+客户端在启用 XTCP 的构建中选择 `--tcp-stack=xtcp` 后，Linux、Windows x64
+和 Android 的 XTCP 每连接 `snd_buf` 配额默认为 1 MiB。它是配额，不会为每条连接
+预先分配内存。macOS 和 iOS 当前不支持 XTCP 构建。此项不是
+`appsettings.json` 字段；启动 `ppp` 前设置进程环境变量：
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `OPENPPP2_XTCP_SNDBUF_BYTES` | 1 MiB | 以字节为单位显式设置发送缓冲配额（小于 1024 的值会忽略）。优先于默认值和吞吐 profile。 |
+| `OPENPPP2_XTCP_DL_GSO_PERF_PROFILE` | 未设置 | 精确值为 `1` 且 `OPENPPP2_XTCP_SNDBUF_BYTES` 未设置或无效时，选择 2 MiB 配额。 |
+
+该 1 MiB 默认值沿用 #109 在 Linux 上引入的调优，并应用于当前支持 XTCP
+的所有平台。吞吐 profile 仍需显式启用。
+
 ## 2. 作用端速查
 
 | 块 | 服务端 | 客户端 | 说明 |

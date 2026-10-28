@@ -67,7 +67,7 @@ ppp policy <子命令> [选项]
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--tcp-stack=native\|lwip\|xtcp` | `native`（Windows 非 Wintun 驱动时为 `lwip`） | TCP 协议栈。`xtcp` 只有构建时启用才能用，否则启动失败。 |
+| `--tcp-stack=native\|lwip\|xtcp` | `native`（Windows 非 Wintun 驱动时为 `lwip`） | TCP 协议栈。`xtcp` 只有构建时启用才能用，否则启动失败。XTCP 每连接默认使用 1 MiB 发送缓冲配额，见[配置参考](CONFIGURATION_CN.md#xtcp-运行时调优)。 |
 | `--lwip=yes\|no` | 同上 | 旧的协议栈开关，等价于 `--tcp-stack=lwip`。 |
 | `--tun-mux=<连接数>` | `0` | MUX 并行连接数，0 = 不启用 MUX。 |
 | `--tun-mux-acceleration=<0-3>` | `0` | MUX 加速模式，超过 3 视为 0。 |

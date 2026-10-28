@@ -114,6 +114,8 @@
   占满后，入向 ACK 因申请不到缓冲被丢弃，snd_buf 无法释放，形成死锁。默认 64 KiB 在
   数百条满载流时同样可能触发。#108 的 0039/0040 已用 TX 余量与有界 heap overflow
   修复（集成说明 §11.188），#109 已把 Linux 默认 snd_buf 调为 1 MiB。
+  当前 1 MiB 默认已扩展到所有支持 XTCP 的平台（Linux、Windows、Android）；macOS/iOS
+  当前不支持 XTCP 构建。
 - 结论：调大 snd_buf 默认值是 G1/G2 下行缺口的主要手段，1.7 的前置修复已经合入。上行
   P4/P16 在各档 snd_buf 下都只有约 1.0×，不受 snd_buf 影响，需要单独工作项。
 
@@ -319,7 +321,7 @@ XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时�
 | 1.3 | `XTCP-GSO-STALL-001` 根因与修复 | M |
 | 1.4 | P64 DL server wedge；direct 路径间歇低值（resume_effective=0 的那一轮） | M |
 | 1.5 | 上游合并进展：liulilittle/xtcp#1 合入后，把补丁栈 rebase 到上游新版本，删除已合入的补丁 | S |
-| 1.6 | 单连接下行固定上限已定位为 snd_buf 64 KiB；#109 已把 Linux 默认值调为 1 MiB，配套 1.7 已合入；当前矩阵见 §2.4.2 | S |
+| 1.6 | 单连接下行固定上限已定位为 snd_buf 64 KiB；#109 先将 Linux 默认值调为 1 MiB，现已扩展到所有支持 XTCP 的平台，配套 1.7 已合入；当前矩阵见 §2.4.2 | S |
 | 1.7 | 缓冲池耗尽死锁已由 #108 的 0039/0040 修复（TX 余量 + 有界 heap overflow，集成说明 §11.188）；继续监测高并发压力 | M |
 | 1.8 | P64 UL watchdog 已定位为 iperf 3.18 同核发送时的 TCP_INFO 统计阻塞；runner 对应组合关闭周期统计，保留逐流结果（§2.4.3） | S |
 | 1.9 | UL P4/P16 的 G2 缺口：单核 CPU 基本饱和，预算未触顶；继续降低加密、逐块处理与 carrier 成本（§2.4.2） | M |
