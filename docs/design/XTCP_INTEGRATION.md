@@ -75,8 +75,8 @@ old pin). The rebased tree initially failed the KCC ECE assertion in
 the frozen virtual clock, per-segment pacing sends one segment per round after
 warm-up. KCC's max-bandwidth filter then ages out and cwnd falls to the floor
 (90 -> 4) on the same ACK *without* ECE as well. With 0005 burst pacing, the
-bandwidth model stays fresh and cwnd stays at the BDP target. Kernel BBR/KCC has
-no ECN window response beyond `tcp_enter_cwr` running the pass-through
+bandwidth model stays fresh and cwnd stays at the BDP target. This legacy
+BBRv1-style KCC port has no ECN model response beyond `tcp_enter_cwr` running the pass-through
 `ssthresh` hook (`tcp_cong_control` returns early for `cong_control`), so the
 port's only effect is the clamp to that threshold (178 > 90 here). 0034 now
 asserts that contract with seeded twin runs: the threshold is real, cwnd <=
@@ -289,8 +289,62 @@ under `/tmp/starve-xtcp/`. GitHub cloning failed, so frozen Git archives were
 transferred using the authorized fallback. No host network settings were
 changed. Windows and mobile runtime behavior was not tested in this campaign.
 
-The current local series has 33 patches with stable, sparse IDs: 0001-0015,
-0023, 0025-0029, 0031-0035 and 0037-0043 (0035: retry ACK/window construction after
+Patch 0044 (`0044-kcc-bbr2-ecn-response.patch`, 2026-10-29) adds an actual
+KCC ECN model response, superseding the limited ECE contract described above.
+The FSM counts newly delivered packets on ECE ACKs, including SACK delivery,
+the first sample and same-tick ACK batches; duplicate ACKs add no delivery.
+Rate samples carry the cumulative count and the negotiated-ECN gate.
+At packet-timed round boundaries, KCC computes the marked fraction and updates
+Q8 alpha using the Linux BBRv2 formula: `(240 * alpha >> 8) +
+(16 * fraction >> 8)`, with alpha initially 256 and gain 1/16.
+A round with more than 50% marked delivery tightens `inflight_hi` and the
+bandwidth-probing ceiling by `1 - ((alpha * 85) >> 8) / 256`; 100% marks
+initially bound 100 packets to 66, rather than Reno's 50. The cwnd floor is
+four packets. Congestion ends upward probing and exits STARTUP through DRAIN;
+low-marked PROBE_UP rounds permit additive ceiling recovery. Both regular and
+idle-restart pacing obey the ceiling. No marks leave both ceilings unbounded;
+unnegotiated connections bypass the ECN model. Loss hooks and recovery remain
+unchanged.
+
+This ports BBRv2's ECN estimator and proportional bounding into KCC's existing
+cycle, not its entire PROBE_BW state machine. BBRv2 applies its alpha/factor
+bound to `inflight_lo`; this KCC adaptation uses the requested `inflight_hi`
+and bandwidth ceiling. Reference: Google's
+[tcp_bbr2.c](https://github.com/google/bbr/blob/v2alpha/net/ipv4/tcp_bbr2.c),
+`bbr2_update_ecn_alpha` and `bbr2_adapt_lower_bounds`.
+The receiver retains RFC3168 sticky ECE/CWR feedback: the fraction measures
+packets delivered on ECE ACKs, not exact router CE prevalence. Accurate DCTCP
+CE-transition feedback, RTT eligibility policy and the full BBRv2 state machine
+are outside this patch.
+
+`test_ecn_cc` now checks 0%, 10%, 50% and 100% fractions, the negotiation gate,
+same-round suppression, subsequent-round EWMA and decay to zero. Its seeded
+FSM twins require a strict marked-vs-unmarked KCC window reduction, and equal
+windows for unnegotiated twins. ACK-accounting tests cover first samples,
+same-tick mixed ECE ACKs and duplicate ACKs; existing CUBIC wire tests remain.
+Validation and A/B evidence are recorded in XTCP_INTEGRATION_CN.md section
+11.190.
+
+The lab's Release/checksum-enabled XTCP CTest passed 245/245; the assertion-enabled
+`tests/cpp` suite passed 191/191. Resume validation matched the final patch and
+tested sources and replayed all 34 patches with `patch -p1 --fuzz=0` in a new
+lab directory; no local builds or tests were run during the resume.
+The completed 24-cell default-config A/B used frozen task baseline
+`bfd5b88101943ba370bb9f04858af54787a5a461` versus that baseline plus 0044,
+with two rounds in opposite variant order. Mean throughput changes for
+DL P1/P16/P64 were +2.31%/-1.38%/+0.22%; UL changes were -0.45%/+8.38%/-2.09%.
+All cells passed with no zero-rate flows or runtime faults. This small shared-host
+sample shows no clear default-path regression, not statistical equivalence.
+The default integration does not enable ECN negotiation; this measures the
+non-ECN path without injected CE. Negotiated zero-mark behavior is unit-tested;
+real marked-network convergence, fairness and recovery remain unverified.
+Measurements used the shared `/home/ppp-m2/measure.py` guard/run functions with
+private network/mount namespaces and host kernel steering disabled. Task build
+directories were removed; logs and frozen sources were retained. Windows,
+mobile and sanitizer validation were not performed. No commit or push was made.
+
+The current local series has 34 patches with stable, sparse IDs: 0001-0015,
+0023, 0025-0029, 0031-0035 and 0037-0044 (0035: retry ACK/window construction after
 allocation failure; 0037: byte-based immediate ACK for super-segments; former
 0036, SACK blocks fit the option space, is upstream as liulilittle/xtcp#2 and
 its ID is not reused). Upstream absorbs former local 0016 (PSH tail),
