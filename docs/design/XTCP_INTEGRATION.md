@@ -142,8 +142,155 @@ watchdog. 2 MiB P64 DL passed at 1384 Mbps. P1/P4/P16 DL+UL at 1 MiB and
 iperf watchdog on both old and new binaries, so it predates this change.
 See XTCP_INTEGRATION_CN.md §11.188 for the table and residual risks.
 
-The current local series has 31 patches with stable, sparse IDs: 0001-0015,
-0023, 0025-0029, 0031-0035 and 0037-0041 (0035: retry ACK/window construction after
+### Sustained pool pressure and per-flow starvation (2026-10-28)
+
+Patch 0039 prevents the ACK-ingress wedge, but does not make TX admission
+fair. A busy connection can consume released blocks in its ACK callback
+before a connection with no data in flight is polled. Polling still happens:
+in the new default-buffer P64 DL diagnostic, six zero-rate flows had open
+peer windows, adequate cwnd, zero inflight and tens of thousands of flush
+attempts, while their ACKed bytes stayed unchanged. Aggregate pending-flush
+allocation failures exceeded 116,000 in a one-second sample. This is
+allocation starvation, not a missing per-connection timer or a cwnd collapse.
+
+The lab campaign uses main `7766d87f` (including #111 tooling), one shard,
+GSO on, 30 s plus 2 s omit, and the default 1 MiB send quota. All cells use
+the shared measurement/build locks and idle guard, private network/mount
+namespaces, and `--kernel-steering off`. Diagnostic controls:
+
+| Binary / snd_buf | P64 DL Mbps | Zero-rate flows |
+| --- | ---: | ---: |
+| main / default 1 MiB | 1630 | 6 |
+| main / 256 KiB | 1535 | 0 |
+| main / 64 KiB | 1439 | 0 |
+| #115 `0091600e` / default 1 MiB | 1681 | 8 |
+| main without 0039/0040 / default 1 MiB | watchdog at 62 s | no completed result |
+
+Thus #115's half-close and GSO FIN fixes do not resolve this starvation.
+Rechecking the earlier poolfix artifacts confirms zero-rate counts 0/0/0;
+however, pass 2's slowest flow was only 52,251 bit/s (max/min 746).
+
+Patch `0042-tests-pool-release-without-own-ack.patch` checks restart through
+the real stack timer sweep after unrelated pool users release memory, with
+no data ACK available to the waiting connection. It passes on the old stack.
+Patch `0043-fair-tx-pool-waiters.patch` adds an intrusive waiter per connection.
+After 256 consecutive allocation denials, later TX attempts reserve up to 32
+arena blocks for each older eligible waiter before refilling the caller. Successful
+allocation resets the denial count, preserving existing admission for brief
+pressure. Unavailable large tiers do not block MSS requests. A flush returns
+unused burst blocks when it stops, retaining at most one protected packet
+across a window/pacing stop. Close, destruction and an empty pending buffer
+cancel it. Burst metadata is allocated lazily; packets stay in the arena.
+An atomic release/acquire handoff publishes an unlinked, fully populated
+grant to its connection. That owner consumes the burst without taking the
+global queue mutex for every packet; queue mutation, publication and
+cancellation remain protected by the mutex. Acquire/Cancel on the same
+connection remain serialized by the caller.
+
+Fair admission alone was insufficient. An aged single-packet candidate still
+had three iperf zero-rate flows: ACKs advanced occasionally, but KCC pacing
+fell as low as 11 kbit/s, below iperf's complete-read reporting threshold.
+When allocation fails with an empty pipe or an aged waiter, the connection
+marks newly emitted delivery as locally limited using the existing
+app-limited mechanism. Brief pressure with data in flight keeps the existing
+sampling behavior. The watermark
+includes current packets in flight; existing segments keep their send-time
+flags. The bandwidth
+estimator already rejects lower limited samples and accepts higher ones;
+its policy is unchanged. Earlier immediate-FIFO/burst candidates were rejected for
+zero-rate flows or throughput loss; their artifacts remain available.
+The adjacent P64 gates rejected `fixed5` (64-denial, 32-packet, no sampling
+fix: zero flows 1/0, mean throughput +10.9%), `fixed7` (64-denial, one-packet,
+sampling fix: 2/0, -20.3%), and `fixed8` (64-denial, 32-packet, sampling fix:
+0/0, -12.5%). `fixed9` (512-denial, 32-packet, sampling fix) had 1/0 zero
+flows and -0.5% mean throughput. The 256-denial threshold reduces interference with ordinary
+ACK-clocked bursts; it is an allocation-attempt count, not a time guarantee.
+`fixed10` (256-denial, empty-pipe-only sampling fix) still had 1/3 zero
+flows despite +0.3% mean throughput; its diagnostic captured pacing collapse
+with an open window and no retransmissions. The final sampling fix also
+covers partial inflight allocation failure, with a failing KCC regression.
+
+Allocation failure additionally restores a newly opened pacing tick's prior
+deadline if that tick has not emitted any packet. The old flush prepaid wire
+time before construction, so a memory denial could repeatedly delay retries
+despite transmitting nothing. Ticks that already emitted data retain their
+deadline. A regression releases one arena block and polls at the same time,
+without a data ACK: it fails before this correction and sends afterward.
+`fixed12` eliminated zero flows in both adjacent P64 passes, but lost 2.6%
+mean throughput and was rejected before the grant-consumption optimization.
+`fixed13` also had zero flows 0/0 but lost 1.9% mean throughput. Restricting
+the sampling marker to an empty pipe or an aged waiter preserves the healthy
+ACK clock; the regression verifies brief and sustained pressure separately.
+
+The intermediate `fixed14` adjacent P64 gate passed: main 1865/1845 Mbps with 5/7
+zero flows; fixed 1877/1839 Mbps with 0/0 zero flows. Mean throughput changed
+by +0.17% (within shared-host noise); the slowest fixed flows were 2.41/1.64
+Mbps. This is progress protection, not equal bandwidth or a time guarantee.
+Its complete two-pass matrix had zero flows in every fixed cell, but DL P16
+mean throughput fell 2.06% (DL P1 -0.61%, P4 +0.73%, UL P16 +1.62%). The final
+candidate moves the new waiter to the end of the connection to preserve
+existing hot-field offsets, and constructs successful arena results directly
+instead of returning an intermediate buffer. A local no-pressure allocation
+microbenchmark improved from about 23 to 19 ns/op (base about 16 ns/op); only
+product A/B determines the performance result.
+
+Final adjacent A/B (`fixed15`, same default 1 MiB, one shard, GSO on,
+30 s plus 2 s omit; main/fixed then fixed/main for each cell), Mbps:
+
+| Cell | main pass 1 / 2 | fixed pass 1 / 2 | Mean change | Fixed zero flows |
+| --- | ---: | ---: | ---: | ---: |
+| DL P1 | 1843.887 / 1776.111 | 1788.836 / 1791.773 | -1.09% | 0 / 0 |
+| DL P4 | 1604.565 / 1530.884 | 1561.787 / 1631.617 | +1.85% | 0 / 0 |
+| DL P16 | 1722.853 / 1757.070 | 1735.679 / 1725.893 | -0.53% | 0 / 0 |
+| DL P64 | 1832.526 / 1855.350 | 1878.478 / 1840.705 | +0.85% | 0 / 0 |
+| UL P16 | 878.541 / 909.122 | 979.844 / 909.890 | +5.71% | 0 / 0 |
+
+Main P64 had 7/3 zero flows; the slowest fixed P64 flows were 0.769/0.699
+Mbps. P1/P16 have small negative point estimates; main's pass-to-pass
+variation was 3.7%/2.0% respectively. Two passes on a shared host do not
+establish statistical performance equivalence. All 20 cells completed with
+cleanup and monitoring checks passing, no remaining private netns, and no
+disk-guard stop. All ten fixed cells had no runtime qualification faults and
+the same binary SHA-256:
+`e9f100193d18d01eaa7f25c99b7342d28d982c6157b0a60aadc8b90e762a01db`.
+Ingress, controls, retransmissions, the 1/8 reserve and the 8 MiB overflow cap
+retain their existing allocation rules. With no waiters and no pool pressure,
+TX takes the existing arena path without the waiter mutex.
+
+The overtaking regression fails before 0043 and passes after it. Tests also
+cover queue order, cancellation of queued/reserved waiters, mixed sizes,
+brief-pressure admission, retaining one grant across a closed window, and
+the existing 1600-connection completion scenario. A separate regression
+holds ACKed wire buffers to force allocation failure with KCC attached, both
+with data in flight and after the pipe drains; the delivery marker fails to
+advance before the fix and advances afterward.
+Eight concurrent senders also exercise grant publication, consumption and
+cancellation under pressure. TSan compiled, but its runtime stopped before
+the test with `unexpected memory mapping`; it provides no race-check result.
+The complete patch series
+applies to a fresh pinned archive with `patch -p1 --fuzz=0`. Full CTest is
+243/245 on the initial baseline; `test_ts_ooo_drain` fails consistently and
+`test_sack_gap_edge` is timing-flaky. The current candidate passed 244/245,
+with only the existing `test_ts_ooo_drain` failure. Ordinary PIE ASan/UBSan binaries intermittently crashed at startup
+or timed out with repeated `DEADLYSIGNAL` output; bounded churn repeats also
+timed out on the unmodified baseline. Disabling the ASan SIGSEGV handler did
+not make these runs stable. A separate non-PIE Debug build
+(`XTCP_SANITIZE=ON`, `CMAKE_CXX_FLAGS=-fno-pie`,
+`CMAKE_EXE_LINKER_FLAGS=-no-pie`, default ASan signal handling) passed the
+pool-pressure, MPSC TX-retry and connection-churn tests 3/3 with 45 s limits.
+Artifacts:
+`/home/ppp-m2/starve-20261028/` (diagnostics under `runs/diagnostic/`, including
+rejected candidate `fixed`; final A/B under `runs/qualified-fixed15/`).
+`qualification-fixed15.json` and `summary.json` contain the metric summaries;
+`manifest-fixed15.json` freezes the common main runner, while
+`source-manifest-fixed15.json` and the XTCP patch stamp identify the variant
+source. Validation logs are under `validation/`; local logs are also retained
+under `/tmp/starve-xtcp/`. GitHub cloning failed, so frozen Git archives were
+transferred using the authorized fallback. No host network settings were
+changed. Windows and mobile runtime behavior was not tested in this campaign.
+
+The current local series has 33 patches with stable, sparse IDs: 0001-0015,
+0023, 0025-0029, 0031-0035 and 0037-0043 (0035: retry ACK/window construction after
 allocation failure; 0037: byte-based immediate ACK for super-segments; former
 0036, SACK blocks fit the option space, is upstream as liulilittle/xtcp#2 and
 its ID is not reused). Upstream absorbs former local 0016 (PSH tail),

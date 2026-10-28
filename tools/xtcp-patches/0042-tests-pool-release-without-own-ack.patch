@@ -1,0 +1,89 @@
+--- a/tests/test_pool_pressure.cpp
++++ b/tests/test_pool_pressure.cpp
+@@ -21,6 +21,8 @@
+ 
+ #include <xtcp/buf/bufref.h>
+ #include <xtcp/core/tcp.h>
++#include <xtcp/core/stack.h>
++#include <xtcp/ndi/manual.h>
+ 
+ #include <chrono>
+ #include <cstdio>
+@@ -175,6 +177,69 @@
+         static_cast<unsigned long long>(end.tx_deferrals - before.tx_deferrals),
+         static_cast<unsigned long long>(end.heap_overflow_acquires - before.heap_overflow_acquires));
+ }
++
++void PoolReleaseWithoutOwnAck() {
++    xtcp::ndi::ManualBackend a, b;
++    xtcp::XtcpStack sender(&a), receiver(&b);
++    auto wire = [](xtcp::ndi::ManualBackend& backend, xtcp::XtcpStack& stack) {
++        backend.SetRxHandler([&stack](xtcp::ndi::Packet&& packet) {
++            auto ref = xtcp::buf::BufRef::Acquire(packet.len);
++            CHECK(!ref.IsEmpty());
++            if (ref.IsEmpty()) return;
++            std::memcpy(ref.Data(), packet.data, packet.len);
++            ref.SetLen(packet.len);
++            stack.OnPacket(std::move(ref));
++        });
++    };
++    wire(a, sender);
++    wire(b, receiver);
++    auto pump = [](xtcp::ndi::ManualBackend& from, xtcp::ndi::ManualBackend& to) {
++        Byte packet[65536];
++        while (from.TxPending()) {
++            const UInt32 size = from.PollTx(packet);
++            if (!size) break;
++            to.Inject(packet, size, 0x0800);
++        }
++    };
++    const auto local = EndpointAt(0x0a000001, 1001);
++    const auto remote = EndpointAt(0x0a000002, 2001);
++    CHECK(receiver.Listen(remote));
++    UInt32 received = 0;
++    receiver.SetRecvHandler([&](UInt64, const Byte* data, UInt32 size) {
++        for (UInt32 i = 0; i < size; ++i) CHECK(data[i] == 0x5a);
++        received += size;
++    });
++    const UInt64 conn = sender.Connect(local, remote);
++    CHECK(conn != 0);
++    pump(a, b); pump(b, a); pump(a, b);
++
++    std::vector<xtcp::buf::BufRef> retained;
++    {
++        xtcp::buf::TxAcquireScope scope;
++        for (;;) {
++            auto ref = xtcp::buf::BufRef::Acquire(1500);
++            if (ref.IsEmpty()) break;
++            retained.push_back(std::move(ref));
++        }
++    }
++    std::vector<Byte> data(16 * 1024, 0x5a);
++    const auto before = xtcp::buf::GetPoolPressureStats();
++    CHECK(sender.Send(conn, data.data(), static_cast<UInt32>(data.size())));
++    sender.PollAckTimers();
++    CHECK(a.TxPending() == 0);
++    CHECK(xtcp::buf::GetPoolPressureStats().tx_deferrals > before.tx_deferrals);
++    // This connection has never emitted data: no ACK/RTO can restart it.
++    retained.clear();
++    CHECK(sender.NextTimerDeadlineUs() != xtcp::XtcpStack::kNoTimerDeadline);
++    sender.PollAckTimers();
++    CHECK(a.TxPending() > 0);
++    for (unsigned i = 0; i < 1000 && received < data.size(); ++i) {
++        pump(a, b); pump(b, a);
++        sender.PollAckTimers(); receiver.PollAckTimers();
++    }
++    CHECK(received == data.size());
++    std::printf("pool_release_without_own_ack: received=%u\n", received);
++}
+ } // namespace
+ 
+ int main() {
+@@ -182,6 +247,7 @@
+     TxReserve();
+     HeapOverflow();
+     ConnWedge();
++    PoolReleaseWithoutOwnAck();
+     xtcp::buf::ShutdownPools();
+     return failures ? 1 : 0;
+ }
