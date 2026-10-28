@@ -146,6 +146,44 @@ CXX=clang++ scripts/run-cpp-tsan-tests.sh
 
 本批关键的确定性并发测试包括 `yield_context_test`、`spinlock_test`、`asynchronous_write_io_queue_test`、`dns_udp_relay_test`、`client_datagram_port_manager_test`、`protector_network_request_test`、`transmission_qos_concurrency_test`、`vdns_request_lifecycle_test`、`mapping_port_connect_reentrancy_test` 和 `dns_controller_test`。
 
+Linux 下脚本检查 `ADDR_NO_RANDOMIZE`，必要时通过
+`setarch "$(uname -m)" -R` 重启自身。高熵 ASLR（本地 WSL2 的
+`vm.mmap_rnd_bits=32`）可能将 PIE 或共享库映射到 TSan 保留地址范围，
+导致进入 `main` 前报 `unexpected memory mapping`。仅关闭 PIE 无法控制共享库
+地址。该处理只影响测试进程树，不修改系统 sysctl。需要 util-linux 的
+`setarch` 及设置该 personality 标志的权限；容器禁止该操作时脚本明确失败。
+不能通过反复重试直到启动成功来掩盖问题。
+
+`TSAN_BUILD_DIR` 可指定独立构建目录，`CMAKE_BUILD_PARALLEL_LEVEL` 控制并行度，
+额外脚本参数传递给 CMake：
+
+```bash
+TSAN_BUILD_DIR=/tmp/cpp-tsan CMAKE_BUILD_PARALLEL_LEVEL=8 CXX=g++ \
+  sh scripts/run-cpp-tsan-tests.sh -DENABLE_XTCP_TESTS=ON \
+  -DXTCP_SOURCE_DIR=/path/to/prepared/xtcp -DCMAKE_BUILD_TYPE=RelWithDebInfo
+```
+
+vendored XTCP 自身测试需要同时插桩库和测试程序：
+
+```bash
+cmake -S /path/to/prepared/xtcp -B /tmp/xtcp-tsan -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DXTCP_CHECKSUM_VALIDATE=ON \
+  -DXTCP_SANITIZE=OFF -DXTCP_BUILD_TESTS=ON \
+  -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
+  -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+cmake --build /tmp/xtcp-tsan --parallel 8
+TSAN_OPTIONS='halt_on_error=0 exitcode=66' setarch "$(uname -m)" -R \
+  ctest --test-dir /tmp/xtcp-tsan --output-on-failure --timeout 120
+```
+
+M3 并发覆盖包括 `spsc_handoff_test`、`xtcp_direct_handoff_test`、
+`tap_output_lane_test`、`tap_lane_envelope_handoff_test`、
+`xtcp_queue_mode_lifecycle_test`、`xtcp_shard_policy_test`；XTCP 侧包括
+`test_shard`、`test_thread_data`、
+`test_thread_send_abort`、`test_conn_churn_threads`。shard policy 测试只验证选择规则，
+不能视为多线程 runtime 验证。TSan 通过只说明实际执行的离线路径，不能证明 VPN
+会话工作正常。
+
 ## Runtime contract 前提
 
 `bash scripts/test-runtime-contract.sh cpp` 假定 `build/test` 已存在。先配置独立项目；该脚本随后在检查共享 fixture hashes 后，只构建并运行 `runtime_snapshot_test`。

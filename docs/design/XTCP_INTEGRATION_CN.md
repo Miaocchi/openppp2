@@ -430,7 +430,72 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0040-tests-pool-pressure-no-ack-wedge.patch`：新增 `test_pool_pressure`，覆盖 TX 余量、heap overflow 上限与归还，以及 1600 连接保留量超过 arena 时 ACK 仍可分配且全部完成。
 - `0041-tests-sack-gap-and-timestamp-paws.patch`：SACK 丢包测试按带时间戳的 1448 字节 payload cap 对齐，记录所有首次发送区间，避免重传改变丢包节奏；两处丢包直接检查实际重传区间与已观察到的 SACK block。时间戳 OOO 测试从真实握手 TSval 派生合成值，避免 PAWS 丢弃过旧的注入包。
 
-当前共 33 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037-0043（0036 为已上游的历史编号，不复用）；0042/0043 的逐流饥饿修复和测试见 §11.189。不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+当前共 38 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037-0048（0036 为已上游的历史编号，不复用）；0042/0043 的逐流饥饿修复和测试见 §11.189。不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+
+### 时间戳 drain 与 TSan 后续修复（0045-0048）
+
+上游 `f71548f` 的 OOO 时间戳测试固定注入 `0x10000001/2`。当机器单调时钟
+按 TCP 序号比较已超过该值时，PAWS 会正确丢弃这些比握手更旧的合成数据。
+实验机上，上游原测试失败 3 条断言，仅改用 0041 已有的真实握手时间戳派生逻辑后，
+同一未修改上游库即通过。
+新提取的 0045 前旧补丁链，其原 OOO 测试连续 30 次通过，因此没有在当前完整旧补丁链
+上复现所报的 vendored 必失败。未修改上游库配合 0045 前的夹具（0034 ACK 捕获、
+0041 时间戳派生）也连续通过 30 次。
+
+0045 修正 ACK 捕获夹具：在 pump 中记录探测字节的 ACK，不再额外消费同一个队列；
+显式记录 ACK 是否到达，允许序号为零；造包使用真实握手后的 ACK 号。切换合成
+对端后，不把针对合成数据的 ACK 送回并未发送这些字节的真实 sender；使用 checked
+接收回调验证应用背压。
+
+旧断言还掩盖了真实协议栈问题：drain 会把 TS.Recent 替换成缓存 OOO 段的 TSval。
+若填洞重传更新，这会把 PAWS 锚点倒退，随后错误接收旧数据。
+[RFC 7323 §4.3(C)](https://www.rfc-editor.org/rfc/rfc7323.html#section-4.3)
+要求回显填洞段的时间戳；Linux v6.6 的
+[`tcp_replace_ts_recent` 与 `tcp_ofo_queue`](https://github.com/torvalds/linux/blob/v6.6/net/ipv4/tcp_input.c)
+也在接收时确定锚点，不在缓存数据投递时更新。0046 在 Established、closing drain
+以及 ResumeReceive 中保持该锚点，并补齐 closing 状态和带时间戳纯 FIN 的到达更新。
+回归还在两种连接状态下检查陈旧纯 FIN 被拒绝、有效 FIN 正确回显时间戳；不重写无关的
+延迟 ACK 时间戳选择算法。回归覆盖 Established、FIN-WAIT-2，以及各自背压后
+Resume 的路径，同时检查回显和 PAWS 丢弃。旧库 4 种路径各失败 4 条断言
+（含纯 FIN，共 16 条），修复后通过。
+
+0047 前的 TSan 对照中，选定的 3 个夹具测试全部失败：一个 map 数据竞态，
+两个 fake NIC 测试的锁顺序反转告警。0047 修正
+`test_thread_data` 无锁读取 `crc_b.size()` 与 pump 插入 map 的真实测试代码竞态，
+并让单线程 TSO/背压 fake NIC 按 `test_tx_retry_mpsc` 的模式排队接受包，由 pump
+在栈锁外投递。原同步跨栈投递形成反向锁图。没有新增 TSan suppression，原 TSO、
+拒绝重试、metadata 和字节投递断言仍启用。
+
+夹具变化暴露了真实 TX shard 路由错误：`RetryBatchSharded` 为 qdisc/DMA 拒绝的
+发送包调用 `ShardOfPacket`，但后者按 RX 方向反转五元组。0048 改为源=local、
+目的=remote；回归检查 64 个 IPv4 与 64 个 IPv6 flow 的 packet shard 等于
+connection-ID shard（修复前 113/128 错误），并把背压夹具的归属断言保持到最终
+投递完成。该修复只改变 TX 重试归属，不改变 RX lookup、shard 数和拥塞控制策略。
+
+0045-0048 最终验证（2026-10-29）全部在共享实验机进行：Debian Linux 6.12.73、
+GCC 14.2、`vm.mmap_rnd_bits=28`。含纯 FIN 补充的最终源码普通 XTCP CTest
+完整跑 3 轮，每轮 245/245；另有补充前的一轮 245/245。库与测试均插桩的
+XTCP TSan 为 245/245，无告警；`test_shard`、
+`test_conn_churn_threads`、`test_thread_data`、`test_thread_send_abort`、
+`test_tx_retry_mpsc` 各连续通过 5 次 TSan（共 25 次调用）。全部 37 个补丁在 prepare
+的新提取目录中按顺序以 `patch -p1 --fuzz=0` 应用成功，源码与实际测试目录一致。
+ECN 的 0044 尚未提供，不在此次验证链内。
+
+修改后的独立 C++ TSan 脚本启用 XTCP 后通过 201/201 targets，再对测试指南中的
+6 个 M3 targets 各重复 5 次通过（共 30 次调用）。该构建使用 `-O1 -g1 -DNDEBUG`；
+XTCP 套件使用通常的 RelWithDebInfo flags。C++ 保留既有 libcrypto suppression，
+没有新增 suppression；XTCP 套件没有使用 suppression。全部 sanitizer 验收均在
+`setarch -R` 下运行。
+
+启动诊断对当前 SPSC 测试分别运行 PIE/non-PIE × ASLR 开/关，每种组合固定 5 次；
+本实验机 20 次调用全部通过 7 组测试，因此不能宣称在此重现了旧 WSL 启动失败。
+本地只读确认 WSL2 6.6.87.2、`vm.mmap_rnd_bits=32`、ASLR 开启；本次续跑没有
+在本地执行任何构建、测试或 sanitizer，也没有修改主机 sysctl。日志与命令保存在
+本地 `build/private/ts-ooo-tsan-20261029/`，本任务在实验机创建的构建目录已在完成后删除。
+
+两套插桩测试的命令及 WSL ASLR 启动原因见
+[TSan 测试说明](../development/TESTING_CN.md#threadsanitizer)。本次为隔离单元测试，
+没有启动 VPN、运行特权网络 E2E、测量实验机吞吐，或验证 Windows/移动端运行行为。
 
 修改上游行为的唯一入口是该目录下的补丁；直接改解包树会在下次 prepare 时丢失。
 
