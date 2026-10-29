@@ -130,7 +130,12 @@ android/android/keystore/*.p12
 android/android/keystore/*.jks
 android/android/keystore/*.keystore
 android/android/keystore/*.properties
-/third-party
+/third-party/*
+!/third-party/NOTICE
+!/third-party/MIT.txt
+!/third-party/BSL-1.0.txt
+# Optional pinned coroutine backend (prepared locally).
+/third-party/corocc/
 .DS_Store
 
 # Local OTEL/Grafana deploy configs (not for version control)

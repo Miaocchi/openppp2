@@ -1,6 +1,6 @@
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/diagnostics/Error.h>
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
 #include <sanitizer/tsan_interface.h>
 #endif
 
@@ -43,7 +43,11 @@ namespace ppp
                 heap = allocator->shared_from_this();
             }
 
+#if defined(PPP_COROUTINE_BACKEND_COROCC) && defined(PPP_COROCC_GUARD_STACK)
+            stack_ = backend::AllocateStack(stack_size);
+#else
             stack_ = ppp::threading::BufferswapAllocator::MakeByteArray(heap, stack_size);
+#endif
 
             cell_ = ppp::make_shared_object<AnchorCell>();
             if (cell_)
@@ -52,7 +56,7 @@ namespace ppp
                 cell_->context = &context;
                 cell_->strand  = strand;
             }
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
             sanitizer_fiber_ = __tsan_create_fiber(0);
 #endif
         }
@@ -69,13 +73,17 @@ namespace ppp
                 cell->y = NULLPTR;
             }
 
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
             if (y->sanitizer_fiber_)
             {
                 __tsan_destroy_fiber(y->sanitizer_fiber_);
                 y->sanitizer_fiber_ = NULLPTR;
             }
             y->sanitizer_caller_fiber_ = NULLPTR;
+#endif
+#if defined(PPP_COROUTINE_BACKEND_COROCC)
+            backend::Destroy(y->backend_context_);
+            y->backend_context_ = NULLPTR;
 #endif
             y->h_          = NULLPTR;
             y->stack_      = NULLPTR;
@@ -165,11 +173,11 @@ namespace ppp
             }
 
             /** @brief The mutex is released before jumping; never hold it across fcontext switches. */
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
             __tsan_switch_to_fiber(y->sanitizer_caller_fiber_, 0);
 #endif
             y->caller_.exchange(
-                boost::context::detail::jump_fcontext(
+                backend::Jump(
                     y->caller_.exchange(NULLPTR), y).fctx);
 
             {
@@ -224,12 +232,12 @@ namespace ppp
                 }
             }
 
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
             y->sanitizer_caller_fiber_ = __tsan_get_current_fiber();
             __tsan_switch_to_fiber(y->sanitizer_fiber_, 0);
 #endif
             return Switch(
-                boost::context::detail::jump_fcontext(
+                backend::Jump(
                     y->callee_.exchange(NULLPTR), y), y);
         }
 
@@ -243,13 +251,22 @@ namespace ppp
 
             if (stack)
             {
-                boost::context::detail::fcontext_t callee =
-                    boost::context::detail::make_fcontext(stack + stack_size_, stack_size_, &YieldContext::Handle);
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+                backend::Context callee =
+                    backend::Make(stack + stack_size_, stack_size_, &YieldContext::Handle);
+#if defined(PPP_COROUTINE_BACKEND_COROCC)
+                y->backend_context_ = callee;
+                if (!callee)
+                {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    YieldContext::Release(y);
+                    return;
+                }
+#endif
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
                 y->sanitizer_caller_fiber_ = __tsan_get_current_fiber();
                 __tsan_switch_to_fiber(y->sanitizer_fiber_, 0);
 #endif
-                Switch(boost::context::detail::jump_fcontext(callee, y), y);
+                Switch(backend::Jump(callee, y), y);
             }
             else
             {
@@ -259,14 +276,14 @@ namespace ppp
         }
 
         /** @brief Performs guarded fcontext jump only when target is valid. */
-        boost::context::detail::transfer_t YieldContext::Jump(boost::context::detail::fcontext_t context, void* state) noexcept
+        backend::Transfer YieldContext::Jump(backend::Context context, void* state) noexcept
         {
             if (context) 
             {
-                return boost::context::detail::jump_fcontext(context, state);
+                return backend::Finish(context, state);
             }
 
-            return boost::context::detail::transfer_t{ NULLPTR, NULLPTR };
+            return backend::Transfer{ NULLPTR, NULLPTR };
         }
 
         /**
@@ -305,7 +322,7 @@ namespace ppp
         /**
          * @brief Stores transfer context and finishes one switch cycle.
          */
-        bool YieldContext::Switch(const boost::context::detail::transfer_t& t, YieldContext* y) noexcept
+        bool YieldContext::Switch(const backend::Transfer& t, YieldContext* y) noexcept
         {
             if (!t.data)
             {
@@ -326,12 +343,12 @@ namespace ppp
                  * @brief A wakeup was latched while the coroutine was parking; re-enter
                  *        it immediately so the suspend is never allowed to block.
                  */
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
                 y->sanitizer_caller_fiber_ = __tsan_get_current_fiber();
                 __tsan_switch_to_fiber(y->sanitizer_fiber_, 0);
 #endif
-                boost::context::detail::transfer_t r =
-                    boost::context::detail::jump_fcontext(
+                backend::Transfer r =
+                    backend::Jump(
                         y->callee_.exchange(NULLPTR), y);
 
                 if (!r.data)
@@ -372,7 +389,7 @@ namespace ppp
          *        and release the context to prevent a second invalid jump and a memory
          *        leak.
          */
-        void YieldContext::Handle(boost::context::detail::transfer_t t) noexcept
+        void YieldContext::Handle(backend::Transfer t) noexcept
         {
             YieldContext* y = (YieldContext*)t.data;
             if (y)
@@ -403,7 +420,7 @@ namespace ppp
                     h = NULLPTR;
                 }
 
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
                 __tsan_switch_to_fiber(y->sanitizer_caller_fiber_, 0);
 #endif
                 Jump(y->caller_.exchange(NULLPTR), NULLPTR);

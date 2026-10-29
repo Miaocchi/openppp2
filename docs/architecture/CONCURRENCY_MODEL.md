@@ -1,4 +1,11 @@
 # Concurrency Model
+
+The default coroutine primitive is Boost fcontext. An experimental,
+default-OFF `ENABLE_COROCC` backend replaces only L0 stack switching; Asio
+executors, Anchor wakeups and shard ownership are unchanged. See
+[ADR 0003](../adr/0003-corocc-coroutine-backend.md) for transfer and sanitizer
+semantics and [validation](../development/COROCC_VALIDATION.md) for tested scope.
+
 > Status: Active
 > Type: Architecture
 > Last verified: `ppp/threading/`, `ppp/coroutines/`, and runtime startup sources, 2026-07-22

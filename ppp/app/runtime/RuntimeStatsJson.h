@@ -43,6 +43,9 @@ namespace ppp {
                 const RuntimeStatsSample& sample) noexcept {
                 Json::Value root(Json::objectValue);
                 root["type"] = "ppp-stats";
+#if defined(PPP_COROUTINE_BACKEND_COROCC)
+                root["coroutine_backend"] = "corocc";
+#endif
                 root["version"] = RuntimeStatsSample::SchemaVersion;
                 root["monotonic_ms"] = Json::UInt64(sample.monotonic_ms);
                 root["rx_bytes"] = Json::UInt64(sample.rx_bytes);

@@ -13,6 +13,7 @@
 |---|---|
 | Follow the executable from entry point to runtime | [Source Reading Guide](SOURCE_READING_GUIDE.md) |
 | Run the appropriate test set | [Testing](TESTING.md) |
+| Build or evaluate the opt-in coroutine backend | [corocc build guide](COROCC_BACKEND.md) · [Validation record](COROCC_VALIDATION.md) |
 | Review the dated Boost audit | [Boost compatibility audit (Chinese)](BOOST_187_COMPATIBILITY.md) |
 | Follow repository conventions | [Code style](../governance/CODE_STYLE.md) · [Documentation style](../governance/DOCUMENTATION_STYLE.md) |
 | Build, preview, and publish the bilingual site | [Documentation site](DOCS_SITE.md) |

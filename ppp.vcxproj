@@ -1025,6 +1025,9 @@
     <ClInclude Include="ppp\ipv6\IPv6Auxiliary.h" />
     <ClInclude Include="ppp\coroutines\asio\asio.h" />
     <ClInclude Include="ppp\coroutines\YieldContext.h" />
+    <ClInclude Include="ppp\coroutines\ContextBackend.h" />
+    <ClInclude Include="ppp\coroutines\backend\BoostFcontextBackend.h" />
+    <ClInclude Include="ppp\coroutines\backend\CoroccBackend.h" />
     <ClInclude Include="ppp\cryptography\EVP.h" />
     <ClInclude Include="ppp\cryptography\noise\NoisePsk.h" />
     <ClInclude Include="ppp\cryptography\md5.h" />

@@ -1,4 +1,11 @@
 # Testing
+
+For the optional coroutine backend, run both normal suites plus separate corocc
+ASan and TSan builds. See [corocc commands and coverage](COROCC_BACKEND.md) and
+[recorded results](COROCC_VALIDATION.md). Sanitizer scripts disable ASLR with
+`setarch $(uname -m) -R` on WSL. Guard-page death tests run only in opt-in guard
+builds and use a child process.
+
 > Status: Active
 > Type: Development guide
 > Last verified: 2026-07-24

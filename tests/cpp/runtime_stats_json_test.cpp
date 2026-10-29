@@ -50,6 +50,11 @@ BOOST_AUTO_TEST_CASE(stats_json_preserves_v1_contract) {
     const std::string encoded = runtime::SerializeRuntimeStats(sample);
     BOOST_REQUIRE(reader.parse(encoded.data(), encoded.data() + encoded.size(), root));
     BOOST_TEST(root["type"].asString() == "ppp-stats");
+#if defined(PPP_COROUTINE_BACKEND_COROCC)
+    BOOST_TEST(root["coroutine_backend"].asString() == "corocc");
+#else
+    BOOST_TEST(!root.isMember("coroutine_backend"));
+#endif
     BOOST_TEST(root["version"].asUInt() == 1u);
     BOOST_TEST(root["monotonic_ms"].asUInt64() == 8080123u);
     BOOST_TEST(root["rx_bytes"].asUInt64() == 1932734464u);

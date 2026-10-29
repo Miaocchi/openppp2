@@ -7,6 +7,7 @@
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <random>
 #include <thread>
 #include <vector>
 
@@ -360,4 +361,34 @@ BOOST_AUTO_TEST_CASE(racing_wakeup_sources_multi_runner) {
     BOOST_TEST(failures.load() == 0);
     std::this_thread::sleep_for(100ms);          // let straggling losers run
     BOOST_TEST(winners.load() == kCoroutines * kIterations);
+}
+
+BOOST_AUTO_TEST_CASE(randomized_anchor_resume_four_workers) {
+    Runner runner;
+    std::atomic<int> done{0}, failures{0};
+    runner.Start(4);
+    for (unsigned seed = 1; seed <= 8; ++seed) {
+        BOOST_REQUIRE(ppp::coroutines::YieldContext::Spawn(runner.context,
+            [&, seed](ppp::coroutines::YieldContext& y) {
+                std::minstd_rand random(seed);
+                Anchor previous;
+                for (int k = 0; k < 500; ++k) {
+                    auto anchor = y.Arm();
+                    const unsigned delay = random() % 5;
+                    boost::asio::post(y.GetContext(), [anchor, delay] {
+                        for (unsigned n = 0; n < delay; ++n) std::this_thread::yield();
+                        anchor.R();
+                        anchor.R();
+                    });
+                    if (previous.R()) ++failures;
+                    if ((random() & 1) != 0) std::this_thread::yield();
+                    if (!y.Suspend(anchor)) { ++failures; return; }
+                    previous = anchor;
+                }
+                ++done;
+            }));
+    }
+    BOOST_REQUIRE(WaitFor([&] { return done.load() == 8; }, 60s));
+    BOOST_TEST(failures.load() == 0);
+    runner.Stop();
 }

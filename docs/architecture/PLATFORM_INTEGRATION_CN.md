@@ -1,4 +1,11 @@
 # 平台集成
+
+可选 `ENABLE_COROCC` 允许配置的平台为 Linux x86_64/aarch64、macOS x86_64/arm64、
+Android x86_64/arm64、MSVC Windows x64；允许配置不代表运行已验证。
+iOS 警告并保留 Boost；其他平台需 `COROCC_FORCE`。手工 MSBuild 工程暂不启用。
+参见[构建说明](../development/COROCC_BACKEND_CN.md)和
+[实际验证范围](../development/COROCC_VALIDATION_CN.md)。
+
 > Status: Active
 > Type: Architecture
 > Last verified: 63fc030

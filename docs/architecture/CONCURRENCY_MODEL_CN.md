@@ -1,4 +1,10 @@
 # 并发模型
+
+默认协程原语仍为 Boost fcontext。实验性 `ENABLE_COROCC` 默认关闭，仅替换
+L0 栈切换；Asio 执行器、Anchor 唤醒协议、shard 归属保持不变。
+transfer 与 sanitizer 语义见 [ADR 0003](../adr/0003-corocc-coroutine-backend_CN.md)，
+实测范围见[验证记录](../development/COROCC_VALIDATION_CN.md)。
+
 > Status: Active
 > Type: Architecture
 > Last verified: `ppp/threading/`, `ppp/coroutines/`, and runtime startup sources, 2026-07-22
