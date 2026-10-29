@@ -1438,6 +1438,15 @@
     <ClInclude Include="ppp\coroutines\YieldContext.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ppp\coroutines\ContextBackend.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\coroutines\backend\BoostFcontextBackend.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\coroutines\backend\CoroccBackend.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ppp\net\packet\IPFragment.h">
       <Filter>头文件</Filter>
     </ClInclude>

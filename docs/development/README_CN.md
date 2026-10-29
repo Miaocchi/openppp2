@@ -13,6 +13,7 @@
 |---|---|
 | 从入口点跟踪到运行时 | [源码阅读指南](SOURCE_READING_GUIDE_CN.md) |
 | 运行合适的测试集合 | [测试](TESTING_CN.md) |
+| 构建或评估可选协程后端 | [corocc 构建指南](COROCC_BACKEND_CN.md) · [验证记录](COROCC_VALIDATION_CN.md) |
 | 审阅带日期的 Boost 审计 | [Boost 兼容性审计](BOOST_187_COMPATIBILITY.md) |
 | 遵循仓库约定 | [代码风格](../governance/CODE_STYLE.md) · [文档规范](../governance/DOCUMENTATION_STYLE.md) |
 | 构建、预览与发布双语文档站 | [文档站](DOCS_SITE_CN.md) |

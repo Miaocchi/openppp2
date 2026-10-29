@@ -1,4 +1,10 @@
 # 测试
+
+可选协程后端需要分别运行默认/corocc 套件，以及独立 corocc ASan、TSan 构建。
+命令与覆盖范围见 [corocc 测试说明](COROCC_BACKEND_CN.md)，
+实测见[验证记录](COROCC_VALIDATION_CN.md)。WSL 下 sanitizer 脚本使用
+`setarch $(uname -m) -R`。保护页 death test 仅在可选 guard 构建的子进程运行。
+
 > Status: Active
 > Type: Development guide
 > Last verified: 2026-07-24

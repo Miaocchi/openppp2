@@ -100,6 +100,7 @@ ENDIF()
 
 # CXX17
 SET(CMAKE_CXX_STANDARD 17)
+INCLUDE("${PROJECT_SOURCE_DIR}/../cmake/Corocc.cmake")
 
 # -rdynamic -Wl,-Bstatic -Wl,-Bdynamic -lstdc++ -lpthread -ldl -lz -lrt
 SET(CMAKE_EXE_LINKER_FLAGS "-static-libstdc++ -rdynamic -Wl,-Bstatic")
@@ -158,6 +159,9 @@ FILE(GLOB_RECURSE SOURCE_FILES
 
 # Add the compiled output binary files.
 ADD_LIBRARY(${NAME} SHARED ${SOURCE_FILES} ${PLATFORM_SOURCE_FILES} ${AES_NI_SOURCE_FILES})
+IF(ENABLE_COROCC)
+    TARGET_LINK_LIBRARIES(${NAME} ppp_context_backend)
+ENDIF()
 IF(ENABLE_P2P_V2_PRODUCTION)
     TARGET_COMPILE_DEFINITIONS(${NAME} PRIVATE OPENPPP2_P2P_V2_PRODUCTION=1)
 ELSE()

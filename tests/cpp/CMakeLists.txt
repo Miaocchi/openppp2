@@ -17,6 +17,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     endif()
 endif()
 get_filename_component(OPENPPP2_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+include("${OPENPPP2_ROOT}/cmake/Corocc.cmake")
+if(ENABLE_COROCC)
+    link_libraries(ppp_context_backend)
+endif()
 set(XTCP_SOURCE_DIR "${OPENPPP2_ROOT}/third-party/xtcp" CACHE PATH
     "Path to the pinned XTCP source tree")
 
@@ -437,6 +441,13 @@ if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     target_compile_definitions(vmux_reliability_config_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
+endif()
+if(ENABLE_SANITIZERS OR ENABLE_TSAN)
+    # Instrumentation can retain allocator entry points that section GC drops
+    # in the normal partial-link fixture. Supply their real buddy implementation.
+    foreach(_config_test transport_auth_configuration_test vmux_reliability_config_test)
+        target_compile_definitions(${_config_test} PRIVATE BUDDY_ALLOC_IMPLEMENTATION)
+    endforeach()
 endif()
 openppp2_add_cpp_test(transport_auth_negotiation_test SOURCES
     transport_auth_negotiation_test.cpp
@@ -1045,6 +1056,8 @@ if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     # BufferswapAllocator is stubbed in the test, so its typeinfo is not linked.
     target_compile_options(udp_frame_ipv4_packet_test PRIVATE -fno-sanitize=vptr)
 endif()
+openppp2_add_cpp_test(coroutine_backend_switch_test SOURCES coroutine_backend_switch_test.cpp)
+target_link_libraries(coroutine_backend_switch_test PRIVATE boost_context Threads::Threads)
 openppp2_add_cpp_test(yield_context_test SOURCES
     yield_context_test.cpp
     support/yield_context_test_stubs.cpp
@@ -1053,6 +1066,16 @@ openppp2_add_cpp_test(yield_context_test SOURCES
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
 target_link_libraries(yield_context_test PRIVATE boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+foreach(_test yield_context_exception_test yield_context_stack_test yield_context_multi_iocontext_test)
+    openppp2_add_cpp_test(${_test} SOURCES
+        ${_test}.cpp
+        support/yield_context_test_stubs.cpp
+        "${OPENPPP2_ROOT}/ppp/coroutines/YieldContext.cpp"
+        "${OPENPPP2_ROOT}/ppp/diagnostics/Error.cpp"
+        "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
+        "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
+    target_link_libraries(${_test} PRIVATE boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+endforeach()
 if(UNIX AND NOT APPLE)
 openppp2_add_cpp_test(tun_gso_mergeability_test SOURCES
     tun_gso_mergeability_test.cpp)
@@ -1251,6 +1274,8 @@ target_link_libraries(policy_runtime_guard_test PRIVATE
     boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     target_compile_definitions(policy_runtime_guard_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
+elseif(ENABLE_SANITIZERS OR ENABLE_TSAN)
+    target_compile_definitions(policy_runtime_guard_test PRIVATE BUDDY_ALLOC_IMPLEMENTATION)
 endif()
 if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(policy_runtime_guard_test PRIVATE -fno-sanitize=vptr)
@@ -1444,6 +1469,12 @@ foreach(_policy_extended_test policy_status_file_test policy_update_connectors_t
     target_link_libraries(${_policy_extended_test} PRIVATE openppp2_policy_update_test_core)
     set_tests_properties(${_policy_extended_test} PROPERTIES LABELS "routing-policy;offline")
 endforeach()
+set(_policy_tunnel_logger_source "${OPENPPP2_ROOT}/ppp/app/protocol/VirtualEthernetLogger.cpp")
+if(ENABLE_SANITIZERS OR ENABLE_TSAN)
+    # Sanitizers retain the logger's unrelated runtime dependencies in this
+    # partial fixture, which never supplies a logger to the connector.
+    set(_policy_tunnel_logger_source support/policy_tunnel_logger_stub.cpp)
+endif()
 openppp2_add_cpp_test(policy_tunnel_update_connector_test SOURCES
     policy_tunnel_update_connector_test.cpp
     support/windows_composition_stub.cpp
@@ -1481,7 +1512,7 @@ openppp2_add_cpp_test(policy_tunnel_update_connector_test SOURCES
     "${OPENPPP2_ROOT}/ppp/app/protocol/VirtualEthernetInformation.cpp"
     "${OPENPPP2_ROOT}/ppp/app/protocol/VirtualEthernetLinklayer.cpp"
     "${OPENPPP2_ROOT}/ppp/app/protocol/VirtualEthernetTcpipConnection.cpp"
-    "${OPENPPP2_ROOT}/ppp/app/protocol/VirtualEthernetLogger.cpp"
+    ${_policy_tunnel_logger_source}
     "${OPENPPP2_ROOT}/ppp/DateTime.cpp"
     "${OPENPPP2_ROOT}/ppp/net/native/checksum.cpp"
     "${OPENPPP2_ROOT}/common/dnslib/buffer.cpp"

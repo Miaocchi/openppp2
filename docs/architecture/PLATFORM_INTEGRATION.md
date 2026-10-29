@@ -1,4 +1,12 @@
 # Platform Integration
+
+Optional `ENABLE_COROCC` eligibility: Linux x86_64/aarch64, macOS x86_64/arm64,
+Android x86_64/arm64, MSVC Windows x64. Eligibility does not imply runtime
+validation. iOS warns and retains Boost; other targets require `COROCC_FORCE`.
+The hand-maintained MSBuild project does not enable corocc. See
+[build instructions](../development/COROCC_BACKEND.md) and
+[actual validation](../development/COROCC_VALIDATION.md).
+
 > Status: Active
 > Type: Architecture
 > Last verified: 63fc030

@@ -20,9 +20,12 @@ if [ "$(uname -s)" = Linux ]; then
         exec setarch "$(uname -m)" -R sh "$ROOT/scripts/run-cpp-tsan-tests.sh" "$@"
     fi
 fi
-BUILD_DIR=${TSAN_BUILD_DIR:-$ROOT/build/test-tsan}
-cmake -S "$ROOT/tests/cpp" -B "$BUILD_DIR" -G Ninja "$@" -DENABLE_TSAN=ON -DENABLE_SANITIZERS=OFF
-cmake --build "$BUILD_DIR"
+BACKEND=${ENABLE_COROCC:-0}
+SUFFIX=""
+if [ "$BACKEND" = 1 ] || [ "$BACKEND" = ON ]; then SUFFIX=-corocc; fi
+BUILD_DIR=${TSAN_BUILD_DIR:-${CPP_TEST_BUILD_DIR:-$ROOT/build/test-tsan$SUFFIX}}
+cmake -S "$ROOT/tests/cpp" -B "$BUILD_DIR" -G Ninja "$@" -DENABLE_TSAN=ON -DENABLE_SANITIZERS=OFF -DENABLE_COROCC="$BACKEND"
+cmake --build "$BUILD_DIR" --parallel "${CPP_TEST_JOBS:-4}"
 # ctest 3.29+ supports --env, but exporting TSAN_OPTIONS before the ctest
 # invocation is simpler, works on older CMake versions, and also covers any
 # helper subprocesses spawned by the test harness.

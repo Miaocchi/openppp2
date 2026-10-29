@@ -11,7 +11,7 @@
  * `YieldContext` is a manually-managed, stackful coroutine context that integrates with
  * Boost.Asio's `io_context` execution model without relying on `boost::asio::spawn` or
  * `boost::coroutines2`.  Instead it owns a raw `boost::context::fcontext_t` stack and
- * performs symmetric context switches via `boost::context::detail::jump_fcontext`.
+ * performs symmetric context switches via `backend::Jump`.
  *
  * ### Lifecycle
  * ```
@@ -86,7 +86,7 @@
 
 #include <ppp/stdafx.h>
 #include <boost/coroutine/detail/coroutine_context.hpp>
-#include <boost/context/detail/fcontext.hpp>
+#include <ppp/coroutines/ContextBackend.h>
 #include <ppp/threading/Executors.h>
 #include <ppp/threading/BufferswapAllocator.h>
 
@@ -354,7 +354,7 @@ namespace ppp
             void                                                                Invoke() noexcept;
 
             /** @brief Coroutine entry-point trampoline; must be noexcept (cannot throw across fcontext). */
-            static void                                                         Handle(boost::context::detail::transfer_t t) noexcept;
+            static void                                                         Handle(backend::Transfer t) noexcept;
 
             /**
              * @brief Publishes the fully-suspended state after the coroutine jumped out.
@@ -377,7 +377,7 @@ namespace ppp
              * @param y Pointer to the owning `YieldContext`; used to update `caller_`.
              * @return true on success.
              */
-            static bool                                                         Switch(const boost::context::detail::transfer_t& t, YieldContext* y) noexcept;
+            static bool                                                         Switch(const backend::Transfer& t, YieldContext* y) noexcept;
 
         private:
             template <typename T, typename... A>
@@ -453,7 +453,7 @@ namespace ppp
              * @param state   User data pointer passed through the jump.
              * @return The transfer structure returned by `jump_fcontext`.
              */
-            static boost::context::detail::transfer_t                           Jump(boost::context::detail::fcontext_t context, void* state) noexcept;
+            static backend::Transfer                                            Jump(backend::Context context, void* state) noexcept;
 
         private:
             /** @brief Default construction is deleted — use `Spawn` factory methods. */
@@ -492,9 +492,12 @@ namespace ppp
             /** @brief Latched wakeup for `anchor_current_`, consumed by its `Suspend()`. */
             bool                                                                wakeup_pending_ = false;
             /** @brief Stored callee (coroutine) context handle; updated on each switch. */
-            std::atomic<boost::context::detail::fcontext_t>                     callee_     = NULLPTR;
+            std::atomic<backend::Context>                                        callee_     = NULLPTR;
             /** @brief Stored caller (event loop) context handle; updated on each switch. */
-            std::atomic<boost::context::detail::fcontext_t>                     caller_     = NULLPTR;
+            std::atomic<backend::Context>                                        caller_     = NULLPTR;
+#if defined(PPP_COROUTINE_BACKEND_COROCC)
+            backend::Context                                                   backend_context_ = NULLPTR;
+#endif
             /** @brief User-provided coroutine entry function. */
             SpawnHander                                                         h_;
             /** @brief Associated Asio I/O context; lifetime must exceed this object. */
@@ -507,7 +510,7 @@ namespace ppp
             std::shared_ptr<Byte>                                               stack_;
             /** @brief Allocator used to allocate this object; null means heap via `Malloc`. */
             ppp::threading::BufferswapAllocator*                                allocator_  = NULLPTR;
-#if defined(PPP_COROUTINES_TSAN_ENABLED)
+#if defined(PPP_COROUTINES_TSAN_ENABLED) && !defined(PPP_COROUTINE_BACKEND_COROCC)
             /** @brief ThreadSanitizer identity for the coroutine stack. */
             void*                                                               sanitizer_fiber_ = NULLPTR;
             /** @brief ThreadSanitizer identity of the Asio runner currently calling in. */

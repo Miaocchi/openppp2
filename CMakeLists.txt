@@ -221,6 +221,7 @@ OPTION(ENABLE_SSEA_SIMD "Enable SSEA SIMD acceleration (SSSE3+AVX2, requires ENA
 
 OPTION(ENABLE_TESTS "Build unit tests (GTest)" OFF)
 OPTION(ENABLE_XTCP_WINDOWS_TESTS "Build the offline Windows XTCP lifecycle test" OFF)
+INCLUDE(cmake/Corocc.cmake)
 OPTION(ENABLE_P2P_RECOVERY_TESTS "Build isolated actual Exchanger recovery tests (test-only seams)" OFF)
 OPTION(ENABLE_P2P_V2_PRODUCTION "Enable authenticated P2P v2 production capability" ON)
 OPTION(ENABLE_VMUX_CHURN_TEST "Build the root-linked VMUX carrier churn test" OFF)
@@ -532,6 +533,9 @@ IF(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
 ENDIF()
 IF(ENABLE_P2P_RECOVERY_TESTS)
     TARGET_COMPILE_DEFINITIONS(openppp2_lib PUBLIC OPENPPP2_P2P_RECOVERY_TESTING=1)
+ENDIF()
+IF(ENABLE_COROCC)
+    TARGET_LINK_LIBRARIES(openppp2_lib ppp_context_backend)
 ENDIF()
 IF(ENABLE_XTCP)
     TARGET_LINK_LIBRARIES(openppp2_lib xtcp_static)
