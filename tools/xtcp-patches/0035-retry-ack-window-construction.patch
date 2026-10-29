@@ -1,6 +1,8 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 94b1e9e..a479a24 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -107,6 +107,7 @@
+@@ -107,6 +107,7 @@ if(XTCP_BUILD_TESTS)
      enable_testing()
  
      set(XTCP_TESTS
@@ -8,9 +10,11 @@
          test_smoke
          test_fin_state_callbacks
          test_ndi
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index 4cfc9a6..ec69fc4 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -516,7 +516,8 @@
+@@ -516,7 +516,8 @@ namespace xtcp {
                      return 0;  // the sweep's reclamation pass is due now
                  }
                  if (TcpState::kTimeWait == state_) {
@@ -20,7 +24,7 @@
                  }
                  TimePoint next = ~(TimePoint)0;
                  const auto consider = [&next](TimePoint due) noexcept {
-@@ -525,6 +526,7 @@
+@@ -525,6 +526,7 @@ namespace xtcp {
                      }
                  };
                  consider(ack_deadline_);
@@ -28,7 +32,7 @@
                  consider(rto_deadline_);
                  consider(persist_deadline_);
                  consider(mtu_probe_deadline_);
-@@ -1287,7 +1289,7 @@
+@@ -1287,7 +1289,7 @@ namespace xtcp {
              void ConsumePendingSendFrontNoLock() noexcept;
              void RequeuePendingSendNoLock(std::vector<Byte>& data, std::size_t offset) noexcept;
              void Transition(TcpState next) noexcept;
@@ -37,7 +41,7 @@
              Byte BuildSackRanges(UInt32* out, Byte max_pairs) const noexcept;
              void SendChallengeAck() noexcept;
              void SendDupAck() noexcept;
-@@ -1464,6 +1466,7 @@
+@@ -1464,6 +1466,7 @@ namespace xtcp {
              bool        ack_pending_ = false;
              UInt32      ack_count_ = 0;
              TimePoint   ack_deadline_ = 0;
@@ -45,9 +49,11 @@
              TimePoint   challenge_deadline_ = 0;  /**< RFC 5961 challenge-ACK window end (us) */
              UInt32      challenge_count_ = 0;     /**< Challenge ACKs sent in current window */
              TimePoint   dupack_deadline_ = 0;     /**< dup-ACK rate-limit window end (us) */
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index d61ee66..b77dfc7 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -1096,13 +1096,14 @@
+@@ -1096,13 +1096,14 @@ namespace xtcp {
                  ack_pending_ = false;
                  ack_count_ = 0;
                  ack_deadline_ = 0;
@@ -63,7 +69,7 @@
              // RFC 3168 s6.1.2: a pending CWR (we reduced cwnd on an ECE) is
              // emitted on the next DATA segment per the RFC - but when no data
              // flows, Linux also puts it on a pure ACK so the peer stops ECEing
-@@ -1112,7 +1113,6 @@
+@@ -1112,7 +1113,6 @@ namespace xtcp {
              UInt16 out_flags = flags;
              if (cwr_pending_ && 0 == (flags & (kFlagSyn | kFlagRst))) {
                  out_flags |= kFlagCwr;
@@ -71,7 +77,7 @@
              }
              // Advertise the receive window scaled by our WSOPT factor.
              const UInt16 advertised = AdvertisedWindow();
-@@ -1131,7 +1131,6 @@
+@@ -1131,7 +1131,6 @@ namespace xtcp {
                  if (dsack_pending_) {
                      sack_buf[0] = dsack_left_;
                      sack_buf[1] = dsack_right_;
@@ -79,7 +85,7 @@
                      sack_n = 1;
                  }
                  if (!ooo_.empty()) {
-@@ -1156,9 +1155,26 @@
+@@ -1156,9 +1155,26 @@ namespace xtcp {
              // unilaterally - parity with the kernel's tcp_sack=0).
              const bool sack_offer = (0 != (flags & kFlagSyn)) &&
                  (no_sack_permitted_ || (0 != (flags & kFlagAck) && !peer_syn_sack_));
@@ -107,7 +113,7 @@
          }
  
          Byte TcpConn::BuildSackRanges(UInt32* out, Byte max_pairs) const noexcept {
-@@ -5151,15 +5167,21 @@
+@@ -5151,15 +5167,21 @@ namespace xtcp {
              // delayed ACK, persist probe, keepalive). Transition(kClosed)
              // already disarmed these timers; this guard is the belt-and-
              // suspenders for any state that slipped in without a Transition.
@@ -136,7 +142,7 @@
              // TCP_USER_TIMEOUT: abort when the oldest unacknowledged segment
              // has been outstanding longer than the bound (Linux parity; 0 =
              // disabled, the RTO-retry budget still bounds the connection).
-@@ -5175,10 +5197,14 @@
+@@ -5175,10 +5197,14 @@ namespace xtcp {
              }
              if (0 != ack_deadline_ && ack_deadline_ <= now) {
                  if (ack_pending_) {
@@ -155,7 +161,7 @@
                      ++fired;
                  }
              }
-@@ -5305,7 +5331,7 @@
+@@ -5305,7 +5331,7 @@ namespace xtcp {
              // reclamation pass in PollAckTimers sees them every round.
              const bool closing = (TcpState::kClosed == state_ || TcpState::kLastAck == state_ ||
                                    TcpState::kFinWait2 == state_ || TcpState::kTimeWait == state_);
@@ -164,7 +170,7 @@
                  0 == tlp_deadline_ && 0 == PendingSendSizeNoLock() && 0 == keepalive_idle_ &&
                  0 == mtu_probe_deadline_ && !closing) {
                  timers_dirty_.store(false, std::memory_order_relaxed);
-@@ -5986,7 +6012,11 @@
+@@ -5986,7 +6012,11 @@ namespace xtcp {
          }
  
          void TcpConn::SendAck() noexcept {
@@ -177,7 +183,7 @@
          }
  
          ReceiveResumeResult TcpConn::ResumeReceiveDetailed() noexcept {
-@@ -5998,9 +6028,6 @@
+@@ -5998,9 +6028,6 @@ namespace xtcp {
                  return ReceiveResumeResult::kNotBlocked;
              }
              rcv_blocked_ = false;
@@ -187,6 +193,9 @@
              const TimePoint now = NowUs();
              if (pending_frontier_) {
                  std::unique_ptr<OutSeg> segment = std::move(pending_frontier_);
+diff --git a/tests/test_ack_allocation.cpp b/tests/test_ack_allocation.cpp
+new file mode 100644
+index 0000000..1fc40ac
 --- /dev/null
 +++ b/tests/test_ack_allocation.cpp
 @@ -0,0 +1,322 @@

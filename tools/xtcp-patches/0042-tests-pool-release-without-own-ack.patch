@@ -1,3 +1,5 @@
+diff --git a/tests/test_pool_pressure.cpp b/tests/test_pool_pressure.cpp
+index 67f6d5b..301b88d 100644
 --- a/tests/test_pool_pressure.cpp
 +++ b/tests/test_pool_pressure.cpp
 @@ -21,6 +21,8 @@
@@ -9,7 +11,7 @@
  
  #include <chrono>
  #include <cstdio>
-@@ -175,6 +177,69 @@
+@@ -175,6 +177,69 @@ void ConnWedge() {
          static_cast<unsigned long long>(end.tx_deferrals - before.tx_deferrals),
          static_cast<unsigned long long>(end.heap_overflow_acquires - before.heap_overflow_acquires));
  }
@@ -79,7 +81,7 @@
  } // namespace
  
  int main() {
-@@ -182,6 +247,7 @@
+@@ -182,6 +247,7 @@ int main() {
      TxReserve();
      HeapOverflow();
      ConnWedge();

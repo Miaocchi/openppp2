@@ -1,3 +1,5 @@
+diff --git a/tests/test_ts_ooo_drain.cpp b/tests/test_ts_ooo_drain.cpp
+index 7b28fa6..958d58a 100644
 --- a/tests/test_ts_ooo_drain.cpp
 +++ b/tests/test_ts_ooo_drain.cpp
 @@ -1,19 +1,15 @@
@@ -24,7 +26,7 @@
   */
  
  #include <xtcp/buf/bufref.h>
-@@ -103,7 +99,7 @@
+@@ -103,7 +99,7 @@ namespace {
      // frame in out (out_cap bytes). seq/ack/ts fields as given; payload
      // filled with 0x5E. IP src/dst/ports match the established connection.
      UInt32 BuildTsSegment(Byte* out, UInt32 out_cap, UInt32 seq, UInt32 ack,
@@ -33,7 +35,7 @@
          const UInt32 tcp_hdr = 20 + 12;  // base + TSopt
          const UInt32 total = 20 + tcp_hdr + payload_len;
          if (out_cap < total) {
-@@ -125,7 +121,7 @@
+@@ -125,7 +121,7 @@ namespace {
          t[8] = static_cast<Byte>(ack >> 24); t[9] = static_cast<Byte>(ack >> 16);
          t[10] = static_cast<Byte>(ack >> 8); t[11] = static_cast<Byte>(ack & 0xFF);
          t[12] = static_cast<Byte>(tcp_hdr / 4 << 4);  // data offset
@@ -42,7 +44,7 @@
          t[14] = 0xFF; t[15] = 0xFF;  // window
          // TSopt (kind 8, len 10).
          t[20] = 8; t[21] = 10;
-@@ -161,8 +157,7 @@
+@@ -161,8 +157,7 @@ namespace {
  
  }  // namespace
  
@@ -52,7 +54,7 @@
      {
          xtcp::ndi::ManualBackend backend_a, backend_b;
          xtcp::XtcpStack stack_a(&backend_a);
-@@ -180,8 +175,15 @@
+@@ -180,8 +175,15 @@ int main() {
              stack_b.OnPacket(std::move(buf));
          });
  
@@ -69,7 +71,7 @@
              b_recv.fetch_add(len, std::memory_order_relaxed);
              return true;
          });
-@@ -192,11 +194,18 @@
+@@ -192,11 +194,18 @@ int main() {
          std::vector<UInt32> b_ecrs;
          UInt32 client_last_tsval = 0;
          bool client_tsval_seen = false;
@@ -88,7 +90,7 @@
                      const TsInfo ts = ParseTs(out);
                      if (ts.has) {
                          client_last_tsval = ts.ts_val;
-@@ -208,11 +217,17 @@
+@@ -208,11 +217,17 @@ int main() {
              while (0 != backend_b.TxPending()) {
                  const UInt32 n = backend_b.PollTx(out);
                  if (0 < n) {
@@ -107,7 +109,7 @@
                  }
              }
              stack_a.PollAckTimers();
-@@ -239,24 +254,20 @@
+@@ -239,24 +254,20 @@ int main() {
          // field is rcv_nxt.
          const Byte one = 0x01;
          CHECK(stack_a.Send(conn, &one, 1));
@@ -142,7 +144,7 @@
  
          // Segment 2 (seq = frontier + 1460) delivered FIRST: buffered as
          // out-of-order, nothing reaches the app.
-@@ -265,11 +276,13 @@
+@@ -265,11 +276,13 @@ int main() {
          // Keep synthetic peer timestamps newer than the actual handshake and
          // probe timestamps so PAWS does not discard the test data on hosts
          // whose monotonic clock has already passed the old fixed TSval.
@@ -158,7 +160,7 @@
          CHECK(0 != n2);
          {
              xtcp::buf::BufRef b = xtcp::buf::BufRef::Acquire(n2);
-@@ -285,10 +298,10 @@
+@@ -285,10 +298,10 @@ int main() {
          CHECK(1 == b_recv.load());  // only the 1-byte probe; OOO segment buffered
  
          // Segment 1 (seq = frontier): in-order; the app receives both
@@ -172,7 +174,7 @@
          CHECK(0 != n1);
          {
              xtcp::buf::BufRef b = xtcp::buf::BufRef::Acquire(n1);
-@@ -301,10 +314,17 @@
+@@ -301,10 +314,17 @@ int main() {
              backend_b.Inject(std::move(p));
              pump();
          }
@@ -192,7 +194,7 @@
          // time, so keep pumping until one is observed.
          UInt32 ack_ecr = 0;
          bool ack_seen = false;
-@@ -318,8 +338,41 @@
+@@ -318,8 +338,41 @@ int main() {
              std::this_thread::sleep_for(std::chrono::milliseconds(1));
          }
          CHECK(ack_seen);

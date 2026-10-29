@@ -1,6 +1,8 @@
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
+index 076d96b..96f7c11 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -919,7 +919,9 @@
+@@ -947,7 +947,9 @@ namespace xtcp {
          const Byte* t = p.data + tcp_off;
          src.port = static_cast<UInt16>((t[0] << 8) | t[1]);
          dst.port = static_cast<UInt16>((t[2] << 8) | t[3]);
@@ -11,6 +13,8 @@
      }
  
      bool XtcpStack::SetOption(UInt64 conn_id, options::SocketOption opt,
+diff --git a/tests/test_shard.cpp b/tests/test_shard.cpp
+index 3f537bb..9d1af0a 100644
 --- a/tests/test_shard.cpp
 +++ b/tests/test_shard.cpp
 @@ -4,6 +4,8 @@
@@ -22,7 +26,7 @@
  
  #include <cstdio>
  #include <cstdlib>
-@@ -102,11 +104,45 @@
+@@ -102,11 +104,45 @@ static void TestPoolAndTimers() {
      CHECK(fired);
  }
  

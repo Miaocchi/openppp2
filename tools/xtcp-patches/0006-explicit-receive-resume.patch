@@ -1,6 +1,8 @@
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
+index 2d88263..61d58bc 100644
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
-@@ -138,6 +138,12 @@
+@@ -138,6 +138,12 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
           * @brief Sends data on an established connection.
           */
          bool Send(UInt64 conn_id, const Byte* data, UInt32 len) noexcept;
@@ -13,7 +15,7 @@
          /**
           * @brief Sends a SYN with early data (TCP Fast Open, RFC 7413).
           * @return True when the SYN was emitted (SynSent); the data rides
-@@ -198,8 +204,8 @@
+@@ -198,8 +204,8 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
            *        application buffer is full): the TCP layer rolls RCV.NXT
            *        back, advertises a zero receive window (RFC 1122 s4.2.3.4)
            *        and the peer persists instead of retransmitting into an
@@ -24,9 +26,11 @@
            * @warning Same reentrancy/lifetime rules as SetRecvHandler.
            */
           void SetRecvHandlerChecked(RecvHandlerChecked handler) noexcept { recv_handler_ = std::move(handler); }
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index 555783f..2230630 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -369,6 +369,13 @@
+@@ -369,6 +369,13 @@ namespace xtcp {
               * @brief Sends an empty ACK segment.
               */
              void SendAck() noexcept;
@@ -40,7 +44,7 @@
              /**
               * @brief Sends the SYN segment (active-open path, SynSent).
               * @note Caller invokes after creating the connection in SynSent.
-@@ -1134,8 +1141,8 @@
+@@ -1134,8 +1141,8 @@ namespace xtcp {
               * @brief Advertised receive-window field (RFC 1122 s4.2.3.4):
               *        zero while the app is backpressuring (recv_cb_ rejected
               *        data) - the peer stops sending and persists instead of
@@ -51,9 +55,11 @@
               *        buffer occupancy: buffered OOO bytes are receive memory
               *        already consumed, so the free capacity is
               *        window_ - ooo_bytes_.
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
+index 03d59ea..e35bc0b 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1423,6 +1423,16 @@
+@@ -1451,6 +1451,16 @@ namespace xtcp {
          return it->second->conn->SendData(data, len, GetTickUs());
      }
  
@@ -70,9 +76,11 @@
      bool XtcpStack::ConnLastSendAdmission(
          UInt64 conn_id, core::SendAdmissionSnapshot& out) const noexcept {
          out = {};
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index a905423..25fd17f 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -5730,6 +5730,23 @@
+@@ -5730,6 +5730,23 @@ namespace xtcp {
              SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
          }
  
@@ -96,9 +104,11 @@
          void TcpConn::SendSyn() noexcept {
              std::lock_guard<std::recursive_mutex> scope(syncobj_);
              // RFC 7323: offer window scaling in the SYN (our receive
+diff --git a/tests/test_zero_window_backpressure.cpp b/tests/test_zero_window_backpressure.cpp
+index 7330de6..3c3ed73 100644
 --- a/tests/test_zero_window_backpressure.cpp
 +++ b/tests/test_zero_window_backpressure.cpp
-@@ -100,9 +100,15 @@
+@@ -100,9 +100,15 @@ static void TestRejectionAloneAdvertisesWindowZero() {
      Byte payload[1460];
      std::memset(payload, 0x5A, sizeof(payload));
      CHECK(stack_a.Send(conn_a, payload, sizeof(payload)));
@@ -115,7 +125,7 @@
          while (0 != backend_a.TxPending()) {
              const UInt32 n = backend_a.PollTx(out);
              if (0 < n) {
-@@ -171,13 +177,27 @@
+@@ -171,13 +177,27 @@ int main() {
          b_local.port = 9130;
          CHECK(stack_b.Listen(b_local));
  
@@ -145,7 +155,7 @@
              return true;
          });
  
-@@ -186,10 +206,17 @@
+@@ -186,10 +206,17 @@ int main() {
          Pump(backend_a, backend_b, stack_a, stack_b);
          Pump(backend_a, backend_b, stack_a, stack_b);
          CHECK(xtcp::core::TcpState::kEstablished == stack_a.ConnectionState(conn_a));
@@ -164,7 +174,7 @@
          for (UInt32 i = 0; i < 4; ++i) {
              stack_a.Send(conn_a, payload.data() + i * 16384, 16384);
          }
-@@ -259,15 +286,35 @@
+@@ -259,15 +286,35 @@ int main() {
          std::fprintf(stderr, "[zero-window] A snd_wnd=%u (expect 0 while blocked)\n", snd_wnd);
          CHECK(0 == snd_wnd);  // CORE: the peer sees the zero window
  

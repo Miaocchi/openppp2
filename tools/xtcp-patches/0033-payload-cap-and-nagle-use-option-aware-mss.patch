@@ -1,6 +1,8 @@
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
+index e234ef8..d2289aa 100644
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
-@@ -471,6 +471,20 @@
+@@ -471,6 +471,20 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
              }
              return it->second->conn->PeerMss();
          }
@@ -21,9 +23,11 @@
          /**
           * @brief Number of unacknowledged segments on a connection
           *        (diagnostics / tests: the TSO-direct gate requires an
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index b769bbe..4cfc9a6 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -632,13 +632,21 @@
+@@ -632,13 +632,21 @@ namespace xtcp {
               *       but reserves the option space a later fresh-TS RTO rebuild
               *       needs. MD5 and timestamps are mutually exclusive on this
               *       stack, so MD5 retains its larger 20-byte reservation.
@@ -47,9 +51,11 @@
              }
              /** @brief TCP_MAXSEG ceiling (Linux semantics); 0 = unset. */
              void SetUserMss(UInt32 mss) noexcept { user_mss_ = mss; }
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index e40ac57..d61ee66 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -4824,7 +4824,11 @@
+@@ -4824,7 +4824,11 @@ namespace xtcp {
              // flight - gating on any nonzero inflight strands small sends
              // behind a 1-byte persist probe or a drained pipe (RFC 1122
              // 4.2.3.4: transmit immediately when inflight < MSS).

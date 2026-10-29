@@ -1,3 +1,5 @@
+diff --git a/include/xtcp/buf/bufref.h b/include/xtcp/buf/bufref.h
+index b763b36..f2a1d44 100644
 --- a/include/xtcp/buf/bufref.h
 +++ b/include/xtcp/buf/bufref.h
 @@ -13,6 +13,7 @@
@@ -8,7 +10,7 @@
  
  namespace xtcp {
      namespace buf {
-@@ -217,6 +218,7 @@
+@@ -217,6 +218,7 @@ namespace xtcp {
  
          private:
              static BufRef AcquireFrom(BufPool& pool, Byte* payload) noexcept;
@@ -16,7 +18,7 @@
              void Release() noexcept;
  
              BufPool*    pool_     = NULLPTR;
-@@ -241,6 +243,35 @@
+@@ -241,6 +243,35 @@ namespace xtcp {
           */
          void ShutdownPools() noexcept;
  
@@ -52,7 +54,7 @@
          /**
           * @brief Global packet-memory pressure gate for NEW transmit data
           *        (kernel tcp_memory_pressure / sk_wmem_schedule analogue).
-@@ -267,12 +298,13 @@
+@@ -267,12 +298,13 @@ namespace xtcp {
           */
          class TxAcquireScope {
          public:
@@ -67,9 +69,11 @@
          };
  
          /**
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index ec69fc4..047636f 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -1396,6 +1396,7 @@
+@@ -1396,6 +1396,7 @@ namespace xtcp {
               *        marker is cleared only when delivered passes it).
               */
              void MaybeMarkAppLimited(UInt32 inflight, TimePoint now) noexcept;
@@ -77,7 +81,7 @@
              /**
               * @brief Kernel tcp_rate_gen's app-limited clear
               *        (tcp_rate_66.c:123-125): runs on EVERY ACK, cumulative
-@@ -1705,6 +1706,7 @@
+@@ -1705,6 +1706,7 @@ namespace xtcp {
              Byte        batch_app_limited_ = 0;     /**< app-limited snapshot of the newest popped segment */
              bool        batch_retrans_ = false;     /**< any segment popped by the CURRENT ACK was retransmitted */
              bool        last_ack_delayed_ = false;  /**< current ACK looks like a delayed ACK (kernel flag) */
@@ -85,9 +89,11 @@
          };
  
          /**
+diff --git a/src/buf/bufref.cpp b/src/buf/bufref.cpp
+index e012d5b..1b7e0c4 100644
 --- a/src/buf/bufref.cpp
 +++ b/src/buf/bufref.cpp
-@@ -23,6 +23,10 @@
+@@ -23,6 +23,10 @@ namespace xtcp {
              // above all the pure ACKs that release transmit retention -
              // allocatable when flows x snd_buf exceeds the arena.
              constexpr UInt32 kTxReserveShift = 3;
@@ -98,7 +104,7 @@
  
              // Heap overflow owners (one per tier) and the bounded overflow
              // accounting. Overflow blocks are plain heap allocations tagged
-@@ -35,6 +39,11 @@
+@@ -35,6 +39,11 @@ namespace xtcp {
              std::atomic<UInt64> g_tx_deferrals{ 0 };
              // Set by TxAcquireScope: the current Acquire builds NEW data.
              thread_local bool t_tx_class = false;
@@ -110,7 +116,7 @@
  
              // Pool lifetime: pools are created by InitPools and are NEVER
              // freed by ShutdownPools. A concurrent Acquire/Release running on
-@@ -283,8 +292,7 @@
+@@ -283,8 +292,7 @@ namespace xtcp {
              Unref();  // shared handles must not release the block until zero
          }
  
@@ -120,7 +126,7 @@
              for (UInt32 i = 0; i < kPoolCount; ++i) {
                  BufPool* pool = g_pools[i];
                  if (NULLPTR == pool) {
-@@ -300,11 +308,98 @@
+@@ -300,11 +308,98 @@ namespace xtcp {
                      }
                      Byte* payload = pool->Acquire();
                      if (NULLPTR != payload) {
@@ -220,7 +226,7 @@
                  // Transmit data never uses the heap overflow: it stays
                  // buffered (bounded by snd_buf) until ACKs free blocks.
                  g_tx_deferrals.fetch_add(1, std::memory_order_relaxed);
-@@ -349,12 +444,84 @@
+@@ -349,12 +444,84 @@ namespace xtcp {
              return BufRef();
          }
  
@@ -306,9 +312,11 @@
          }
  
          PoolPressureStats GetPoolPressureStats() noexcept {
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index 64102ef..1e7d5ba 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -978,6 +978,19 @@
+@@ -978,6 +978,19 @@ namespace xtcp {
              }
          }
  
@@ -328,7 +336,7 @@
          void TcpConn::ClearAppLimitedMarker() noexcept {
              // Kernel tcp_rate_gen (tcp_rate_66.c:123-125):
              //   if (tp->app_limited && after(tp->delivered, tp->app_limited))
-@@ -1079,6 +1092,7 @@
+@@ -1079,6 +1092,7 @@ namespace xtcp {
              // Closing states must keep being swept: the reclamation pass in
              // PollAckTimers reads state/deadline before the dirty fast path.
              if (TcpState::kClosed == next || TcpState::kTimeWait == next) {
@@ -336,7 +344,7 @@
                  timers_dirty_.store(true, std::memory_order_relaxed);
              }
              // Bug(close): a closed connection must stop sending. Reaching
-@@ -4875,7 +4889,7 @@
+@@ -4875,7 +4889,7 @@ namespace xtcp {
              // snd_buf_; the dirty poll flushes it once ACKs free blocks.
              buf::BufRef packet;
              {
@@ -345,7 +353,7 @@
                  packet = BuildSegmentPacket(local_, remote_, seq, rcv_nxt_,
                                                      kFlagAck | kFlagPsh |
                                                          (cwr_pending_ ? kFlagCwr : 0), data, len,
-@@ -4892,10 +4906,12 @@
+@@ -4892,10 +4906,12 @@ namespace xtcp {
                  // buffer as the window frees and re-queues on repeated
                  // exhaustion (FlushPendingSend packet.IsEmpty()). cwr_pending_
                  // stays set so the flush still emits the CWR.
@@ -358,7 +366,7 @@
              if (len > payload_cap && tso_tx_ && PendingSendEmptyNoLock() && retrans_queue_.empty() &&
                  !fast_recovery_ && inflight + len <= snd_wnd_ && inflight + len <= cwnd_bytes &&
                  (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
-@@ -5385,6 +5401,7 @@
+@@ -5385,6 +5401,7 @@ namespace xtcp {
              if (PendingSendEmptyNoLock()) {
                  pending_send_.clear();
                  pending_send_offset_ = 0;
@@ -366,7 +374,7 @@
              }
          }
  
-@@ -5408,8 +5425,13 @@
+@@ -5408,8 +5425,13 @@ namespace xtcp {
  
          void TcpConn::FlushPendingSend(TimePoint now) noexcept {
              if (PendingSendEmptyNoLock() || (TcpState::kEstablished != state_ && TcpState::kCloseWait != state_)) {
@@ -380,7 +388,7 @@
              ack_release_pending_flush_attempts_.fetch_add(1, std::memory_order_relaxed);
              std::vector<Byte> data;
              data.swap(pending_send_);
-@@ -5421,6 +5443,8 @@
+@@ -5421,6 +5443,8 @@ namespace xtcp {
              // instead of one MSS per host event-loop iteration - the latter
              // pins throughput at MSS / loop-iteration regardless of RTT/cwnd.
              UInt64 pacing_budget = 0;
@@ -389,7 +397,7 @@
              for (; off < data.size();) {
                  const bool tso_candidate = data.size() - off > DataPayloadCap();
                  bool tso_gate_classified = false;
-@@ -5480,6 +5504,8 @@
+@@ -5480,6 +5504,8 @@ namespace xtcp {
                          catch_up = (cc_.pacing_rate * late_us) / 1000000ull;
                      }
                      pacing_budget = quantum + catch_up;
@@ -398,7 +406,7 @@
                      pacing_deadline_ = now + (quantum * 1000000ull) / cc_.pacing_rate;
                  }
                  UInt32 n = static_cast<UInt32>(data.size() - off);
-@@ -5600,7 +5626,7 @@
+@@ -5600,7 +5626,7 @@ namespace xtcp {
                  // Pool pressure gate (see SendData): new data stays pending.
                  buf::BufRef packet;
                  {
@@ -407,7 +415,7 @@
                      packet = BuildSegmentPacket(local_, remote_, seq, rcv_nxt_,
                                                          data_flags, data.data() + off, n,
                                                          AdvertisedWindow(), rcv_wscale_,
-@@ -5609,9 +5635,14 @@
+@@ -5609,9 +5635,14 @@ namespace xtcp {
                  }
                  if (packet.IsEmpty()) {
                      ack_release_pending_flush_packet_allocation_.fetch_add(1, std::memory_order_relaxed);
@@ -422,7 +430,7 @@
                  if (tso_flush) {
                      tso_gate_flush_emitted_.fetch_add(1, std::memory_order_relaxed);
                  }
-@@ -5675,6 +5706,7 @@
+@@ -5675,6 +5706,7 @@ namespace xtcp {
              // Bug(close): when Close() deferred the FIN because buffered data
              // was window-constrained, this drain is what unlocks it - the FIN
              // must follow every data byte on the wire (RFC 793).
@@ -430,13 +438,15 @@
              MaybeFinishClose(now);
          }
  
-@@ -7628,4 +7660,4 @@
+@@ -7628,4 +7660,4 @@ namespace xtcp {
              }
          }
      }
 -}
 \ No newline at end of file
 +}
+diff --git a/tests/test_pool_pressure.cpp b/tests/test_pool_pressure.cpp
+index 301b88d..c44f664 100644
 --- a/tests/test_pool_pressure.cpp
 +++ b/tests/test_pool_pressure.cpp
 @@ -21,13 +21,17 @@
@@ -457,7 +467,7 @@
  #include <vector>
  
  namespace {
-@@ -107,12 +111,12 @@
+@@ -107,12 +111,12 @@ struct Flow {
      UInt32 sent = 0;
  };
  
@@ -472,7 +482,7 @@
      c.OnSegment(p, sizeof(p), now);
  }
  
-@@ -155,6 +159,13 @@
+@@ -155,6 +159,13 @@ void ConnWedge() {
      for (auto& f : flows) if (0 < f.conn->PendingSendBytes()) ++buffered;
      CHECK(buffered > 0);
  
@@ -486,7 +496,7 @@
      // Drive ACKs + polls until every flow has delivered everything.
      unsigned rounds = 0;
      bool done = false;
-@@ -240,6 +251,304 @@
+@@ -240,6 +251,304 @@ void PoolReleaseWithoutOwnAck() {
      CHECK(received == data.size());
      std::printf("pool_release_without_own_ack: received=%u\n", received);
  }
@@ -791,7 +801,7 @@
  } // namespace
  
  int main() {
-@@ -248,6 +557,13 @@
+@@ -248,6 +557,13 @@ int main() {
      HeapOverflow();
      ConnWedge();
      PoolReleaseWithoutOwnAck();

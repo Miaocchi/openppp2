@@ -1,6 +1,8 @@
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index 2230630..e2a29e6 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -482,6 +482,13 @@
+@@ -482,6 +482,13 @@ namespace xtcp {
                      consider(last_rx_ + idle_us);
                  }
                  if (0 < pending_send_.size()) {
@@ -14,6 +16,8 @@
                      // Buffered sends: when a pacing clock is armed the flush
                      // cannot make progress before pacing_deadline_, so wake
                      // AT the deadline instead of reporting "due now" and
+diff --git a/tests/test_persist.cpp b/tests/test_persist.cpp
+index 87e4118..db89d74 100644
 --- a/tests/test_persist.cpp
 +++ b/tests/test_persist.cpp
 @@ -9,6 +9,7 @@
@@ -24,7 +28,7 @@
  
  #include <cstdio>
  #include <cstring>
-@@ -40,6 +41,15 @@
+@@ -40,6 +41,15 @@ namespace {
          }
      };
  
@@ -40,7 +44,7 @@
      std::unique_ptr<xtcp::core::TcpConn> MakeConn(TxLog& log) {
          static UInt32 g_iss = 0x40000000;
          ++g_iss;
-@@ -82,6 +92,7 @@
+@@ -82,6 +92,7 @@ namespace {
  static void TestZeroWindowProbe() {
      TxLog log;
      auto conn = MakeConn(log);
@@ -48,7 +52,7 @@
      conn->SetPersistInterval(1000);  // 1 ms probes for the test
  
      // Peer advertises window 0.
-@@ -94,6 +105,10 @@
+@@ -94,6 +105,10 @@ static void TestZeroWindowProbe() {
      std::memset(data, 0xAB, sizeof(data));
      CHECK(conn->SendData(data, 100, 2000));
      CHECK(0 != conn->PersistDeadline());
@@ -59,7 +63,7 @@
      CHECK(100 == conn->PendingSendBytes());
      CHECK(0 == log.lens.size());  // nothing sent yet
  
-@@ -234,6 +249,7 @@
+@@ -234,6 +249,7 @@ static void TestLostProbeByteRecoverable() {
  
  int main() {
      xtcp::buf::InitPools();

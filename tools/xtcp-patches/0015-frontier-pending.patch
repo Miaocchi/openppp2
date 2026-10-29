@@ -1,6 +1,8 @@
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index 7ada287..f961a7c 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -298,6 +298,7 @@
+@@ -298,6 +298,7 @@ namespace xtcp {
          struct ReceiveStateSnapshot final {
              bool rcv_blocked = false;
              UInt32 ooo_bytes = 0;
@@ -8,7 +10,7 @@
              UInt32 window = 0;
              UInt16 advertised_window = 0;
          };
-@@ -431,7 +432,7 @@
+@@ -431,7 +432,7 @@ namespace xtcp {
              }
              ReceiveStateSnapshot ReceiveState() const noexcept {
                  std::lock_guard<std::recursive_mutex> scope(syncobj_);
@@ -17,7 +19,7 @@
              }
              /**
               * @brief Sends the SYN segment (active-open path, SynSent).
-@@ -1212,10 +1213,10 @@
+@@ -1212,10 +1213,10 @@ namespace xtcp {
               *        window_ - ooo_bytes_.
               */
              UInt16 AdvertisedWindow() const noexcept {
@@ -30,7 +32,7 @@
              }
              /**
               * @brief Configures our receive-buffer capacity (the advertised
-@@ -1437,6 +1438,14 @@
+@@ -1437,6 +1438,14 @@ namespace xtcp {
              bool TrimOooToFrontier() noexcept;
              std::map<UInt32, OutSeg> ooo_;       /**< Out-of-order reassembly buffer (seq -> segment) */
              UInt32      ooo_bytes_ = 0;
@@ -45,7 +47,7 @@
              std::deque<SentSeg> retrans_queue_;
  
              Byte        md5_key_[64];
-@@ -1708,8 +1717,3 @@
+@@ -1708,8 +1717,3 @@ namespace xtcp {
      }
  }
  #include <chrono>
@@ -54,9 +56,11 @@
 -
 -
 -
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index 805168d..de6907c 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -1071,6 +1071,8 @@
+@@ -1071,6 +1071,8 @@ namespace xtcp {
                  ack_count_ = 0;
                  ack_deadline_ = 0;
                  close_pending_ = false;
@@ -65,7 +69,7 @@
              }
          }
  
-@@ -2271,16 +2273,29 @@
+@@ -2271,16 +2273,29 @@ namespace xtcp {
                  // makes inside it (echo/reply) carries an ACK covering the
                  // just-delivered bytes (RFC 793); roll back on backpressure.
                  const UInt32 prev_in = rcv_nxt_;
@@ -105,7 +109,7 @@
                  }
                  if (rcv_blocked_) {
                      ArmWindowUpdateAck(now);  // window reopens (RFC 1122 s4.2.3.4)
-@@ -5890,6 +5905,53 @@
+@@ -5890,6 +5905,53 @@ namespace xtcp {
              ack_count_ = 0;
              ack_deadline_ = 0;
              const TimePoint now = NowUs();
@@ -159,7 +163,7 @@
              // A full advertised window can itself be caused by these cached
              // bytes. Try the application before deciding whether it can open.
              while (!ooo_.empty()) {
-@@ -6746,20 +6808,37 @@
+@@ -6746,20 +6808,37 @@ namespace xtcp {
                          // that gated one chunk per delayed-ACK (40ms) round
                          // (the interop_latency regression).
                          const UInt32 prev_rcv = rcv_nxt_;

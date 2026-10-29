@@ -1,3 +1,5 @@
+diff --git a/tests/test_sack_gap_edge.cpp b/tests/test_sack_gap_edge.cpp
+index 014b23c..ac7fd26 100644
 --- a/tests/test_sack_gap_edge.cpp
 +++ b/tests/test_sack_gap_edge.cpp
 @@ -5,15 +5,13 @@
@@ -110,7 +112,7 @@
  }
  
  #define CHECK(cond)                                                       \
-@@ -48,14 +116,13 @@
+@@ -48,14 +116,13 @@ static bool HasTcpPayload(const Byte* packet, UInt32 length) {
  
  /**
   * @brief Pumps `from`'s tx into `to`, dropping every `drop_every`-th
@@ -130,7 +132,7 @@
      Byte out[65536];
      UInt32 guard = 0;
      while (0 != from.TxPending()) {
-@@ -65,29 +132,35 @@
+@@ -65,29 +132,35 @@ static void PumpDrop(xtcp::ndi::ManualBackend& from, xtcp::ndi::ManualBackend& t
          }
          // IPv4 (20B) + TCP: flags at tcp offset 13, seq at 4.
          const UInt32 tcp_off = 20;
@@ -181,7 +183,7 @@
          to.Inject(out, got, 0x0800);
          if (20000 < ++guard) {
              break;
-@@ -111,6 +184,16 @@
+@@ -111,6 +184,16 @@ static void Wire(xtcp::ndi::ManualBackend& ba, xtcp::ndi::ManualBackend& bb,
      });
  }
  
@@ -198,7 +200,7 @@
  /** 64 KiB transfer, every 8th first-seen data segment blackholed. */
  int main() {
      xtcp::buf::InitPools();
-@@ -141,11 +224,10 @@
+@@ -141,11 +224,10 @@ int main() {
  
          // Handshake: no drops.
          {
@@ -214,7 +216,7 @@
          }
  
          constexpr UInt32 kTotal = 64 * 1024;
-@@ -153,40 +235,51 @@
+@@ -153,40 +235,51 @@ int main() {
          for (UInt32 i = 0; i < kTotal; ++i) {
              payload.push_back(static_cast<char>((i * 17 + 11) & 0xFF));
          }
@@ -280,28 +282,28 @@
  
          // 1) Data integrity: byte-exact size + exact rolling CRC. A duplicate
          //    delivery (re-delivered SACKed bytes) corrupts the stream and
-@@ -202,14 +295,12 @@
+@@ -202,14 +295,12 @@ int main() {
          CHECK(kTotal == received.size());
          CHECK(crc_recv == crc_expect);
  
 -        // 2) The loss policy must actually have created gaps - at least two
 -        //    single-segment holes (kTotal / 1460 ~= 45 segments, every 8th).
 -        CHECK(2 <= dropped);
++        // 2) The loss policy must actually have created two isolated gaps
++        //    (kTotal / 1448 ~= 46 segments, every 16th).
++        CHECK(2 <= loss.dropped);
 -
++
 -        // 3) Retransmit count (ConnStats): bounded by the true number of
 -        //    losses. Each blackholed segment needs >= 1 retransmit
 -        //    (dropped <= retx); the boundary bug re-sends SACKed segments on
 -        //    every dupack/partial-ACK, blowing retx far past the loss count.
-+        // 2) The loss policy must actually have created two isolated gaps
-+        //    (kTotal / 1448 ~= 46 segments, every 16th).
-+        CHECK(2 <= loss.dropped);
-+
 +        // 3) Check retransmitted sequence ranges directly. A timer-triggered
 +        //    RTO may legally retry previously SACKed data if a receiver reneges.
          UInt32 inflight = 0, cwnd = 0, ssthresh = 0, snd_wnd = 0, retx = 0, dup = 0, fast = 0;
          UInt64 rto_deadline = 0;
          UInt32 front_seq = 0, snd_una = 0;
-@@ -217,11 +308,12 @@
+@@ -217,11 +308,12 @@ int main() {
          stack_a.ConnStats(conn, inflight, cwnd, ssthresh, snd_wnd, retx, rto_deadline, dup, fast,
                            front_seq, snd_una, lp, rp);
          std::fprintf(stderr,
@@ -319,9 +321,11 @@
      }
      xtcp::buf::ShutdownPools();
      std::fprintf(stderr, g_failures ? "SACK_GAP_EDGE: FAILED (%d)\n" : "SACK_GAP_EDGE: ALL PASSED\n", g_failures);
+diff --git a/tests/test_ts_ooo_drain.cpp b/tests/test_ts_ooo_drain.cpp
+index 13ff60a..7b28fa6 100644
 --- a/tests/test_ts_ooo_drain.cpp
 +++ b/tests/test_ts_ooo_drain.cpp
-@@ -190,11 +190,18 @@
+@@ -190,11 +190,18 @@ int main() {
          // ACKed immediately, so pump() forwards that ACK before the caller
          // can poll B's queue; record it here.
          std::vector<UInt32> b_ecrs;
@@ -340,7 +344,7 @@
                      backend_b.Inject(out, n, 0x0800);
                  }
              }
-@@ -253,8 +260,13 @@
+@@ -253,8 +260,13 @@ int main() {
  
          // Segment 2 (seq = frontier + 1460) delivered FIRST: buffered as
          // out-of-order, nothing reaches the app.

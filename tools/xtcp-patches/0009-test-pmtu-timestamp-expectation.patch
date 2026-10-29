@@ -1,6 +1,8 @@
+diff --git a/tests/test_pmtu.cpp b/tests/test_pmtu.cpp
+index 65e4f0f..9aad005 100644
 --- a/tests/test_pmtu.cpp
 +++ b/tests/test_pmtu.cpp
-@@ -149,7 +149,9 @@
+@@ -149,7 +149,9 @@ int main() {
          CHECK(0 != conn);
          Pump(backend_a, backend_b, stack_a, stack_b);
  
@@ -11,7 +13,7 @@
          const UInt32 kChunk = 4096;
          Byte payload[kChunk];
          std::memset(payload, 0x55, sizeof(payload));
-@@ -164,7 +166,7 @@
+@@ -164,7 +166,7 @@ int main() {
          }
          std::fprintf(stderr, "[pmtu] pre-ICMP max payload=%llu segs=%llu\n",
                       (unsigned long long)g_tx_payload_max, (unsigned long long)g_tx_segs);

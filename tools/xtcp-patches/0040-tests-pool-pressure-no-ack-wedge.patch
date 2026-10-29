@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 1724b93..77363e1 100644
+index c3215ca..169ca6c 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -350,6 +350,7 @@ if(XTCP_BUILD_TESTS)
+@@ -351,6 +351,7 @@ if(XTCP_BUILD_TESTS)
          test_qdisc_rate_bridge
          test_qdisc_remove_flow
          test_qdisc_batch
