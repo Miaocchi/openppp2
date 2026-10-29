@@ -1,6 +1,8 @@
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
+index 5b128ee..4eb11a5 100644
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
-@@ -517,6 +517,14 @@
+@@ -517,6 +517,14 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
              out.inflight = it->second->conn->InflightBytes();
              return true;
          }
@@ -15,9 +17,11 @@
          /**
           * @brief Sets the algorithm applied to all new connections.
           * @param name Registered algorithm name; NULLPTR/empty = Reno.
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index b849c01..c2299e8 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -120,6 +120,33 @@
+@@ -120,6 +120,33 @@ namespace xtcp {
              kTimeWait    = 10,
          };
  
@@ -51,7 +55,7 @@
          /**
           * @brief TCP flags (RFC 793).
           */
-@@ -276,6 +303,11 @@
+@@ -276,6 +303,11 @@ namespace xtcp {
   *         (full Linux send semantics).
               */
              bool SendData(const Byte* data, UInt32 len, TimePoint now) noexcept;
@@ -63,7 +67,7 @@
              /**
               * @brief Re-sends buffered data after a window update.
               * @param now Monotonic time.
-@@ -1296,6 +1328,7 @@
+@@ -1296,6 +1328,7 @@ namespace xtcp {
              static constexpr UInt32 kDefaultSndBuf = 65536;  /**< 64 KiB per-conn quota */
              UInt32      snd_buf_ = kDefaultSndBuf;
              std::vector<Byte> pending_send_;  /**< App data queued while SYN/SYN+ACK is in flight (full client semantics) */
@@ -71,9 +75,11 @@
              mutable std::recursive_mutex syncobj_;  /**< Guards state changes (multi-thread safe) */
              TxSink      sink_;
              RecvCallback recv_cb_;
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
+index 30c79a4..7d4f1d7 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1423,6 +1423,16 @@
+@@ -1451,6 +1451,16 @@ namespace xtcp {
          return it->second->conn->SendData(data, len, GetTickUs());
      }
  
@@ -90,9 +96,11 @@
      bool XtcpStack::SetCongestionControl(UInt64 conn_id, const char* name) noexcept {
          Shard* shard = ShardOf(conn_id);
          std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index 7c29626..e195b74 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -4548,8 +4548,31 @@
+@@ -4548,8 +4548,31 @@ namespace xtcp {
                  : pipe_retrans_bytes_;
          }
  
@@ -124,7 +132,7 @@
              if (0 == len) {
                  return true;
              }
-@@ -4558,7 +4581,7 @@
+@@ -4558,7 +4581,7 @@ namespace xtcp {
              // the connection reaches Established.
              if (TcpState::kSynSent == state_ || TcpState::kSynRcvd == state_) {
                  if (snd_buf_ < pending_send_.size() + len) {
@@ -133,7 +141,7 @@
                  }
                  pending_send_.insert(pending_send_.end(), data, data + len);
                  timers_dirty_.store(true, std::memory_order_relaxed);
-@@ -4568,7 +4591,7 @@
+@@ -4568,7 +4591,7 @@ namespace xtcp {
              // its send side) the application may still send data. Established
              // is the normal send state.
              if (TcpState::kEstablished != state_ && TcpState::kCloseWait != state_) {
@@ -142,7 +150,7 @@
              }
              const UInt32 inflight = snd_nxt_ - snd_una_;
              // Kernel tcp_rate_check_app_limited runs at the sendmsg entry,
-@@ -4590,7 +4613,7 @@
+@@ -4590,7 +4613,7 @@ namespace xtcp {
              const UInt64 cwnd_bytes = static_cast<UInt64>(cc_.snd_cwnd) * peer_mss_;
              if (len > payload_cap) {
                  if (snd_buf_ < pending_send_.size() + len + inflight) {
@@ -151,7 +159,7 @@
                  }
                  // TSO direct-send (backends with kCapTsoTx): hand the whole
                  // super-segment to the NIC in ONE Tx instead of buffering
-@@ -4664,7 +4687,7 @@
+@@ -4664,7 +4687,7 @@ namespace xtcp {
              if (!pending_send_.empty() || inflight + len > limit || pipe_gated || nagle ||
                  (0 < cc_.pacing_rate && now < pacing_deadline_)) {
                  if (snd_buf_ < pending_send_.size() + len + inflight) {
@@ -160,7 +168,7 @@
                  }
                  pending_send_.insert(pending_send_.end(), data, data + len);
                  timers_dirty_.store(true, std::memory_order_relaxed);
-@@ -4681,7 +4704,7 @@
+@@ -4681,7 +4704,7 @@ namespace xtcp {
              // buffered bytes (pending + inflight + this send <= snd_buf_),
              // otherwise buffering bypasses the per-connection quota.
              if (snd_buf_ < pending_send_.size() + len + inflight) {
@@ -169,9 +177,11 @@
              }
              const UInt32 seq = snd_nxt_;
              buf::BufRef packet = BuildSegmentPacket(local_, remote_, seq, rcv_nxt_,
+diff --git a/tests/test_sndbuf_config.cpp b/tests/test_sndbuf_config.cpp
+index 4cbd124..0982083 100644
 --- a/tests/test_sndbuf_config.cpp
 +++ b/tests/test_sndbuf_config.cpp
-@@ -72,6 +72,17 @@
+@@ -72,6 +72,17 @@ static void TestDirectFsmQuota() {
      std::vector<Byte> chunk(16384, 0x5C);
      CHECK(conn.SendData(chunk.data(), 16384, 0));
      CHECK(!conn.SendData(chunk.data(), 16384, 0));  // quota exhausted
@@ -189,7 +199,7 @@
      std::fprintf(stderr, "[sndbuf] direct-FSM quota enforced\n");
  }
  
-@@ -118,6 +129,11 @@
+@@ -118,6 +129,11 @@ static void TestStackLevelQuota() {
      std::vector<Byte> chunk(16384, 0x5D);
      CHECK(stack_a.Send(conn, chunk.data(), 16384));
      CHECK(!stack_a.Send(conn, chunk.data(), 16384));  // quota: pending 16384 + 16384 > 16384

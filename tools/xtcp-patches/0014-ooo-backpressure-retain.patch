@@ -1,6 +1,8 @@
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
+index acdd064..51d0239 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1444,6 +1444,7 @@
+@@ -1472,6 +1472,7 @@ namespace xtcp {
          UInt64 conn_id, core::ReceiveStateSnapshot* state) noexcept {
          Shard* shard = ShardOf(conn_id);
          std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
@@ -8,7 +10,7 @@
          auto it = shard->conns_.find(conn_id);
          if (it == shard->conns_.end() || NULLPTR == it->second->conn) {
              if (NULLPTR != state) {
-@@ -1452,6 +1453,14 @@
+@@ -1480,6 +1481,14 @@ namespace xtcp {
              return core::ReceiveResumeResult::kConnectionMissing;
          }
          const core::ReceiveResumeResult result = it->second->conn->ResumeReceiveDetailed();
@@ -23,9 +25,11 @@
          if (NULLPTR != state) {
              *state = it->second->conn->ReceiveState();
          }
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index 986e0c7..805168d 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -2315,13 +2315,13 @@
+@@ -2315,13 +2315,13 @@ namespace xtcp {
                              ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
                      }
                      if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
@@ -43,7 +47,7 @@
                          break;
                      }
                      if (TcpState::kClosed == state_) {
-@@ -2382,14 +2382,12 @@
+@@ -2382,14 +2382,12 @@ namespace xtcp {
                              const UInt32 prev_drain = rcv_nxt_;
                              rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback
                              if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
@@ -61,7 +65,7 @@
                                  break;
                              }
                              if (TcpState::kClosed == state_) {
-@@ -5881,6 +5879,9 @@
+@@ -5881,6 +5879,9 @@ namespace xtcp {
  
          ReceiveResumeResult TcpConn::ResumeReceiveDetailed() noexcept {
              std::lock_guard<std::recursive_mutex> scope(syncobj_);
@@ -71,7 +75,7 @@
              if (!rcv_blocked_) {
                  return ReceiveResumeResult::kNotBlocked;
              }
-@@ -5888,10 +5889,72 @@
+@@ -5888,10 +5889,72 @@ namespace xtcp {
              ack_pending_ = false;
              ack_count_ = 0;
              ack_deadline_ = 0;
@@ -146,7 +150,7 @@
          }
  
          void TcpConn::SendSyn() noexcept {
-@@ -6734,15 +6797,12 @@
+@@ -6734,15 +6797,12 @@ namespace xtcp {
                                  ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
                              }
                              if (!seg.data.empty() && recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
@@ -165,7 +169,7 @@
                                  break;
                              }
                              if (TcpState::kEstablished != state_) {
-@@ -6859,12 +6919,11 @@
+@@ -6859,12 +6919,11 @@ namespace xtcp {
                                      const UInt32 prev_os = rcv_nxt_;
                                      rcv_nxt_ += static_cast<UInt32>(os.data.size());  // advance before callback
                                      if (!os.data.empty() && recv_cb_ && !recv_cb_(os.data.data(), static_cast<UInt32>(os.data.size()))) {
@@ -180,9 +184,11 @@
                                          break;
                                      }
                                      if (TcpState::kEstablished != state_) {
+diff --git a/tests/test_ooo_frontier.cpp b/tests/test_ooo_frontier.cpp
+index 1062d73..d63c6c8 100644
 --- a/tests/test_ooo_frontier.cpp
 +++ b/tests/test_ooo_frontier.cpp
-@@ -71,9 +71,9 @@
+@@ -71,9 +71,9 @@ static void CheckOverlap(UInt32 irs, xtcp::core::TcpState state, int scenario) {
          inject(1000, 3000); inject(0, 2000);
          CHECK(conn.RcvNxt() == irs + 1 + 2000);
          CHECK(conn.ReceiveState().rcv_blocked);

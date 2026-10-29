@@ -1,6 +1,8 @@
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index 43b6b06..555783f 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -431,9 +431,11 @@
+@@ -431,9 +431,11 @@ namespace xtcp {
               * @brief Earliest armed timer deadline (steady-clock microseconds,
               *        the PollAckTimers clock).
               * @return The minimum of the delayed-ACK/RTO/TLP/persist/MTU-probe/
@@ -15,7 +17,7 @@
               *         TIME-WAIT connection reports its 2MSL deadline.
               * @note  OPENPPP2 integration patch (tools/xtcp-patches/
               *        0001-next-timer-deadline.patch): enables deadline-driven
-@@ -473,6 +475,16 @@
+@@ -473,6 +475,16 @@ namespace xtcp {
                      consider(last_rx_ + idle_us);
                  }
                  if (0 < pending_send_.size()) {
@@ -32,9 +34,11 @@
                      return 0;  // buffered sends ride the next sweep
                  }
                  return next;
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index 5af71ce..a905423 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -5195,15 +5195,40 @@
+@@ -5195,15 +5195,40 @@ namespace xtcp {
              ack_release_pending_flush_attempts_.fetch_add(1, std::memory_order_relaxed);
              std::vector<Byte> data;
              data.swap(pending_send_);
@@ -80,7 +84,7 @@
                  }
                  UInt32 n = static_cast<UInt32>(data.size() - off);
                  const UInt64 cwnd = static_cast<UInt64>(cc_.snd_cwnd) * peer_mss_;
-@@ -5270,6 +5295,12 @@
+@@ -5270,6 +5295,12 @@ namespace xtcp {
                  if (n > payload_cap) {
                      n = payload_cap;
                  }
@@ -93,7 +97,7 @@
                  // No Nagle gate here: this is the ACK-driven flush path, and
                  // Nagle (RFC 896) applies only at the application send entry.
                  // Gating the tail here deadlocks: after a partial ACK leaves
-@@ -5340,7 +5371,9 @@
+@@ -5340,7 +5371,9 @@ namespace xtcp {
                  cc_.inflight = PipeInFlightBytes();
                  cc_.lsndtime = now / 1000;
                  if (0 < cc_.pacing_rate) {
@@ -104,7 +108,7 @@
                  }
                  off += n;
              }
-@@ -6511,6 +6544,12 @@
+@@ -6511,6 +6544,12 @@ namespace xtcp {
                              // (a later Transition would resurrect/regress it).
                              break;
                          }
@@ -117,7 +121,7 @@
                          while (!ooo_.empty()) {
                              TrimOooToFrontier();
                              // Exact-key lookup: sequence wraparound makes
-@@ -6552,6 +6591,7 @@
+@@ -6552,6 +6591,7 @@ namespace xtcp {
                              ooo_bytes_ -= static_cast<UInt32>(seg.data.size());
                              const bool fin = seg.fin;  // capture before erase (seg aliases the node)
                              ooo_.erase(it);
@@ -125,7 +129,7 @@
                              if (fin) {
                                  // RFC 793: an out-of-order FIN is consumed once
                                  // its data fills the gap - enter CLOSE-WAIT.
-@@ -6562,7 +6602,16 @@
+@@ -6562,7 +6602,16 @@ namespace xtcp {
                                  break;
                              }
                          }
@@ -143,7 +147,7 @@
                              SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
                              Transition(TcpState::kCloseWait);
                              NotifyStateChanged();  // peer half-closed: the app must see it
-@@ -6589,6 +6638,7 @@
+@@ -6589,6 +6638,7 @@ namespace xtcp {
                              }
                          }
                      } else if (SeqLt(hdr.seq, rcv_nxt_)) {
@@ -151,7 +155,7 @@
                          // Fully or partially old data: re-ACK. A partially
                          // overlapping segment (hdr.seq < rcv_nxt_ < seg_end)
                          // must not be dropped whole - its fresh suffix
-@@ -6681,16 +6731,26 @@
+@@ -6681,16 +6731,26 @@ namespace xtcp {
                              }
                          }
                          // Re-ACK of old data: consumes the TCP_QUICKACK
@@ -188,7 +192,7 @@
                          quickack_ = false;
                      } else {
                          // Out-of-order: RFC 793 accepts only segments inside
-@@ -6699,6 +6759,7 @@
+@@ -6699,6 +6759,7 @@ namespace xtcp {
                          // fills the ooo buffer and starves real reassembly.
                          const UInt32 wnd_end = rcv_nxt_ + rcv_wnd_;
                          if (SeqLt(hdr.seq, wnd_end) || hdr.seq == wnd_end) {
@@ -196,7 +200,7 @@
                              if ((ooo_bytes_ + payload_len) <= OooCapacity(window_)) {
                                  OutSeg entry;
                                  entry.data.assign(payload, payload + payload_len);
-@@ -6715,6 +6776,8 @@
+@@ -6715,6 +6776,8 @@ namespace xtcp {
                                  auto existing = ooo_.find(hdr.seq);
                                  if (existing != ooo_.end()) {
                                      ooo_bytes_ -= static_cast<UInt32>(existing->second.data.size());
@@ -205,7 +209,7 @@
                                  }
                                  ooo_[hdr.seq] = std::move(entry);
                                  ooo_bytes_ += payload_len;
-@@ -6724,12 +6787,27 @@
+@@ -6724,12 +6787,27 @@ namespace xtcp {
                              // delayed-ACK state (an in-order segment may have
                              // armed ack_deadline_ earlier; wiping it would
                              // lose that ACK and stall the peer's recovery).
@@ -239,9 +243,11 @@
                          }
                      }
                  } else if (0 == payload_len) {
+diff --git a/tests/test_1mb_stream.cpp b/tests/test_1mb_stream.cpp
+index 0b19094..1be7bb2 100644
 --- a/tests/test_1mb_stream.cpp
 +++ b/tests/test_1mb_stream.cpp
-@@ -218,12 +218,17 @@
+@@ -218,12 +218,17 @@ static void Run1MiB(const char* tag, UInt32 drop_every, const std::string& send_
      WriteFile(send_path, payload);
  
      // Send the full 1 MiB (chunked), pumping with the drop policy.
@@ -262,7 +268,7 @@
          if (stack_a.Send(conn, payload.data() + sent, chunk)) {
              sent += chunk;
          }
-@@ -231,6 +236,9 @@
+@@ -231,6 +236,9 @@ static void Run1MiB(const char* tag, UInt32 drop_every, const std::string& send_
          PumpDrop(backend_b, backend_a, drop_every, first_seen, dropped);
          stack_a.PollAckTimers();
          stack_b.PollAckTimers();
@@ -272,9 +278,11 @@
      }
      // Drain until the receiver has everything.
      for (UInt32 i = 0; i < 4000 && received.size() < kTotal; ++i) {
+diff --git a/tests/test_pacing_flush.cpp b/tests/test_pacing_flush.cpp
+index 102950a..0350c92 100644
 --- a/tests/test_pacing_flush.cpp
 +++ b/tests/test_pacing_flush.cpp
-@@ -153,15 +153,18 @@
+@@ -153,15 +153,18 @@ static void TestPacingGate() {
      stack_a.PollAckTimers();
      Pump(backend_a, backend_b);
  

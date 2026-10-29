@@ -1,16 +1,20 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 44da76c..9f9933c 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -108,6 +108,7 @@
+@@ -108,6 +108,7 @@ if(XTCP_BUILD_TESTS)
  
      set(XTCP_TESTS
          test_smoke
 +        test_fin_state_callbacks
          test_ndi
+         test_ndi_tx_concurrency
          test_mempool
-         test_bufref
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index 3e4dc85..db12d10 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -6987,10 +6987,19 @@
+@@ -6987,10 +6987,19 @@ namespace xtcp {
                                  SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
                                  Transition(TcpState::kCloseWait);
                                  NotifyStateChanged();  // peer half-closed: the app must see it
@@ -31,7 +35,7 @@
                              // Gap filled: ACK immediately (the sender's fast
                              // retransmit / RACK recovery waits on this
                              // cumulative ACK); the ACK covers any previously
-@@ -6999,10 +7008,6 @@
+@@ -6999,10 +7008,6 @@ namespace xtcp {
                              ack_pending_ = false;
                              ack_count_ = 0;
                              ack_deadline_ = 0;
@@ -42,6 +46,9 @@
                          } else if (quickack_) {
                              // TCP_QUICKACK: ACK every segment immediately.
                              // Linux one-shot semantics: the flag is cleared by
+diff --git a/tests/test_fin_state_callbacks.cpp b/tests/test_fin_state_callbacks.cpp
+new file mode 100644
+index 0000000..25234e7
 --- /dev/null
 +++ b/tests/test_fin_state_callbacks.cpp
 @@ -0,0 +1,111 @@
@@ -156,9 +163,11 @@
 +    std::printf("FIN state callbacks: 16 scenarios, %u failures\n", failures);
 +    return failures ? 1 : 0;
 +}
+diff --git a/tests/test_ooo_frontier.cpp b/tests/test_ooo_frontier.cpp
+index d63c6c8..da0c463 100644
 --- a/tests/test_ooo_frontier.cpp
 +++ b/tests/test_ooo_frontier.cpp
-@@ -77,6 +77,13 @@
+@@ -77,6 +77,13 @@ static void CheckOverlap(UInt32 irs, xtcp::core::TcpState state, int scenario) {
          inject(2000, 2000);
          expected = 4000;
          break;
@@ -172,7 +181,7 @@
      case 7:
          // Every drain advances into the next range, without an exact key.
          // This exercises a deep overlap chain and both numeric map ranges.
-@@ -100,10 +107,10 @@
+@@ -100,10 +107,10 @@ int main() {
      xtcp::buf::InitPools();
      for (UInt32 irs : {200U, 0xfffff000U}) {
          for (auto state : {xtcp::core::TcpState::kEstablished, xtcp::core::TcpState::kFinWait2}) {

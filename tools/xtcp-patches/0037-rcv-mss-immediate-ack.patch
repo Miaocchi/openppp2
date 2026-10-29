@@ -1,6 +1,8 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a479a24..c3215ca 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -243,6 +243,7 @@
+@@ -244,6 +244,7 @@ if(XTCP_BUILD_TESTS)
          test_mss_zero
          test_ecn_bidi
          test_ecn_cc
@@ -8,9 +10,11 @@
          test_ecn_cwr
          test_retries_cap
          test_window_sndwl
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index b77dfc7..05e72c4 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -64,6 +64,9 @@
+@@ -64,6 +64,9 @@ namespace xtcp {
              constexpr UInt32 kDefaultWindow = 65535;
              constexpr UInt32 kMaxDataRetries = 15;  // Linux tcp_retries2 equivalent
              constexpr UInt32 kDelayedAckMs = 40;  // RFC 1122 delayed-ACK timer
@@ -20,7 +24,7 @@
              // RFC 7323 s5.5: after this much idle time (24 days) the peer's
              // millisecond clock may have wrapped - the PAWS check is relaxed
              // (the sequence-number checks still bound the segment). Linux:
-@@ -7063,7 +7066,16 @@
+@@ -7063,7 +7066,16 @@ namespace xtcp {
                          } else {
                              ack_pending_ = true;
                              ++ack_count_;
@@ -38,6 +42,9 @@
                                  ack_pending_ = false;
                                  ack_count_ = 0;
                                  ack_deadline_ = 0;
+diff --git a/tests/test_rcv_mss_ack.cpp b/tests/test_rcv_mss_ack.cpp
+new file mode 100644
+index 0000000..511eda1
 --- /dev/null
 +++ b/tests/test_rcv_mss_ack.cpp
 @@ -0,0 +1,166 @@

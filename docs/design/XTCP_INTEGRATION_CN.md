@@ -28,7 +28,7 @@ Windows 使用 Wintun L3 数据路径；传统 TapWindows L2 适配器当前不�
 
 ### Windows 数据面与离线验证（2026-10-17）
 
-Windows XTCP 仅支持 x64、Wintun L3 和内部 loopback TCP 桥。当前固定依赖为 `third-party/xtcp` 的 revision `f71548f3664740bf87b40bf0b226d2ee315109a8`，归档 SHA256 为 `ff0a0a6021abeeadc84337992d765a02eee57dfb3e3ed7ef7e8f3bb22e08656e`（见 §11.187）。在 VS x64 开发者环境中构建：
+Windows XTCP 仅支持 x64、Wintun L3 和内部 loopback TCP 桥。当前固定依赖为 `third-party/xtcp` 的 revision `c1fc9d6b6ead239043d7a7608eaea7e0cb143fe6`，归档 SHA256 为 `0c5a5512d6a42344f9626e6122af103a23c38ce2016d64d203d10669065e7bb6`（见 §11.191）。在 VS x64 开发者环境中构建：
 
 ```bat
 bash tools/prepare_xtcp.sh
@@ -2865,3 +2865,70 @@ Windows、移动端及 sanitizer 未验证。
 `/home/ppp-m2/ecn-0044-resume-20261029-tZ2hqy/` 重新准备源码并用
 `patch -p1 --fuzz=0` 重放；核对其与受测源码一致。本任务构建目录已清理，
 日志和冻结源码保留；未提交或推送。
+
+### 11.191 固定上游迁移到 c1fc9d6（2026-10-29）
+
+固定 revision 为 `c1fc9d6b6ead239043d7a7608eaea7e0cb143fe6`，归档 SHA256 为
+`0c5a5512d6a42344f9626e6122af103a23c38ce2016d64d203d10669065e7bb6`。
+上游将 backend TX 串行化，并覆盖 closed-port RST，新增
+`test_ndi_tx_concurrency`。本次没有本地补丁被上游吸收，38 个补丁全部保留，
+稀疏编号不变。0037、0038 分别已提出为
+[xtcp#3](https://github.com/liulilittle/xtcp/pull/3)、
+[xtcp#4](https://github.com/liulilittle/xtcp/pull/4)，合入前继续保留。
+
+逐个按前序状态重新生成补丁；0031 的 CMake hunk 适配上游新增的 NDI 测试。
+校验归档后全新解压，按文件名顺序用 `patch -p1 --fuzz=0` 重放 38/38，
+没有 fuzz 或行偏移。完整栈中的 0039/0040/0042/0043 有前序 API 和测试夹具，
+可正常应用；纯上游候选分支则需要另外移植：pool 分支使用上游 send/flush
+接口，fair 分支基于 pool 分支，移除本地 burst pacing 和 timer deadline API
+依赖；timestamp 分支覆盖上游 established/closing 接收路径，本地专属
+`ResumeReceive` 用例仍由完整补丁栈验证。
+旧 pin+完整栈与新 pin+完整栈的源码比较仅有上游变更的四个路径：CMake、
+`stack.h`、`stack.cpp` 和新增 NDI 测试；没有引入额外产品行为变化。
+
+全部编译和运行验证在实验机的新任务目录中进行，使用共享构建锁、CPU 0-15、
+nice 10、最多 16 个构建任务。Release 开启 `XTCP_BUILD_TESTS=ON` 和
+`XTCP_CHECKSUM_VALIDATE=ON`，三轮分别为 246/246，合计 738/738。
+按测试指南对 XTCP 库和测试同时插桩的 TSan 为 246/246，无数据竞态或锁顺序告警。
+历史章节的 revision、参数和测量结果保持原义。
+
+独立 C++ Release 开启 `ENABLE_XTCP_TESTS=ON` 后为 200/201；
+`spinlock_test` 超过既有的 120 秒看门狗。该目标只链接 Threads/OpenSSL 与
+SpinLock/diagnostics 源码，不依赖 XTCP；相关源码和构建定义在本次升级中均未修改。
+单独复核 `spinlock_test` 也在 120 秒超时（0/1），保留两次失败记录，不报告为全绿。
+纯上游 Release/checksum 对照为 239/240，
+唯一失败为原始固定时间戳夹具 `test_ts_ooo_drain`。
+
+纯上游候选各在其基线上只有一个本地提交：pool reserve（0039+0040）、
+fair waiters（0042+0043，基于 pool 分支）、timestamp gap fill（0045+0046）、
+TX retry shard direction（0048）。Release/checksum ctest 分别为 240/241、
+240/241、240/240、239/240；三个非 timestamp 分支唯一失败均为与纯上游对照
+相同的原始 `test_ts_ooo_drain`，各候选自身回归测试全部通过。
+分支和英文 PR 草稿保留在 `build/private/xtcp-upstream-next/`，没有推送或提交 PR。
+
+默认运行配置 A/B：main `43fab3e455f49e14d868e56a77aa172a051b71cd`（旧 pin+
+完整栈）对比同一源码加本次 pin/rebase。DL/UL × P1/P16/P64 × 两轮，
+每个 cell 30 秒、omit 2 秒；首轮 main→candidate，第二轮 candidate→main。
+两侧均使用 CPU 0-15、client.concurrent=1、AES-256-CFB、GSO on。
+不传 shard、sndbuf、GRO、gather 和 CC 调优覆盖，保留运行时默认值：
+单 shard、1 MiB sndbuf、KCC、memory bridge on。通过共享 `measure.py` 的
+guard/run 执行，外层独立 net/mount namespace、host kernel steering off。
+原始记录同时保留实际启动参数和共享控制器的名义参数。
+
+单位 Mbps；变化为两轮算术均值之比：
+
+| 方向/并发 | main 第1/2轮 | c1fc9d6 第1/2轮 | 均值变化 |
+| --- | ---: | ---: | ---: |
+| DL P1 | 1790.274 / 1720.156 | 1794.289 / 1787.338 | +2.03% |
+| DL P16 | 1798.941 / 1746.454 | 1763.215 / 1765.175 | -0.48% |
+| DL P64 | 1879.607 / 1877.860 | 1904.598 / 1834.660 | -0.48% |
+| UL P1 | 1483.673 / 1453.640 | 1455.579 / 1447.325 | -1.17% |
+| UL P16 | 922.902 / 981.997 | 949.114 / 999.827 | +2.31% |
+| UL P64 | 537.286 / 554.939 | 563.268 / 565.549 | +3.35% |
+
+24/24 均通过，所有 cell 零速流为 0、runtime_faults 为空、二进制 hash 未变，
+namespace cleanup 和监控完整性检查通过。共享主机且只有两轮，不证明统计意义上
+性能等价，也不能将变化归因于某个独立上游候选。候选分支未分别做吞吐 A/B 或 TSan；
+Windows、移动平台与生产网络行为未验证。证据归档在
+`build/private/xtcp-c1fc9d6-validation/`，本任务远端构建目录已清理。
+主仓库没有提交、推送，也没有提交 PR。

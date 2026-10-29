@@ -1,6 +1,8 @@
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index 4bda716..986e0c7 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -6715,7 +6715,7 @@
+@@ -6715,7 +6715,7 @@ namespace xtcp {
                          // ACK here would stall every loss recovery.
                          bool drained_gap = false;
                          while (!ooo_.empty()) {
@@ -9,9 +11,11 @@
                              // Exact-key lookup: sequence wraparound makes
                              // std::less<UInt32> ordering meaningless at the
                              // 2^32 boundary, so do not rely on map order.
+diff --git a/tests/test_ooo_frontier.cpp b/tests/test_ooo_frontier.cpp
+index 3adccc7..1062d73 100644
 --- a/tests/test_ooo_frontier.cpp
 +++ b/tests/test_ooo_frontier.cpp
-@@ -20,8 +20,12 @@
+@@ -20,8 +20,12 @@ static void CheckOverlap(UInt32 irs, xtcp::core::TcpState state, int scenario) {
      TcpConn conn(state, local, remote, iss, irs, [](xtcp::buf::BufRef&&) {});
      std::vector<Byte> bytes(64000), received;
      for (std::size_t i = 0; i < bytes.size(); ++i) bytes[i] = Byte(i * 37 + i / 251);
@@ -24,7 +28,7 @@
          received.insert(received.end(), p, p + n);
          return true;
      });
-@@ -64,6 +68,16 @@
+@@ -64,6 +68,16 @@ static void CheckOverlap(UInt32 irs, xtcp::core::TcpState state, int scenario) {
          expected = 3000; expected_fin = true;
          break;
      case 6:
@@ -41,7 +45,7 @@
          // Every drain advances into the next range, without an exact key.
          // This exercises a deep overlap chain and both numeric map ranges.
          for (UInt32 i = 1; i <= 2048; ++i) inject(2 * i, 3);
-@@ -71,8 +85,9 @@
+@@ -71,8 +85,9 @@ static void CheckOverlap(UInt32 irs, xtcp::core::TcpState state, int scenario) {
          expected = 4099;
          break;
      }
@@ -53,7 +57,7 @@
      CHECK(received.size() == expected);
      CHECK(received.size() <= bytes.size() && std::equal(received.begin(), received.end(), bytes.begin()));
      CHECK(conn.RcvNxt() == irs + 1 + expected + (expected_fin ? 1 : 0));
-@@ -85,10 +100,10 @@
+@@ -85,10 +100,10 @@ int main() {
      xtcp::buf::InitPools();
      for (UInt32 irs : {200U, 0xfffff000U}) {
          for (auto state : {xtcp::core::TcpState::kEstablished, xtcp::core::TcpState::kFinWait2}) {

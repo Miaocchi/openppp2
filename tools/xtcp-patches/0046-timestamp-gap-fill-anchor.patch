@@ -1,6 +1,8 @@
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index 4b55364..f8cf45f 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -2380,12 +2380,8 @@
+@@ -2389,12 +2389,8 @@ namespace xtcp {
                      }
                      const UInt32 prev_drain = rcv_nxt_;
                      rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback
@@ -15,7 +17,7 @@
                      if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
                          if (TcpState::kClosed == state_) return false;
                          // Backpressure: retain the SACKed segment and stop
-@@ -6093,10 +6089,6 @@
+@@ -6104,10 +6100,6 @@ namespace xtcp {
                      pending_frontier_ = std::move(segment);
                      return ReceiveResumeResult::kReceiveWindowFull;
                  }
@@ -26,7 +28,7 @@
                  if (segment->fin) {
                      ++rcv_nxt_;
                      if (TcpState::kEstablished == state_) {
-@@ -6157,10 +6149,6 @@
+@@ -6168,10 +6160,6 @@ namespace xtcp {
                      ooo_bytes_ += bytes;
                      break;
                  }
@@ -37,7 +39,7 @@
                  if (fin) {
                      ++rcv_nxt_;
                      if (TcpState::kEstablished == state_) {
-@@ -6479,7 +6467,7 @@
+@@ -6490,7 +6478,7 @@ namespace xtcp {
              // every consumer already treats as "no options".
              TcpOpts opts;
              const bool opts_parsed = ParseTcpOpts(data, len, hdr.hdr_len, opts);
@@ -46,7 +48,7 @@
                  const bool paws_state = TcpState::kEstablished == state_ ||
                      TcpState::kFinWait1 == state_ || TcpState::kFinWait2 == state_ ||
                      TcpState::kClosing == state_ || TcpState::kCloseWait == state_ ||
-@@ -6488,6 +6476,13 @@
+@@ -6499,6 +6487,13 @@ namespace xtcp {
                      kPawsMaxIdleMs > static_cast<UInt32>((now / 1000) - ts_recent_stamp_)) {
                      return;  // stale: drop (RFC 7323 s5.3 R1; s5.5 relaxes after a 24-day idle)
                  }
@@ -60,7 +62,7 @@
              }
  
              // RFC 5961: an RST in a closing state (FIN-WAIT-1/2, CLOSING,
-@@ -6958,13 +6953,6 @@
+@@ -6969,13 +6964,6 @@ namespace xtcp {
                  }
                  if (payload_len > 0 || hdr.IsFin()) {
                      if (hdr.seq == rcv_nxt_) {
@@ -74,7 +76,7 @@
                          // RFC 793 urgent data (SO_OOBINLINE): the URG flag
                          // marks the segment - the app is notified once, the
                          // urgent bytes ride the normal stream.
-@@ -7041,13 +7029,8 @@
+@@ -7052,13 +7040,8 @@ namespace xtcp {
                              const OutSeg& seg = it->second;
                              const UInt32 prev_drain = rcv_nxt_;
                              rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback (piggyback ACK)

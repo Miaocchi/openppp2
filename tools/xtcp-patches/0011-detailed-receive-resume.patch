@@ -1,6 +1,8 @@
+diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
+index 61d58bc..a9854d6 100644
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
-@@ -139,11 +139,15 @@
+@@ -139,11 +139,15 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
           */
          bool Send(UInt64 conn_id, const Byte* data, UInt32 len) noexcept;
          /**
@@ -20,9 +22,11 @@
          /**
           * @brief Sends a SYN with early data (TCP Fast Open, RFC 7413).
           * @return True when the SYN was emitted (SynSent); the data rides
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index e2a29e6..959eccc 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -253,6 +253,19 @@
+@@ -253,6 +253,19 @@ namespace xtcp {
           * @brief Output sink: receives complete IP packets to transmit.
           */
          typedef std::function<void(buf::BufRef&&)> TxSink;
@@ -42,7 +46,7 @@
          /**
           * @brief Received in-order data callback.
           * @param data Buffer (valid only during the callback).
-@@ -370,12 +383,17 @@
+@@ -370,12 +383,17 @@ namespace xtcp {
               */
              void SendAck() noexcept;
              /**
@@ -65,9 +69,11 @@
              /**
               * @brief Sends the SYN segment (active-open path, SynSent).
               * @note Caller invokes after creating the connection in SynSent.
+diff --git a/src/core/stack.cpp b/src/core/stack.cpp
+index 0291d98..85d0361 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1440,14 +1440,35 @@
+@@ -1468,14 +1468,35 @@ namespace xtcp {
          return it->second->conn->SendData(data, len, GetTickUs());
      }
  
@@ -105,9 +111,11 @@
      }
  
      bool XtcpStack::ConnLastSendAdmission(
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index 3fc968e..5d1cd28 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -5749,21 +5749,19 @@
+@@ -5749,21 +5749,19 @@ namespace xtcp {
              SendSegment(snd_nxt_, rcv_nxt_, AckFlags(), NULLPTR, 0);
          }
  
@@ -134,9 +142,11 @@
          }
  
          void TcpConn::SendSyn() noexcept {
+diff --git a/tests/test_ooo_capacity.cpp b/tests/test_ooo_capacity.cpp
+index 4405632..23b6d27 100644
 --- a/tests/test_ooo_capacity.cpp
 +++ b/tests/test_ooo_capacity.cpp
-@@ -167,10 +167,58 @@
+@@ -167,10 +167,58 @@ static void TestDefaultKeepsLegacyCap() {
      CHECK(1295 == min_ooo_win);
  }
  
@@ -195,9 +205,11 @@
      xtcp::buf::ShutdownPools();
      std::fprintf(stderr, g_failures ? "OOO_CAPACITY: FAILED (%d)\n" : "OOO_CAPACITY: ALL PASSED\n", g_failures);
      return g_failures ? 1 : 0;
+diff --git a/tests/test_zero_window_backpressure.cpp b/tests/test_zero_window_backpressure.cpp
+index 3c3ed73..a678669 100644
 --- a/tests/test_zero_window_backpressure.cpp
 +++ b/tests/test_zero_window_backpressure.cpp
-@@ -295,7 +295,21 @@
+@@ -295,7 +295,21 @@ int main() {
              (void)backend_b.PollTx(resume_ack);  // discard pre-resume zero-window ACKs
          }
          const UInt64 accepted_conn = conn_b.load(std::memory_order_relaxed);

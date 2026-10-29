@@ -54,8 +54,83 @@ campaign have not been re-run with 0036. See XTCP_INTEGRATION_CN.md §11.186.
 XTCP is opt-in on Windows and Android. Linux desktop retains its current
 default. All platforms use the pinned source in `third-party/xtcp` and the
 same production target settings from the root CMake build (revision
-`f71548f3664740bf87b40bf0b226d2ee315109a8`). The verified archive SHA256 is
-`ff0a0a6021abeeadc84337992d765a02eee57dfb3e3ed7ef7e8f3bb22e08656e`.
+`c1fc9d6b6ead239043d7a7608eaea7e0cb143fe6`). The verified archive SHA256 is
+`0c5a5512d6a42344f9626e6122af103a23c38ce2016d64d203d10669065e7bb6`.
+
+### Rebase Onto c1fc9d6 (2026-10-29)
+
+Upstream serializes backend TX, including closed-port RST emission, and adds
+`test_ndi_tx_concurrency`. None of the 38 local patches is absorbed by this
+update. All sparse IDs remain unchanged; 0037 and 0038 remain local while
+[xtcp#3](https://github.com/liulilittle/xtcp/pull/3) and
+[xtcp#4](https://github.com/liulilittle/xtcp/pull/4) are pending.
+
+Every patch was regenerated against its predecessor on the new tree. The
+0031 CMake hunk now includes upstream's new NDI test. A fresh, checksum-verified
+archive accepts the entire series in filename order with `patch -p1 --fuzz=0`,
+without offsets. In the full series, 0039/0040/0042/0043 retain their preceding
+local APIs and fixtures. Their standalone upstream submissions need separate
+adaptation: pool reserve uses upstream's send/flush interfaces; fair waiters
+build on that pool branch without local burst-pacing or timer-deadline APIs;
+timestamp coverage uses upstream's established/closing receive paths without
+the local `ResumeReceive` API. The full local series retains resume coverage.
+Comparing old-pin/full-series and new-pin/full-series trees changes only the
+four upstream paths (CMake, `stack.h`, `stack.cpp`, and the new NDI test).
+
+All compilation and runtime validation takes place on the lab host, in a new
+task directory, under the shared build lock, CPUs 0-15, nice 10, and at most
+16 build jobs. Release with tests and checksum validation passed 246/246 in
+each of three rounds (738/738). The documented fully instrumented XTCP TSan
+workflow passed 246/246 with no race or lock-order warnings. Historical
+sections below retain their original revisions and measurement conditions.
+
+The standalone C++ Release run with `ENABLE_XTCP_TESTS=ON` passed 200/201;
+`spinlock_test` exceeded its existing 120-second watchdog. That target links
+Threads/OpenSSL and SpinLock/diagnostics sources, without XTCP; those files
+and its build definition are unchanged by this bump. This initial timeout
+is retained in the evidence rather than reported as an all-green C++ run.
+A focused `spinlock_test` recheck also timed out at 120 seconds (0/1).
+The unmodified upstream Release/checksum control passed 239/240, failing only
+the original fixed-timestamp `test_ts_ooo_drain` fixture.
+
+Standalone upstream candidates each have one local commit above their stated
+base: pool reserve (0039+0040), fair waiters (0042+0043, based on the pool
+branch), timestamp gap fill (0045+0046), and TX retry shard direction (0048).
+Release/checksum ctest results are respectively 240/241, 240/241, 240/240,
+and 239/240. The only failure on the three non-timestamp branches is the
+same original `test_ts_ooo_drain` failure as the upstream control. Every
+candidate's own regression passes. English drafts and branches are retained
+in `build/private/xtcp-upstream-next/`; none was pushed or submitted.
+
+Default-runtime A/B compares main `43fab3e455f49e14d868e56a77aa172a051b71cd`
+(old pin/full stack) with the same source plus this pin/rebase. Two rounds
+cover DL/UL P1/P16/P64, 30 seconds per cell, omit 2 seconds; main runs first
+in round 1 and candidate first in round 2. Both use CPUs 0-15, client
+concurrency 1, AES-256-CFB and GSO on. Shard, sndbuf, GRO, gather and CC tuning
+overrides are omitted, retaining runtime defaults (one shard, 1 MiB sndbuf,
+KCC, memory bridge on). Runs use the shared `measure.py` guard/run functions,
+private net/mount namespaces and host kernel steering off. Actual launch
+arguments are retained alongside the shared controller's nominal arguments.
+
+Mbps; change is the ratio of the two-round arithmetic means:
+
+| Cell | Main Round 1 / 2 | c1fc9d6 Round 1 / 2 | Mean Change |
+| --- | ---: | ---: | ---: |
+| DL P1 | 1790.274 / 1720.156 | 1794.289 / 1787.338 | +2.03% |
+| DL P16 | 1798.941 / 1746.454 | 1763.215 / 1765.175 | -0.48% |
+| DL P64 | 1879.607 / 1877.860 | 1904.598 / 1834.660 | -0.48% |
+| UL P1 | 1483.673 / 1453.640 | 1455.579 / 1447.325 | -1.17% |
+| UL P16 | 922.902 / 981.997 | 949.114 / 999.827 | +2.31% |
+| UL P64 | 537.286 / 554.939 | 563.268 / 565.549 | +3.35% |
+
+All 24 cells pass, with zero zero-rate flows, no runtime faults, unchanged
+binary hashes and successful namespace cleanup/monitoring checks. Two rounds
+on a shared host do not prove statistical equivalence or gains from any
+individual upstream candidate. Those candidates have no separate throughput
+A/B or TSan run. Windows, mobile platforms and production-network behavior
+remain unverified. Evidence is in `build/private/xtcp-c1fc9d6-validation/`;
+the task's remote build directories were removed. No main-repository commit,
+push or PR submission was made.
 
 Rebase onto upstream f71548f (2026-10-25): upstream added KCC v2
 (kernel-faithful delivery/recovery), CA state-machine, RACK/SACK/undo/RTO

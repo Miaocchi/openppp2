@@ -1,3 +1,5 @@
+diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
+index f961a7c..1e2e4f7 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
 @@ -15,6 +15,7 @@
@@ -8,7 +10,7 @@
  #include <deque>
  #include <functional>
  #include <map>
-@@ -406,7 +407,7 @@
+@@ -406,7 +407,7 @@ namespace xtcp {
               */
              UInt32 PendingSendBytes() const noexcept {
                  std::lock_guard<std::recursive_mutex> scope(syncobj_);
@@ -17,7 +19,7 @@
              }
              /**
   * @brief Initiates active close (sends FIN).
-@@ -539,7 +540,7 @@
+@@ -539,7 +540,7 @@ namespace xtcp {
                          (0 < keepalive_probes_) ? keepalive_intvl_ : keepalive_idle_;
                      consider(last_rx_ + idle_us);
                  }
@@ -26,7 +28,7 @@
                      // A zero peer window cannot be opened by the pacing clock.
                      // Wake only for the actual recovery timers (persist/RTO/...)
                      // instead of returning a stale pacing deadline and spinning
-@@ -1126,6 +1127,7 @@
+@@ -1126,6 +1127,7 @@ namespace xtcp {
                  UInt32   srtt       = 0;
                  UInt32   rttvar     = 0;
                  std::vector<Byte>              pending_send;  /**< Buffered application bytes */
@@ -34,7 +36,7 @@
                  std::deque<SentSeg>            retrans_queue; /**< In-flight, unacknowledged segments */
              };
              /**
-@@ -1248,6 +1250,15 @@
+@@ -1248,6 +1250,15 @@ namespace xtcp {
              void SetSndWscale(Byte factor) noexcept { snd_wscale_ = (14 < factor) ? 14 : factor; }
  
          private:
@@ -50,7 +52,7 @@
              void Transition(TcpState next) noexcept;
              void SendSegment(UInt32 seq, UInt32 ack, UInt16 flags, const Byte* payload, UInt32 payload_len) noexcept;
              Byte BuildSackRanges(UInt32* out, Byte max_pairs) const noexcept;
-@@ -1455,6 +1466,7 @@
+@@ -1455,6 +1466,7 @@ namespace xtcp {
              static constexpr UInt32 kDefaultSndBuf = 65536;  /**< 64 KiB per-conn quota */
              UInt32      snd_buf_ = kDefaultSndBuf;
              std::vector<Byte> pending_send_;  /**< App data queued while SYN/SYN+ACK is in flight (full client semantics) */
@@ -58,9 +60,11 @@
              SendAdmissionSnapshot last_send_admission_;  /**< Updated only by rejected SendData calls. */
              std::atomic<UInt64> ack_release_valid_acks_{0};
              std::atomic<UInt64> ack_release_advance_events_{0};
+diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
+index de6907c..5390875 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -945,9 +945,9 @@
+@@ -945,9 +945,9 @@ namespace xtcp {
              // tx_idle: no buffered bytes AND no pacing-gated backlog (the
              // pacing deadline stands in for the host qdisc's queued packets;
              // a connection waiting on the pacing clock is NOT idle).
@@ -72,7 +76,7 @@
                                   inflight_pkts, cwnd_pkts,
                                   lost_out_pkts_, retrans_out_pkts_, peer_mss_)) {
                  // Kernel tp->app_limited = tp->delivered + tcp_packets_in_flight
-@@ -3531,7 +3531,7 @@
+@@ -3531,7 +3531,7 @@ namespace xtcp {
                      persist_deadline_ = 0;
                      persist_interval_ = persist_base_;  // restore user-configured base
                  }
@@ -81,7 +85,7 @@
                      FlushPendingSend(now);
                  }
                  return;
-@@ -3755,7 +3755,7 @@
+@@ -3755,7 +3755,7 @@ namespace xtcp {
                  } else {
                      rto_deadline_ = 0;
                  }
@@ -90,7 +94,7 @@
                  const TimePoint deadline_before_ack_flush = pacing_deadline_;
                  const UInt64 flush_packets_before =
                      ack_release_tx_sink_packets_.load(std::memory_order_relaxed);
-@@ -4234,7 +4234,7 @@
+@@ -4234,7 +4234,7 @@ namespace xtcp {
                  // exit block did not raise cwnd, so the old position was
                  // harmless; with the exit block in place it released the whole
                  // backlog at 0x7FFFFFFF - audit D01.)
@@ -99,7 +103,7 @@
                      FlushPendingSend(now);  // buffered sends ride the freed window
                  }
                  // Rate-change telemetry (0012): measured after the post-CC
-@@ -4275,7 +4275,7 @@
+@@ -4275,7 +4275,7 @@ namespace xtcp {
                      persist_deadline_ = 0;
                      persist_interval_ = persist_base_;  // restore user-configured base
                  }
@@ -108,7 +112,7 @@
                      FlushPendingSend(now);
                  }
                  // Duplicate ACK on the frontier. Data-bearing segments
-@@ -4305,7 +4305,7 @@
+@@ -4305,7 +4305,7 @@ namespace xtcp {
                      const UInt32 oseg = static_cast<UInt32>(retrans_queue_.size());
                      if (2 <= oseg && oseg < 4) {
                          const UInt32 inflight = snd_nxt_ - snd_una_;
@@ -117,7 +121,7 @@
                              snd_wnd_ <= inflight ||
                              cc_.snd_cwnd * peer_mss_ <= inflight;
                          if (no_inject) {
-@@ -4664,7 +4664,7 @@
+@@ -4664,7 +4664,7 @@ namespace xtcp {
                  snapshot.reason = reason;
                  snapshot.state = state_;
                  snapshot.attempted_len = len;
@@ -126,7 +130,7 @@
                  snapshot.inflight = snd_nxt_ - snd_una_;
                  snapshot.snd_buf = snd_buf_;
                  snapshot.snd_wnd = snd_wnd_;
-@@ -4679,10 +4679,10 @@
+@@ -4679,10 +4679,10 @@ namespace xtcp {
              // while the SYN/SYN+ACK handshake is in flight and flushed once
              // the connection reaches Established.
              if (TcpState::kSynSent == state_ || TcpState::kSynRcvd == state_) {
@@ -139,7 +143,7 @@
                  timers_dirty_.store(true, std::memory_order_relaxed);
                  return true;
              }
-@@ -4708,7 +4708,7 @@
+@@ -4708,7 +4708,7 @@ namespace xtcp {
              // Send window = min(congestion window, peer window, local quota).
              const UInt64 cwnd_bytes = static_cast<UInt64>(cc_.snd_cwnd) * peer_mss_;
              if (len > payload_cap) {
@@ -148,7 +152,7 @@
                      return reject(SendAdmissionReason::kSndBufQuota);
                  }
                  // TSO direct-send (backends with kCapTsoTx): hand the whole
-@@ -4723,7 +4723,7 @@
+@@ -4723,7 +4723,7 @@ namespace xtcp {
                  // payload size. This remains safe when timestamps reduce the
                  // cap below PeerMss(): a later fresh-TS RTO rebuild uses the
                  // same cap and still fits the path MTU.
@@ -157,7 +161,7 @@
                      retrans_queue_.empty() && !fast_recovery_ &&
                      inflight + len <= snd_wnd_ &&
                      inflight + len <= cwnd_bytes &&
-@@ -4732,7 +4732,7 @@
+@@ -4732,7 +4732,7 @@ namespace xtcp {
                  tso_gate_direct_candidates_.fetch_add(1, std::memory_order_relaxed);
                  if (!tso_tx_) {
                      tso_gate_direct_disabled_.fetch_add(1, std::memory_order_relaxed);
@@ -166,7 +170,7 @@
                      tso_gate_direct_pending_.fetch_add(1, std::memory_order_relaxed);
                  } else if (!retrans_queue_.empty()) {
                      tso_gate_direct_outstanding_.fetch_add(1, std::memory_order_relaxed);
-@@ -4750,7 +4750,7 @@
+@@ -4750,7 +4750,7 @@ namespace xtcp {
                      // segments by FlushPendingSend (the direct-send variant
                      // was reverted: it could overrun the window and corrupt
                      // recovery under loss - see discover.md).
@@ -175,7 +179,7 @@
                      timers_dirty_.store(true, std::memory_order_relaxed);
                      // RFC 1122 zero-window probing applies to super-MSS buffers
                      // too: while the peer advertises zero, arm probes so a lost
-@@ -4799,12 +4799,12 @@
+@@ -4799,12 +4799,12 @@ namespace xtcp {
              // behind a 1-byte persist probe or a drained pipe (RFC 1122
              // 4.2.3.4: transmit immediately when inflight < MSS).
              const bool nagle = (!nodelay_ && len < peer_mss_ && inflight >= peer_mss_);
@@ -191,7 +195,7 @@
                  timers_dirty_.store(true, std::memory_order_relaxed);
                  // RFC 1122 zero-window probing: while the peer advertises a
                  // zero window, schedule probes so a lost window-update ACK
-@@ -4818,7 +4818,7 @@
+@@ -4818,7 +4818,7 @@ namespace xtcp {
              // Hard memory bound: the direct-send path must also count the
              // buffered bytes (pending + inflight + this send <= snd_buf_),
              // otherwise buffering bypasses the per-connection quota.
@@ -200,7 +204,7 @@
                  return reject(SendAdmissionReason::kSndBufQuota);
              }
              const UInt32 seq = snd_nxt_;
-@@ -4837,11 +4837,11 @@
+@@ -4837,11 +4837,11 @@ namespace xtcp {
                  // buffer as the window frees and re-queues on repeated
                  // exhaustion (FlushPendingSend packet.IsEmpty()). cwr_pending_
                  // stays set so the flush still emits the CWR.
@@ -214,7 +218,7 @@
                  !fast_recovery_ && inflight + len <= snd_wnd_ && inflight + len <= cwnd_bytes &&
                  (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
                  len + 40 <= xtcp::buf::kMaxPoolPayload) {
-@@ -4900,7 +4900,7 @@
+@@ -4900,7 +4900,7 @@ namespace xtcp {
              // arms). The probe fires after ~2xRTT (well before the RTO),
              // retransmitting the tail - avoiding the RTO's window cut and
              // latency penalty for a single lost tail segment.
@@ -223,7 +227,7 @@
                  TimePoint tlp = now + static_cast<TimePoint>(2ull * srtt_);
                  if (tlp < now + 10000) {
                      tlp = now + 10000;  // 10ms floor
-@@ -4966,7 +4966,7 @@
+@@ -4966,7 +4966,7 @@ namespace xtcp {
                      if (front_data.Len() > ip_hdr_len + tcp_hdr_len) {
                          probe_byte = front_data.Data()[ip_hdr_len + tcp_hdr_len];  // the missing byte
                      }
@@ -232,7 +236,7 @@
                      // All previously sent bytes were ACKed: probe the FIRST
                      // buffered byte. It is CONSUMED from pending_send_ - the
                      // window-reopen flush then continues from byte 2. A probe
-@@ -4974,7 +4974,7 @@
+@@ -4974,7 +4974,7 @@ namespace xtcp {
                      // delivered [0x00 x n] + payload once the window reopened
                      // (n phantom bytes that were never application data).
                      probe_seq = snd_nxt_;
@@ -241,7 +245,7 @@
                      consume_pending = true;
                  }
                  if (0 != probe_seq || consume_pending) {
-@@ -4984,7 +4984,7 @@
+@@ -4984,7 +4984,7 @@ namespace xtcp {
                                                              Md5Key(), Md5KeyLen(), NULLPTR, 0, NULLPTR, ecn_active_);
                      if (!packet.IsEmpty()) {
                          if (consume_pending) {
@@ -250,7 +254,7 @@
                              // The probe byte is REAL data (consumed above), so it
                              // must be recoverable: queue it in retrans_queue_ like
                              // any other segment (mirror of SendData below). A
-@@ -5208,7 +5208,7 @@
+@@ -5208,7 +5208,7 @@ namespace xtcp {
                  OnPersistTimer(now);  // re-locks (recursive); zero-window probe
                  ++fired;
              }
@@ -259,7 +263,7 @@
                  FlushPendingSend(now);  // buffered sends ride the freed window
              }
              // Keepalive (Linux TCP_KEEPIDLE semantics): probe when idle,
-@@ -5276,7 +5276,7 @@
+@@ -5276,7 +5276,7 @@ namespace xtcp {
              const bool closing = (TcpState::kClosed == state_ || TcpState::kLastAck == state_ ||
                                    TcpState::kFinWait2 == state_ || TcpState::kTimeWait == state_);
              if (0 == ack_deadline_ && 0 == rto_deadline_ && 0 == persist_deadline_ &&
@@ -268,7 +272,7 @@
                  0 == mtu_probe_deadline_ && !closing) {
                  timers_dirty_.store(false, std::memory_order_relaxed);
              }
-@@ -5286,7 +5286,7 @@
+@@ -5286,7 +5286,7 @@ namespace xtcp {
          void TcpConn::Flush(TimePoint now) noexcept {
              // Sends buffered data after a window update; on SynSent/SynRcvd
              // the queued app data is flushed on Established (FlushPendingSend).
@@ -277,7 +281,7 @@
                  FlushPendingSend(now);
              }
              // Window-driven resend is handled by the caller retrying SendData
-@@ -5294,20 +5294,69 @@
+@@ -5294,20 +5294,69 @@ namespace xtcp {
              (void)now;
          }
  
@@ -349,7 +353,7 @@
                  const bool tso_candidate = data.size() - off > DataPayloadCap();
                  bool tso_gate_classified = false;
                  if (tso_candidate) {
-@@ -5337,11 +5386,7 @@
+@@ -5337,11 +5386,7 @@ namespace xtcp {
                              tso_gate_flush_pacing_.fetch_add(1, std::memory_order_relaxed);
                              tso_gate_classified = true;
                          }
@@ -362,7 +366,7 @@
                          return;
                      }
                      UInt64 quantum = cc_.pacing_rate / 1000;  // ~1ms of data
-@@ -5379,7 +5424,7 @@
+@@ -5379,7 +5424,7 @@ namespace xtcp {
                              tso_gate_flush_fast_recovery_.fetch_add(1, std::memory_order_relaxed);
                              tso_gate_classified = true;
                          }
@@ -371,7 +375,7 @@
                          return;  // pipe full: the ACK clock reopens it
                      }
                      limit = (snd_wnd_ < snd_buf_) ? snd_wnd_ : snd_buf_;
-@@ -5395,7 +5440,7 @@
+@@ -5395,7 +5440,7 @@ namespace xtcp {
                          tso_gate_flush_window_cwnd_.fetch_add(1, std::memory_order_relaxed);
                          tso_gate_classified = true;
                      }
@@ -380,7 +384,7 @@
                      // RFC 1122 s4.2.2.17: data buffered behind a zero window
                      // MUST be probed - a lost window-update ACK must not
                      // deadlock the flow. The handshake-completion flush can
-@@ -5476,7 +5521,7 @@
+@@ -5476,7 +5521,7 @@ namespace xtcp {
                                                          Md5Key(), Md5KeyLen(), NULLPTR, 0, NULLPTR, ecn_active_);
                  if (packet.IsEmpty()) {
                      ack_release_pending_flush_packet_allocation_.fetch_add(1, std::memory_order_relaxed);
@@ -389,7 +393,7 @@
                      return;
                  }
                  if (tso_flush) {
-@@ -5534,7 +5579,7 @@
+@@ -5534,7 +5579,7 @@ namespace xtcp {
                  }
                  off += n;
                  if (tso_flush && off < data.size()) {
@@ -398,7 +402,7 @@
                      timers_dirty_.store(true, std::memory_order_relaxed);
                      return;
                  }
-@@ -5546,7 +5591,7 @@
+@@ -5546,7 +5591,7 @@ namespace xtcp {
          }
  
          void TcpConn::MaybeFinishClose(TimePoint now) noexcept {
@@ -407,7 +411,7 @@
                  return;
              }
              // The buffered data drained: send the FIN that Close() deferred.
-@@ -5603,7 +5648,9 @@
+@@ -5603,7 +5648,9 @@ namespace xtcp {
              // so each segment's payload is cloned into an independent pool
              // reference - the checkpoint and the source connection stay
              // valid independently.
@@ -418,7 +422,7 @@
              ckpt.retrans_queue.clear();
              for (const SentSeg& s : retrans_queue_) {
                  SentSeg c;
-@@ -5760,6 +5807,8 @@
+@@ -5760,6 +5807,8 @@ namespace xtcp {
              batch_retrans_ = false;
              last_ack_delayed_ = false;
              pending_send_ = ckpt.pending_send;
@@ -427,7 +431,7 @@
              retrans_queue_.clear();
              // The queue is rebuilt from the checkpoint below; the pipe sums are
              // re-accumulated per restored segment.
-@@ -5815,7 +5864,7 @@
+@@ -5815,7 +5864,7 @@ namespace xtcp {
                  // In-flight segments survived the migration: the RTO must
                  // drive their retransmission on this (possibly new) connection.
                  ArmRetransmit(NowUs());
@@ -436,7 +440,7 @@
                  // Buffered data with nothing in flight: a fresh send window.
                  if (0 == snd_wnd_ && 0 == persist_deadline_) {
                      persist_deadline_ = NowUs() + persist_interval_;
-@@ -6101,7 +6150,7 @@
+@@ -6101,7 +6150,7 @@ namespace xtcp {
                  // these bytes, or they would be queued after the flush and
                  // never sent.
                  snd_nxt_ = iss_ + 1;
@@ -445,7 +449,7 @@
                  timers_dirty_.store(true, std::memory_order_relaxed);
                  SendSegmentPacket(local_, remote_, iss_, 0,
                                    kFlagSyn | (ecn_requested_ ? (kFlagEce | kFlagCwr) : 0),
-@@ -6177,6 +6226,7 @@
+@@ -6177,6 +6226,7 @@ namespace xtcp {
              // the handshake is still in flight - data was never flushed).
              if (TcpState::kSynSent == state_) {
                  pending_send_.clear();
@@ -453,7 +457,7 @@
                  Transition(TcpState::kClosed);
                  NotifyStateChanged();  // the app must see the close
                  return;
-@@ -6189,6 +6239,7 @@
+@@ -6189,6 +6239,7 @@ namespace xtcp {
                  // be dead on arrival: both sides would retransmit for
                  // minutes before converging.
                  pending_send_.clear();
@@ -461,7 +465,7 @@
                  SendSegment(snd_nxt_, rcv_nxt_, kFlagRst | kFlagAck, NULLPTR, 0);
                  Transition(TcpState::kClosed);
                  NotifyStateChanged();  // the app must see the close
-@@ -6197,7 +6248,7 @@
+@@ -6197,7 +6248,7 @@ namespace xtcp {
                  // RFC 793: the FIN must follow all buffered data, so flush
                  // any window-constrained sends first (the FIN's seq then
                  // lands after them on the wire).
@@ -470,7 +474,7 @@
                      FlushPendingSend(NowUs());
                  }
                  // Bug(close): a zero window (or pacing/cwnd limit) can leave
-@@ -6205,7 +6256,7 @@
+@@ -6205,7 +6256,7 @@ namespace xtcp {
                  // them: FinWait1/LastAck never flush pending_send_, so the
                  // data would be silently dropped. Defer the FIN and let
                  // MaybeFinishClose send it once the buffer drains.
@@ -479,7 +483,7 @@
                      SendSegment(snd_nxt_, rcv_nxt_, kFlagFin | kFlagAck, NULLPTR, 0);
                      ++snd_nxt_;
                      Transition(TcpState::kFinWait1);
-@@ -6224,7 +6275,7 @@
+@@ -6224,7 +6275,7 @@ namespace xtcp {
                  }
                  break;
              case TcpState::kCloseWait:
@@ -488,7 +492,7 @@
                      SendSegment(snd_nxt_, rcv_nxt_, kFlagFin | kFlagAck, NULLPTR, 0);
                      ++snd_nxt_;
                      Transition(TcpState::kLastAck);
-@@ -6256,6 +6307,7 @@
+@@ -6256,6 +6307,7 @@ namespace xtcp {
                  return;
              }
              pending_send_.clear();
@@ -496,7 +500,7 @@
              SendSegment(snd_nxt_, rcv_nxt_, kFlagRst | kFlagAck, NULLPTR, 0);
              Transition(TcpState::kClosed);
          }
-@@ -6764,7 +6816,7 @@
+@@ -6764,7 +6816,7 @@ namespace xtcp {
                          // (no probe, RTO only re-arms). Mirror the SendData
                          // arming pattern.
                          if (0 == snd_wnd_ &&
@@ -505,7 +509,7 @@
                              (0 == persist_deadline_ || now < persist_deadline_)) {
                              persist_deadline_ = now + persist_interval_;
                              timers_dirty_.store(true, std::memory_order_relaxed);
-@@ -7312,7 +7364,7 @@
+@@ -7312,7 +7364,7 @@ namespace xtcp {
                          cc_.snd_wnd = snd_wnd_;
                      }
                      OnAckReceived(hdr.ack, hdr.IsEce(), now, NULLPTR);
@@ -514,9 +518,11 @@
                          FlushPendingSend(now);
                      }
                  }
+diff --git a/tests/test_scheduler.cpp b/tests/test_scheduler.cpp
+index 1728fe6..ea84982 100644
 --- a/tests/test_scheduler.cpp
 +++ b/tests/test_scheduler.cpp
-@@ -162,6 +162,26 @@
+@@ -162,6 +162,26 @@ static void TestMigration() {
      conn2.OnSegment(seg, sizeof(seg), 4000);
      CHECK(105 == conn2.SndUna());
      CHECK(0 == conn2.InflightBytes());
