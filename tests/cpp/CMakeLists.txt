@@ -1112,8 +1112,8 @@ openppp2_add_cpp_test(spinlock_test SOURCES
     "${OPENPPP2_ROOT}/ppp/diagnostics/ErrorHandler.cpp"
     "${OPENPPP2_ROOT}/ppp/diagnostics/Telemetry.cpp")
 target_link_libraries(spinlock_test PRIVATE Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
-# This test deliberately saturates eight busy-spinning workers. Run it alone so
-# unrelated CTest jobs cannot turn scheduler contention into a timeout.
+# Keep the bounded contention regression isolated from other CTest jobs;
+# external runner load is handled by cooperative acquisition in the test.
 set_tests_properties(spinlock_test PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
 openppp2_add_cpp_test(asynchronous_write_io_queue_test SOURCES
     asynchronous_write_io_queue_test.cpp
