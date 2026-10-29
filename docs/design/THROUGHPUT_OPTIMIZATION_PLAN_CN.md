@@ -211,6 +211,71 @@ result/qualification pass、零速流为 0，冻结与清理通过。
 
 以上为单轮筛选，不是新默认值的稳定性验收；本次不修改产品 C++、密码套件或 M3 默认值。
 
+#### 2.4.3a 2026-10 重测（main 027b398d 之后）
+
+英文配对记录：[October remeasurement](THROUGHPUT_OPTIMIZATION_PLAN.md)。
+
+2026-10-30 在同一共享实验 VM 重测，main 为
+`18b02f8cab224d214998ef2286c5c29ff1ecf61d`，晚于 `027b398d`，包含 #116、
+#117、#118、#121。Release、`ENABLE_XTCP=ON`、SIMD on，固定 XTCP
+`c1fc9d6b6ead239043d7a7608eaea7e0cb143fe6`，由 `tools/prepare_xtcp.sh`
+准备并应用当前补丁。产品构建 335/335 成功，二进制 SHA-256：
+`e2060fc3016f4db0c7b963110f3eb0a2e29f5c8203a2ffe051cc6ea1c0857d2d`。
+所有编译和测量均在测试机新目录 `/home/ppp-m2/m2-remeasure`，本机没有编译或测试。
+开始时根分区可用 48GB；编译使用指定共享 flock、CPU 0-15、nice 10、12 jobs。
+
+通过 GitHub API 核对 `c232f892` 的原始变更（本机 Git worktree 的 Windows 路径
+无法由当前 Linux Git 解析，Windows Git 互操作也失败，未用其他 gitdir 绕过）。
+复用 #107 的单核 CPU49、native/XTCP、UL/DL × P1/P4/P16、45秒正式区间、
+omit=2秒、AES-256-CFB、KCC、单 shard、memory bridge、GRO=12288、
+gather=65536 / wait=1ms、GSO cap32。snd_buf 显式取当前默认 1MiB，而不是
+#107 的 64KiB。外层私有 net/mount namespace，内层三端 netns；steering on
+只操作私有虚拟设备的 RPS/XPS，禁止物理 IRQ 写入。客户端 PPP 与 iperf 固定
+CPU49。只通过未改动的 `/home/ppp-m2/measure.py` 的 guard/run 调用，保留
+共享构建/测量锁、负载≤4及无其他编译/测量进程检查、磁盘检查和冻结清单。
+
+**一小时目标下采用优先范围，不是完整 #107 矩阵。** 本次 GSO-on 两轮，
+第一轮 native→XTCP，第二轮 XTCP→native；每轮主矩阵之后补 P64 DL。
+未跑 GSO-off，未跑第三轮，因此没有复现原来的 on/off、off/on、on/off 顺序。
+不能据此判断 GSO-off 或完整 G2 门禁已通过。
+
+单位 Mbps；native/XTCP 列为本次两轮算术均值，变化为本次 XTCP 均值相对
+#107 三轮中位数。统计口径与样本量不同，这是描述性比较，不是显著性检验。
+
+| 方向 / P | native 均值 | XTCP 均值 | 第1 / 第2轮 XTCP/native | #107 XTCP | XTCP 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| UL / 1 | 1114.418 | 1227.308 | 1.111 / 1.092 | 1301 | -5.66% |
+| UL / 4 | 1110.741 | 1091.139 | 0.988 / 0.977 | 1177 | -7.29% |
+| UL / 16 | 1084.898 | 997.018 | 0.922 / 0.916 | 1070 | -6.82% |
+| DL / 1 | 1836.234 | 1817.772 | 0.975 / 1.006 | 414 | +339.08% |
+| DL / 4 | 1726.207 | 2120.729 | 1.214 / 1.244 | 1269 | +67.12% |
+| DL / 16 | 1680.812 | 1742.771 | 1.061 / 1.014 | 1528 | +14.06% |
+| DL / 64（补充） | 1332.289 | 1311.644 | 0.944 / 1.038 | — | — |
+
+P64 DL 逐轮 native=1519.588/1144.990、XTCP=1434.484/1188.804 Mbps；
+两轮两栈零速流均为 0，XTCP 最慢流为 8.250/6.002 Mbps。未复现零速流或
+watchdog，但吞吐有明显轮间波动，不能据两轮排除长期饥饿。#107 主表没有
+P64，因此不提供伪造的 P64 同口径历史百分比。
+
+总计 **28/28 result/strict qualification pass、零速流 0**。四组退出状态均为 0，
+runtime_faults 均为空，namespace cleanup 与监控完整性全部通过，前后二进制
+SHA-256 一致。最终根分区可用 47GB。证据统计不包含前面的失败/中断尝试。
+
+主矩阵 24/24 result/strict qualification pass。下行单流差距由约 0.22× 缩小到
+0.975/1.006×，但不是稳定 ≥1.2×；只有 DL P4 两轮均超过 1.2×。
+**观察到 >3% 的退化信号：UL P1/P4/P16 分别 -5.66%/-7.29%/-6.82%。**
+不能宣称无退化；共享 VM、非同期基线及 snd_buf 变化也不允许将这些差异归因于
+某个单独补丁。相较 §2.4.2 的较新历史 XTCP 中位数，上述 UL 均值变化约
+-0.30%/+1.94%/-1.58%；这不撤销相对 #107 的退化记录。
+
+完整证据保存在测试机 `W=/home/ppp-m2/m2-remeasure`：
+`main.tar.gz`、`frozen-source.json`、构建日志、`campaign-priority.py`、
+`ordered-runner.py`、`summary.json` 以及 `runs-priority/` 下的逐格 result、
+qualification、实际 argv、provenance、completed 和 contention 记录。
+初次 steering-off 的资格失败及为切换优先范围而中断的尝试分别保留在
+`runs/`、`runs-qualified/`，不混入结果表。没有更改产品源码、宿主网络设置，
+也没有验证 Windows、移动端或真实节点网络。
+
 #### 2.4.3 P64 UL watchdog：iperf 周期统计阻塞结束计时（2026-10-26）
 
 旧现场根目录 `/home/ppp-m2/runs/poolfix/new-p64-64k-ul-a/` 的
