@@ -276,6 +276,75 @@ qualification、实际 argv、provenance、completed 和 contention 记录。
 `runs/`、`runs-qualified/`，不混入结果表。没有更改产品源码、宿主网络设置，
 也没有验证 Windows、移动端或真实节点网络。
 
+#### UL 同期 A/B（2026-10-30）
+
+**结论：按预设判据判噪声，未确认约 -6% 的真实提交退化；停止二分。**
+A=`c232f892`，B=`18b02f8c`，同期两组 ABBA，共4A+4B，每次仅测
+XTCP UL P1/P16。总体 B/A：P1 **-0.43%**，P16 **+0.28%**；两组均未
+出现 B 低于 A 超过3%，因此不满足“低 >3% 且超过组内波动”的联合判据。
+不能据此归因 #116/#117/#118/#121，也不需要进入 ECN/snd_buf 开关细分。
+
+全部构建和测试仅在测试机新目录 `W=/home/ppp-m2/ul-regress` 完成，
+本机未编译或测试。根分区开始/结束均可用47GB。两版分别用原版本
+`tools/prepare_xtcp.sh` 准备依赖及补丁，Release、XTCP/SIMD on、GCC14.2、
+同一依赖目录；构建命令前缀均为
+`flock /tmp/ppp-m2-build.lock taskset -c 0-15 nice -n 10`，12 jobs，
+两版均335/335成功。二进制 SHA-256：
+
+- A：`06408863be37e5255f2ec02e89876cc83b036fc91bbd9adab8fde7044714fd6a`
+- B：`6416a143a7cefec222bdb7a71f1f77b7198d52e603656d748104ee6802e4ab00`
+
+只调用未改动的 `/home/ppp-m2/measure.py` guard/run；沿用 #124 的 CPU49
+客户端单核、45秒正式区间、omit2秒、KCC、AES-256-CFB、单shard、memory
+bridge、GRO12288、gather65536/wait1ms、GSO cap32、私有设备 steering on。
+**A/B 均显式固定 snd_buf=1MiB**，避免默认值差异混入代码对照；不是重放
+#107 的64KiB配置。每次运行前由 guard 等待负载≤4且无外来构建/测量进程。
+保持外层私有 net/mount namespace、内层三端 netns，不修改宿主网络设置。
+
+单位 Mbps，按实际执行顺序；每格一轮45秒，不以历史数据补样：
+
+| 组 | 顺序 | 版本 | UL P1 | UL P16 |
+| --- | ---: | --- | ---: | ---: |
+| 1 | 1 | A | 1243.698 | 1000.313 |
+| 1 | 2 | B | 1209.219 | 1010.726 |
+| 1 | 3 | B | 1227.335 | 1002.656 |
+| 1 | 4 | A | 1245.252 | 1014.579 |
+| 2 | 1 | A | 1189.057 | 999.603 |
+| 2 | 2 | B | 1224.145 | 1002.611 |
+| 2 | 3 | B | 1226.816 | 1015.952 |
+| 2 | 4 | A | 1230.488 | 1006.114 |
+
+| 范围 / P | A均值 | B均值 | B/A变化 | A / B波动 |
+| --- | ---: | ---: | ---: | ---: |
+| 组1 / 1 | 1244.475 | 1218.277 | -2.11% | 0.12% / 1.49% |
+| 组1 / 16 | 1007.446 | 1006.691 | -0.07% | 1.42% / 0.80% |
+| 组2 / 1 | 1209.772 | 1225.481 | +1.30% | 3.42% / 0.22% |
+| 组2 / 16 | 1002.858 | 1009.281 | +0.64% | 0.65% / 1.32% |
+| 总体 / 1 | 1227.124 | 1221.879 | -0.43% | 4.58% / 1.48% |
+| 总体 / 16 | 1005.152 | 1007.986 | +0.28% | 1.49% / 1.32% |
+
+波动定义为各范围内同版本 `(最大值-最小值)/算术均值`。P1 的组间方向反转，
+A自身总体极差4.58%，说明非同期基线不适合归因。组1 P1差异虽超过该组
+同版本极差，但仅2.11%，仍未达到3%阈值；本记录不是统计等效性证明。
+
+16/16 result及严格qualification pass，零速流0；8次运行退出0，
+runtime_faults为空，cleanup_ok/monitoring_complete均true，前后二进制哈希一致。
+竞争监控未检测到外来构建/测量进程，但这不排除共享VM的其他竞争。
+初次A运行因旧版 `os.path.ismount` 不识别同文件系统bind mount而退出1，
+无有效样本，证据保留在 `runs/group-1/slot-1-A`。外部 `isolated.sh` 仅在
+私有mount namespace中将隔离目录挂tmpfs，使两版原有检查都通过；产品源码
+未改动，失败尝试不混入表格。
+
+证据：`W/{A,B}/src`、`build`、`bin/ppp`、`frozen.json`，
+`prepare-{A,B}.log`、`build-{A,B}.log`、`campaign-qualified.py/.log`、
+`isolated.sh`、`ordered-runner.py`、`summary.py/.json`、`runs/qualified/`。
+后者包含实际argv、逐格result/qualification、provenance、completed及contention。
+Git工作树元数据不可解析；归档只读使用获准的备用gitdir，未向其提交。
+
+建议：当前不回滚或修改任何嫌疑补丁；后续性能变更继续保留同期ABBA门禁。
+若需排除小幅退化，使用独占CPU/主机扩大样本，并另做64KiB/1MiB配置对照。
+本结论不覆盖P4、GSO-off、其他配置/平台，也不证明历史差异完全由哪一种噪声造成。
+
 #### 2.4.3 P64 UL watchdog：iperf 周期统计阻塞结束计时（2026-10-26）
 
 旧现场根目录 `/home/ppp-m2/runs/poolfix/new-p64-64k-ul-a/` 的

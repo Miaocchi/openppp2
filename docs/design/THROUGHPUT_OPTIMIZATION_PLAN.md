@@ -84,3 +84,84 @@ qualifications, actual argv, provenance, completion and contention records in
 interrupted pre-priority attempt remain in `runs/` and `runs-qualified/`,
 excluded from the table. Product sources and host network settings were not
 changed. Windows, mobile platforms and real-node network paths were not tested.
+
+## UL Contemporaneous A/B (2026-10-30)
+
+**Decision: noise under the prescribed rule; the approximately 6% regression
+was not confirmed. Stop without bisection or attribution to a PR.**
+A=`c232f892`, B=`18b02f8c`; two ABBA groups, four runs per version, XTCP UL
+P1/P16 only. Overall B/A is **-0.43% / +0.28%**. Neither group exceeds a 3%
+drop, so the joint rule (>3% drop and larger than within-group variation)
+fails. No evidence justifies blaming #116/#117/#118/#121 or proceeding to
+ECN/send-buffer discrimination.
+
+All builds and measurements ran under the new lab directory
+`W=/home/ppp-m2/ul-regress`; no local builds or tests ran. Root free space
+was 47GB before and after. Each revision used its own `tools/prepare_xtcp.sh`,
+Release, XTCP/SIMD on, GCC14.2 and the same dependency root. Both builds
+completed 335/335 with 12 jobs under
+`flock /tmp/ppp-m2-build.lock taskset -c 0-15 nice -n 10`.
+Binary SHA-256:
+
+- A: `06408863be37e5255f2ec02e89876cc83b036fc91bbd9adab8fde7044714fd6a`
+- B: `6416a143a7cefec222bdb7a71f1f77b7198d52e603656d748104ee6802e4ab00`
+
+The unchanged `/home/ppp-m2/measure.py` guard/run supplied measurement and
+locking. Settings match #124: CPU49 client single-core, 45-second formal
+interval, omit 2 seconds, KCC, AES-256-CFB, one shard, memory bridge,
+GRO12288, gather65536/wait1ms, GSO cap32 and private-device steering on.
+**Both versions explicitly used snd_buf=1MiB**, controlling the default-value
+confound; this is not a replay of #107's 64KiB configuration. Before each run
+the guard waited for load <=4 and no foreign build/measurement processes.
+Private outer net/mount namespaces and inner endpoint netns kept host network
+settings untouched.
+
+Mbps, actual execution order; each cell is one 45-second sample:
+
+| Group | Order | Version | UL P1 | UL P16 |
+| --- | ---: | --- | ---: | ---: |
+| 1 | 1 | A | 1243.698 | 1000.313 |
+| 1 | 2 | B | 1209.219 | 1010.726 |
+| 1 | 3 | B | 1227.335 | 1002.656 |
+| 1 | 4 | A | 1245.252 | 1014.579 |
+| 2 | 1 | A | 1189.057 | 999.603 |
+| 2 | 2 | B | 1224.145 | 1002.611 |
+| 2 | 3 | B | 1226.816 | 1015.952 |
+| 2 | 4 | A | 1230.488 | 1006.114 |
+
+| Scope / P | A Mean | B Mean | B/A Change | A / B Variation |
+| --- | ---: | ---: | ---: | ---: |
+| Group 1 / 1 | 1244.475 | 1218.277 | -2.11% | 0.12% / 1.49% |
+| Group 1 / 16 | 1007.446 | 1006.691 | -0.07% | 1.42% / 0.80% |
+| Group 2 / 1 | 1209.772 | 1225.481 | +1.30% | 3.42% / 0.22% |
+| Group 2 / 16 | 1002.858 | 1009.281 | +0.64% | 0.65% / 1.32% |
+| Overall / 1 | 1227.124 | 1221.879 | -0.43% | 4.58% / 1.48% |
+| Overall / 16 | 1005.152 | 1007.986 | +0.28% | 1.49% / 1.32% |
+
+Variation is `(maximum-minimum)/arithmetic mean` for the same version within
+the stated scope. P1 reverses direction between groups; A itself spans 4.58%
+overall. Group 1 P1 exceeds its within-version ranges but is only 2.11%, below
+the 3% threshold. This is not a statistical equivalence proof.
+
+All 16 result/strict qualification checks passed, with zero zero-rate flows.
+All eight runs exited 0 with empty runtime faults, successful cleanup,
+complete monitoring and unchanged binary hashes. No foreign build/measurement
+processes were detected; other shared-VM contention remains possible.
+The initial A attempt exited 1 without samples because the old
+`os.path.ismount` check misses same-filesystem bind mounts; evidence remains
+in `runs/group-1/slot-1-A`. External `isolated.sh` mounted tmpfs on the
+isolation directory only inside the private mount namespace, allowing both
+unmodified revisions' checks to pass. The failed attempt is excluded.
+
+Evidence: `W/{A,B}/{src,build,bin/ppp,frozen.json}`, prepare/build logs,
+`campaign-qualified.py/.log`, `isolated.sh`, `ordered-runner.py`,
+`summary.py/.json`, and `runs/qualified/` with actual argv, per-cell
+result/qualification, provenance, completion and contention records.
+The broken local worktree metadata required the authorized alternate gitdir
+for read-only archives; no commits were directed there.
+
+Recommendation: do not revert or modify a suspect patch on this evidence.
+Keep contemporaneous ABBA gates for future changes. To exclude smaller
+effects, expand samples on dedicated CPUs/hosts and separately compare
+64KiB/1MiB. P4, GSO-off, other configurations/platforms and the precise
+source of historical noise remain unverified.
