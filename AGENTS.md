@@ -83,9 +83,10 @@ reasons to delete platform code.
 - The current login password is `auth.jwtSecret`. First startup can generate
   and persist that value. Treat the config as secret; never print or commit it.
   API routes use the `/api/v1` prefix.
-- The documented profile Add workflow can submit empty JSON that validation
-  rejects. Supply a valid profile through `PUT /api/v1/profiles/{name}` when
-  investigating this issue; verify current behavior before relying on the workaround.
+- The profile Add workflow submits the current default form as its initial
+  profile. Empty request bodies to profile save/validate endpoints return HTTP
+  400 with an explicit error; `{}` remains invalid because it has no known PPP
+  key.
 
 ## Code Analysis
 
