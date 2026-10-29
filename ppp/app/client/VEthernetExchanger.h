@@ -238,6 +238,7 @@ namespace ppp {
                 struct RuntimeStateSnapshot final {
                     NetworkState network_state = NetworkState_Connecting;
                     ppp::p2p::P2PState p2p_state = ppp::p2p::P2PState::Disabled;
+                    std::string p2p_gate_reason;
                     std::vector<ppp::app::runtime::RuntimePeerSnapshot> peers;
                 };
 
@@ -1143,6 +1144,7 @@ namespace ppp {
                 const ppp::p2p::P2PState                                                configured_p2p_state_;
                 /** @brief Fail-closed P2P capability state published to RuntimeSnapshot. */
                 std::atomic<ppp::p2p::P2PState>                                         p2p_state_{ppp::p2p::P2PState::Disabled};
+                std::atomic<const char*> p2p_gate_reason_{"not-evaluated"};
                 std::atomic<ppp::p2p::P2PPeerPriority>                                 p2p_peer_priority_{ppp::p2p::P2PPeerPriority::IPv6First};
                 std::map<ppp::p2p::P2PId, ppp::p2p::P2PPeerPriority>                    p2p_peer_priorities_;
                 /** @brief Authenticated offer and derived-key owner for the active relay generation. */

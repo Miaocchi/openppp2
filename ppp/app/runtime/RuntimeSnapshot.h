@@ -64,6 +64,7 @@ namespace ppp {
                 std::uint16_t mux_active_links = 0;
                 std::string mux_fallback_reason;
                 ppp::p2p::P2PState p2p_state = ppp::p2p::P2PState::Disabled;
+                std::string p2p_gate_reason;
                 std::vector<RuntimePeerSnapshot> peers;
                 std::string p2p_priority = "ipv6-first";
                 RuntimeTraffic traffic;
