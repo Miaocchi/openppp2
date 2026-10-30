@@ -1,5 +1,9 @@
 # Android P2P v2 audit
 
+> Status: Audit record
+> Type: Platform audit
+> Last verified: 2026-10-30
+
 ## Route and socket protection
 
 Android host-candidate discovery previously used `Socket::GetBestInterfaceIP`,

@@ -1,5 +1,9 @@
 # Android P2P v2 审计
 
+> Status: Audit record
+> Type: Platform audit
+> Last verified: 2026-10-30
+
 ## 路由与保护
 
 原 Android host 候选通过 Socket::GetBestInterfaceIP 获取，其临时 UDP
