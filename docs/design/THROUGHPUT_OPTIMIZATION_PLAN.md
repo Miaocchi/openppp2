@@ -12,6 +12,28 @@ Current pin: c9dd56013842 (2026-10-31), with 33 local patches. PRs #3-#8
 fully absorb 0037-0040 and 0048; 0042/0043/0045/0046 retain local integration
 residuals only. The old pin and measurements below remain historical.
 
+## Single-Flow DL Profile (2026-11-01)
+
+See Chinese section 2.4.5 for the full ranked profile and proposals. Frozen worktree
+HEAD `2b4d720e` (the local `main` ref was stale), independent remote Release build,
+XTCP one shard, P1 DL 30 s: **1708.73 Mbps**, result/qualification PASS.
+The hottest client thread used **99.74% of one CPU**, versus server **71.95%**.
+Client exclusive samples: kernel networking/TUN/syscalls 33.27%, locking 12.84%
+(mainly kernel spin operations, not demonstrated contention), XTCP 11.99%, crypto
+9.16%, identifiable copies/fused copy-checksum 7.95%, other/unresolved 24.79%.
+Server crypto was 67.40%, but the server was not saturated. Prioritize reducing
+client TUN flush/syscall frequency, then XTCP per-segment work; faster server AES
+alone does not establish a single-flow gain. Proposed changes, not implemented,
+have conditional estimates and need separate A/B validation.
+
+Both PPP processes had simultaneous perf record/stat over an approximately 24 s
+window. Hardware cycles/instructions were unsupported; client lost 41 samples and
+10.51% of client samples were unresolved libc. One profiled run, no native pair or
+unprofiled control: neither a throughput regression nor the 1.2x target is proven.
+No local builds/tests or product changes. Shared locks and an explicit idle process
+check prevented concurrent benchmark runs. Evidence is private under
+`build/private/dl-single-flow/`; the dedicated remote build is cleaned afterward.
+
 ## 2026-10 Remeasurement (After Main 027b398d)
 
 Tested main: `18b02f8cab224d214998ef2286c5c29ff1ecf61d`, including #116,
