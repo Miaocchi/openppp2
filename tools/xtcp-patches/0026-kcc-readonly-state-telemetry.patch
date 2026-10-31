@@ -1,8 +1,7 @@
 diff --git a/include/xtcp/cc/cc.h b/include/xtcp/cc/cc.h
-index da58663..24434fa 100644
 --- a/include/xtcp/cc/cc.h
 +++ b/include/xtcp/cc/cc.h
-@@ -92,6 +92,24 @@ namespace xtcp {
+@@ -92,6 +92,24 @@
              UInt32  pacing_edt_us = 0;
          };
  
@@ -27,7 +26,7 @@ index da58663..24434fa 100644
          /**
           * @brief Kernel tcp_rate_skb_delivered delayed-ACK heuristic
           *        (tcp_input.c: pkts_acked==1 && fully_acked && !prior_sacked
-@@ -190,6 +208,7 @@ namespace xtcp {
+@@ -190,6 +208,7 @@
              void (*cong_control)(XtcpConnCc* sk, const RateSample* rs) = NULLPTR;
              UInt32 (*reinit_ssthresh)(XtcpConnCc* sk) = NULLPTR;
              Byte    flags = 0;
@@ -36,7 +35,6 @@ index da58663..24434fa 100644
  
          /**
 diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
-index 80c4b52..e234ef8 100644
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
 @@ -12,6 +12,7 @@
@@ -47,7 +45,7 @@ index 80c4b52..e234ef8 100644
  #include <xtcp/mimt/mimt.h>
  #include <xtcp/core/syncookies.h>
  #include <xtcp/qdisc/qdisc.h>
-@@ -527,6 +528,9 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
+@@ -527,6 +528,9 @@
              out.inflight = it->second->conn->InflightBytes();
              return true;
          }
@@ -58,10 +56,9 @@ index 80c4b52..e234ef8 100644
           * @brief Reads the latest SendData rejection snapshot for a connection.
           * @return True when the connection exists; @a out is zeroed on failure.
 diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
-index 1e2e4f7..6024b70 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -30,6 +30,7 @@ namespace xtcp {
+@@ -30,6 +30,7 @@
          struct XtcpCongestionOps;
          struct RateSample;
          struct AckSample;
@@ -69,7 +66,7 @@ index 1e2e4f7..6024b70 100644
      }
      namespace core {
          /**
-@@ -349,6 +350,7 @@ namespace xtcp {
+@@ -349,6 +350,7 @@
   *         NULLPTR/empty selected the built-in Reno default.
               */
              bool SetCongestionControl(const char* name) noexcept;
@@ -78,10 +75,9 @@ index 1e2e4f7..6024b70 100644
              /**
               * @brief Processes one incoming TCP segment (IP payload).
 diff --git a/plugins/cc_kcc.cpp b/plugins/cc_kcc.cpp
-index 5604db9..9fee4eb 100644
 --- a/plugins/cc_kcc.cpp
 +++ b/plugins/cc_kcc.cpp
-@@ -1164,6 +1164,34 @@ namespace {
+@@ -1260,6 +1260,34 @@
          }
      }
  
@@ -116,7 +112,7 @@ index 5604db9..9fee4eb 100644
      /**
       * @brief Kernel kcc_ssthresh: save the current window for a later undo
       *        and PASS THE CURRENT ssthresh THROUGH (the kernel never lowers
-@@ -1247,6 +1275,7 @@ namespace {
+@@ -1343,6 +1371,7 @@
              KccMain,          /* cong_control */
              NULLPTR,
              0,
@@ -125,10 +121,9 @@ index 5604db9..9fee4eb 100644
          return ops;
      }
 diff --git a/src/core/stack.cpp b/src/core/stack.cpp
-index 8982d87..713c339 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1518,6 +1518,16 @@ namespace xtcp {
+@@ -1520,6 +1520,16 @@
              it->second->conn->LastSendAdmission(out);
      }
  
@@ -146,10 +141,9 @@ index 8982d87..713c339 100644
          core::AckReleaseTelemetrySnapshot total;
          const auto add = [&total](const core::AckReleaseTelemetrySnapshot& value) noexcept {
 diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
-index 5390875..970266e 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -1047,6 +1047,12 @@ namespace xtcp {
+@@ -1061,6 +1061,12 @@
              return true;
          }
  
@@ -163,10 +157,9 @@ index 5390875..970266e 100644
              state_ = next;
              // Closing states must keep being swept: the reclamation pass in
 diff --git a/tests/test_cc_kcc.cpp b/tests/test_cc_kcc.cpp
-index a89acd6..8d2efb4 100644
 --- a/tests/test_cc_kcc.cpp
 +++ b/tests/test_cc_kcc.cpp
-@@ -830,6 +830,13 @@ namespace {
+@@ -830,6 +830,13 @@
          }
          const KccSnapshot s = d.Snap();
          CHECK(static_cast<UInt64>(kFastDelivered / kMss) == s.next_rtt_delivered);

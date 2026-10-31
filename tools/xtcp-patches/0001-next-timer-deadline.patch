@@ -1,12 +1,10 @@
 diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
-index cd768bd..5b128ee 100644
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
-@@ -319,6 +319,26 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
-          * @return Number of timer events fired on that shard.
+@@ -320,6 +320,26 @@
           */
          UInt32 PollAckTimers(UInt32 shard_index) noexcept;
-+        /**
+         /**
 +         * @brief Sentinel returned by NextTimerDeadlineUs() when no timer
 +         *        work is pending anywhere in the stack.
 +         * @note  OPENPPP2 integration patch (tools/xtcp-patches/
@@ -26,14 +24,14 @@ index cd768bd..5b128ee 100644
 +         *        shards with armed timers.
 +         */
 +        UInt64 NextTimerDeadlineUs() noexcept;
-         /**
++        /**
           * @brief Total live connections (all shards).
           */
+         UInt32 ConnectionCount() const noexcept;
 diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
-index e87b761..b849c01 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -374,6 +374,56 @@ namespace xtcp {
+@@ -374,6 +374,56 @@
                  std::lock_guard<std::recursive_mutex> scope(syncobj_);
                  return ack_deadline_;
              }
@@ -91,10 +89,9 @@ index e87b761..b849c01 100644
              /**
               * @brief Enables TCP-MD5 (RFC 2385) with the given key.
 diff --git a/src/core/stack.cpp b/src/core/stack.cpp
-index 60ec249..30c79a4 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1839,6 +1839,42 @@ namespace xtcp {
+@@ -1841,6 +1841,42 @@
          return sent;
      }
  

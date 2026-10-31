@@ -1,8 +1,7 @@
 diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
-index 900cfc6..80c4b52 100644
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
-@@ -539,6 +539,9 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
+@@ -539,6 +539,9 @@
           * @brief Aggregates read-only ACK-release telemetry across live connections.
           */
          core::AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
@@ -13,10 +12,9 @@ index 900cfc6..80c4b52 100644
           * @brief Aggregates read-only super-MSS TSO gate telemetry.
           */
 diff --git a/src/core/stack.cpp b/src/core/stack.cpp
-index 51d0239..8982d87 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1552,6 +1552,19 @@ namespace xtcp {
+@@ -1554,6 +1554,19 @@
          return total;
      }
  
@@ -37,10 +35,9 @@ index 51d0239..8982d87 100644
          core::TsoGateTelemetrySnapshot total;
          const auto add = [&total](const core::TsoGateTelemetrySnapshot& value) noexcept {
 diff --git a/tests/test_pacing_flush.cpp b/tests/test_pacing_flush.cpp
-index 0350c92..5197b1d 100644
 --- a/tests/test_pacing_flush.cpp
 +++ b/tests/test_pacing_flush.cpp
-@@ -159,6 +159,14 @@ static void TestPacingGate() {
+@@ -159,6 +159,14 @@
      constexpr UInt32 kSegPayload = kMss - 12;  // TSopt (12 B) negotiated above
      CHECK(received.size() == kSegPayload);
      const xtcp::core::AckReleaseTelemetrySnapshot telemetry = stack_a.AckReleaseTelemetry();

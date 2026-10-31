@@ -28,7 +28,7 @@ Windows 使用 Wintun L3 数据路径；传统 TapWindows L2 适配器当前不�
 
 ### Windows 数据面与离线验证（2026-10-17）
 
-Windows XTCP 仅支持 x64、Wintun L3 和内部 loopback TCP 桥。当前固定依赖为 `third-party/xtcp` 的 revision `c1fc9d6b6ead239043d7a7608eaea7e0cb143fe6`，归档 SHA256 为 `0c5a5512d6a42344f9626e6122af103a23c38ce2016d64d203d10669065e7bb6`（见 §11.191）。在 VS x64 开发者环境中构建：
+Windows XTCP 仅支持 x64、Wintun L3 和内部 loopback TCP 桥。当前固定依赖为 `third-party/xtcp` 的 revision `c9dd5601384201b396b1b6599c6c868097da5dcf`，归档 SHA256 为 `6a9988d5bf5a039bd9bd0d0c7162e33afc1c60013af10f73abc82d0dc82b2631`（见 §11.192）。在 VS x64 开发者环境中构建：
 
 ```bat
 bash tools/prepare_xtcp.sh
@@ -430,7 +430,7 @@ default-off perf JSON 的 `conn`/`queue`/`direct` 分组另保留 read/write 调
 - `0040-tests-pool-pressure-no-ack-wedge.patch`：新增 `test_pool_pressure`，覆盖 TX 余量、heap overflow 上限与归还，以及 1600 连接保留量超过 arena 时 ACK 仍可分配且全部完成。
 - `0041-tests-sack-gap-and-timestamp-paws.patch`：SACK 丢包测试按带时间戳的 1448 字节 payload cap 对齐，记录所有首次发送区间，避免重传改变丢包节奏；两处丢包直接检查实际重传区间与已观察到的 SACK block。时间戳 OOO 测试从真实握手 TSval 派生合成值，避免 PAWS 丢弃过旧的注入包。
 
-当前共 38 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0037-0048（0036 为已上游的历史编号，不复用）；0042/0043 的逐流饥饿修复和测试见 §11.189。不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
+当前共 33 个补丁，稀疏编号为 0001-0015、0023、0025-0029、0031-0035、0041-0047。0037-0040 和 0048 已全部上游，文件删除；0042、0043、0045、0046 仅保留本地集成残余。0036 等历史空号不复用。不重编号，以保持历史引用。上游已吸收原 0016（PSH tail）、0017（loss-test helper）、0018-0022（KCC）、0024（pool counts）和 0030（dupack 分类），对应本地文件已删除。历史章节中的旧编号、revision、二进制 hash 和测量结果保持原义；本次迁移不引入新的 KCC 策略、pool 大小、bridge 或 GSO 默认值。
 
 ### 时间戳 drain 与 TSan 后续修复（0045-0048）
 
@@ -2865,6 +2865,41 @@ Windows、移动端及 sanitizer 未验证。
 `/home/ppp-m2/ecn-0044-resume-20261029-tZ2hqy/` 重新准备源码并用
 `patch -p1 --fuzz=0` 重放；核对其与受测源码一致。本任务构建目录已清理，
 日志和冻结源码保留；未提交或推送。
+
+### 11.192 固定上游迁移到 c9dd560（2026-10-31）
+
+当前固定 revision 为 `c9dd5601384201b396b1b6599c6c868097da5dcf`，归档
+SHA256 为 `6a9988d5bf5a039bd9bd0d0c7162e33afc1c60013af10f73abc82d0dc82b2631`。
+通过旧 archive + 原始完整补丁栈与新 archive + 重放栈逐文件 diff 核对
+上游 #3-#8 的等价性，而非仅依赖 PR 状态。
+
+| 原编号 | 处理 | 核对结果 |
+|---|---|---|
+| 0037 | 删除 | MSS 按字节立即 ACK 与测试已上游 |
+| 0038 | 删除 | KCC ack aggregation、quantization 与 ref 实现已上游 |
+| 0039/0040 | 删除 | TX reserve、bounded heap overflow 与压力测试已上游 |
+| 0042 | 缩小 | 保留本地 NextTimerDeadlineUs 断言 |
+| 0043 | 缩小 | 保留 pending-send offset 的 waiter 取消与未使用 pacing tick 恢复 |
+| 0045 | 缩小 | 保留本地 ResumeReceive 背压测试分支 |
+| 0046 | 缩小 | 保留本地 ResumeReceive drain 路径的 hole-filler 时间戳锚点 |
+| 0048 | 删除 | TX retry 方向与 shard 测试已上游 |
+
+剩余 33 个补丁。0034/0041 不再修改已被上游取代的时间戳夹具；其余
+补丁重生成到新基线，保留原编号和原意图。0003/0012 的遥测插入与上游
+waiter 逻辑并存；0023/0028 保留上游 pool scope 并接回本地 offset/checksum
+参数。不改变 KCC、pool、bridge 或 GSO 默认设置。
+
+历史章节与其他性能文档中的旧 pin、补丁编号和测量保持历史含义。
+本次证据保存于 `build/private/xtcp-c9dd560-validation/`。
+本机未编译或运行软件测试；测试机操作限于 `/home/ppp-m2/xbump`。
+
+最终重生成栈的 checksum-enabled ctest 连跑三遍均为 246/246；TSan ctest
+246/246；`scripts/run-cpp-tests.sh` 195/195；fault suite 20/20，全部通过。
+编译均使用指定 flock、CPU 0-15 和 nice 10。
+Release 产品构建 335/335 成功，未启动二进制。
+默认配置 A/B 尚未执行：允许的 measure.py 固定 UL、64KiB sndbuf 和旧源码/
+二进制校验，已请求在本任务目录适配的确认；未声称无零速流或退化不超过 3%。
+Git 元数据只读，无法创建 index.lock，修改留在工作区，未提交。
 
 ### 11.191 固定上游迁移到 c1fc9d6（2026-10-29）
 

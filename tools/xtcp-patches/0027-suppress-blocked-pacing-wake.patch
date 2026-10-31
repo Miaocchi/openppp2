@@ -1,8 +1,7 @@
 diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
-index 6024b70..fa7e993 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -557,7 +557,22 @@ namespace xtcp {
+@@ -557,7 +557,22 @@
                      // buffer. Other armed timers (persist/RTO/...) still win
                      // when earlier.
                      if (0 < cc_.pacing_rate && 0 != pacing_deadline_) {
@@ -27,10 +26,9 @@ index 6024b70..fa7e993 100644
                      }
                      return 0;  // buffered sends ride the next sweep
 diff --git a/tests/test_persist.cpp b/tests/test_persist.cpp
-index db89d74..2e292a1 100644
 --- a/tests/test_persist.cpp
 +++ b/tests/test_persist.cpp
-@@ -150,6 +150,29 @@ static void TestZeroWindowProbe() {
+@@ -150,6 +150,29 @@
      CHECK(0 == conn->PendingSendBytes());  // the probe byte is gone too
  }
  
@@ -60,7 +58,7 @@ index db89d74..2e292a1 100644
  static void TestPersistIntervalPreservedAcrossRecovery() {
      // Regression pin for the persist_base_ fix: the user-configured probe
      // interval must survive a window-recovery episode (the three recovery
-@@ -251,6 +274,7 @@ int main() {
+@@ -251,6 +274,7 @@
      xtcp::buf::InitPools();
      CHECK(xtcp::cc::RegisterCongestionControl(kPersistPaced));
      TestZeroWindowProbe();

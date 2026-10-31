@@ -1,8 +1,7 @@
 diff --git a/include/xtcp/cc/cc.h b/include/xtcp/cc/cc.h
-index 24434fa..e45137a 100644
 --- a/include/xtcp/cc/cc.h
 +++ b/include/xtcp/cc/cc.h
-@@ -90,6 +90,9 @@ namespace xtcp {
+@@ -90,6 +90,9 @@
               *         Kernel kcc_packets_in_net_at_edt credits
               *         bw*interval_to_edt to the in-flight count. */
              UInt32  pacing_edt_us = 0;
@@ -13,10 +12,9 @@ index 24434fa..e45137a 100644
  
          /** Read-only KCC model state; bandwidth is Q24 bytes/us. */
 diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
-index 047636f..070e4cb 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -1351,7 +1351,7 @@ namespace xtcp {
+@@ -1351,7 +1351,7 @@
               *        that only advanced SACK/DSACK delivery must report too.
               */
              void EmitRateSample(TimePoint now, UInt32 acked, UInt32 rtt_sample,
@@ -25,7 +23,7 @@ index 047636f..070e4cb 100644
              void RetransmitEarliestMissing(TimePoint now, const TcpOpts* opts) noexcept;
              /**
               * @brief Processes peer data arriving in a closing state
-@@ -1556,6 +1556,8 @@ namespace xtcp {
+@@ -1556,6 +1556,8 @@
              bool        no_sack_permitted_ = false; /**< Suppress SACK-permitted on SYN (RFC 5827 ER / tcp_sack=0 parity) */
              bool        peer_syn_sack_ = false;  /**< Peer's SYN carried SACK-permitted (RFC 2018: both sides must offer) */
              bool        ecn_active_ = false;
@@ -35,10 +33,9 @@ index 047636f..070e4cb 100644
              bool        rcv_blocked_ = false;    /**< App backpressure: advertise window 0 (RFC 1122 s4.2.3.4) */
              TimePoint   ecn_reduce_at_ = 0;  /**< Last ECE-driven cwnd cut (RFC 3168 s6.1.2: once per RTT) */
 diff --git a/plugins/cc_kcc.cpp b/plugins/cc_kcc.cpp
-index 5954b65..8dca6e8 100644
 --- a/plugins/cc_kcc.cpp
 +++ b/plugins/cc_kcc.cpp
-@@ -259,6 +259,12 @@ namespace {
+@@ -259,6 +259,12 @@
          Byte    packet_conservation = 0;
          /** @brief Kernel kcc->prior_cwnd, kept in the CC-private state too. */
          UInt32  prior_cwnd = 0;
@@ -51,7 +48,7 @@ index 5954b65..8dca6e8 100644
          /**
           * @brief ACK-aggregation estimator (Linux tcp_bbr.c
           *        bbr_update_ack_aggregation): max packets ACKed beyond what
-@@ -520,6 +526,9 @@ namespace {
+@@ -520,6 +526,9 @@
          if (0 == bw) {
              bw = static_cast<UInt64>(kBwUnit);
          }
@@ -61,7 +58,7 @@ index 5954b65..8dca6e8 100644
          // Kernel clamps the estimate to U32_MAX (packets/usec<<24) before
          // converting; the byte rate is then bw * mss.
          if (bw > static_cast<UInt64>(kBwSegMax)) {
-@@ -535,7 +544,7 @@ namespace {
+@@ -535,7 +544,7 @@
              const UInt64 bdp_bw = (cwnd_segs * kBwUnit) / rtt;
              const UInt64 boot_rate = HaircutScale(
                  MulShr8(bdp_bw * sk->mss, kHighGain));
@@ -70,7 +67,7 @@ index 5954b65..8dca6e8 100644
                  rate = boot_rate;
              }
          }
-@@ -936,6 +945,52 @@ namespace {
+@@ -936,6 +945,52 @@
          return (aggr < max_aggr) ? aggr : max_aggr;
      }
  
@@ -123,7 +120,7 @@ index 5954b65..8dca6e8 100644
      void KccInit(XtcpConnCc* sk) noexcept {
          KccState* k = Priv(sk);
          if (NULLPTR == k) {
-@@ -982,6 +1037,12 @@ namespace {
+@@ -982,6 +1037,12 @@
          k->prev_ca_state = 0;
          k->packet_conservation = 0;
          k->prior_cwnd = 0;
@@ -136,7 +133,7 @@ index 5954b65..8dca6e8 100644
          k->extra_acked[0] = 0;
          k->extra_acked[1] = 0;
          k->ack_epoch_mstamp_us = 0;
-@@ -1057,6 +1118,7 @@ namespace {
+@@ -1057,6 +1118,7 @@
              k->BwUpdate(bw, k->rtt_cnt);
          }
          k->max_bw = k->BwMax();
@@ -144,7 +141,7 @@ index 5954b65..8dca6e8 100644
          UpdateAckAggregation(k, acked, now_us, round_start, sk->snd_cwnd);
  
          // ---- 2. PROBE_BW cycle phase (before gains) ----
-@@ -1233,6 +1295,9 @@ namespace {
+@@ -1233,6 +1295,9 @@
                  }
              }
          }
@@ -154,7 +151,7 @@ index 5954b65..8dca6e8 100644
          if (cwnd_pkts < static_cast<UInt64>(kCwndMinTarget)) {
              cwnd_pkts = kCwndMinTarget;
          }
-@@ -1422,6 +1487,10 @@ namespace xtcp {
+@@ -1422,6 +1487,10 @@
              snapshot.prev_ca_state = k->prev_ca_state;
              snapshot.prior_cwnd = sk->prior_cwnd;
              snapshot.packet_conservation = k->packet_conservation;
@@ -165,7 +162,7 @@ index 5954b65..8dca6e8 100644
              *out = snapshot;
              return true;
          }
-@@ -1495,4 +1564,4 @@ namespace xtcp {
+@@ -1495,4 +1564,4 @@
              RegisterCongestionControl(KccOps());
          }
      }
@@ -173,10 +170,9 @@ index 5954b65..8dca6e8 100644
 \ No newline at end of file
 +}
 diff --git a/plugins/cc_kcc_probe.h b/plugins/cc_kcc_probe.h
-index fac4da8..c4e6f71 100644
 --- a/plugins/cc_kcc_probe.h
 +++ b/plugins/cc_kcc_probe.h
-@@ -56,6 +56,10 @@ namespace xtcp {
+@@ -56,6 +56,10 @@
              UInt32 prev_ca_state = 0;
              UInt32 prior_cwnd = 0;
              UInt32 packet_conservation = 0;
@@ -188,10 +184,9 @@ index fac4da8..c4e6f71 100644
  
          /**
 diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
-index 1e7d5ba..4b55364 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -1367,7 +1367,12 @@ namespace xtcp {
+@@ -1367,7 +1367,12 @@
           * one implementation so the sampling window rules cannot drift.
           */
          void TcpConn::EmitRateSample(TimePoint now, UInt32 acked, UInt32 rtt_sample,
@@ -205,7 +200,7 @@ index 1e7d5ba..4b55364 100644
              // Kernel tcp_rate_gen (tcp_rate_66.c:123-125) runs on EVERY ACK,
              // cumulative or duplicate, and its FIRST statement clears the
              // app-limited marker:
-@@ -1388,6 +1393,8 @@ namespace xtcp {
+@@ -1388,6 +1393,8 @@
                  last_delivered_ = cc_.delivered;
                  last_delivered_pkts_ = cc_.delivered_pkts;
                  cc::RateSample rs;
@@ -214,7 +209,7 @@ index 1e7d5ba..4b55364 100644
                  rs.acked = acked;
                  rs.delivered = 0;
                  rs.rtt_us = rtt_sample;
-@@ -1429,6 +1436,8 @@ namespace xtcp {
+@@ -1429,6 +1436,8 @@
                      cc_.lost = 0;
                      cc_.lost_pkts = 0;
                      cc::RateSample rs;
@@ -223,7 +218,7 @@ index 1e7d5ba..4b55364 100644
                      rs.acked = acked;
                      rs.delivered = (delivered_delta > 0xFFFFFFFFull)
                          ? 0xFFFFFFFFu
-@@ -3986,7 +3995,7 @@ namespace xtcp {
+@@ -3981,7 +3990,7 @@
                      // as one MSS over the whole interval, starving cwnd).
                      // KCC/BBR consume rs.delivered / rs.interval_us for
                      // bandwidth.
@@ -232,7 +227,7 @@ index 1e7d5ba..4b55364 100644
                      // Reset the pacing deadline ONLY when the CC plugin changed
                      // the rate: a stale deadline from an old (small) rate would
                      // gate sends for minutes. An unconditional reset would let
-@@ -4568,7 +4577,7 @@ namespace xtcp {
+@@ -4563,7 +4572,7 @@
                  // never reported to the CC hook.
                  if (cc_.delivered_pkts > delivered_pkts_at_entry ||
                      cc_.delivered > delivered_bytes_at_entry) {
@@ -241,7 +236,7 @@ index 1e7d5ba..4b55364 100644
                  }
              }
          }
-@@ -5861,6 +5870,8 @@ namespace xtcp {
+@@ -5849,6 +5858,8 @@
              quickack_ = false;
              cwr_pending_ = false;
              ecn_ce_seen_ = false;
@@ -251,7 +246,6 @@ index 1e7d5ba..4b55364 100644
              dsack_pending_ = false;
              dsack_left_ = 0;
 diff --git a/tests/test_ecn_cc.cpp b/tests/test_ecn_cc.cpp
-index d89b8c8..d0a000a 100644
 --- a/tests/test_ecn_cc.cpp
 +++ b/tests/test_ecn_cc.cpp
 @@ -12,6 +12,7 @@
@@ -262,7 +256,7 @@ index d89b8c8..d0a000a 100644
  
  #include <cstdio>
  #include <cstring>
-@@ -124,10 +125,10 @@ struct EcnHarness {
+@@ -124,10 +125,10 @@
      xtcp::core::TcpConn conn;
      xtcp::core::TimePoint now = 1000;
  
@@ -275,7 +269,7 @@ index d89b8c8..d0a000a 100644
          conn.SetSackOk(true);
          conn.SendSyn();
          const std::vector<Byte> synack = Seg(500, 101,
-@@ -158,12 +159,16 @@ struct EcnHarness {
+@@ -158,12 +159,16 @@
  
  static Byte g_ecnState = 0xFF;
  static UInt32 g_ecnCalls = 0;
@@ -294,7 +288,7 @@ index d89b8c8..d0a000a 100644
      ++g_ecnCalls;
  }
  
-@@ -208,13 +213,44 @@ static void TestEcnEntersCwr() {
+@@ -208,13 +213,44 @@
      CHECK(2 == g_ecnState);   // red: 0 (never entered CWR)
  }
  
@@ -343,7 +337,7 @@ index d89b8c8..d0a000a 100644
   */
  //
  // OPENPPP2 patch-stack note (tools/xtcp-patches/0034): upstream asserted
-@@ -225,13 +261,10 @@ static void TestEcnEntersCwr() {
+@@ -225,13 +261,10 @@
  // a plain ACK without ECE, so the old assertion never measured the ECN
  // response. With burst pacing (patch 0005) a full 1 ms quantum leaves per
  // round, the bandwidth model stays fresh and cwnd stays at the BDP target.
@@ -361,7 +355,7 @@ index d89b8c8..d0a000a 100644
  namespace xtcp {
      namespace cc {
          // plugins/cc_kcc_probe.h (test-only seed hook, linked via RegisterKcc).
-@@ -239,14 +272,16 @@ namespace xtcp {
+@@ -239,14 +272,16 @@
      }
  }
  
@@ -381,7 +375,7 @@ index d89b8c8..d0a000a 100644
      h.now += 20000;
      h.Deliver(h.conn.SndNxt(),
                static_cast<UInt16>(xtcp::core::kFlagAck | (ece ? xtcp::core::kFlagEce : 0)));
-@@ -264,7 +299,72 @@ static void TestEcnCutSurvivesSameAck() {
+@@ -264,7 +299,72 @@
      CHECK(before_ece == before_plain);        // seeded twins are identical up to the ECE
      CHECK(0x7FFFFFFFu != ssth_ece);           // the hook ran with a real (DRAIN) threshold
      CHECK(after_ece <= ssth_ece);             // the clamp survives the same ACK
@@ -455,7 +449,7 @@ index d89b8c8..d0a000a 100644
  }
  
  /**
-@@ -376,7 +476,9 @@ static void TestRackDoesNotRecutInCwr() {
+@@ -376,7 +476,9 @@
  int main() {
      xtcp::buf::InitPools();
      TestEcnEntersCwr();
