@@ -430,6 +430,80 @@ fail，与功能无关。
   可显式开 `OPENPPP2_XTCP_SHARDS=2` + `SPSC_INGRESS=1`；queues/workers/DIRECT_SPSC 保持
   opt-in。M3 记为 WS3 完成、验收未达成；baseline P64 零速流需单独排查。
 
+#### 2.4.5 单连接 DL 热点诊断（2026-11-01）
+
+**结论：客户端单线程已饱和；不是“服务端 AES 样本最多，所以先优化服务端 AES”。**
+本次只做分析，没有修改产品代码。冻结本 worktree HEAD
+`2b4d720e16f9534e76c444c9c6e04fef868c0156`（与同时进行的 M3 eval 相同）；
+本地 `main` 引用实际停在 `cb29bed9`，未将其冒充当前 main，也未联网更新引用。
+远端归档副本另建 Git snapshot 仅满足 runner provenance，不能把 snapshot commit 当上游 revision。
+
+**方法与运行边界**：实验主机新目录独立 Release 构建，335/335 完成；
+`flock /tmp/ppp-m2-build.lock taskset -c 0-15 nice -n 10`，最多 `-j16`。
+二进制 SHA-256：`bccef28776c6792d6d6b4ee4a13540fdec7ff4b896466248344e9adb236d256c`。
+没有本机编译或测试。测量同时取得共享 measure/build 锁，运行前 `pgrep -af`
+检查 measure.py、run_m3_isolated、PPP benchmark 和 iperf；确认 idle 后才启动。
+只通过 `tools/run_m3_isolated.sh` 包裹现有 matrix runner，kernel steering off，
+不修改宿主 IRQ、路由、DNS。根分区构建前后均可用 42 GB。
+
+沿用 §2.4.4：XTCP、DL P1、30 s + omit 2 s、KCC、AES-256-CFB、memory bridge on、
+GSO on cap32、gather 65536/1 ms；显式 shards=1、SPSC ingress/direct SPSC=0，
+client-cpuset=36,39,40,46,50，其余产品默认。单格 result/qualification 均 PASS，
+**1708.73 Mbps**，零零速流。没有同期 native 配对、没有无 profiler 对照，不能判定
+相对历史 1801 Mbps 的回归，更不能据此重新验收 1.2×。
+
+客户端/服务端同时 `perf record -e cpu-clock -F 99 --call-graph dwarf,8192 -p PID`，
+并 `perf stat -x, -e task-clock,context-switches,cpu-migrations,cycles,instructions -p PID`。
+采样窗口约 24 s，覆盖正式流量主体而非完整 30 s；以 SIGINT 结束 perf，返回 -2，
+数据正常落盘。正式 30.087 s 的 runner 客户端 task-clock=30.001 s（按正式墙钟为
+0.997 核；perf 自身报告 0.988 核，计时边界不同）。
+采样窗口客户端 task-clock=23.910 s（0.999 核），服务端=17.257 s（0.721 核）。
+`/proc/PID/task/TID/stat` 同窗口差值：最热 client TID 577998 **99.74% 单核**，
+server TID 577988 **71.95%**；tick 线程分别 0.25%/0.17%，其余观测线程为 0。
+因此即使允许 5 CPU，P1 实际仍卡在一个客户端执行线程；不能靠增加 shard 假定单流可分摊。
+
+**互斥叶子样本排名**（各端自身 CPU 时间份额，不是端到端耗时比例；父子调用不重复计数）：
+
+| 类别 | client（2227 样本） | server（1632 样本） |
+| --- | ---: | ---: |
+| syscalls/TUN I/O 与内核网络（不含下面复制、锁） | 33.27% | 19.12% |
+| locking（含内核自旋锁） | 12.84% | 2.39% |
+| XTCP 段处理（不含复制/校验融合） | 11.99% | 0.00% |
+| crypto | 9.16% | 67.40% |
+| copies（含 CopyAndChecksumAvx2 的融合成本） | 7.95% | 5.82% |
+| 其他：分配、调度、协议、未解析 | 24.79% | 5.27% |
+
+client 最大明确叶子：AES decrypt 9.03%、`_raw_spin_unlock_irqrestore` 5.93%、
+`do_syscall_64` 5.84%、`rep_movs_alternative` 5.30%、`_raw_spin_unlock_irq` 4.49%、
+`clear_page_orig` 2.92%、`TcpConn::FlushPendingSend` 2.11%、
+`CopyAndChecksumAvx2` 1.80%、`pthread_mutex_lock` 1.35%。libc 未解析叶子占 10.51%，
+保留在“其他”，没有假定都是 memcpy；复制排名因而是可识别部分而非完整复制成本。
+锁类主要是内核网络唤醒路径；解锁指令采样不证明阻塞或争用，不能宣称应用 mutex 是主瓶颈。
+
+**前三类可行动成本的源码归因与建议**（仅提案；收益均为条件估算，非测量结果）：
+
+| 优先级 / 成本与调用链 | 具体变化提案 | 条件性吞吐收益 / 风险 / 规模 |
+| --- | --- | --- |
+| 1：客户端内核 I/O 与锁合计 46.11%（锁部分不全是内核）。`FlushPendingSend → XtcpNdiBackend::Tx → TunGsoCoalescer::PushInternal/Flush → TapLinux::WriteGsoIov → writev → tun_get_user → TCP → sock_def_readable`；见 `ppp/app/client/xtcp/XtcpNdiBackend.cpp`、`linux/ppp/tap/TapGsoCoalescer.h`、`linux/ppp/tap/TapLinux.cpp` | 先量化每次 writev 的字节/段数及 FlushReason；在 ACK 驱动短批次上减少过早 flush，保留已有 retained-writev；仅在受控批次结束统一 flush，并保留定时器/PSH/关闭边界。不是重新实现已有 GSO 或 retained-writev | 若此组 CPU 减少 20%–35%，Amdahl 约 **1.10–1.19×**；风险高：ACK 延迟、尾延迟、短流/关闭语义、UL 回退；M，约 150–300 行、3–5 天含门禁 |
+| 2：客户端 XTCP 段处理 11.99%，另有融合 copy/checksum 1.80%。`OnSegment/OnAckReceived → FlushPendingSend → EmitOrRetry`；`third-party/xtcp/src/core/tcp_fsm.cpp`、`src/core/stack.cpp`，PPP 接入在 `ppp/app/client/xtcp/XtcpRuntime.cpp` | 先观察 ACK 到发送的批次大小；减少每 MSS 的 BufRef/回调/计时开销，沿用现有大段/GSO 能力，在 FlushPendingSend 中按可用窗口聚合发出；重传和 partial ACK 保留 MSS 语义，不能只加 snd_buf 或 shard | 若这 13.79% 减少 25%–40%，约 **1.04–1.06×**；风险高：拥塞控制、重传、包所有权、池耗尽；M，约 200–400 行及 XTCP 补丁、4–7 天 |
+| 3：客户端 crypto 9.16%；服务端 67.40%。`Transmission_Packet_Read/Encrypt → EVP::DecryptInPlace/EncryptTo → aesni::AES::ProcessTo → aes256_cfb_decrypt/encrypt`；`ppp/transmissions/ITransmission.cpp`、`ppp/cryptography/EVP.cpp`、`common/aesni/impl/simd_aes_256_cfb.cpp` | 客户端已有 4-block 并行 CFB 解密，可比较 8-block 交错及更大帧的尾部摊销；不要重复推荐已实现的原地解密、EncryptTo、密钥调度缓存。CFB 加密块间串行，服务端若研究跨独立帧流水线，必须保持帧序与各帧重置语义；不把更换密码套件当兼容性无损优化 | 客户端 crypto 减少 20%–40% 仅 **1.02–1.04×**；全部消除也仅约 1.10×。风险中：原地重叠、尾块、CPU feature dispatch；S，约 80–150 行、1–2 天。仅优化服务端不能保证当前 P1 增益 |
+
+1.2× 需要饱和客户端每字节 CPU 至少减少 16.7%；不能把上表重叠路径收益直接相加。
+优先做 #1 的批次/flush 计数，再同输入开关 A/B；#2 配合才能更可能跨过目标。
+若客户端提高 20%，按线性外推服务端线程约 86% 单核，仍有余量，但这不是容量保证。
+下一步两项：① 无采样 native/XTCP 交错复测 P1，确定 profiler 开销；② 增加
+writev/flush 诊断再做单因素批次实验，同时跑半关闭、重传、短流及 UL 回归门禁。
+
+**证据与限制**：本地私有目录 `build/private/dl-single-flow/` 保存二进制、构建日志、
+`profile.py`/`analyze.py`、perf.data、调用图文本、分类 JSON、线程快照、matrix 结果及失败日志；
+不提交原始数据或配置。首次归档缺 Git 元数据，runner 在 PPP 启动前报 Git exit 129，
+不计入有效运行。解析时禁用 inline addr2line 后成功；旧 perf 不支持
+`perf script --no-call-graph`，改用 `-G`，空分类中间结果不作为证据。
+client perf report 报 41 lost samples，分类是保留样本估计；硬件 cycles/instructions 不支持，
+没有 IPC、cache miss 或 off-CPU 锁等待结论。共享虚机、单轮、部分 libc 符号缺失，
+CPU 边界另提示 other-CPU NET_RX/NET_TX，内核成本不是整个系统网络 CPU 总量。
+未验证实网、Windows/mobile、1.2× 收益或任何产品优化效果。远端本次专用构建目录在证据取回后清理。
+
 ### 2.5 文档与代码不一致
 
 XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时默认尝试"，但
