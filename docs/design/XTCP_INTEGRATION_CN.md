@@ -2897,9 +2897,116 @@ waiter 逻辑并存；0023/0028 保留上游 pool scope 并接回本地 offset/c
 246/246；`scripts/run-cpp-tests.sh` 195/195；fault suite 20/20，全部通过。
 编译均使用指定 flock、CPU 0-15 和 nice 10。
 Release 产品构建 335/335 成功，未启动二进制。
-默认配置 A/B 尚未执行：允许的 measure.py 固定 UL、64KiB sndbuf 和旧源码/
-二进制校验，已请求在本任务目录适配的确认；未声称无零速流或退化不超过 3%。
-Git 元数据只读，无法创建 index.lock，修改留在工作区，未提交。
+下述 2026-11-01 UL A/B 补测取代此前等待适配确认的状态；DL 仍未验证。
+修改留在工作区，未提交或推送。
+
+#### UL 吞吐 A/B 补测（2026-11-01）
+
+A 为 main `a9cc7765`（xtcp c1fc9d6 + 38 补丁），B 为 main
+`2b4d720e16f9534e76c444c9c6e04fef868c0156`（xtcp c9dd560 + 33 补丁）。
+测试机全新目录 `/home/ppp-m2/ab128-20261101/{A,B}` 分别构建真实提交，
+Release、CMake 默认功能配置（含 SIMD ON），复用已配置的
+`/home/ppp-m2/deps`。均 335/335 成功，使用指定构建锁、CPU 0-15、
+nice 10、最大 -j16；本机没有编译或软件测试，根盘始终至少剩余 42 GB。
+
+经批准仅导入原 `/home/ppp-m2/measure.py`，重绑定 ROOT/BIN/OUT 与对应
+源码清单和校验元数据，调用未改动的 `run()`。控制器前后 SHA256 均为
+`33776f7465797e67b39144263b6a8d2af819b3df58e7536f745626e442264d9b`。
+驱动固定 UL、64KiB xtcp sndbuf；P1/P16/P64、native 后 xtcp，
+client-single-core 使用既存 cpu-choice 的 CPU49，10 秒测量、omit 2 秒，
+AES-256-CFB、GSO on/32 segments、单 shard、KCC、memory bridge、
+GRO=12288、gather=61440，均保持驱动默认值。这不是任意运行时默认配置
+或 DL 的测试。通过仓库既有
+`B/tools/run_m3_isolated.sh --run-dir TASK -- python3 TASK/wrapper.py`
+启动，外层 taskset 0-15、nice 10；驱动自行设置 client affinity 并持有
+测量/构建锁。未修改主机路由、DNS 或其他进程。
+
+完成两轮 ABBA，每格每版本四个有效样本。表中各版本按出现时间排序：
+第一轮第一次/第二次，第二轮第一次/第二次；delta 使用未舍入的中位数。
+原计划第三轮因约一小时时间预算在空闲等待阶段结束，未启动流量。
+下方包装器保留原文 range(1, 4)，不代表完成三轮。
+
+| Stack / P | A runs (Mbps) | B runs (Mbps) | Median A | Median B | B/A - 1 | Range/median A; B |
+|---|---|---|---:|---:|---:|---:|
+| xtcp / 1 | 1101.63, 1072.12, 1062.91, 1074.33 | 1023.67, 1102.54, 1081.04, 1083.60 | 1073.22 | 1082.32 | +0.85% | 3.61%; 7.29% |
+| xtcp / 16 | 984.45, 980.93, 974.66, 980.25 | 974.30, 994.46, 961.40, 966.78 | 980.59 | 970.54 | -1.03% | 1.00%; 3.41% |
+| xtcp / 64 | 874.78, 783.45, 837.81, 854.17 | 835.88, 778.53, 865.10, 861.45 | 845.99 | 848.66 | +0.32% | 10.79%; 10.20% |
+| native / 1 | 1104.33, 1087.31, 1096.22, 1100.69 | 1076.16, 1111.93, 1112.89, 1103.61 | 1098.45 | 1107.77 | +0.85% | 1.55%; 3.32% |
+| native / 16 | 1066.16, 1079.62, 1083.66, 1076.25 | 1095.38, 1066.82, 1065.01, 1093.23 | 1077.94 | 1080.02 | +0.19% | 1.62%; 2.81% |
+| native / 64 | 936.28, 916.72, 878.67, 915.86 | 896.85, 877.22, 883.32, 903.01 | 916.29 | 890.09 | -2.86% | 6.29%; 2.90% |
+
+48 个有效格全部 qualification pass，零速流数量均为 0；八个有效调用
+exit=0，namespace 列表恢复，二进制哈希不变。剔除并保留三次失败调用：
+A 首次因缺少既有隔离入口失败，第二次因 archive 缺 Git provenance
+失败，均未产生吞吐样本；补入真实提交历史后通过。第一轮第二位置 B
+的首次尝试因 native PPP/iperf CPU migration 资格检查失败，零速流为 0，
+重跑 attempt-2 成功。失败调用整次不计入表格。结束时 SIGINT 未终止
+第三轮空闲等待，随后 TERM 仅结束本任务 wrapper；无活跃 runner，
+隔离入口正常清理。
+
+结论：本次 UL 未检出超出运行噪声的明确吞吐变化。xtcp P1/P16/P64
+中位变化为 +0.85%/-1.03%/+0.32%，对应版本内极差/中位数约 1%-11%，
+native 对照亦有波动；不能据此证明等价或保证退化不超过 3%。
+DL、其他 sndbuf、长时间稳定性和其他平台未覆盖。
+A binary SHA256：
+`c93c36ec4a1bf57c6efbc1cfa10a6f14e11666f800b0fbfea07d5ba0efb078cf`；
+B：`a3497b27472000ff6cb8c55ac883f7115b44aad2ce347bd2dcc45cd06146257c`。
+私有证据 `build/private/xtcp-c9dd560-ab/{evidence.tar.gz,summary.txt}`
+含包装器原文、日志、逐格结果、资格检查与 completion/provenance；不是公开夹具。
+取回证据后已清理本任务远端构建及源码目录。
+
+实际包装器全文（含重试与恢复逻辑）：
+```python
+import hashlib
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, '/home/ppp-m2')
+import measure as m
+
+TASK = Path(__file__).resolve().parent
+original_verify = m.verify
+
+def verify():
+    metadata = json.loads((m.ROOT / 'ab-manifest.json').read_text())
+    for name, digest in metadata['files'].items():
+        assert m.sha(m.ROOT / name) == digest, name
+    return dict(metadata, binary_sha256=m.sha(m.BIN),
+                controller_sha256=m.sha(Path(m.__file__)),
+                ordered_runner_sha256=m.sha(m.BASE / 'ordered-runner.py'))
+
+m.verify = verify
+m.OUT = TASK / 'runs'
+cpu = json.loads((m.BASE / 'cpu-choice.json').read_text())['cpu']
+for version in ('A', 'B'):
+    root = TASK / version
+    files = {str(p.relative_to(root)): m.sha(p) for p in root.rglob('*')
+             if p.is_file() and p.name != 'ab-manifest.json' and not any(x in p.relative_to(root).parts
+                                       for x in ('build', 'bin', '.cache', '.git'))}
+    (root / 'ab-manifest.json').write_text(json.dumps(dict(version=version,
+        commit={'A': 'a9cc7765', 'B': '2b4d720e'}[version], files=files)))
+for round_no in range(1, 4):
+    for position, version in enumerate('ABBA', 1):
+        m.ROOT = TASK / version
+        m.BIN = m.ROOT / 'bin/ppp'
+        for attempt in range(1, 4):
+            assert int(m.cmd(['df', '--output=avail', '-BG', '/']).splitlines()[-1].strip().rstrip('G')) >= 20
+            name = f'round-{round_no}/{position}-{version}-attempt-{attempt}'
+            if (m.OUT / name / 'completed.json').exists():
+                previous = json.loads((m.OUT / name / 'completed.json').read_text())
+                if previous['exit'] or previous['runtime_faults']:
+                    continue
+            try:
+                m.run(name, cpu, parallel='1,16,64')
+                break
+            except RuntimeError:
+                completed = m.OUT / name / 'completed.json'
+                if not completed.exists():
+                    raise
+                result = json.loads(completed.read_text())
+                if not result['cleanup_ok'] or not result['runtime_faults'] or attempt == 3:
+                    raise
+```
 
 ### 11.191 固定上游迁移到 c1fc9d6（2026-10-29）
 
