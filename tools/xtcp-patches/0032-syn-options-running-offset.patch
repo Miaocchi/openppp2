@@ -1,8 +1,7 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 9f9933c..94b1e9e 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -191,6 +191,7 @@ if(XTCP_BUILD_TESTS)
+@@ -191,6 +191,7 @@
          test_ooo_capacity
          test_ooo_frontier
          test_options
@@ -11,10 +10,9 @@ index 9f9933c..94b1e9e 100644
          test_syncookies
          test_syncookie_flood
 diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
-index db12d10..e40ac57 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -595,34 +595,45 @@ namespace xtcp {
+@@ -596,34 +596,45 @@
                  t[17] = 0x00;
                  t[18] = 0x00;
                  t[19] = 0x00;  // urgent pointer
@@ -78,9 +76,7 @@ index db12d10..e40ac57 100644
                  // RFC 7323 timestamps (kind 8, len 10): tsval + tsecr. The
                  // option sits after the SYN options (the layout is
 diff --git a/tests/test_syn_option_layout.cpp b/tests/test_syn_option_layout.cpp
-new file mode 100644
-index 0000000..676d266
---- /dev/null
+--- a/tests/test_syn_option_layout.cpp
 +++ b/tests/test_syn_option_layout.cpp
 @@ -0,0 +1,136 @@
 +/**

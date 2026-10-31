@@ -54,8 +54,32 @@ campaign have not been re-run with 0036. See XTCP_INTEGRATION_CN.md §11.186.
 XTCP is opt-in on Windows and Android. Linux desktop retains its current
 default. All platforms use the pinned source in `third-party/xtcp` and the
 same production target settings from the root CMake build (revision
-`c1fc9d6b6ead239043d7a7608eaea7e0cb143fe6`). The verified archive SHA256 is
-`0c5a5512d6a42344f9626e6122af103a23c38ce2016d64d203d10669065e7bb6`.
+`c9dd5601384201b396b1b6599c6c868097da5dcf`). The verified archive SHA256 is
+`6a9988d5bf5a039bd9bd0d0c7162e33afc1c60013af10f73abc82d0dc82b2631`.
+
+### Rebase Onto c9dd560 (2026-10-31)
+
+Upstream PRs #3-#8 absorb the main changes from 0037-0040, 0042-0043,
+0045-0046 and 0048. Fully absorbed patches 0037, 0038, 0039, 0040 and 0048
+are removed. Four smaller integration residuals remain: 0042 preserves the
+local timer-deadline assertion; 0043 preserves pending-send-offset waiter
+cancellation and unused pacing-tick restoration; 0045 preserves receive-resume
+backpressure coverage; 0046 preserves the timestamp anchor across the local
+ResumeReceive drain paths. These paths do not exist in the upstream API.
+0034 and 0041 no longer modify the upstream timestamp fixture, superseded by
+the upstream version and residual 0045. Historical sections below describe
+their original patch stacks and measurements, not the current inventory.
+
+Final rebased-stack validation ran only under `/home/ppp-m2/xbump` on the
+shared lab machine, with the prescribed build lock, CPUs 0-15 and nice 10:
+checksum-enabled ctest passed 246/246 three times; TSan ctest passed 246/246;
+`scripts/run-cpp-tests.sh` passed 195/195; the fault suite passed 20/20.
+The Release product build completed 335/335 steps; the binary was not launched.
+No local compilation or software tests ran. Default-config old/new A/B remains
+unverified: the permitted measurement driver hardcodes UL and a 64 KiB send
+buffer, requiring an approved adapter for this task's default DL/UL matrix.
+No zero-rate-flow or <=3% regression claim is made. Git metadata is read-only,
+so changes remain uncommitted. Evidence: `build/private/xtcp-c9dd560-validation/`.
 
 ### Rebase Onto c1fc9d6 (2026-10-29)
 
@@ -418,9 +442,9 @@ private network/mount namespaces and host kernel steering disabled. Task build
 directories were removed; logs and frozen sources were retained. Windows,
 mobile and sanitizer validation were not performed. No commit or push was made.
 
-The current local series has 38 patches with stable, sparse IDs: 0001-0015,
-0023, 0025-0029, 0031-0035 and 0037-0048 (0035: retry ACK/window construction after
-allocation failure; 0037: byte-based immediate ACK for super-segments; former
+The current local series has 33 patches with stable, sparse IDs: 0001-0015,
+0023, 0025-0029, 0031-0035 and 0041-0047 (0035: retry ACK/window construction after
+allocation failure; 0037-0040 and 0048 are now upstream; former
 0036, SACK blocks fit the option space, is upstream as liulilittle/xtcp#2 and
 its ID is not reused). Upstream absorbs former local 0016 (PSH tail),
 0017 (loss-test helpers), 0018-0022 (KCC), 0024 (pool counts), and 0030

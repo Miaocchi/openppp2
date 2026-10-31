@@ -1,23 +1,7 @@
 diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
-index 4b55364..f8cf45f 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -2389,12 +2389,8 @@ namespace xtcp {
-                     }
-                     const UInt32 prev_drain = rcv_nxt_;
-                     rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback
--                    // RFC 7323: the drained segment is now in-order - its
--                    // TSval advances TsRecent (the PAWS anchor).
--                    if (0 != seg.ts_val) {
--                        ts_recent_ = seg.ts_val;
--                            ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
--                    }
-+                    // RFC 7323 4.3(C): retain the hole-filler's timestamp.
-+                    // Cached OOO data was validated at arrival, not at drain.
-                     if (recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
-                         if (TcpState::kClosed == state_) return false;
-                         // Backpressure: retain the SACKed segment and stop
-@@ -6104,10 +6100,6 @@ namespace xtcp {
+@@ -6092,10 +6092,6 @@
                      pending_frontier_ = std::move(segment);
                      return ReceiveResumeResult::kReceiveWindowFull;
                  }
@@ -28,7 +12,7 @@ index 4b55364..f8cf45f 100644
                  if (segment->fin) {
                      ++rcv_nxt_;
                      if (TcpState::kEstablished == state_) {
-@@ -6168,10 +6160,6 @@ namespace xtcp {
+@@ -6156,10 +6152,6 @@
                      ooo_bytes_ += bytes;
                      break;
                  }
@@ -39,56 +23,3 @@ index 4b55364..f8cf45f 100644
                  if (fin) {
                      ++rcv_nxt_;
                      if (TcpState::kEstablished == state_) {
-@@ -6490,7 +6478,7 @@ namespace xtcp {
-             // every consumer already treats as "no options".
-             TcpOpts opts;
-             const bool opts_parsed = ParseTcpOpts(data, len, hdr.hdr_len, opts);
--            if (timestamps_ok_ && 0 < payload_len && opts_parsed && opts.has_timestamp) {
-+            if (timestamps_ok_ && (0 < payload_len || hdr.IsFin()) && opts_parsed && opts.has_timestamp) {
-                 const bool paws_state = TcpState::kEstablished == state_ ||
-                     TcpState::kFinWait1 == state_ || TcpState::kFinWait2 == state_ ||
-                     TcpState::kClosing == state_ || TcpState::kCloseWait == state_ ||
-@@ -6499,6 +6487,13 @@ namespace xtcp {
-                     kPawsMaxIdleMs > static_cast<UInt32>((now / 1000) - ts_recent_stamp_)) {
-                     return;  // stale: drop (RFC 7323 s5.3 R1; s5.5 relaxes after a 24-day idle)
-                 }
-+                // Anchor on arrival of the frontier segment, including in
-+                // closing states. Never re-anchor while draining cached data
-+                // or resuming delivery after application backpressure.
-+                if (paws_state && hdr.seq == rcv_nxt_ && !hdr.IsRst() && !hdr.IsSyn()) {
-+                    ts_recent_ = opts.ts_val;
-+                    ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
-+                }
-             }
- 
-             // RFC 5961: an RST in a closing state (FIN-WAIT-1/2, CLOSING,
-@@ -6969,13 +6964,6 @@ namespace xtcp {
-                 }
-                 if (payload_len > 0 || hdr.IsFin()) {
-                     if (hdr.seq == rcv_nxt_) {
--                        // RFC 7323: TsRecent = the TSval of the accepted
--                        // in-order segment (the PAWS anchor + the tsecr
--                        // source for our ACKs).
--                        if (timestamps_ok_ && opts_parsed && opts.has_timestamp) {
--                            ts_recent_ = opts.ts_val;
--                            ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
--                        }
-                         // RFC 793 urgent data (SO_OOBINLINE): the URG flag
-                         // marks the segment - the app is notified once, the
-                         // urgent bytes ride the normal stream.
-@@ -7052,13 +7040,8 @@ namespace xtcp {
-                             const OutSeg& seg = it->second;
-                             const UInt32 prev_drain = rcv_nxt_;
-                             rcv_nxt_ += static_cast<UInt32>(seg.data.size());  // advance before callback (piggyback ACK)
--                            // RFC 7323: the drained segment is now in-order -
--                            // its TSval advances TsRecent (the PAWS anchor),
--                            // mirroring the closing-state drain path.
--                            if (0 != seg.ts_val) {
--                                ts_recent_ = seg.ts_val;
--                                ts_recent_stamp_ = static_cast<UInt32>((now / 1000) & 0xFFFFFFFF);
--                            }
-+                            // Keep the timestamp of the segment filling the
-+                            // hole (RFC 7323 4.3(C)), not this cached TSval.
-                             if (!seg.data.empty() && recv_cb_ && !recv_cb_(seg.data.data(), static_cast<UInt32>(seg.data.size()))) {
-                                 if (TcpState::kClosed == state_) return;
-                                 // Backpressure: retain the SACKed segment and

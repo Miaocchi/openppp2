@@ -1,8 +1,7 @@
 diff --git a/include/xtcp/buf/bufref.h b/include/xtcp/buf/bufref.h
-index b5a15e2..c759b12 100644
 --- a/include/xtcp/buf/bufref.h
 +++ b/include/xtcp/buf/bufref.h
-@@ -31,7 +31,12 @@ namespace xtcp {
+@@ -32,7 +32,12 @@
           */
          constexpr UInt32 kMaxPoolPayload = 32768 - kHeaderBytes;
          /**
@@ -16,7 +15,7 @@ index b5a15e2..c759b12 100644
           */
          struct SegMeta {
              UInt32 gso_size = 0;  /**< Bytes per GSO segment */
-@@ -185,7 +190,7 @@ namespace xtcp {
+@@ -198,7 +203,7 @@
               */
              UInt32 UseCount() const noexcept;
              /**
@@ -26,10 +25,9 @@ index b5a15e2..c759b12 100644
              SegMeta& Meta() noexcept { return meta_; }
              /**
 diff --git a/include/xtcp/ndi.h b/include/xtcp/ndi.h
-index db43575..d21bbe0 100644
 --- a/include/xtcp/ndi.h
 +++ b/include/xtcp/ndi.h
-@@ -29,8 +29,11 @@ namespace xtcp {
+@@ -29,8 +29,11 @@
               *        super-MSS sends straight through when the retransmission
               *        queue is empty, the window/cwnd fit, and the pool's
               *        biggest class holds the super-segment (32KB). The RTO
@@ -43,7 +41,7 @@ index db43575..d21bbe0 100644
               */
              kCapTsoTx       = 0x0002,  /**< Hardware TSO offload on tx */
              /**
-@@ -48,7 +51,10 @@ namespace xtcp {
+@@ -48,7 +51,10 @@
           * @note Ownership is transferable. When `owned` is non-empty the
           *       packet owns a pool buffer (zero-copy rx: the stack adopts it
           *       without copying); otherwise `data` borrows a buffer and the
@@ -56,10 +54,9 @@ index db43575..d21bbe0 100644
          struct Packet {
              Byte*       data     = NULLPTR;  /**< Packet buffer (borrowed or owned.payload) */
 diff --git a/src/core/stack.cpp b/src/core/stack.cpp
-index e35bc0b..4c6b023 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -508,6 +508,7 @@ namespace xtcp {
+@@ -508,6 +508,7 @@
          }
          const UInt16 eth_type = (6 == (packet.Data()[0] >> 4)) ? kIpv6 : kIpv4;
          const UInt16 mss = (NULLPTR != conn->conn) ? conn->conn->PeerMss() : 1460;
@@ -67,7 +64,7 @@ index e35bc0b..4c6b023 100644
          // Defense in depth: a signed connection is never segmented at the tx
          // boundary (GSO rebuilds headers and would strip the MD5 option).
          // The send path already caps signed payloads, but an oversized signed
-@@ -531,6 +532,20 @@ namespace xtcp {
+@@ -531,6 +532,20 @@
              // qdisc (no pacing, no fairness - the qdisc would be dead
              // weight). Such packets fall through to software GSO + SendOne,
              // which enqueue per segment (audit M1).
@@ -89,10 +86,9 @@ index e35bc0b..4c6b023 100644
              out.data = packet.Data();
              out.len = packet.Len();
 diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
-index 25fd17f..28b89df 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -4636,11 +4636,12 @@ namespace xtcp {
+@@ -4646,11 +4646,12 @@
                  // bytes ahead of it, a clean send window, cwnd and pacing
                  // clock, and the pool must hold the super-segment (its max
                  // class is 32KB; anything bigger falls back to buffering).
@@ -111,7 +107,6 @@ index 25fd17f..28b89df 100644
                      inflight + len <= cwnd_bytes &&
                      (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
 diff --git a/tests/test_tso_tx.cpp b/tests/test_tso_tx.cpp
-index eaa329b..585b0da 100644
 --- a/tests/test_tso_tx.cpp
 +++ b/tests/test_tso_tx.cpp
 @@ -13,6 +13,7 @@
@@ -122,7 +117,7 @@ index eaa329b..585b0da 100644
  
  #include <atomic>
  #include <chrono>
-@@ -42,6 +43,8 @@ public:
+@@ -42,6 +43,8 @@
      std::atomic<UInt64> tx_calls{0};
      std::atomic<UInt64> tx_bytes{0};
      std::atomic<bool> reject{false};
@@ -131,7 +126,7 @@ index eaa329b..585b0da 100644
  
      void SetRxHandler(xtcp::ndi::RxHandler handler) noexcept override {
          rx_ = std::move(handler);
-@@ -50,10 +53,12 @@ public:
+@@ -50,10 +53,12 @@
  
      bool Tx(xtcp::ndi::Packet&& packet) noexcept override {
          if (reject.load(std::memory_order_relaxed)) {
@@ -144,7 +139,7 @@ index eaa329b..585b0da 100644
          if (peer_) {
              peer_(std::move(packet));
          }
-@@ -125,6 +130,14 @@ int main() {
+@@ -125,6 +130,14 @@
          }
          CHECK(xtcp::core::TcpState::kEstablished == stack_a.ConnectionState(conn));
  
@@ -159,7 +154,7 @@ index eaa329b..585b0da 100644
          // Grow the congestion window first (slow start needs a few ACK
          // rounds before the cwnd admits a super-segment), then send the
          // pool's largest zero-copy super-segment (32712 = the 32KB class
-@@ -168,6 +181,9 @@ int main() {
+@@ -168,6 +181,9 @@
          // itself is a single call, never the ~22 MSS-sized GSO segments).
          const UInt64 tso_calls = backend_a.tx_calls.load() - calls_before;
          CHECK(1 == tso_calls);
@@ -169,7 +164,7 @@ index eaa329b..585b0da 100644
          // Reap the super-segment's ACK (the delayed-ACK fires on a 40ms
          // timer) so the next super-send finds an empty retransmission queue.
          for (UInt32 i = 0; i < 500 && 0 < stack_a.ConnOutstandingSegments(conn); ++i) {
-@@ -206,6 +222,9 @@ int main() {
+@@ -206,6 +222,9 @@
          }
          CHECK(kTotal == sent);
          CHECK(0 == backend_a.tx_calls.load() - calls_before2);  // nothing accepted while closed
@@ -179,7 +174,7 @@ index eaa329b..585b0da 100644
          backend_a.reject.store(false);
          const UInt64 target = 2 * kTotal + 15 * 1024;
          for (UInt32 i = 0; i < 500 && b_recv.load() < target; ++i) {
-@@ -215,6 +234,9 @@ int main() {
+@@ -215,6 +234,9 @@
          // The drained super-segment was ONE deferred packet, re-emitted as
          // one Tx call (the retry queue holds it whole).
          CHECK(1 == backend_a.tx_calls.load() - calls_before2);

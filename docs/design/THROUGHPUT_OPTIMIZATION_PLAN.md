@@ -8,6 +8,10 @@ Chinese plan and historical results:
 [THROUGHPUT_OPTIMIZATION_PLAN_CN.md](THROUGHPUT_OPTIMIZATION_PLAN_CN.md), section 2.4.3a.
 This companion covers the October remeasurement, not the entire historical plan.
 
+Current pin: c9dd56013842 (2026-10-31), with 33 local patches. PRs #3-#8
+fully absorb 0037-0040 and 0048; 0042/0043/0045/0046 retain local integration
+residuals only. The old pin and measurements below remain historical.
+
 ## 2026-10 Remeasurement (After Main 027b398d)
 
 Tested main: `18b02f8cab224d214998ef2286c5c29ff1ecf61d`, including #116,

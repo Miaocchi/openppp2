@@ -1,8 +1,7 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 3fc60b7..44da76c 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -122,6 +122,7 @@ if(XTCP_BUILD_TESTS)
+@@ -122,6 +122,7 @@
          test_ts_paws
          test_ts_wrap
          test_ts_both_sides
@@ -11,10 +10,9 @@ index 3fc60b7..44da76c 100644
          test_urgent
          test_conn_info
 diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
-index 59e9f28..43b6b06 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
-@@ -524,6 +524,20 @@ namespace xtcp {
+@@ -524,6 +524,20 @@
                  cc_.mss = mss;
              }
              UInt16 PeerMss() const noexcept { return peer_mss_; }
@@ -35,7 +33,7 @@ index 59e9f28..43b6b06 100644
              /** @brief TCP_MAXSEG ceiling (Linux semantics); 0 = unset. */
              void SetUserMss(UInt32 mss) noexcept { user_mss_ = mss; }
              UInt32 UserMss() const noexcept { return user_mss_; }
-@@ -556,7 +570,7 @@ namespace xtcp {
+@@ -556,7 +570,7 @@
                      }
                      peer_mss_ = static_cast<UInt16>(new_mss);
                      cc_.mss = peer_mss_;
@@ -44,7 +42,7 @@ index 59e9f28..43b6b06 100644
                      mtu_probe_deadline_ = MtuNowUs() + mtu_probe_interval_;
                      timers_dirty_.store(true, std::memory_order_relaxed);
                  }
-@@ -1158,7 +1172,7 @@ namespace xtcp {
+@@ -1158,7 +1172,7 @@
              void UpdateRto(UInt32 sample_us) noexcept;
              void ArmRetransmit(TimePoint now, UInt32 interval_us = 0) noexcept;
              void RetransmitFront(TimePoint now, bool fresh_ts = false) noexcept;
@@ -54,10 +52,9 @@ index 59e9f28..43b6b06 100644
              void RackDetectLoss(TimePoint now) noexcept;
              UInt32 PipeBytes() const noexcept;
 diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
-index 092eaa4..5af71ce 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -1650,14 +1650,15 @@ namespace xtcp {
+@@ -1665,14 +1665,15 @@
              }
          }
  
@@ -80,7 +77,7 @@ index 092eaa4..5af71ce 100644
                  return;
              }
              std::deque<SentSeg> resplit;
-@@ -1666,11 +1667,11 @@ namespace xtcp {
+@@ -1681,11 +1682,11 @@
                  retrans_queue_.pop_front();
                  // The pipe sums are rebuilt wholesale at the end of this
                  // function, so no per-segment subtraction is needed here.
@@ -94,7 +91,7 @@ index 092eaa4..5af71ce 100644
                  // stored packet holds IP+TCP headers + payload; rebuild each
                  // chunk as a fresh segment (retries budget is preserved so a
                  // split cannot extend the connection lifetime beyond the
-@@ -1690,11 +1691,6 @@ namespace xtcp {
+@@ -1705,11 +1706,6 @@
                      resplit.push_back(std::move(seg));
                      continue;
                  }
@@ -106,7 +103,7 @@ index 092eaa4..5af71ce 100644
                  const UInt32 avail = orig.Len() - tcp_off;
                  // All-or-nothing per segment: build every chunk first, commit
                  // only when all succeed. A mid-split allocation failure would
-@@ -1710,8 +1706,8 @@ namespace xtcp {
+@@ -1725,8 +1721,8 @@
                          break;
                      }
                      UInt32 chunk = seg.len - off;
@@ -117,7 +114,7 @@ index 092eaa4..5af71ce 100644
                      }
                      if (chunk > avail - off) {
                          chunk = avail - off;
-@@ -4621,14 +4617,11 @@ namespace xtcp {
+@@ -4631,14 +4627,11 @@
              // here cost one extra vDSO call per application send on the
              // pacing path (profile: clock_gettime was the top self item).
              MaybeMarkAppLimited(inflight, now);
@@ -137,7 +134,7 @@ index 092eaa4..5af71ce 100644
              // Send window = min(congestion window, peer window, local quota).
              const UInt64 cwnd_bytes = static_cast<UInt64>(cc_.snd_cwnd) * peer_mss_;
              if (len > payload_cap) {
-@@ -4643,9 +4636,11 @@ namespace xtcp {
+@@ -4653,9 +4646,11 @@
                  // bytes ahead of it, a clean send window, cwnd and pacing
                  // clock, and the pool must hold the super-segment (its max
                  // class is 32KB; anything bigger falls back to buffering).
@@ -152,7 +149,7 @@ index 092eaa4..5af71ce 100644
                      inflight + len <= snd_wnd_ &&
                      inflight + len <= cwnd_bytes &&
                      (0 == cc_.pacing_rate || now >= pacing_deadline_) &&
-@@ -5269,20 +5264,11 @@ namespace xtcp {
+@@ -5290,20 +5285,11 @@
                  if (n > limit - inflight) {
                      n = limit - inflight;
                  }
@@ -179,9 +176,7 @@ index 092eaa4..5af71ce 100644
                  // No Nagle gate here: this is the ACK-driven flush path, and
                  // Nagle (RFC 896) applies only at the application send entry.
 diff --git a/tests/test_rto_timestamp_mtu.cpp b/tests/test_rto_timestamp_mtu.cpp
-new file mode 100644
-index 0000000..b57c871
---- /dev/null
+--- a/tests/test_rto_timestamp_mtu.cpp
 +++ b/tests/test_rto_timestamp_mtu.cpp
 @@ -0,0 +1,255 @@
 +/**
@@ -440,10 +435,9 @@ index 0000000..b57c871
 +    return g_failures == 0 ? 0 : 1;
 +}
 diff --git a/tests/test_tcp_retransmit.cpp b/tests/test_tcp_retransmit.cpp
-index 33f8ab0..dfbbfce 100644
 --- a/tests/test_tcp_retransmit.cpp
 +++ b/tests/test_tcp_retransmit.cpp
-@@ -169,8 +169,12 @@ static void TestSendBufQuota() {
+@@ -169,8 +169,12 @@
  
      Byte data[2048];
      std::memset(data, 0xBB, sizeof(data));

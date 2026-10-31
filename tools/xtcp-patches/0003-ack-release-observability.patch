@@ -1,20 +1,18 @@
 diff --git a/include/xtcp/core/stack.h b/include/xtcp/core/stack.h
-index 4eb11a5..2d88263 100644
 --- a/include/xtcp/core/stack.h
 +++ b/include/xtcp/core/stack.h
-@@ -525,6 +525,10 @@ typedef std::function<bool(UInt64 conn_id, const Byte* data, UInt32 len)> RecvHa
-          */
+@@ -526,6 +526,10 @@
          bool ConnLastSendAdmission(UInt64 conn_id,
                                     core::SendAdmissionSnapshot& out) const noexcept;
-+        /**
+         /**
 +         * @brief Aggregates read-only ACK-release telemetry across live connections.
 +         */
 +        core::AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
-         /**
++        /**
           * @brief Sets the algorithm applied to all new connections.
           * @param name Registered algorithm name; NULLPTR/empty = Reno.
+          */
 diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
-index c2299e8..59e9f28 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
 @@ -14,6 +14,7 @@
@@ -25,11 +23,10 @@ index c2299e8..59e9f28 100644
  #include <deque>
  #include <functional>
  #include <map>
-@@ -147,6 +148,22 @@ namespace xtcp {
-             TimePoint pacing_deadline = 0;
+@@ -148,6 +149,22 @@
          };
  
-+        /**
+         /**
 +         * @brief Cumulative ACK-release telemetry; all fields are observational.
 +         */
 +        struct AckReleaseTelemetrySnapshot {
@@ -45,21 +42,22 @@ index c2299e8..59e9f28 100644
 +            UInt64 pending_flush_packet_allocation = 0;
 +        };
 +
-         /**
++        /**
           * @brief TCP flags (RFC 793).
           */
-@@ -308,6 +325,10 @@ namespace xtcp {
-              * @return True when at least one rejection has been observed.
+         enum TcpFlag : UInt16 {
+@@ -309,6 +326,10 @@
               */
              bool LastSendAdmission(SendAdmissionSnapshot& out) const noexcept;
-+            /**
+             /**
 +             * @brief Copies cumulative ACK-release telemetry.
 +             */
 +            AckReleaseTelemetrySnapshot AckReleaseTelemetry() const noexcept;
-             /**
++            /**
               * @brief Re-sends buffered data after a window update.
               * @param now Monotonic time.
-@@ -1329,6 +1350,16 @@ namespace xtcp {
+              */
+@@ -1330,6 +1351,16 @@
              UInt32      snd_buf_ = kDefaultSndBuf;
              std::vector<Byte> pending_send_;  /**< App data queued while SYN/SYN+ACK is in flight (full client semantics) */
              SendAdmissionSnapshot last_send_admission_;  /**< Updated only by rejected SendData calls. */
@@ -77,10 +75,9 @@ index c2299e8..59e9f28 100644
              TxSink      sink_;
              RecvCallback recv_cb_;
 diff --git a/src/core/stack.cpp b/src/core/stack.cpp
-index 7d4f1d7..03d59ea 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1461,6 +1461,32 @@ namespace xtcp {
+@@ -1463,6 +1463,32 @@
              it->second->conn->LastSendAdmission(out);
      }
  
@@ -114,10 +111,9 @@ index 7d4f1d7..03d59ea 100644
          Shard* shard = ShardOf(conn_id);
          std::lock_guard<std::recursive_mutex> scope(shard->syncobj_);
 diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
-index e195b74..092eaa4 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -3027,6 +3027,7 @@ namespace xtcp {
+@@ -3037,6 +3037,7 @@
              // emit a rate sample too (kernel tcp_rate_gen at :3939).
              const UInt64 delivered_bytes_at_entry = cc_.delivered;
              const UInt64 delivered_pkts_at_entry = cc_.delivered_pkts;
@@ -125,7 +121,7 @@ index e195b74..092eaa4 100644
              // RFC 6675 pipe estimate: track SACKed bytes per queued segment
              // so the recovery path can compute the pipe (bytes actually in
              // the network) instead of using the inflated cwnd. Runs on every
-@@ -3527,6 +3528,8 @@ namespace xtcp {
+@@ -3537,6 +3538,8 @@
                  return;
              }
              if (ack != snd_una_) {
@@ -134,7 +130,7 @@ index e195b74..092eaa4 100644
                  // RFC 3522 Eifel: adjudicate the pending RTO once the ACK
                  // actually covers the retransmitted range (rto_retx_end_), or
                  // once the queue drained (nothing left to judge).
-@@ -4554,6 +4557,23 @@ namespace xtcp {
+@@ -4564,6 +4567,23 @@
              return out.generation != 0;
          }
  
@@ -158,15 +154,15 @@ index e195b74..092eaa4 100644
          bool TcpConn::SendData(const Byte* data, UInt32 len, TimePoint now) noexcept {
              std::lock_guard<std::recursive_mutex> scope(syncobj_);
              const auto reject = [this, len](SendAdmissionReason reason) noexcept {
-@@ -5177,6 +5197,7 @@ namespace xtcp {
-             if (pending_send_.empty() || (TcpState::kEstablished != state_ && TcpState::kCloseWait != state_)) {
-                 return;
-             }
+@@ -5198,6 +5218,7 @@
+                 buf::TxWaiter& waiter;
+                 ~BurstGuard() noexcept { waiter.ReleaseUnused(); }
+             } burst_guard{tx_waiter_};
 +            ack_release_pending_flush_attempts_.fetch_add(1, std::memory_order_relaxed);
              std::vector<Byte> data;
              data.swap(pending_send_);
              for (UInt32 off = 0; off < data.size();) {
-@@ -5185,6 +5206,7 @@ namespace xtcp {
+@@ -5206,6 +5227,7 @@
                  // gates, FlushPendingSend must too - otherwise the ACK clock
                  // flushes the whole buffer in one round).
                  if (0 < cc_.pacing_rate && now < pacing_deadline_) {
@@ -174,7 +170,7 @@ index e195b74..092eaa4 100644
                      pending_send_.assign(data.begin() + off, data.end());
                      return;
                  }
-@@ -5206,6 +5228,8 @@ namespace xtcp {
+@@ -5227,6 +5249,8 @@
                      const UInt64 ssthresh_bytes = static_cast<UInt64>(cc_.snd_ssthresh) * peer_mss_;
                      const UInt64 pipe = PipeBytes();
                      if (pipe >= ssthresh_bytes) {
@@ -183,7 +179,7 @@ index e195b74..092eaa4 100644
                          pending_send_.assign(data.begin() + off, data.end());
                          return;  // pipe full: the ACK clock reopens it
                      }
-@@ -5217,6 +5241,7 @@ namespace xtcp {
+@@ -5238,6 +5262,7 @@
              const UInt32 inflight = snd_nxt_ - snd_una_;
                  if (limit <= inflight) {
                      // Window closed mid-flush: re-queue the remainder.
@@ -191,15 +187,15 @@ index e195b74..092eaa4 100644
                      pending_send_.assign(data.begin() + off, data.end());
                      // RFC 1122 s4.2.2.17: data buffered behind a zero window
                      // MUST be probed - a lost window-update ACK must not
-@@ -5279,6 +5304,7 @@ namespace xtcp {
-                                                         AdvertisedWindow(), rcv_wscale_,
-                                                         Md5Key(), Md5KeyLen(), NULLPTR, 0, NULLPTR, ecn_active_);
+@@ -5305,6 +5330,7 @@
+                 }
                  if (packet.IsEmpty()) {
+                     MarkPoolLimited(inflight);
 +                    ack_release_pending_flush_packet_allocation_.fetch_add(1, std::memory_order_relaxed);
                      pending_send_.insert(pending_send_.begin(), data.begin() + off, data.end());
                      return;
                  }
-@@ -5315,6 +5341,8 @@ namespace xtcp {
+@@ -5341,6 +5367,8 @@
                      first_outstanding_ = now;  // TCP_USER_TIMEOUT anchor (Karn-immune)
                  }
                  if (sink_) {
@@ -209,10 +205,9 @@ index e195b74..092eaa4 100644
                  }
                  // Kernel tcp_packets_in_flight(tp) = packets_out - (sacked_out + lost_out)
 diff --git a/tests/test_pacing_flush.cpp b/tests/test_pacing_flush.cpp
-index b0a28de..102950a 100644
 --- a/tests/test_pacing_flush.cpp
 +++ b/tests/test_pacing_flush.cpp
-@@ -155,6 +155,11 @@ static void TestPacingGate() {
+@@ -155,6 +155,11 @@
  
      // Exactly one MSS may leave under the pacing gate; the rest re-queues.
      CHECK(received.size() == kMss);
@@ -224,7 +219,7 @@ index b0a28de..102950a 100644
      std::fprintf(stderr, "[pacing_flush] gate: one flush emitted %u bytes (expect %u = 1 MSS)\n",
                   (UInt32)received.size(), kMss);
  }
-@@ -208,6 +213,13 @@ static void TestLargeFlushIntegrity() {
+@@ -208,6 +213,13 @@
  
      CHECK(kTotal == received.size());
      CHECK(0 == std::memcmp(received.data(), payload.data(), kTotal));

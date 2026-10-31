@@ -1,8 +1,7 @@
 diff --git a/src/core/stack.cpp b/src/core/stack.cpp
-index 4c6b023..0291d98 100644
 --- a/src/core/stack.cpp
 +++ b/src/core/stack.cpp
-@@ -1346,10 +1346,7 @@ namespace xtcp {
+@@ -1348,10 +1348,7 @@
          if (0 < snd_buf_) {
              entry->conn->SetSndBuf(snd_buf_);
          }
@@ -14,7 +13,7 @@ index 4c6b023..0291d98 100644
          // RFC 7413: reconnections to a known peer carry its cached TFO
          // cookie automatically; a newly learned cookie updates the cache.
          {
-@@ -1383,6 +1380,11 @@ namespace xtcp {
+@@ -1385,6 +1382,11 @@
      void XtcpStack::BindDataPath(UInt64 id, Shard& shard, const core::Endpoint& local,
                                   const core::Endpoint& remote, core::TcpConn& conn,
                                   bool as_accept) noexcept {
@@ -27,10 +26,9 @@ index 4c6b023..0291d98 100644
          // abort, FIN-WAIT-2 timeout) never reached the application - the only
          // handler call sat on the packet path (OnPacket). Route the
 diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
-index 28b89df..3fc968e 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -5290,11 +5290,16 @@ namespace xtcp {
+@@ -5311,11 +5311,16 @@
                  if (n > limit - inflight) {
                      n = limit - inflight;
                  }
@@ -51,7 +49,7 @@ index 28b89df..3fc968e 100644
                  }
                  // A segment may not exceed the remaining pacing budget of the
                  // current tick (the quantum refills to >= payload_cap, so n
-@@ -5302,6 +5307,14 @@ namespace xtcp {
+@@ -5323,6 +5328,14 @@
                  if (0 < cc_.pacing_rate && static_cast<UInt64>(n) > pacing_budget) {
                      n = static_cast<UInt32>(pacing_budget);
                  }
@@ -66,7 +64,7 @@ index 28b89df..3fc968e 100644
                  // No Nagle gate here: this is the ACK-driven flush path, and
                  // Nagle (RFC 896) applies only at the application send entry.
                  // Gating the tail here deadlocks: after a partial ACK leaves
-@@ -5377,6 +5390,11 @@ namespace xtcp {
+@@ -5403,6 +5416,11 @@
                      pacing_budget -= n;
                  }
                  off += n;
@@ -79,10 +77,9 @@ index 28b89df..3fc968e 100644
              // Bug(close): when Close() deferred the FIN because buffered data
              // was window-constrained, this drain is what unlocks it - the FIN
 diff --git a/tests/test_tso_tx.cpp b/tests/test_tso_tx.cpp
-index 585b0da..d95a3df 100644
 --- a/tests/test_tso_tx.cpp
 +++ b/tests/test_tso_tx.cpp
-@@ -42,8 +42,11 @@ public:
+@@ -42,8 +42,11 @@
      xtcp::ndi::RxHandler peer_;
      std::atomic<UInt64> tx_calls{0};
      std::atomic<UInt64> tx_bytes{0};
@@ -94,7 +91,7 @@ index 585b0da..d95a3df 100644
      xtcp::buf::SegMeta rejected_meta{};
  
      void SetRxHandler(xtcp::ndi::RxHandler handler) noexcept override {
-@@ -59,6 +62,13 @@ public:
+@@ -59,6 +62,13 @@
          tx_calls.fetch_add(1, std::memory_order_relaxed);
          tx_bytes.fetch_add(packet.len, std::memory_order_relaxed);
          last_meta = packet.owned.Meta();
@@ -108,7 +105,7 @@ index 585b0da..d95a3df 100644
          if (peer_) {
              peer_(std::move(packet));
          }
-@@ -104,10 +114,21 @@ int main() {
+@@ -104,10 +114,21 @@
              stack_a.OnPacket(std::move(buf));
          };
          std::atomic<UInt64> b_recv{0};
@@ -130,7 +127,7 @@ index 585b0da..d95a3df 100644
  
          auto pump = [&]() {
              stack_a.PollAckTimers();
-@@ -181,9 +202,9 @@ int main() {
+@@ -181,9 +202,9 @@
          // itself is a single call, never the ~22 MSS-sized GSO segments).
          const UInt64 tso_calls = backend_a.tx_calls.load() - calls_before;
          CHECK(1 == tso_calls);
@@ -143,7 +140,7 @@ index 585b0da..d95a3df 100644
          // Reap the super-segment's ACK (the delayed-ACK fires on a 40ms
          // timer) so the next super-send finds an empty retransmission queue.
          for (UInt32 i = 0; i < 500 && 0 < stack_a.ConnOutstandingSegments(conn); ++i) {
-@@ -213,6 +234,7 @@ int main() {
+@@ -213,6 +234,7 @@
          // dropped), then drained when the ring reopens.
          backend_a.reject.store(true);
          const UInt64 calls_before2 = backend_a.tx_calls.load();
@@ -151,7 +148,7 @@ index 585b0da..d95a3df 100644
          sent = 0;
          for (UInt32 i = 0; i < 2000 && sent < kTotal; ++i) {
              if (stack_a.Send(conn, payload.data() + sent, kTotal - sent)) {
-@@ -225,21 +247,90 @@ int main() {
+@@ -225,21 +247,90 @@
          CHECK(1400 == backend_a.rejected_meta.gso_size);
          CHECK(1400 == backend_a.rejected_meta.mss);
          CHECK(24 == backend_a.rejected_meta.segs);
