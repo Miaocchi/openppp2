@@ -35,12 +35,22 @@ public:
     bool Protect(int fd) noexcept override {
         ++calls;
         valid_descriptor = fd >= 0;
+        sockaddr_storage address{};
+        socklen_t size = sizeof(address);
+        if (::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &size) != 0) {
+            unbound = false;
+        } else if (address.ss_family == AF_INET) {
+            unbound = unbound && reinterpret_cast<sockaddr_in*>(&address)->sin_port == 0;
+        } else if (address.ss_family == AF_INET6) {
+            unbound = unbound && reinterpret_cast<sockaddr_in6*>(&address)->sin6_port == 0;
+        }
         return allow;
     }
     bool ready = true;
     bool allow = true;
     std::atomic<unsigned> calls{0};
     bool valid_descriptor = false;
+    bool unbound = true;
 };
 
 std::vector<uint8_t> BindingResponse(const uint8_t* request, const Udp::endpoint& mapped) {
@@ -163,6 +173,21 @@ struct NativeFixture {
 };
 
 } // namespace
+
+BOOST_AUTO_TEST_CASE(route_discovery_is_protected_before_connect_and_fails_closed) {
+    boost::asio::io_context io;
+    auto protector = std::make_shared<RecordingProtector>();
+    const Udp::endpoint destination(boost::asio::ip::address_v4::loopback(), 9);
+    BOOST_CHECK(GetProtectedP2PRouteAddress(io, protector, destination).is_loopback());
+    BOOST_CHECK(protector->unbound);
+    protector->allow = false;
+    BOOST_CHECK(GetProtectedP2PRouteAddress(io, protector, destination).is_unspecified());
+    auto transport = CreateNativeSocketP2PDatagramTransportFactory(protector)->Create(io);
+    protector->allow = true;
+    BOOST_REQUIRE(transport->Start([](P2PDatagramReceiveStatus, const Udp::endpoint&, const uint8_t*, int) {}));
+    BOOST_CHECK(protector->unbound);
+    transport->Close();
+}
 
 BOOST_AUTO_TEST_CASE(stun_probe_and_data_share_one_socket_protected_before_first_send) {
     NativeFixture fixture;

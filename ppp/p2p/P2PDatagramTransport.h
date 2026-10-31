@@ -61,6 +61,11 @@ namespace ppp {
 
         class ISocketProtector;
 
+        boost::asio::ip::address GetProtectedP2PRouteAddress(
+            boost::asio::io_context& context,
+            const std::shared_ptr<ISocketProtector>& protector,
+            const boost::asio::ip::udp::endpoint& destination) noexcept;
+
         std::shared_ptr<IP2PDatagramTransportFactory>
         CreateNativeSocketP2PDatagramTransportFactory(
             const std::shared_ptr<ISocketProtector>& protector) noexcept;

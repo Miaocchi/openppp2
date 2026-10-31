@@ -710,7 +710,7 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
             runtime_lifecycle_.UpdateP2PState(
                 runtime.generation,
                 exchanger_runtime.p2p_state,
-                now);
+                now, exchanger_runtime.p2p_gate_reason);
             runtime_lifecycle_.UpdateP2PPeers(
                 runtime.generation,
                 exchanger_runtime.peers,

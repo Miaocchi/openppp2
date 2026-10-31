@@ -544,6 +544,10 @@ bool                                                                        libo
                 now);
         }
         else {
+            const auto p2p_runtime = exchanger->GetRuntimeState();
+            runtime_lifecycle_.UpdateP2PState(runtime.generation,
+                p2p_runtime.p2p_state, now, p2p_runtime.p2p_gate_reason);
+            runtime_lifecycle_.UpdateP2PPeers(runtime.generation, p2p_runtime.peers, now);
             runtime_lifecycle_.UpdateMuxState(
                 runtime.generation,
                 exchanger->GetMuxRuntimeState(),
