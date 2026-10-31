@@ -34,6 +34,34 @@ No local builds/tests or product changes. Shared locks and an explicit idle proc
 check prevented concurrent benchmark runs. Evidence is private under
 `build/private/dl-single-flow/`; the dedicated remote build is cleaned afterward.
 
+## M3 Linux Default Re-evaluation (2026-11-01)
+
+Keep defaults off. See the Chinese plan section 2.4.6 for the complete method,
+paired native results, limitations and source-path analysis. Main `2b4d720e`,
+XTCP `c9dd560`; remote Release binary SHA-256
+`c3295492703eda17a086cb3c11ff9d58177ee08be41bb60f6f0c605c0f556f23`.
+Two paired 30-second ABBA passes, DL/UL P1/P16/P64, 36 paired cells, all successful.
+No local build/test ran. Shared-host queueing exceeded the approximate hour budget.
+
+XTCP mean Mbps, columns DL P1/P16/P64 then UL P1/P16/P64:
+
+| Configuration | DL P1 | DL P16 | DL P64 | UL P1 | UL P16 | UL P64 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline | 1735.8 | 1754.9 | 1814.7 | 1445.8 | 940.2 | 568.6 |
+| s2+SPSC | 1532.3 | 2195.2 | 2169.9 | 1485.8 | 1399.1 | 911.4 |
+| s2+SPSC+queues+DIRECT_SPSC | 1631.8 | 2187.9 | 2132.9 | 1278.9 | 1193.7 | 1525.7 |
+
+P1 DL still regresses 11.7% / 6.0%; queues also regresses P1 UL 11.5%.
+Baseline P64 DL had zero zero-rate flows in both passes, but minimum flow rates
+were only 0.175/1.223 Mbps. This does not prove starvation permanently fixed.
+Shards move stack work onto dedicated contexts; DL payload blocks are posted to
+the owning strand. Ingress SPSC batches wakeups, while DIRECT_SPSC controls the
+upload queue. Dynamic flow-count switching would require ownership/lifetime
+changes, not a clearly safe small patch, so no product change was implemented.
+Historical soak/correctness/single-core gates were not rerun. Remote build trees
+were cleaned; evidence is retained in `/home/ppp-m2/m3-default-20261101` and local
+ignored `build/private/m3-default-20261101`.
+
 ## 2026-10 Remeasurement (After Main 027b398d)
 
 Tested main: `18b02f8cab224d214998ef2286c5c29ff1ecf61d`, including #116,
