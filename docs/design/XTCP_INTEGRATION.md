@@ -75,11 +75,125 @@ shared lab machine, with the prescribed build lock, CPUs 0-15 and nice 10:
 checksum-enabled ctest passed 246/246 three times; TSan ctest passed 246/246;
 `scripts/run-cpp-tests.sh` passed 195/195; the fault suite passed 20/20.
 The Release product build completed 335/335 steps; the binary was not launched.
-No local compilation or software tests ran. Default-config old/new A/B remains
-unverified: the permitted measurement driver hardcodes UL and a 64 KiB send
-buffer, requiring an approved adapter for this task's default DL/UL matrix.
-No zero-rate-flow or <=3% regression claim is made. Git metadata is read-only,
-so changes remain uncommitted. Evidence: `build/private/xtcp-c9dd560-validation/`.
+No local compilation or software tests ran. The UL A/B follow-up below supersedes
+the earlier pending-adapter status; DL remains unverified.
+Evidence: `build/private/xtcp-c9dd560-validation/`.
+
+#### UL Throughput A/B (2026-11-01)
+
+A = main `a9cc7765` (xtcp c1fc9d6, 38 patches); B = main
+`2b4d720e16f9534e76c444c9c6e04fef868c0156` (xtcp c9dd560, 33 patches).
+Both clean committed trees were built afresh in the lab task directory
+`/home/ppp-m2/ab128-20261101/{A,B}`: Release, default CMake feature options
+(including SIMD ON), provisioned dependencies from `/home/ppp-m2/deps`.
+Each build completed 335/335 actions under
+`flock /tmp/ppp-m2-build.lock taskset -c 0-15 nice -n 10`, maximum -j16.
+No local build or software test ran. Root free space stayed at least 42 GB.
+
+The approved wrapper below imports the original `/home/ppp-m2/measure.py`,
+rebinds ROOT/BIN/OUT and verification metadata only, then calls unchanged
+`run()`. Controller SHA256 before/after:
+`33776f7465797e67b39144263b6a8d2af819b3df58e7536f745626e442264d9b`.
+UL only: 64 KiB xtcp sndbuf, P1/P16/P64, native then xtcp, client-single-core
+CPU49 from the existing cpu-choice, 10 s duration, 2 s omit, AES-256-CFB,
+GSO on/32 segments, one shard, KCC, memory bridge, GRO 12288 and gather 61440.
+These are driver defaults, not an unrestricted default-runtime or DL test.
+The wrapper was invoked through the repository's existing
+`B/tools/run_m3_isolated.sh --run-dir TASK -- python3 TASK/wrapper.py`
+under taskset 0-15 and nice 10. The driver applies its own client affinity
+and measurement/build locks; no host routes, DNS or other processes were changed.
+
+Two complete ABBA rounds yielded four accepted samples per version per cell.
+Within each version the lists below are chronological: round 1 first/second
+appearance, then round 2 first/second appearance. Delta uses unrounded medians.
+The planned third round was stopped while waiting for idle, before any flow,
+to keep the approximately one-hour budget; the wrapper's range(1, 4) is retained
+verbatim, not a claim of three completed rounds.
+
+| Stack / P | A runs (Mbps) | B runs (Mbps) | Median A | Median B | B/A - 1 | Range/median A; B |
+|---|---|---|---:|---:|---:|---:|
+| xtcp / 1 | 1101.63, 1072.12, 1062.91, 1074.33 | 1023.67, 1102.54, 1081.04, 1083.60 | 1073.22 | 1082.32 | +0.85% | 3.61%; 7.29% |
+| xtcp / 16 | 984.45, 980.93, 974.66, 980.25 | 974.30, 994.46, 961.40, 966.78 | 980.59 | 970.54 | -1.03% | 1.00%; 3.41% |
+| xtcp / 64 | 874.78, 783.45, 837.81, 854.17 | 835.88, 778.53, 865.10, 861.45 | 845.99 | 848.66 | +0.32% | 10.79%; 10.20% |
+| native / 1 | 1104.33, 1087.31, 1096.22, 1100.69 | 1076.16, 1111.93, 1112.89, 1103.61 | 1098.45 | 1107.77 | +0.85% | 1.55%; 3.32% |
+| native / 16 | 1066.16, 1079.62, 1083.66, 1076.25 | 1095.38, 1066.82, 1065.01, 1093.23 | 1077.94 | 1080.02 | +0.19% | 1.62%; 2.81% |
+| native / 64 | 936.28, 916.72, 878.67, 915.86 | 896.85, 877.22, 883.32, 903.01 | 916.29 | 890.09 | -2.86% | 6.29%; 2.90% |
+
+All 48 accepted cells passed qualification with zero zero-rate flows.
+Every accepted invocation exited 0, restored namespace listings and retained
+its binary hash. Three excluded invocations were preserved: A attempts 1/2
+failed before traffic (required isolation entry; then missing Git provenance,
+fixed by importing actual commit history); B round-1 position-2 attempt-1
+failed native qualification for PPP/iperf CPU migrations, with zero zero-rate
+flows, and was rerun successfully as attempt-2. No failed invocation contributes
+to the table. SIGINT did not stop the third-round idle wait; TERM ended only
+this wrapper, with no active runner, and the isolation entry cleaned up.
+
+Conclusion: no clear throughput change beyond observed run-to-run noise in
+these UL cells. xtcp changes are +0.85%, -1.03%, +0.32%, versus within-version
+ranges of about 1-11%; native controls also vary. This is not proof of
+equivalence or a guaranteed <=3% regression bound. DL, other send buffers,
+long-duration stability and other platforms were not measured.
+Binary SHA256 A:
+`c93c36ec4a1bf57c6efbc1cfa10a6f14e11666f800b0fbfea07d5ba0efb078cf`;
+B: `a3497b27472000ff6cb8c55ac883f7115b44aad2ce347bd2dcc45cd06146257c`.
+Private evidence: `build/private/xtcp-c9dd560-ab/{evidence.tar.gz,summary.txt}`.
+The evidence archive contains the exact wrapper, logs, raw per-cell results,
+qualifications and completion/provenance records; it is not a public fixture.
+Remote task build/source directories were removed after evidence retrieval.
+
+Approved wrapper, verbatim (including retry/resume handling):
+```python
+import hashlib
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, '/home/ppp-m2')
+import measure as m
+
+TASK = Path(__file__).resolve().parent
+original_verify = m.verify
+
+def verify():
+    metadata = json.loads((m.ROOT / 'ab-manifest.json').read_text())
+    for name, digest in metadata['files'].items():
+        assert m.sha(m.ROOT / name) == digest, name
+    return dict(metadata, binary_sha256=m.sha(m.BIN),
+                controller_sha256=m.sha(Path(m.__file__)),
+                ordered_runner_sha256=m.sha(m.BASE / 'ordered-runner.py'))
+
+m.verify = verify
+m.OUT = TASK / 'runs'
+cpu = json.loads((m.BASE / 'cpu-choice.json').read_text())['cpu']
+for version in ('A', 'B'):
+    root = TASK / version
+    files = {str(p.relative_to(root)): m.sha(p) for p in root.rglob('*')
+             if p.is_file() and p.name != 'ab-manifest.json' and not any(x in p.relative_to(root).parts
+                                       for x in ('build', 'bin', '.cache', '.git'))}
+    (root / 'ab-manifest.json').write_text(json.dumps(dict(version=version,
+        commit={'A': 'a9cc7765', 'B': '2b4d720e'}[version], files=files)))
+for round_no in range(1, 4):
+    for position, version in enumerate('ABBA', 1):
+        m.ROOT = TASK / version
+        m.BIN = m.ROOT / 'bin/ppp'
+        for attempt in range(1, 4):
+            assert int(m.cmd(['df', '--output=avail', '-BG', '/']).splitlines()[-1].strip().rstrip('G')) >= 20
+            name = f'round-{round_no}/{position}-{version}-attempt-{attempt}'
+            if (m.OUT / name / 'completed.json').exists():
+                previous = json.loads((m.OUT / name / 'completed.json').read_text())
+                if previous['exit'] or previous['runtime_faults']:
+                    continue
+            try:
+                m.run(name, cpu, parallel='1,16,64')
+                break
+            except RuntimeError:
+                completed = m.OUT / name / 'completed.json'
+                if not completed.exists():
+                    raise
+                result = json.loads(completed.read_text())
+                if not result['cleanup_ok'] or not result['runtime_faults'] or attempt == 3:
+                    raise
+```
 
 ### Rebase Onto c1fc9d6 (2026-10-29)
 
