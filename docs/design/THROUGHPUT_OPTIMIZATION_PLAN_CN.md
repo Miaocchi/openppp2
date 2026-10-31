@@ -504,6 +504,68 @@ client perf report 报 41 lost samples，分类是保留样本估计；硬件 cy
 CPU 边界另提示 other-CPU NET_RX/NET_TX，内核成本不是整个系统网络 CPU 总量。
 未验证实网、Windows/mobile、1.2× 收益或任何产品优化效果。远端本次专用构建目录在证据取回后清理。
 
+#### 2.4.6 M3 Linux 默认值复评（2026-11-01）
+
+**决定：保持默认关闭。** 当前 main `2b4d720e16f9534e76c444c9c6e04fef868c0156`，
+XTCP `c9dd5601384201b396b1b6599c6c868097da5dcf` 加当前补丁栈。未修改产品代码或默认值。
+远端独立目录 `/home/ppp-m2/m3-default-20261101`，Release 构建 335/335 成功；二进制 SHA-256
+`c3295492703eda17a086cb3c11ff9d58177ee08be41bb60f6f0c605c0f556f23`。
+无本地编译、测试或 PPP 启动。构建经共享 flock、CPU 0–15、nice 10、最多 -j16，
+根分区空闲始终至少 42 GB。等待另一 UL 控制器退出后才测量；排队使总耗时超过原定约一小时。
+
+方法沿用 §2.4.4：client-cpuset `36,39,40,46,50`，queues IO CPUs `39,40`；
+GSO on/cap32、memory bridge on、AES-256-CFB、KCC、默认 snd_buf、GRO 12288、
+gather 65536/1 ms；30 s、omit 2 s，DL/UL × P1/P16/P64。
+两轮配置顺序为 baseline→s2→queues、queues→s2→baseline；每格 native/XTCP，第二轮反序，
+即与历史相同的两轮配对 ABBA，而非每配置额外跑四次。
+每个单元启动前 pgrep 排除其他 measure.py、run_m3_isolated、iperf 和 PPP，
+再经 measure.py 的共享测量/构建锁及负载门禁；实际命令全部在本仓库 run_m3_isolated.sh 内。
+kernel-steering off，没有修改宿主网络设置。
+
+XTCP 两轮算术均值 Mbps（括号为相对 baseline）；native 列依次为 DL P1/P16/P64、UL P1/P16/P64：
+
+| 配置 | DL P1 | DL P16 | DL P64 | UL P1 | UL P16 | UL P64 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline | 1735.8 | 1754.9 | 1814.7 | 1445.8 | 940.2 | 568.6 |
+| s2+SPSC | 1532.3 (-11.7%) | 2195.2 (+25.1%) | 2169.9 (+19.6%) | 1485.8 (+2.8%) | 1399.1 (+48.8%) | 911.4 (+60.3%) |
+| s2+SPSC+queues+DIRECT_SPSC | 1631.8 (-6.0%) | 2187.9 (+24.7%) | 2132.9 (+17.5%) | 1278.9 (-11.5%) | 1193.7 (+27.0%) | 1525.7 (+168.3%) |
+
+- baseline 配对 native：1680.7 / 1535.4 / 1295.3；1320.7 / 1118.0 / 899.3。
+- s2 配对 native：1696.9 / 1540.2 / 1314.6；1310.0 / 1121.0 / 937.9。
+- queues 配对 native：1687.1 / 1540.4 / 1279.9；1299.7 / 1138.9 / 959.4。
+
+P1 DL 原始两轮：baseline 1756.051/1715.471，s2 1533.441/1531.237，
+queues 1618.303/1645.357 Mbps。两轮方向一致，候选均未通过“无 P1 回退”门禁；
+native P1 DL 基本稳定，不能用宿主漂移解释全部差距。queues 仍伴随 P1 UL 回退。
+
+**P64 DL 零速流未复现**：baseline 两轮均为 0，吞吐 1820.490/1808.852 Mbps，
+最慢流 0.175/1.223 Mbps；s2 最慢流 34.009/33.520，queues 33.205/33.205 Mbps。
+多 shard 公平性明显更好，但两次 30 s 不能证明旧故障已永久修复，也不能将变化归因于
+c9dd560 某个补丁。全部 36 个配对单元（72 个 stack 结果）exit 0、status pass、无零速流，
+cleanup_ok=true、无 runtime_faults，binary hash 不变。stats 确认 queues 模式 shard_count=2、
+queue_mode_active=true、direct_spsc_enabled=1。本次未重跑历史正确性/soak/单核门禁，
+没有新增条件策略，因此也没有策略 A/B。
+
+**代码归因与窄方案**：`XtcpRuntime.cpp` 的 Start 路径在 shards>1 时创建专属
+io_context/worker；默认单 shard 复用外部 IO context。
+`OnSecondLegPayload` 对每个 DL 接收数据块做 mutex/预算预留，再 post 到拥有该流的
+shard strand。P1 没有可分摊的并行流，却增加线程交接、唤醒与缓存一致性成本；这是
+源码支持、与结果一致的主要机制解释，不是本次 perf 因果分解。不是每个 TCP segment 都
+唤醒：ingress `PublishIngress`/`DrainSpscIngress` 会批量并合并唤醒（64 包/256 KiB 上限）。
+DIRECT_SPSC 控制 `XtcpDirectUploadQueue`，不能直接消除上述 DL post。
+queues 将 GSO lane 绑定 shard executor，缩短输出交接，但未消除 P1 回退。
+
+“active flows>1 才开 shard”不宜热切换：四元组决定 stack 所有者，flow_generation 高位编码
+shard，还关联 ACK/重传 timer、budget、关闭回调与 TAP lane；第二流到来或退出时迁移会引入
+乱序、双消费者和生命周期风险。可研究会话启动时显式选择单流/多流模式，或新流固定分配到
+IO-thread shard、既有流不迁移；前者需要外部工作负载提示，后者需混合 executor 拓扑、
+同步/预算与回归测试，且首流可能长期成为热点。均非明确安全的约 50 行修复，本次不实现。
+
+证据：远端 `runs-retry/`、`retry.log`、`wrapper.py`、`summarize.py`、`summary.json`、
+`build.log`；本地私有归档 `build/private/m3-default-20261101/`。首批 `runs/` 是归档源码
+缺 Git HEAD 导致 metadata 检查 exit 1 的失败尝试，无吞吐；补齐真实 bundle 后另开
+`runs-retry/`，未覆盖失败记录。结束后清理本任务远端源码/编译目录，保留证据。
+
 ### 2.5 文档与代码不一致
 
 XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时默认尝试"，但
