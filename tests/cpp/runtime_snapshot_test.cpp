@@ -168,6 +168,7 @@ BOOST_AUTO_TEST_CASE(p2p_failure_does_not_change_connected_runtime_phase) {
     runtime::RuntimeSnapshot snapshot;
     snapshot.phase = runtime::RuntimePhase::Connected;
     snapshot.p2p_state = ppp::p2p::P2PState::Failed;
+    snapshot.p2p_gate_reason = "socket-protection-unavailable";
 
     runtime::RuntimeSnapshot decoded;
     BOOST_REQUIRE(runtime::ParseRuntimeSnapshot(
@@ -176,6 +177,7 @@ BOOST_AUTO_TEST_CASE(p2p_failure_does_not_change_connected_runtime_phase) {
         static_cast<int>(decoded.phase) ==
         static_cast<int>(runtime::RuntimePhase::Connected));
     BOOST_TEST(std::string(ppp::p2p::EffectivePath(decoded.p2p_state)) == "relay");
+    BOOST_TEST(decoded.p2p_gate_reason == snapshot.p2p_gate_reason);
 }
 
 BOOST_AUTO_TEST_CASE(valid_contract_fixtures_parse) {

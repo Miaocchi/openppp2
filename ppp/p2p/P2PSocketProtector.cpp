@@ -115,6 +115,18 @@ namespace ppp {
                 return false;
             }
             const unsigned int native_index = static_cast<unsigned int>(interface_index_);
+            if (local.ss_family == AF_UNSPEC) {
+                // Protect now runs before bind; an unbound socket may not
+                // report its family yet, so try IPv4 first and then IPv6.
+                if (::setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &native_index, sizeof(native_index)) == 0) {
+                    return true;
+                }
+#if defined(IPV6_BOUND_IF)
+                return ::setsockopt(fd, IPPROTO_IPV6, IPV6_BOUND_IF, &native_index, sizeof(native_index)) == 0;
+#else
+                return false;
+#endif
+            }
             if (local.ss_family == AF_INET6) {
 #if defined(IPV6_BOUND_IF)
                 return ::setsockopt(

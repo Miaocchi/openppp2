@@ -504,6 +504,7 @@ namespace ppp {
                     transmission->HasAuthenticatedSessionExporter(),
                     protector && protector->IsReady(),
                     ppp::p2p::ProductionAuthenticatedControlV1Ready);
+                p2p_gate_reason_.store(p2p_capability.reason, std::memory_order_relaxed);
                 {
                     std::lock_guard<std::mutex> scope(runtime_state_mutex_);
                     if (!disposed_.load(std::memory_order_acquire)) {
@@ -559,11 +560,10 @@ namespace ppp {
                     candidate_address = bound.address();
 #elif defined(_ANDROID)
                     const auto remote_endpoint = transmission->GetRemoteEndPoint();
-                    if (remote_endpoint.address().is_v4()) {
-                        const uint32_t destination =
-                            IPEndPoint::ToEndPoint(remote_endpoint).GetAddress();
-                        candidate_address = Ipep::ToAddress(
-                            Socket::GetBestInterfaceIP(destination));
+                    if (started && context) {
+                        candidate_address = ppp::p2p::GetProtectedP2PRouteAddress(
+                            *context, protector, boost::asio::ip::udp::endpoint(
+                                remote_endpoint.address(), remote_endpoint.port()));
                     }
 #else
                     underlying = switcher
@@ -2877,6 +2877,7 @@ namespace ppp {
 
             VEthernetExchanger::RuntimeStateSnapshot VEthernetExchanger::GetRuntimeState() const noexcept {
                 RuntimeStateSnapshot snapshot;
+                snapshot.p2p_gate_reason = p2p_gate_reason_.load(std::memory_order_relaxed);
                 snapshot.network_state = network_state_.load(std::memory_order_relaxed);
                 if (disposed_.load(std::memory_order_acquire)) {
                     snapshot.p2p_state = ppp::p2p::P2PState::Disabled;

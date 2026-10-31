@@ -169,6 +169,7 @@ namespace ppp {
                 root["mux_active_links"] = snapshot.mux_active_links;
                 root["mux_fallback_reason"] = detail::ToRuntimeJsonString(snapshot.mux_fallback_reason);
                 root["p2p_state"] = ppp::p2p::ToString(snapshot.p2p_state);
+                root["p2p_gate_reason"] = snapshot.p2p_gate_reason.c_str();
                 root["p2p_priority"] = detail::ToRuntimeJsonString(snapshot.p2p_priority);
                 root["effective_path"] = ppp::p2p::EffectivePath(snapshot.p2p_state);
                 Json::Value peers(Json::arrayValue);
@@ -254,6 +255,8 @@ namespace ppp {
                         std::min<unsigned int>(root["mux_active_links"].asUInt(), UINT16_MAX));
                 }
                 parsed.mux_fallback_reason = detail::RuntimeJsonString(root, "mux_fallback_reason");
+                parsed.p2p_gate_reason = root.isMember("p2p_gate_reason")
+                    ? detail::RuntimeJsonString(root, "p2p_gate_reason") : "";
                 parsed.p2p_state = root.isMember("p2p_state")
                     ? ppp::p2p::ParseP2PState(
                         detail::RuntimeJsonString(root, "p2p_state"))

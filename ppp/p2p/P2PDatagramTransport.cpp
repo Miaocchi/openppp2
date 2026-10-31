@@ -7,6 +7,21 @@
 
 namespace ppp {
     namespace p2p {
+        boost::asio::ip::address GetProtectedP2PRouteAddress(
+                boost::asio::io_context& context,
+                const std::shared_ptr<ISocketProtector>& protector,
+                const boost::asio::ip::udp::endpoint& destination) noexcept {
+            boost::system::error_code ec;
+            boost::asio::ip::udp::socket socket(context);
+            socket.open(destination.protocol(), ec);
+            if (ec || !ProtectP2PSocket(protector, static_cast<int>(socket.native_handle()))) return {};
+            // UDP connect selects a route without sending a packet. Protect first.
+            socket.connect(destination, ec);
+            if (ec) return {};
+            const auto local = socket.local_endpoint(ec);
+            return ec ? boost::asio::ip::address() : local.address();
+        }
+
         namespace {
 
             class NativeSocketP2PDatagramTransport final
@@ -42,11 +57,14 @@ namespace ppp {
                             CloseLocked();
                             return false;
                         }
+                        if (!ProtectP2PSocket(protector_, static_cast<int>(socket_v4_->native_handle()))) {
+                            CloseLocked();
+                            return false;
+                        }
                         socket_v4_->bind(
                             boost::asio::ip::udp::endpoint(
                                 boost::asio::ip::address_v4::any(), 0), ec);
-                        if (ec || !ProtectP2PSocket(
-                                protector_, static_cast<int>(socket_v4_->native_handle()))) {
+                        if (ec) {
                             CloseLocked();
                             return false;
                         }
@@ -60,10 +78,11 @@ namespace ppp {
                         socket_v6_->open(boost::asio::ip::udp::v6(), ec);
                         if (!ec && socket_v6_->is_open()) {
                             socket_v6_->set_option(boost::asio::ip::v6_only(true), ec);
-                            socket_v6_->bind(boost::asio::ip::udp::endpoint(
+                            const bool protected_v6 = !ec && ProtectP2PSocket(protector_,
+                                static_cast<int>(socket_v6_->native_handle()));
+                            if (protected_v6) socket_v6_->bind(boost::asio::ip::udp::endpoint(
                                 boost::asio::ip::address_v6::any(), local_endpoint_.port()), ec);
-                            if (ec || !ProtectP2PSocket(protector_,
-                                static_cast<int>(socket_v6_->native_handle()))) {
+                            if (!protected_v6 || ec) {
                                 boost::system::error_code ignored;
                                 socket_v6_->close(ignored);
                                 socket_v6_.reset();

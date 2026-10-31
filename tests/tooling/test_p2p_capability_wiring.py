@@ -603,7 +603,8 @@ class P2PCapabilityWiringTests(unittest.TestCase):
             exchanger.index("#elif defined(_ANDROID)", exchanger.index("candidate_generation")) :
             exchanger.index("#else", exchanger.index("#elif defined(_ANDROID)", exchanger.index("candidate_generation")))
         ]
-        self.assertIn("Socket::GetBestInterfaceIP", android_candidate)
+        self.assertIn("GetProtectedP2PRouteAddress", android_candidate)
+        self.assertNotIn("Socket::GetBestInterfaceIP", android_candidate)
         self.assertNotIn("GetUnderlyingNetworkInterface", android_candidate)
         iphone_factory = native_transport[native_transport.index("#if defined(_IPHONE)") :]
         self.assertIn("return nullptr", iphone_factory)
