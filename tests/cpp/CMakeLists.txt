@@ -147,6 +147,9 @@ function(openppp2_add_cpp_test target)
     set_tests_properties(${target} PROPERTIES TIMEOUT 120)
 endfunction()
 
+openppp2_add_cpp_test(websocket_buffered_upgrade_test SOURCES websocket_buffered_upgrade_test.cpp)
+target_link_libraries(websocket_buffered_upgrade_test PRIVATE boost_system Threads::Threads)
+
 openppp2_add_cpp_test(xtcp_direct_bridge_policy_test SOURCES xtcp_direct_bridge_policy_test.cpp)
 
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)

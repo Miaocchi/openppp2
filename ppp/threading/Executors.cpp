@@ -604,6 +604,13 @@ namespace ppp
                 ExecutorTable& contexts = Internal->ContextTable;
                 SynchronizedObjectScope scope(Internal->Lock);
 
+                // There is no reliable live-socket/coroutine census. Keep existing
+                // workers until global shutdown rather than orphan pending work.
+                // The application calls this during startup; runtime calls may grow only.
+                if (completionPortThreads < static_cast<int>(contexts.size())) {
+                    return;
+                }
+
                 for (int i = contexts.size(); i < completionPortThreads; i++)
                 {
                     bool bok = Executors_CreateNewThread(allocator);

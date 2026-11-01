@@ -9,6 +9,7 @@
 #include <ppp/IDisposable.h>
 #include <ppp/net/IPEndPoint.h>
 #include <ppp/coroutines/YieldContext.h>
+#include <sstream>
 
 namespace ppp {
     namespace net {
@@ -28,7 +29,7 @@ namespace ppp {
                      */
                     bool                                                        CheckRequestPath(ppp::string& root, const boost::beast::string_view& sw) noexcept;
                     /**
-                     * @brief Extracts client IP address text from proxy forwarding headers.
+                     * @brief Extracts untrusted claimed IP text from proxy headers, for diagnostics only.
                      * @param req HTTP upgrade request.
                      * @return Parsed client address string, or empty string if unavailable.
                      */
@@ -164,11 +165,22 @@ namespace ppp {
                                         return false;
                                     }
 
-                                    websocket_.async_accept(*req,
-                                        [reference, this, req, &ok, accept_anchor](const boost::system::error_code& ec) noexcept {
+                                    // Replay the validated HTTP request together with over-read frames.
+                                    // Beast's buffered accept retains bytes beyond the HTTP upgrade.
+                                    std::ostringstream serialized;
+                                    serialized << *req;
+                                    auto prefill = std::make_shared<std::string>(serialized.str());
+                                    prefill->append(boost::beast::buffers_to_string(buffer->data()));
+                                    auto accepted = [reference, this, req, prefill, &ok, accept_anchor](const boost::system::error_code& ec) noexcept {
                                             ok = ec == boost::system::errc::success;
                                             accept_anchor.R();
-                                        });
+                                        };
+                                    if (buffer->size() == 0) {
+                                        websocket_.async_accept(*req, std::move(accepted));
+                                    }
+                                    else {
+                                        websocket_.async_accept(boost::asio::buffer(*prefill), std::move(accepted));
+                                    }
                                     y.Suspend(accept_anchor);
                                 }
                                 else {

@@ -2101,13 +2101,14 @@ namespace ppp {
 
                     auto allocator = transmission->BufferAllocator;
                     auto self = shared_from_this();
-                    auto& strand = transmission->GetStrand();
+                    auto strand = transmission->GetStrand();
                     if (NULLPTR == strand) {
                         strand = make_shared_object<ppp::threading::Executors::Strand>(
                             context->get_executor());
                         if (NULLPTR == strand) {
                             return false;
                         }
+                        transmission->SetStrand(strand);
                     }
                     return YieldContext::Spawn(allocator.get(), *context, strand.get(),
                         [self, this, context, transmission](YieldContext& y) noexcept {
