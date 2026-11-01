@@ -1,10 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 
 namespace ppp::tap {
 
 struct TapRuntimeStats final {
+    std::uint64_t writev_calls = 0, writev_bytes = 0, writev_segments = 0;
+    std::uint64_t writev_max_bytes = 0, writev_max_segments = 0;
+    std::array<std::uint64_t, 9> gso_flushes{};
     bool vnet_header = false;
     bool gso_merge_active = false;
     bool tx_gso_supported = false;

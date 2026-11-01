@@ -11,6 +11,18 @@
 #include <string>
 #include <vector>
 
+BOOST_AUTO_TEST_CASE(write_diagnostic_sum_and_max) {
+    ppp::tap::TunWriteDiagnostics counters;
+    counters.Write(1500, 1);
+    counters.Write(6000, 4);
+    counters.Write(1000, 1);
+    BOOST_TEST(counters.calls.load() == 3u);
+    BOOST_TEST(counters.bytes.load() == 8500u);
+    BOOST_TEST(counters.segments.load() == 6u);
+    BOOST_TEST(counters.max_bytes.load() == 6000u);
+    BOOST_TEST(counters.max_segments.load() == 4u);
+}
+
 namespace {
 // These cases pin the historical 4-segment cap; the production default is larger.
 const bool kPinnedSegmentCap = ::setenv("OPENPPP2_TAP_GSO_SEGMENTS", "4", 1) == 0;
@@ -84,6 +96,22 @@ BOOST_AUTO_TEST_CASE(cap_four_builds_one_tcpv4_gso_frame) {
     const uint8_t pseudo[] = {0, 6, static_cast<uint8_t>(tcp_bytes >> 8U), static_cast<uint8_t>(tcp_bytes)};
     const uint16_t expected_partial = static_cast<uint16_t>(~fold_checksum(checksum_sum(pseudo, sizeof(pseudo), checksum_sum(ip + 12, 8))));
     BOOST_TEST(be16(tcp + 16) == expected_partial);
+}
+
+BOOST_AUTO_TEST_CASE(flush_diagnostics_count_only_nonempty_batches) {
+    auto& counter = ppp::tap::TunWriteDiagnostics::Instance().flushes[
+        static_cast<size_t>(TunGsoCoalescer::FlushReason::Explicit)];
+    const auto before = counter.load(std::memory_order_relaxed);
+    Sink sink;
+    TunGsoCoalescer c([&sink](const uint8_t* p, size_t n) { return sink(p, n); });
+    BOOST_REQUIRE(c.Flush());
+    BOOST_TEST(counter.load() == before);
+    const auto p = packet();
+    BOOST_REQUIRE(c.Push(p.data(), p.size(), 1000));
+    BOOST_REQUIRE(c.Flush(TunGsoCoalescer::FlushReason::Explicit, 1001));
+    BOOST_TEST(counter.load() == before + 1);
+    BOOST_REQUIRE(c.Flush());
+    BOOST_TEST(counter.load() == before + 1);
 }
 
 BOOST_AUTO_TEST_CASE(retained_owner_payloads_are_written_as_iovecs) {

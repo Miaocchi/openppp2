@@ -67,6 +67,15 @@ namespace ppp {
 
                 if (sample.has_tap_linux) {
                     Json::Value tap_linux(Json::objectValue);
+                    tap_linux["writev_calls"] = Json::UInt64(sample.tap_linux.writev_calls);
+                    tap_linux["writev_bytes"] = Json::UInt64(sample.tap_linux.writev_bytes);
+                    tap_linux["writev_segments"] = Json::UInt64(sample.tap_linux.writev_segments);
+                    tap_linux["writev_max_bytes"] = Json::UInt64(sample.tap_linux.writev_max_bytes);
+                    tap_linux["writev_max_segments"] = Json::UInt64(sample.tap_linux.writev_max_segments);
+                    static const char* reasons[] = {"explicit", "cap", "timeout", "incompatible",
+                        "short_tail", "psh", "control", "ssmt", "terminate"};
+                    for (size_t i = 0; i < sample.tap_linux.gso_flushes.size(); ++i)
+                        tap_linux["gso_flushes"][reasons[i]] = Json::UInt64(sample.tap_linux.gso_flushes[i]);
                     tap_linux["vnet_header"] = sample.tap_linux.vnet_header;
                     tap_linux["gso_merge_active"] = sample.tap_linux.gso_merge_active;
                     tap_linux["tx_gso_supported"] = sample.tap_linux.tx_gso_supported;

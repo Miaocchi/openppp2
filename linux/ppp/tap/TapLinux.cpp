@@ -837,6 +837,14 @@ namespace ppp {
         }
 
         bool TapLinux::GetRuntimeStats(ppp::tap::TapRuntimeStats& stats) const noexcept {
+            const auto& diagnostics = ppp::tap::TunWriteDiagnostics::Instance();
+            stats.writev_calls = diagnostics.calls.load(std::memory_order_relaxed);
+            stats.writev_bytes = diagnostics.bytes.load(std::memory_order_relaxed);
+            stats.writev_segments = diagnostics.segments.load(std::memory_order_relaxed);
+            stats.writev_max_bytes = diagnostics.max_bytes.load(std::memory_order_relaxed);
+            stats.writev_max_segments = diagnostics.max_segments.load(std::memory_order_relaxed);
+            for (size_t i = 0; i < stats.gso_flushes.size(); ++i)
+                stats.gso_flushes[i] = diagnostics.flushes[i].load(std::memory_order_relaxed);
             std::lock_guard<std::mutex> lock(gso_mutex_);
             stats.vnet_header = vnet_header_;
             stats.gso_merge_active = gso_merge_active_;
@@ -2203,6 +2211,15 @@ namespace ppp {
             ssize_t written;
             do {
                 written = ::writev(fd, iovecs, count);
+                const int attempt_errno = errno;
+                const auto* header = static_cast<const virtio_net_hdr*>(iovecs[0].iov_base);
+                const size_t gso_size = le16toh(header->gso_size);
+                const size_t header_size = le16toh(header->hdr_len);
+                const size_t payload = frame_size > sizeof(*header) + header_size
+                    ? frame_size - sizeof(*header) - header_size : 0;
+                ppp::tap::TunWriteDiagnostics::Instance().Write(frame_size,
+                    gso_size ? (payload + gso_size - 1) / gso_size : 1);
+                errno = attempt_errno;
             } while (written < 0 && ppp::tap::ClassifyTunWriteErrno(errno) == ppp::tap::TunWriteErrorKind::Retry);
             const int write_errno = errno;
             ppp::diagnostics::datapath_perf::EndTunDirectWrite(direct_write_accounting);
