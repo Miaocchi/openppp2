@@ -103,8 +103,8 @@ Server listeners, address pools, IPv6, and the rest live in the configuration fi
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--proxy-http-port=<port>` | `8080` | Overrides `client.http-proxy.port`. |
-| `--proxy-socks-port=<port>` | `1080` | Overrides `client.socks-proxy.port`. |
+| `--proxy-http-port=<port>` | `8080` | Overrides `client.http-proxy.port`. Must be an integer in 1..65535; invalid values abort startup. |
+| `--proxy-socks-port=<port>` | `1080` | Overrides `client.socks-proxy.port`. Must be an integer in 1..65535; invalid values abort startup. |
 
 See [Proxy mode](../guides/PROXY_MODE.md) for the full `--mode=proxy` behavior.
 
