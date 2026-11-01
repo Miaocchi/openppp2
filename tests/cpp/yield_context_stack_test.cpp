@@ -2,11 +2,56 @@
 #include <boost/test/included/unit_test.hpp>
 #include <ppp/coroutines/YieldContext.h>
 #include <array>
-#if defined(PPP_COROCC_GUARD_STACK) && defined(__unix__)
+
+BOOST_AUTO_TEST_CASE(failed_post_can_retry_same_anchor) {
+    boost::asio::io_context context;
+    ppp::coroutines::YieldContext::Anchor anchor;
+    bool completed = false;
+    BOOST_REQUIRE(ppp::coroutines::YieldContext::Spawn(context,
+        [&](ppp::coroutines::YieldContext& y) {
+            anchor = y.Arm();
+            if (!y.Suspend(anchor)) std::abort();
+            completed = true;
+        }));
+    context.run();
+    BOOST_TEST(!anchor.R()); // stopped context rejects the post
+    context.restart();
+    BOOST_REQUIRE(anchor.R());
+    BOOST_TEST(!anchor.R());
+    context.run();
+    BOOST_TEST(completed);
+    BOOST_TEST(!anchor.R());
+}
+#if defined(__unix__)
 #include <csignal>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
+
+#if defined(__unix__)
+BOOST_AUTO_TEST_CASE(explicit_allocator_overload_preserves_large_stack) {
+    const pid_t child = fork();
+    BOOST_REQUIRE(child >= 0);
+    if (child == 0) {
+        rlimit limit{0, 0};
+        setrlimit(RLIMIT_CORE, &limit);
+        boost::asio::io_context context;
+        bool checked = false;
+        if (!ppp::coroutines::YieldContext::Spawn(nullptr, context,
+            [&](ppp::coroutines::YieldContext&) {
+                volatile unsigned char data[512 * 1024];
+                for (std::size_t i = 0; i < sizeof(data); ++i) data[i] = static_cast<unsigned char>(i);
+                checked = data[sizeof(data) - 1] == 255;
+            }, 4 * 1024 * 1024)) _exit(2);
+        context.run();
+        _exit(checked ? 0 : 3);
+    }
+    int status = 0;
+    BOOST_REQUIRE(waitpid(child, &status, 0) == child);
+    BOOST_REQUIRE(WIFEXITED(status));
+    BOOST_TEST(WEXITSTATUS(status) == 0);
+}
 #endif
 
 BOOST_AUTO_TEST_CASE(stack_contents_survive_suspend_and_complete) {

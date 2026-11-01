@@ -807,11 +807,12 @@ namespace ppp {
                 }
 
                 datagram_manager_->RebindTransmission(NULLPTR);
+                VirtualEthernetMappingPortTable detached;
                 {
                     SynchronizedObjectScope scope(syncobj_);
-                    Dictionary::ReleaseAllObjects(mappings_);
-                    mappings_.clear();
+                    detached.swap(mappings_);
                 }
+                Dictionary::ReleaseAllObjects(detached);
 
                 if (std::shared_ptr<vmux::vmux_net> mux = mux_coordinator_->Take(); NULLPTR != mux) {
                     mux->close_exec();
@@ -977,8 +978,12 @@ namespace ppp {
                 for (;;) {
                     datagram_manager_->Release();
 
-                    Dictionary::ReleaseAllObjects(mappings_);
-                    mappings_.clear();
+                    VirtualEthernetMappingPortTable detached;
+                    {
+                        SynchronizedObjectScope scope(syncobj_);
+                        detached.swap(mappings_);
+                    }
+                    Dictionary::ReleaseAllObjects(detached);
 
                     Timer::ReleaseAllTimeouts(timeouts_);
                     timeouts_.clear();
@@ -2173,7 +2178,23 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                                 transmission->Dispose();
                             }
                         }
-                        Dictionary::UpdateAllObjects2(mappings_, now);
+                        VirtualEthernetMappingPortTable snapshot;
+                        {
+                            SynchronizedObjectScope scope(syncobj_);
+                            snapshot = mappings_;
+                        }
+                        for (auto& entry : snapshot) {
+                            if (!entry.second->Update(now)) {
+                                {
+                                    SynchronizedObjectScope scope(syncobj_);
+                                    auto it = mappings_.find(entry.first);
+                                    if (it != mappings_.end() && it->second == entry.second) {
+                                        mappings_.erase(it);
+                                    }
+                                }
+                                entry.second->Dispose();
+                            }
+                        }
                     });
                 return true;
             }
@@ -2563,8 +2584,15 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
 
             /** @brief Creates, opens and registers FRP mapping port if absent. */
             bool VirtualEthernetExchanger::RegisterMappingPort(bool in, bool tcp, int remote_port) noexcept {
+                static constexpr std::size_t kMaxMappingPorts = 64;
                 if (disposed_) {
                     return false;
+                }
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    if (mappings_.size() >= kMaxMappingPorts) {
+                        return false;
+                    }
                 }
 
                 ITransmissionPtr transmission = GetTransmission();
@@ -2585,7 +2613,9 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                 VirtualEthernetLoggerPtr logger = switcher_->GetLogger();
                 bool ok = mapping_port->OpenFrpServer(logger);
                 if (ok) {
-                    ok = VirtualEthernetMappingPort::AddMappingPort(mappings_, in, tcp, remote_port, mapping_port);
+                    SynchronizedObjectScope scope(syncobj_);
+                    ok = !disposed_ && mappings_.size() < kMaxMappingPorts &&
+                        VirtualEthernetMappingPort::AddMappingPort(mappings_, in, tcp, remote_port, mapping_port);
                 }
 
                 if (ok) {
@@ -2622,6 +2652,11 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                                 std::shared_ptr<boost::asio::io_context> context = exchanger->GetContext();
                                 auto remove_mapping = [exchanger, self]() noexcept {
                                     SynchronizedObjectScope scope(exchanger->syncobj_);
+                                    if (VirtualEthernetMappingPort::FindMappingPort(exchanger->mappings_,
+                                            self->ProtocolIsNetworkV4(), self->ProtocolIsTcpNetwork(),
+                                            self->GetRemotePort()) != self) {
+                                        return;
+                                    }
                                     VirtualEthernetMappingPort::DeleteMappingPort(
                                         exchanger->mappings_, self->ProtocolIsNetworkV4(), self->ProtocolIsTcpNetwork(), self->GetRemotePort());
                                     ppp::telemetry::Log(Level::kDebug, "exchanger", "mapping removed remote_port=%d", self->GetRemotePort());
@@ -2652,6 +2687,7 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
 
             /** @brief Finds FRP mapping port by direction/protocol/remote-port key. */
             VirtualEthernetExchanger::VirtualEthernetMappingPortPtr VirtualEthernetExchanger::GetMappingPort(bool in, bool tcp, int remote_port) noexcept {
+                SynchronizedObjectScope scope(syncobj_);
                 return VirtualEthernetMappingPort::FindMappingPort(mappings_, in, tcp, remote_port);
             }
 

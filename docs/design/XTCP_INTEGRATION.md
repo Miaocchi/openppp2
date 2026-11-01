@@ -4,6 +4,27 @@
 > Type: Design
 > Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
 
+## Core review batch 1 (0050-0051)
+
+Patch 0050 guards overlapping retransmissions while a rejected receive
+frontier is retained, reopens the receive window after successful overlap
+delivery, and notifies state changes for overlap/retained FIN consumption.
+The frontier test adds pending-frontier, overlap-FIN and retained-FIN cases,
+including sequence wraparound. Patch 0051 restores stack order before
+republishing a residual TX retry FIFO in both shard sweep paths.
+Existing patches 0012 and 0043 have context-only refreshes for c9dd560;
+patch IDs and their semantic changes are unchanged. The complete stack is
+required to apply with `patch -p1 --fuzz=0`.
+
+The associated coroutine fix preserves the explicit Spawn stack size and
+rearms the same Anchor after a rejected post without overwriting a newer
+anchor. AnchorCell still borrows its io_context/strand: callers must keep
+both alive until all asynchronous wake sources are cancelled/drained.
+Spawn accepts references/raw pointers, including stack-owned contexts;
+converting these to shared_ptr is not a local ownership-safe change.
+The server limits each session to 64 FRP mappings (not a configuration key),
+locks table access, and disposes/updates snapshots outside the table lock.
+
 Rebase validation (2026-10-18): the new pin passes Linux product, contracts
 (188/188), assertion-enabled general tests (179/179), fault (20/20), and full
 standalone tests (241/241). Windows x64 static Release builds with zero errors;
