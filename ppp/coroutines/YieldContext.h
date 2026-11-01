@@ -304,7 +304,7 @@ namespace ppp
             static bool                                                         Spawn(ppp::threading::BufferswapAllocator* allocator, boost::asio::io_context& context, SpawnHander&& spawn, int stack_size) noexcept
             {
                 boost::asio::strand<boost::asio::io_context::executor_type>* strand = NULLPTR;
-                return YieldContext::Spawn(allocator, context, strand, std::move(spawn), PPP_COROUTINE_STACK_SIZE);
+                return YieldContext::Spawn(allocator, context, strand, std::move(spawn), stack_size);
             }
 
             /**

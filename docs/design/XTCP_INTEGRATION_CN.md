@@ -1,5 +1,21 @@
 # XTCP Linux IPv4 laboratory runtime 设计
 
+## 核心审查第一批（0050-0051）
+
+0050 在保留拒收前沿时阻止重叠重传重复交付；重叠交付成功后恢复接收窗口，
+并为重叠 FIN、保留 FIN 的状态迁移补充通知。前沿测试新增保留前沿、
+重叠 FIN 和保留 FIN 场景，覆盖序号回绕。0051 在两个 shard 扫描路径中，
+重新发布未发送 FIFO 前恢复其栈顺序，避免下一轮反转残留包顺序。
+0012、0043 仅刷新适配 c9dd560 的上下文，不改变编号和语义；
+完整补丁栈须使用 `patch -p1 --fuzz=0` 应用。
+
+协程修复保留显式 Spawn 栈大小，并在投递拒绝时重新武装同一个 Anchor，
+不会覆盖更新的 Anchor。C3 暂不改变所有权：Spawn 接受引用和裸指针，
+也支持栈上 context，无法安全地局部转换为 shared_ptr。
+调用者必须保证 io_context/strand 活到异步唤醒源全部取消并排空之后。
+服务端每会话最多 64 个 FRP 映射（非配置项），表访问加锁，
+对象更新与释放在表锁之外进行，并按对象身份删除映射。
+
 > Status: Active
 > Type: Design
 > Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)

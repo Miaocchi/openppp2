@@ -523,6 +523,14 @@ namespace ppp
             bool ok = ppp::threading::Executors::Post(cell->context, cell->strand, invoked);
             if (!ok)
             {
+                // Do not overwrite a newer arm or resurrect a completed coroutine.
+                std::lock_guard<std::mutex> scope(cell->syncobj);
+                if (cell->y && cell->y->anchor_current_ == value)
+                {
+                    uint64_t unarmed = 0;
+                    cell->armed.compare_exchange_strong(unarmed, value,
+                        std::memory_order_acq_rel, std::memory_order_acquire);
+                }
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTaskPostFailed);
             }
 
