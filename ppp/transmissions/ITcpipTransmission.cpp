@@ -272,7 +272,7 @@ namespace ppp {
                 return;
             }
 
-            boost::asio::post(socket->get_executor(),
+            const bool posted = ppp::coroutines::asio::PostIfRunning(socket->get_executor(),
                 [socket, destination, minimum, anchor, &read_ec, &transferred, receive_scope]() noexcept {
                     boost::asio::async_read(*socket, destination, boost::asio::transfer_at_least(minimum),
                         [anchor, &read_ec, &transferred, minimum, receive_scope](const boost::system::error_code& ec, std::size_t sz) noexcept {
@@ -284,6 +284,11 @@ namespace ppp {
                             anchor.R();
                         });
                 });
+
+            if (!posted) {
+                read_ec = boost::asio::error::operation_aborted;
+                return;
+            }
 
             y.Suspend(anchor);
             if (!read_ec && transferred < minimum) {
