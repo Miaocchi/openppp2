@@ -372,7 +372,7 @@ namespace ppp {
              * @brief Handles HTTP header read, Host extraction, and forwarding setup.
              */
             bool sniproxy::do_httpd_handshake(ppp::coroutines::YieldContext& y, MemoryStream& messages_) noexcept {
-                auto response = std::make_shared<boost::asio::streambuf>();
+                auto response = std::make_shared<boost::asio::streambuf>(16 * 1024);
                 if (NULLPTR == response) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SniProxyHttpHandshakeResponseAllocFailed);
                     return false;
@@ -406,7 +406,7 @@ namespace ppp {
                         return false;
                     }
 
-                    ppp::diagnostics::SetLastErrorCode(ec ? ppp::diagnostics::ErrorCode::SocketReadFailed
+                    ppp::diagnostics::SetLastErrorCode(ec && ec != boost::asio::error::not_found ? ppp::diagnostics::ErrorCode::SocketReadFailed
                         : ppp::diagnostics::ErrorCode::HttpHeaderInvalid);
                     return false;
                 }

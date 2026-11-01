@@ -469,7 +469,7 @@ namespace ppp
             }
 
 #if defined(_ANDROID)
-            return ProtectorNetwork::Sendfd(dev_.data(), sockfd);
+            return 0 == ProtectorNetwork::Sendfd(dev_.data(), sockfd);
 #else
             if (::setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, dev_.data(), dev_.size()) > -1)
             {
