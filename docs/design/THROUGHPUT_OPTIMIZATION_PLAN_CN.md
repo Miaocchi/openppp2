@@ -566,6 +566,67 @@ IO-thread shard、既有流不迁移；前者需要外部工作负载提示，�
 缺 Git HEAD 导致 metadata 检查 exit 1 的失败尝试，无吞吐；补齐真实 bundle 后另开
 `runs-retry/`，未覆盖失败记录。结束后清理本任务远端源码/编译目录，保留证据。
 
+#### 2.4.8 无 profiler 单连接 DL 配对复测（2026-11-01）
+
+**结论：未发现相对 native 的 P1 DL 明显回归；不能把历史差距全部认定为 profiler 开销。**
+联网核对当前 main 为 `b76d3ba7971820643ff8e7bdb606778585a187f3`，以该提交归档
+在实验主机新目录独立 Release 构建（335/335）；二进制 SHA-256
+`d4b19da55977c47e3ad62d0d838c05f60cc49fa9269488eaa3f785cecbafaad7`。
+XTCP pin 仍为 c9dd560 + 仓库补丁。仅修改测量记录，没有产品代码、默认值变更。
+
+**方法**：30 s、omit 2 s，DL P1，shards=1、SPSC ingress/direct SPSC=0、
+client-cpuset `36,39,40,46,50`、KCC、AES-256-CFB、GSO on/cap32、memory bridge on、
+GRO 12288、gather 65536/1 ms、snd_buf 产品默认。三轮次序 N→X、X→N、N→X。
+每个 stack 单独经过 `/home/ppp-m2/measure.py` 共享 measure/build 锁、负载门禁和
+`pgrep -af`（measure.py、run_m3_isolated、PPP、iperf）空闲检查；实际命令全部经
+`tools/run_m3_isolated.sh`，kernel-steering off。显式移除驱动自动追加的
+`--process-perf-stat`，没有 perf record/stat 或其他 profiler。
+所有构建仅在实验主机新目录，以共享 build flock、CPU 0–15、nice 10、最多 -j16 执行；
+没有本地编译或测试，没有修改宿主网络设置。共享主机多次构建/测试排队导致配对间隔较长，
+不能将其视为紧邻的同一瞬时负载；每格均重新检查空闲。
+
+| P1 DL / Mbps | native | XTCP | XTCP/native |
+| --- | ---: | ---: | ---: |
+| 第 1 轮 | 1652.24 | 1771.05 | 1.072 |
+| 第 2 轮 | 1625.19 | 1738.57 | 1.070 |
+| 第 3 轮 | 1684.33 | 1763.46 | 1.047 |
+| 算术均值（比值为均值之比） | 1653.92 | 1757.69 | 1.063 |
+
+相对 §2.4.4 的 native 1690、XTCP 1801 Mbps，当前分别约 -2.1%、-2.4%；
+比值从约 1.066 到 1.063，仅约 -0.3%，且落在三轮波动内。
+因此未触发“比值明显下降后构建 add77894 做 ABBA”的条件，本次未构建旧提交。
+无采样 XTCP 均值比 §2.4.5 的 1708.73 Mbps 高约 2.9%，但仍比历史 1801 低约 2.4%；
+native 同向降低，说明不能用绝对值直接宣布产品回归。
+结果与 profiler/共享宿主条件造成差距相容，但 §2.4.5 没有同期 native，且提交与时间不同，
+本次没有同一二进制 profiler on/off 实验，**无法分离或定量证明 profiler 的独立开销**。
+本次不重新验收 1.2×，不提供 CPU 核数或热点结论。
+
+补充 P16 DL 三轮（同样 N→X、X→N、N→X）：
+
+| P16 DL / Mbps | native | XTCP |
+| --- | ---: | ---: |
+| 第 1 轮 | 1526.90 | 1705.04 |
+| 第 2 轮 | 1532.85 | 1713.45 |
+| 第 3 轮 | 1545.50 | 1678.50 |
+| 算术均值 | 1535.08 | 1699.00 |
+
+P16 均值比 1.107，历史 1740/1534≈1.134，约 -2.4%；三轮 XTCP 跨度约 2.1%，
+仅作为多流补充观测，不把这一幅度当作已确认的跨提交回归。旧提交 ABBA 条件按本任务
+主目标 P1 判断；P16 若需判定小幅变化，仍需另做同场旧/新版本重复对照。
+
+**资格状态**：无 profiler 意味着进程核数与迁移计数缺失；全部 12 格 result=pass、
+零零速流、无 runtime_faults、cleanup_ok=true、二进制 hash 不变，但 qualification=fail
+（`process_cores_ok`、`ppp_zero_migrations`），runner exit 1。保留这些原始失败状态，
+不将吞吐有效与完整 CPU 资格通过混为一谈。
+
+**证据与清理**：私有归档 `build/private/p1-clean-20261101/` 保存构建/测量日志、
+驱动、原始 result/qualification、逐格 pgrep/负载门禁、竞争记录和二进制。
+`summary.txt` 汇总 literal 状态；竞争记录的 foreign_builds_or_measurements 为空。
+归档源码的临时 Git snapshot 仅用于 runner metadata，不冒充上游 commit。
+根分区检查记录始终 ≥30 GB（本次构建前 42 GB，结束 41 GB）；取回证据后删除本任务
+远端 `src/`、`bin/` 和临时 isolation 目录，保留结果归档，不动其他任务目录。
+没有运行正确性/soak、实网、Windows/mobile 验证，没有提交或推送。
+
 ### 2.5 文档与代码不一致
 
 XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时默认尝试"，但
