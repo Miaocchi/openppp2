@@ -8,6 +8,7 @@
 #include <ppp/app/ProxySubnetOptions.h>
 #include <ppp/app/PppApplicationInternal.h>
 #include <ppp/diagnostics/Error.h>
+#include <errno.h>
 #include <ppp/diagnostics/Telemetry.h>
 #include <ppp/dns/DnsResolver.h>
 
@@ -102,14 +103,34 @@ int PppApplication::PreparedArgumentEnvironment(int argc, const char* argv[]) no
         configuration->ApplyProxyModeDefaults();
     }
 
+    /** @brief Parse a CLI proxy port strictly: full-string decimal in 1..65535. */
+    auto parse_proxy_port = [](const ppp::string& text, int& port) noexcept -> bool {
+        const char* begin = text.data();
+        char* endptr = NULLPTR;
+        errno = 0;
+        long value = strtol(begin, &endptr, 10);
+        if (text.empty() || errno != 0 || endptr == begin || NULLPTR == endptr || *endptr != '\0' || value < 1 || value > 65535) {
+            return false;
+        }
+
+        port = static_cast<int>(value);
+        return true;
+    };
+
     if (ppp::HasCommandArgument("--proxy-http-port", argc, argv)) {
         ppp::string port_arg = ppp::GetCommandArgument("--proxy-http-port", argc, argv);
-        configuration->client.http_proxy.port = static_cast<int>(strtol(port_arg.data(), NULLPTR, 10));
+        if (!parse_proxy_port(port_arg, configuration->client.http_proxy.port)) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkPortInvalid);
+            return -1;
+        }
     }
 
     if (ppp::HasCommandArgument("--proxy-socks-port", argc, argv)) {
         ppp::string port_arg = ppp::GetCommandArgument("--proxy-socks-port", argc, argv);
-        configuration->client.socks_proxy.port = static_cast<int>(strtol(port_arg.data(), NULLPTR, 10));
+        if (!parse_proxy_port(port_arg, configuration->client.socks_proxy.port)) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::NetworkPortInvalid);
+            return -1;
+        }
     }
 
     int max_concurrent = configuration->concurrent - 1;
