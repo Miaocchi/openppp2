@@ -566,6 +566,78 @@ IO-thread shard、既有流不迁移；前者需要外部工作负载提示，�
 缺 Git HEAD 导致 metadata 检查 exit 1 的失败尝试，无吞吐；补齐真实 bundle 后另开
 `runs-retry/`，未覆盖失败记录。结束后清理本任务远端源码/编译目录，保留证据。
 
+#### 2.4.7 Linux TUN GSO writev/flush 诊断（2026-11-01）
+
+本次仅添加诊断计数，不修改合并、PSH、定时器、失败回退或发送顺序。
+`WriteGsoIov` 对每次实际 writev 尝试（含重试、失败）累计请求字节、逻辑段数及
+各自最大值；字节包含 VNET 头，段数由 VNET `gso_size/hdr_len` 推导，不能简单用
+iovec 数量代替。`TunGsoCoalescer::Flush` 按原因累计非空 flush，包含 singleton，
+不等同于 writev 次数。所有计数使用 relaxed 原子，进程生命周期累计、跨 TUN/lane
+汇总，快照不是事务一致的。通过现有 stats-json 的 `tap_linux.writev_calls`、
+`writev_bytes`、`writev_segments`、`writev_max_bytes`、`writev_max_segments`、
+`gso_flushes.{explicit,cap,timeout,incompatible,short_tail,psh,control,ssmt,terminate}` 暴露。
+
+**方法与验证**：候选基于 HEAD `b76d3ba7971820643ff8e7bdb606778585a187f3`；
+独立实验目录 `/home/ppp-m2/tunctr-20261101`。所有构建/测试在实验机以
+`flock /tmp/ppp-m2-build.lock taskset -c 0-15 nice -n 10` 执行，最多 j16。
+Release 构建成功，`CPP_TEST_JOBS=16 bash scripts/run-cpp-tests.sh` **195/195 通过**。
+新增 sum/max、非空 flush 和 JSON 64 位字段测试。没有本机编译或测试，没有提交/推送。
+测量沿用 §2.4.5：XTCP、DL P1、30 s + omit 2 s、KCC、AES-256-CFB、memory bridge on、
+GSO on cap32、gather 65536/1 ms、shards=1、SPSC ingress/direct SPSC=0、
+client-cpuset `36,39,40,46,50`。每格取得共享 build/measure 锁，并在锁内用 pgrep
+检查其他 measure.py、run_m3_isolated、PPP/iperf；空闲后只经 `tools/run_m3_isolated.sh`
+运行，kernel steering off。等待了其他任务的构建/测量，没有干预其进程或宿主网络。
+根分区观测最低 26 GB；提前归档并清理本任务中间构建产物后恢复余量。
+
+**单次诊断**：`runs-qualified/00-modified`，1721.656 Mbps，result/qualification
+均 PASS。39 条客户端 stats，首条计数为零；下表取末条，包含启动、omit 和收尾流量，
+不是正式 30 s 窗口的精确差分。选择 sum+max，未采集直方图或分位数。
+
+| 指标 | 观测值 |
+|---|---:|
+| writev 次数 | 235,906 |
+| 请求字节总和 / 每次均值 / 最大值 | 6,688,806,419 / 28,353.69 / 46,386 |
+| 逻辑段总和 / 每次均值 / 最大值 | 4,611,225 / 19.5469 / 32 |
+| 非空 flush 总数 | 236,109 |
+| PSH | 235,823（99.8789%） |
+| cap / timeout / incompatible / short_tail | 212 / 16 / 2 / 56 |
+| explicit / control / ssmt / terminate | 全部 0 |
+
+**同源码开销对照**：本地 literal main 为 `cb29bed9`，其 XTCP pin 为 `77d45585`，
+不同于候选的 `c9dd5601`，不能隔离计数器开销。因此另构建同 HEAD 的无计数版本 A，
+候选为 B；构建参数/依赖相同。追加两轮 ABBA，8 格全部 result/qualification PASS，
+无零速流、清理成功、二进制哈希未变。单位 Mbps：
+
+| 轮次 | A | B | B | A | B/A 均值差 |
+|---|---:|---:|---:|---:|---:|
+| 1 | 1706.733 | 1738.927 | 1708.203 | 1753.291 | -0.373% |
+| 2 | 1729.311 | 1687.231 | 1753.220 | 1737.560 | -0.762% |
+
+A/B 总均值 1731.724/1721.895 Mbps，**-0.568%**；样本标准差分别为
+19.404/29.779 Mbps（1.12%/1.73%）。客户端 task-clock ns/载荷字节均值
+4.6053/4.6370（+0.69%）。差异小于本次样本波动，可作为诊断开销处于观测噪声范围的
+初步证据，**不能证明严格等效或排除亚百分比开销**，也未验证延迟、UL 或其他平台。
+
+literal main 另做两轮 ABBA 尝试，合格第一轮为
+1552.311 / 1723.055 / 1722.041 / 1580.727 Mbps（末 A 重试后通过）；
+第二轮为 1577.339 / 1706.593 / 1728.787 / 1442.000，末 A qualification 失败，
+最后重试 1380.870 仍失败，**不能声明 literal main 的第二轮完整合格**。
+其他被排除的 main 样本 1498.610、1444.238 Mbps，同样仅因 `process_cores_ok`
+未达门槛（不是流量或清理失败）。没有降低门槛；失败数据全部保留，跨版本差异不作
+计数器开销或回归结论。另一次准备失败为冻结清单缺必填字段，流量前 exit 1；补齐后
+换目录运行。等待阶段控制器退出 143/255 不作为 benchmark 样本。
+
+**二进制 SHA-256**：B `caede4294c98489b65987850c77ca1c7144c7c0e4776c75bafca0004a3d35be5`；
+A `fd79783f5c33f794646c1465a11005273a870387432dd31f217d5497930c8ae4`；
+literal main `b70ce160d4426eecfe74f7ac925606a81a25bf4cc02f258775d51546bc7ef5b1`。
+证据在本地私有目录 `build/private/tunctr-20261101/`：原始运行、冻结源码/二进制指纹、
+构建及 CTest 日志、`summary*.json`、补丁/修改副本及回滚验证。runner 源码指纹与
+`binary_source_revision` 分列，未把 runner 的 HEAD 冒充旧 main 二进制源码。
+
+结论：当前每次 writev 已承载约 19.5 个逻辑段，PSH 而非 explicit/cap 主导 flush。
+后续批量写实验应保留帧边界和 PSH/超时/关闭语义，不应仅凭此表延迟 PSH 或调大 cap。
+本次不改变 batching 行为；源码补丁可重建修改副本，独立回滚副本哈希与原始源码一致。
+
 #### 2.4.8 无 profiler 单连接 DL 配对复测（2026-11-01）
 
 **结论：未发现相对 native 的 P1 DL 明显回归；不能把历史差距全部认定为 profiler 开销。**

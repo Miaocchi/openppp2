@@ -7,6 +7,29 @@
 
 namespace runtime = ppp::app::runtime;
 
+BOOST_AUTO_TEST_CASE(tun_write_diagnostics_json) {
+    runtime::RuntimeStatsSample sample;
+    sample.has_tap_linux = true;
+    sample.tap_linux.writev_calls = UINT64_C(9000000000);
+    sample.tap_linux.writev_bytes = 1234;
+    sample.tap_linux.writev_segments = 4;
+    sample.tap_linux.writev_max_bytes = 1234;
+    sample.tap_linux.writev_max_segments = 4;
+    sample.tap_linux.gso_flushes[8] = 7;
+    Json::Value root;
+    Json::Reader reader;
+    const auto encoded = runtime::SerializeRuntimeStats(sample);
+    BOOST_REQUIRE(reader.parse(encoded.data(), encoded.data() + encoded.size(), root));
+    const auto& tap = root["tap_linux"];
+    BOOST_TEST(tap["writev_calls"].asUInt64() == UINT64_C(9000000000));
+    BOOST_TEST(tap["writev_bytes"].asUInt64() == 1234u);
+    BOOST_TEST(tap["writev_segments"].asUInt64() == 4u);
+    BOOST_TEST(tap["writev_max_bytes"].asUInt64() == 1234u);
+    BOOST_TEST(tap["writev_max_segments"].asUInt64() == 4u);
+    BOOST_TEST(tap["gso_flushes"]["terminate"].asUInt64() == 7u);
+    BOOST_TEST(tap["gso_flushes"].size() == 9u);
+}
+
 BOOST_AUTO_TEST_CASE(xtcp_startup_and_shard_metadata) {
     runtime::RuntimeStatsSample sample;
     sample.has_xtcp = true;

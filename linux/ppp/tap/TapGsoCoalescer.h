@@ -15,6 +15,7 @@
 #include <sys/uio.h>
 
 #include <ppp/tap/RetainedPacketOwner.h>
+#include <ppp/tap/TunWriteDiagnostics.h>
 
 #include <endian.h>
 #include <sys/types.h>
@@ -247,6 +248,7 @@ public:
 
     bool Flush(FlushReason reason = FlushReason::Explicit, uint64_t now_ns = NowNs()) noexcept {
         if (count_ == 0) return true;
+        TunWriteDiagnostics::Instance().flushes[static_cast<size_t>(reason)].fetch_add(1, std::memory_order_relaxed);
         const uint64_t hold_ns = now_ns >= started_ns_ ? now_ns - started_ns_ : 0;
         if (count_ == 1) {
             const bool ok = WriteOrdinaryStored(0, reason, hold_ns);

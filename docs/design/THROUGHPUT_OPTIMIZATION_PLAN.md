@@ -2,7 +2,7 @@
 
 > Status: Measurement record
 > Type: Performance report
-> Last verified: 2026-10-30
+> Last verified: 2026-11-01
 
 Chinese plan and historical results:
 [THROUGHPUT_OPTIMIZATION_PLAN_CN.md](THROUGHPUT_OPTIMIZATION_PLAN_CN.md), section 2.4.3a.
@@ -11,6 +11,23 @@ This companion covers the October remeasurement, not the entire historical plan.
 Current pin: c9dd56013842 (2026-10-31), with 33 local patches. PRs #3-#8
 fully absorb 0037-0040 and 0048; 0042/0043/0045/0046 retain local integration
 residuals only. The old pin and measurements below remain historical.
+
+## TUN Write Diagnostics (2026-11-01)
+
+Chinese section 2.4.7 records diagnostic-only relaxed counters exposed in
+`tap_linux` stats-json: writev attempts, requested bytes/segments (sum/max), and
+nonempty flush counts by reason. One isolated P1 DL 30s run reached 1721.656 Mbps:
+235,906 writev calls, mean 28,353.69 bytes / 19.5469 segments, maxima 46,386 / 32;
+PSH accounted for 99.8789% of 236,109 flushes. Totals include omit/startup/tail.
+
+Two matched-HEAD ABBA rounds passed all 8 cells: baseline/counters means
+1731.724/1721.895 Mbps (-0.568%), versus sample SD 1.12%/1.73%; client CPU ns/B
+increased 0.69%. This is within observed noise, not proof of strict equivalence.
+Literal local main has a different XTCP pin: its second ABBA round remained
+unqualified after retries, so it cannot establish counter overhead. All failed
+attempts are retained. Remote Release builds and 195/195 C++ tests passed;
+no local builds/tests, commits, or pushes. Evidence: `build/private/tunctr-20261101/`.
+No batching, PSH, timeout, or fallback behavior was changed.
 
 ## Unprofiled Single-Flow DL Remeasurement (2026-11-01)
 
