@@ -81,6 +81,9 @@ Once connected, the manager handles user authentication and traffic reports. The
 ## 7. Security
 
 - All of these are sensitive: the admin token, `key` / `server.backend-key`, `manager-data.json`, and subscription URLs and their contents (which include node keys).
+- The shared `key` is compared in constant time and may be sent as `?key=` (legacy) or `Authorization: Bearer <key>`. Prefer the header: query strings are recorded by reverse proxies and access logs, so a `?key=` value can leak there.
+- A node connection is bound to the node id given at the handshake; authentication or traffic packets carrying a different `Node` are dropped and logged. A traffic report counter above 1 TiB (2^40) or not a plain non-negative integer is ignored.
+- API errors return generic messages; database/Redis details are written to the server log only.
 - The manager does not provide TLS itself. Put it behind a TLS-terminating proxy such as Nginx before exposing it, or bind it to a private / loopback address.
 - Subscription tokens do not expire; to revoke access, rotate the token (`rotate-token`) or disable the subscription.
 
