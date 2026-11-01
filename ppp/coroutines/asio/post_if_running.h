@@ -1,7 +1,5 @@
 #pragma once
 
-#include <ppp/stdafx.h>
-
 #include <utility>
 
 #include <boost/asio.hpp>
@@ -14,9 +12,22 @@ namespace ppp {
              * @details A stopped io_context never runs posted handlers, so a coroutine
              *          that suspends waiting for such a handler would leak with its stack.
              */
+            inline bool                                                         ExecutorStopped(const boost::asio::io_context::executor_type& ex) noexcept {
+                return ex.context().stopped();
+            }
+
+            template <class Executor>
+            inline bool                                                         ExecutorStopped(const boost::asio::strand<Executor>& ex) noexcept {
+                return ExecutorStopped(ex.get_inner_executor());
+            }
+
             template <class Executor>
             inline bool                                                         ExecutorStopped(const Executor& ex) noexcept {
-                return static_cast<boost::asio::io_context&>(boost::asio::query(ex, boost::asio::execution::context)).stopped();
+                // Polymorphic executors (any_io_executor): resolve the owning
+                // execution context and treat a non-io_context owner as running.
+                boost::asio::execution_context& owner = boost::asio::query(ex, boost::asio::execution::context_as<boost::asio::execution_context&>);
+                boost::asio::io_context* context = dynamic_cast<boost::asio::io_context*>(&owner);
+                return nullptr != context && context->stopped();
             }
 
             /**
