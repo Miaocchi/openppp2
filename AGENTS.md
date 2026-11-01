@@ -87,6 +87,12 @@ reasons to delete platform code.
   profile. Empty request bodies to profile save/validate endpoints return HTTP
   400 with an explicit error; `{}` remains invalid because it has no known PPP
   key.
+- The API sends no CORS headers: foreign-Origin POST/PUT/DELETE get 403, and
+  loopback listeners reject unknown Host headers (keep Host when proxying).
+  Login/password endpoints rate-limit per IP (HTTP 429). Guardian refuses to
+  start on a non-loopback `listen` with `auth.enabled=false`. Binaries are only
+  executed for version detection when named like ppp and inside `binariesDir`
+  or auto-discovered.
 
 ## Code Analysis
 
