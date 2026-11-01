@@ -1,5 +1,9 @@
 # XTCP platform build notes
 
+> Status: Active
+> Type: Design
+> Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+
 ## Core review batch 1 (0050-0051)
 
 Patch 0050 guards overlapping retransmissions while a rejected receive
@@ -20,10 +24,6 @@ Spawn accepts references/raw pointers, including stack-owned contexts;
 converting these to shared_ptr is not a local ownership-safe change.
 The server limits each session to 64 FRP mappings (not a configuration key),
 locks table access, and disposes/updates snapshots outside the table lock.
-
-> Status: Active
-> Type: Design
-> Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
 
 Rebase validation (2026-10-18): the new pin passes Linux product, contracts
 (188/188), assertion-enabled general tests (179/179), fault (20/20), and full

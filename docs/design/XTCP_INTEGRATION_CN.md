@@ -1,5 +1,9 @@
 # XTCP Linux IPv4 laboratory runtime 设计
 
+> Status: Active
+> Type: Design
+> Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+
 ## 核心审查第一批（0050-0051）
 
 0050 在保留拒收前沿时阻止重叠重传重复交付；重叠交付成功后恢复接收窗口，
@@ -15,10 +19,6 @@
 调用者必须保证 io_context/strand 活到异步唤醒源全部取消并排空之后。
 服务端每会话最多 64 个 FRP 映射（非配置项），表访问加锁，
 对象更新与释放在表锁之外进行，并按对象身份删除映射。
-
-> Status: Active
-> Type: Design
-> Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
 
 ## 实验性 runtime 执行域
 
@@ -616,11 +616,9 @@ oversized_l3_rejected    = false（由 first_push_failure.packet_shape.excess_by
 
 这些是 qualification 装置与两条短路径的真实 smoke，不是 native/lwIP/XTCP 六模式、paired 多轮、P4/P16 或完整 production 路线通过声明。旧 artifact `artifacts/route3-strict-smoke-20260904/` 保留作为修正前失败证据。runner 现新增 `--xtcp-memory-bridge` / `--xtcp-ndi-tso-tx`，清除父环境同名变量并把显式值写入 metadata，后续 strict direct 证据必须使用该合同。
 
-
 > **实测陷阱（已修复）：** 首次带 `--process-perf-stat/--system-cpu-stat` 运行发现 runner 在 iperf 完成后无限阻塞。根因是 `perf stat ... -- sleep 1000000`：perf 在 `do_wait` 等其 sleep 子进程，`kill -INT` 被忽略，runner 的无界 `wait` 于是永久挂起。修复为：去掉 workload，改用 `--timeout=<iperf_timeout+60>s` 兜底（正常 run 不触发）+ `stop_cpu_perf()` 有界等待（INT 后 10s，僵尸提前退出；超时再 `SIGKILL`）。复现实验确认无 workload 的 `perf stat -p/-a -C` 响应 SIGINT 并写出 CSV；带 workload 则否。修复后 6/6 cell 均 `status=measured` 且 `affinity_verified=true`。
 
 > **口径修正（重要）：** P1 UL 六模式首次实测暴露两个口径问题。其一，`perf stat -a -C 8,9` 的 system-wide task-clock 实际是 selected CPU 的墙钟容量（每颗 CPU 忙闲都计时），六模式反算全部恒为 ≈2 cores，因此它**不能**用于 CPU 排名，只能作 `selected_cpu_clock_capacity` 诊断；真正的 busy CPU 以 `process task-clock` 与 selected `/proc/stat` non-idle delta 为准。其二，`client-vnet-isolated`（vnet→CPU8、其余→CPU9）**允许 lwIP 同时吃两颗核**：lwIP 实际消耗 1.60（off）/1.92（on）个 process core，而 native/XTCP 恒为 ≈1.00 core。因此**不得**把 lwIP 的 raw 577/979 Mbps 称为"单核"。按 process core 归一化：GSO-off 为 lwIP≈360、XTCP≈336、native≈261 Mbps/core（lwIP 仅比 XTCP 高约 7%，而非 raw Mbps 的 73%）；GSO-on 为 native≈833、lwIP≈510、XTCP≈419 Mbps/core（native+GSO 明显领先）。lwIP 的 GSO 收益应分开写：throughput 1.70×、process CPU efficiency 1.41×、process CPU consumption +20%。这佐证了引入 `client-single-core` 主 profile 的必要性。
-
 
 
 **历史两栈 GSO-off 参考（已由 §11.4.2 三栈 provisional 取代）。** 新 runner 曾完成 GSO-off、3 round、P1/P4/P16 × UL/DL × native/XTCP 的 **36/36** cell；该历史窗口全部 XTCP stats NDJSON 验证通过，最终窗口未见 zero-rate flow。它不与当前三栈 Stage A / provisional 的 `XTCP/GSO-off/P16/UL` 零速流观察相抵触，后者仍是当前公平性结论。该历史窗口的 per-round ratio 中位数如下（artifact：`build/c1-gso-production-candidate-20260901/matrix-gso-off-r3-v2/`）：
