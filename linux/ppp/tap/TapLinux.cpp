@@ -881,6 +881,11 @@ namespace ppp {
                 ifrName = "tun%d";
             }
 
+            if (strlen(ifrName) >= IFNAMSIZ) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelOpenFailed);
+                return -1;
+            }
+
             // __oflag
             int __open_flags = O_RDWR | O_NONBLOCK;
 #if defined(O_CLOEXEC)
@@ -904,7 +909,9 @@ namespace ppp {
 
             // By default, try to enable tun/tap-driver multi-queue mode, if not single-queue mode.
             // https://www.kernel.org/doc/Documentation/networking/tuntap.txt
-            strncpy(ifr.ifr_name, ifrName, IFNAMSIZ);
+            // Copy with a terminator; the length was validated before the device was opened.
+            memcpy(ifr.ifr_name, ifrName, strlen(ifrName));
+            ifr.ifr_name[IFNAMSIZ - 1] = 0;
 
             bool request_gso = !tun_gso_force_bare_ &&
                 (TapGsoMergeRequested() || TapNdiTsoRequested());
@@ -988,8 +995,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strcpy(ifr.ifr_name, ifrName.data());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return false;
+            }
 
             struct sockaddr_in* addr = (struct sockaddr_in*)&(ifr.ifr_addr);
             addr->sin_family = AF_INET;
@@ -1273,8 +1281,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strcpy(ifr.ifr_name, ifrName.data());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return "";
+            }
 
             struct sockaddr_in* addr = (struct sockaddr_in*)&(ifr.ifr_addr);
             addr->sin_family = AF_INET;
@@ -1300,8 +1309,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strcpy(ifr.ifr_name, ifrName.data());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return "";
+            }
 
             struct sockaddr_in* addr = (struct sockaddr_in*)&(ifr.ifr_netmask);
             addr->sin_family = AF_INET;
@@ -1326,8 +1336,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strncpy(ifr.ifr_name, ifrName.data(), ifrName.size());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return "";
+            }
 
             if (ioctl(ifc_ctl_sock.sock_v4, SIOCGIFHWADDR, &ifr)) {
                 return "";
@@ -1347,8 +1358,9 @@ namespace ppp {
             }
 
             struct ifreq ifr;
-            memset(&ifr, 0, sizeof(ifr));
-            strncpy(ifr.ifr_name, ifrName.data(), ifrName.size());
+            if (!CopyInterfaceName(ifr, ifrName)) {
+                return -1;
+            }
 
             if (ioctl(ifc_ctl_sock.sock_v4, SIOGIFINDEX, &ifr)) {
                 return -1;
@@ -1407,7 +1419,7 @@ namespace ppp {
             return err;
         }
 
-        static bool SetRouteToLinux(UInt32 address, int prefix, UInt32 gw, bool action_add_or_delete) noexcept {
+        static bool SetRouteToLinux(const ppp::string& ifrName, UInt32 address, int prefix, UInt32 gw, bool action_add_or_delete) noexcept {
             if (prefix < 0 || prefix > 32) {
                 prefix = 32;
             }
@@ -1416,27 +1428,39 @@ namespace ppp {
             ppp::string address_string = IPEndPoint::ToAddressString(address);
             ppp::string gw_string = IPEndPoint::ToAddressString(gw);
 
+            // Deleting without "dev" could remove same-destination routes owned by other interfaces.
+            ppp::string dev_suffix;
+            if (!action_add_or_delete) {
+                if (!IsSafeInterfaceName(ifrName)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteDeleteFailed);
+                    return false;
+                }
+                dev_suffix = " dev " + ifrName;
+            }
+
             char cmd[1000];
             if (prefix > 31) {
                 len = snprintf(cmd,
                     sizeof(cmd),
-                    "route %s -host %s gw %s > /dev/null 2>&1",
+                    "route %s -host %s gw %s%s > /dev/null 2>&1",
                     action_add_or_delete ? "add" : "delete",
                     address_string.data(),
-                    gw_string.data());
+                    gw_string.data(),
+                    dev_suffix.data());
             }
             else {
                 ppp::string netmask_string = IPEndPoint::ToAddressString(IPEndPoint::PrefixToNetmask(prefix));
                 len = snprintf(cmd,
                     sizeof(cmd),
-                    "route %s -net %s netmask %s gw %s > /dev/null 2>&1",
+                    "route %s -net %s netmask %s gw %s%s > /dev/null 2>&1",
                     action_add_or_delete ? "add" : "delete",
                     address_string.data(),
                     netmask_string.data(),
-                    gw_string.data());
+                    gw_string.data(),
+                    dev_suffix.data());
             }
 
-            if (len < 1) {
+            if (len < 1 || len >= (int)sizeof(cmd)) {
                 ppp::diagnostics::SetLastErrorCode(action_add_or_delete
                     ? ppp::diagnostics::ErrorCode::RouteAddFailed
                     : ppp::diagnostics::ErrorCode::RouteDeleteFailed);
@@ -1454,7 +1478,7 @@ namespace ppp {
             }
 
             bool any = false;
-            for (;;) {
+            for (int i = 0; i < 64; i++) {
                 int status = system(cmd);
                 if (status != 0) {
                     break;
@@ -1468,7 +1492,7 @@ namespace ppp {
         }
 
         bool TapLinux::AddRoute2(UInt32 address, int prefix, UInt32 gw) noexcept {
-            bool ok = SetRouteToLinux(address, prefix, gw, true);
+            bool ok = SetRouteToLinux(ppp::string(), address, prefix, gw, true);
             if (!ok) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RouteAddFailed);
             }
@@ -1476,7 +1500,8 @@ namespace ppp {
         }
 
         bool TapLinux::DeleteRoute2(UInt32 address, int prefix, UInt32 gw) noexcept {
-            return SetRouteToLinux(address, prefix, gw, false);
+            // No interface is known here; a dev-less delete is refused (no callers). Use DeleteRoute.
+            return SetRouteToLinux(ppp::string(), address, prefix, gw, false);
         }
 
         TapLinux::RouteMutationResult TapLinux::AddRouteStatus(
@@ -1489,7 +1514,7 @@ namespace ppp {
                 if (TryRouteExists(ifrName, address, prefix, gw, exists) && exists) {
                     return RouteMutationResult::Unchanged;
                 }
-                bool ok = SetRouteToLinux(address, prefix, gw, true);
+                bool ok = SetRouteToLinux(ifrName, address, prefix, gw, true);
                 if (ok) {
                     return RouteMutationResult::Changed;
                 }
@@ -1532,7 +1557,7 @@ namespace ppp {
 
         bool TapLinux::DeleteRoute(const ppp::string& ifrName, UInt32 address, int prefix, UInt32 gw) noexcept {
             if (ifc_ctl_sock_compatible_route) {
-                if (SetRouteToLinux(address, prefix, gw, false)) {
+                if (SetRouteToLinux(ifrName, address, prefix, gw, false)) {
                     return true;
                 }
                 bool exists = false;
@@ -1551,7 +1576,7 @@ namespace ppp {
 
             bool any = false;
             int last_err = 0;
-            for (;;) {
+            for (int i = 0; i < 64; i++) {
                 int err = TapLinux::SetRoute(SIOCDELRT, ifrName, in_dst, prefix, in_gw);
                 if (err != 0) {
                     last_err = err;
