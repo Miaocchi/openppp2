@@ -223,8 +223,7 @@ namespace ppp {
                     });
                     bool ok = HandshakeWebsocket(configuration, socket, handshake_type, y);
                     ok = pending->exchange(false) && ok;
-                    boost::system::error_code ignored;
-                    timer->cancel(ignored);
+                    ppp::net::Socket::Cancel(*timer);
                     return ok;
                 }
                 /** @brief Finalizes websocket resources and platform QoS objects. */
