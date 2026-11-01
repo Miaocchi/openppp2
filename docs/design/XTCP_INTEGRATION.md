@@ -4,6 +4,26 @@
 > Type: Design
 > Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
 
+## Core review batch 2 (0052)
+
+Patch 0052 disables WSOPT and SACK-permitted in stateless cookie SYN+ACKs:
+the cookie cannot restore either negotiated state. Pool-limited pending TX
+uses a 1 ms retry deadline. RST processing requires an exact RCV.NXT match
+and otherwise uses the existing rate-limited challenge ACK path. IPv4/IPv6
+input is bounded by IP length, GSO keeps CWR only on the first segment and
+clears expired URG pointers, and a retransmitted FIN restarts TIME_WAIT.
+Regression coverage includes a WSOPT cookie handshake with padded ACK data
+and exact/non-exact RSTs in established and closing states. Patch 0053
+updates three pre-existing tests (`test_seqwrap_rst`, `test_rst_keepalive`,
+`test_window_edge_rst`) that asserted the old in-window-inexact RST close.
+
+PPP additionally checks coroutine post results, bounds HTTP headers to 16 KiB,
+makes UDP finalization idempotent and identity-checked, and caps per-session
+UDP ports and mux carriers (including the turbo hard maximum) at 1024 each.
+The Android fallback now interprets Sendfd's zero result as success; its
+blocking connect/recv path (up to approximately 6 seconds) is not redesigned.
+Validation results must come from the isolated lab run, not prior batch counts.
+
 ## Core review batch 1 (0050-0051)
 
 Patch 0050 guards overlapping retransmissions while a rejected receive

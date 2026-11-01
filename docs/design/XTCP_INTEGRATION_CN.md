@@ -4,6 +4,23 @@
 > Type: Design
 > Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
 
+## 核心审查第二批（0052）
+
+0052 禁止无状态 Cookie SYN+ACK 协商 WSOPT 和 SACK-permitted，因为 Cookie
+不保存这两项状态。发送池耗尽时待发队列使用 1 ms 重试期限；RST 仅在序号
+精确等于 RCV.NXT 时关闭连接，否则使用已有的限速挑战 ACK。IPv4/IPv6 输入
+按 IP 长度截断；GSO 仅首段保留 CWR，清除已过期的 URG 指针；重传 FIN
+重新启动 TIME_WAIT。回归覆盖带 WSOPT 的 Cookie 握手、带 padding 的 ACK
+数据，以及 established 和 closing 状态下精确与非精确序号的 RST。0053 同步更新了
+三个原先断言“窗口内非精确 RST 即关闭”的既有测试（`test_seqwrap_rst`、
+`test_rst_keepalive`、`test_window_edge_rst`）。
+
+PPP 同时检查协程投递结果、限制 HTTP 头为 16 KiB，使 UDP 清理幂等且按
+对象身份移除，并将每会话 UDP 端口和 mux carrier（含 turbo hard max）分别
+限制为 1024。Android fallback 按 Sendfd 返回零表示成功；其中可能阻塞
+约 6 秒的 connect/recv 路径未重新设计。验证须以本批隔离实验机记录为准，
+不能沿用上一批测试计数。
+
 ## 核心审查第一批（0050-0051）
 
 0050 在保留拒收前沿时阻止重叠重传重复交付；重叠交付成功后恢复接收窗口，

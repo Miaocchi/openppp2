@@ -368,19 +368,23 @@ namespace ppp {
                     const auto pending = std::make_shared<Await>();
                     const ppp::coroutines::YieldContext::Anchor anchor = yield.Arm();
                     if (!anchor) return false;
-                    auto resolve = [service, snapshot, session, domain, pending, anchor] {
-                    service->Resolve(snapshot, session, PolicyResolverService::BuildQuery(domain),
-                        [pending, anchor](ppp::vector<Byte> response) {
-                            {
-                                std::lock_guard<std::mutex> lock(pending->mutex);
-                                if (!pending->waiting) return;
-                                pending->result = PolicyResolverService::FirstAddress(response);
-                            }
+                    auto resolve = [service, snapshot, session, domain, pending, anchor]() noexcept {
+                        try {
+                            service->Resolve(snapshot, session, PolicyResolverService::BuildQuery(domain),
+                                [pending, anchor](ppp::vector<Byte> response) noexcept {
+                                    try {
+                                        std::lock_guard<std::mutex> lock(pending->mutex);
+                                        if (!pending->waiting) return;
+                                        pending->result = PolicyResolverService::FirstAddress(response);
+                                    } catch (...) {
+                                    }
+                                    anchor.R();
+                                });
+                        } catch (...) {
                             anchor.R();
-                        });
+                        }
                     };
-                    if (yield.GetStrand()) boost::asio::post(*yield.GetStrand(), resolve);
-                    else boost::asio::post(yield.GetContext(), resolve);
+                    if (!ppp::threading::Executors::Post(addressof(yield.GetContext()), yield.GetStrand(), resolve)) return false;
                     yield.Suspend(anchor);
                     std::lock_guard<std::mutex> lock(pending->mutex);
                     pending->waiting = false;

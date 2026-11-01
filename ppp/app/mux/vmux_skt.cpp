@@ -695,12 +695,16 @@ namespace vmux {
                     break;
                 }
 
-                boost::asio::post(tx_socket->get_executor(),
+                bool posted = vmux_post_exec(tx_context_, tx_strand_,
                     [&tx_socket, &ec, &remote_endpoint, open_anchor]() noexcept {
                         tx_socket->open(remote_endpoint.protocol(), ec);
                         open_anchor.R();
                     });
 
+                if (!posted) {
+                    err = 'N';
+                    break;
+                }
                 y.Suspend(open_anchor);
             }
 
@@ -742,7 +746,7 @@ namespace vmux {
                 break;
             }
 
-            boost::asio::post(tx_socket->get_executor(), 
+            bool posted = vmux_post_exec(tx_context_, tx_strand_,
                 [&tx_socket, &ec, &remote_endpoint, connect_anchor]() noexcept {
                     tx_socket->async_connect(remote_endpoint,
                         [connect_anchor, &ec](const boost::system::error_code& err) noexcept {
@@ -751,6 +755,10 @@ namespace vmux {
                         });
                 });
 
+            if (!posted) {
+                err = 'R';
+                break;
+            }
             y.Suspend(connect_anchor); 
             if (ec) {
                 if (ec == boost::system::errc::operation_canceled) {
