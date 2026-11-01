@@ -95,7 +95,7 @@ namespace ppp
             static bool                                                                             SetMaxSchedulers(int completionPortThreads) noexcept;
 
         public:
-            /** @brief Adjusts worker-thread executor count and per-thread context allocation. */
+            /** @brief Grows worker executors; lower limits are ignored until global shutdown. */
             static void                                                                             SetMaxThreads(const std::shared_ptr<BufferswapAllocator>& allocator, int completionPortThreads) noexcept;
             /** @brief Requests shutdown of all known contexts and worker threads. */
             static bool                                                                             Exit() noexcept;

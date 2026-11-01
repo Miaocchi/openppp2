@@ -244,8 +244,8 @@ namespace ppp {
             bool ok = ppp::threading::Executors::ShiftToScheduler(*socket, socket_new, scheduler, strand);
             if (ok) {
                 std::atomic_store(&socket_, socket_new);
-                GetStrand() = strand;
-                GetContext() = scheduler;
+                SetStrand(strand);
+                SetContext(scheduler);
             }
 
             if (!ok) {

@@ -1418,7 +1418,7 @@ namespace ppp {
                 std::lock_guard<std::mutex> lock(authenticated_carrier_mutex_);
                 binding = noise_authenticated_carrier_binding_;
             }
-            return binding && binding->IsAvailable(context_, strand_);
+            return binding && binding->IsAvailable(GetContext(), GetStrand());
         }
 
         bool ITransmission::HasAuthenticatedSessionExporter() const noexcept {
@@ -1443,7 +1443,7 @@ namespace ppp {
                 std::lock_guard<std::mutex> lock(authenticated_carrier_mutex_);
                 binding = noise_authenticated_carrier_binding_;
             }
-            return binding && binding->Export(context_, strand_, label, context,
+            return binding && binding->Export(GetContext(), GetStrand(), label, context,
                 context_length, output, output_length);
         }
 
@@ -1457,8 +1457,8 @@ namespace ppp {
                 finalized_.load(std::memory_order_acquire) ||
                 GetAuthenticatedCarrierMethod() != AuthenticatedCarrierMethod::None ||
                 !IsHandshakeComplete() || !result.IsValid() ||
-                !context_ || !strand_ || context_->stopped() ||
-                !strand_->running_in_this_thread()) {
+                !GetContext() || !GetStrand() || GetContext()->stopped() ||
+                !GetStrand()->running_in_this_thread()) {
                 result.Clear();
                 return false;
             }
@@ -1472,7 +1472,7 @@ namespace ppp {
             try {
                 noise_authenticated_carrier_binding_ =
                     std::make_shared<NoisePskAuthenticatedCarrierBinding>(
-                        context_, strand_, std::move(result));
+                        GetContext(), GetStrand(), std::move(result));
             }
             catch (...) {
                 result.Clear();
@@ -1863,8 +1863,8 @@ namespace ppp {
                 return false;
             }
 
-            auto st = strand_;
-            auto ctx = context_;
+            auto st = GetStrand();
+            auto ctx = GetContext();
             if (NULLPTR == st && NULLPTR == ctx)  {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeIoContextMissing);
                 return false;
@@ -1895,7 +1895,7 @@ namespace ppp {
                         return;   // cancelled normally
                     }
 
-                    auto ctx = self->context_;
+                    auto ctx = self->GetContext();
                     if (NULLPTR == ctx) {
                         self->Dispose();
                         return;
@@ -1907,7 +1907,7 @@ namespace ppp {
                         return;
                     }
 
-                    auto st = self->strand_;
+                    auto st = self->GetStrand();
                     // Spawn a coroutine to send final NOPs and dispose.
                     YieldContext::Spawn(NULLPTR, *ctx, st.get(),
                         [self, st, cfg](YieldContext& y) noexcept {
