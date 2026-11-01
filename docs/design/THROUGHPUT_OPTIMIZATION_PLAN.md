@@ -12,6 +12,30 @@ Current pin: c9dd56013842 (2026-10-31), with 33 local patches. PRs #3-#8
 fully absorb 0037-0040 and 0048; 0042/0043/0045/0046 retain local integration
 residuals only. The old pin and measurements below remain historical.
 
+## Unprofiled Single-Flow DL Remeasurement (2026-11-01)
+
+See Chinese section 2.4.8. Current main `b76d3ba7`, independent remote Release,
+no profiler; three paired 30 s DL P1 rounds, N/X then X/N then N/X, matching the
+historical one-shard, SPSC-off, five-CPU, KCC/AES-256-CFB/GSO-cap32/memory-bridge,
+65536-byte/1-ms gather settings. Native: 1652.24/1625.19/1684.33 Mbps;
+XTCP: 1771.05/1738.57/1763.46 Mbps. Mean ratio **1.063**, versus historical
+1801/1690 = **1.066**: no clear relative regression, so the conditional add77894
+ABBA was not triggered. Unprofiled XTCP averaged **1757.69 Mbps**, 2.9% above
+the profiled 1708.73, but native also fell versus history. Different revisions,
+times and long shared-host queue gaps preclude attributing the entire gap to
+profiler overhead or quantifying it without a same-binary on/off experiment.
+No local builds/tests or product changes. Each stack used shared locks, an idle
+process check and run_m3_isolated.sh. Throughput results passed with no zero-rate
+flows or runtime faults and clean isolation rollback; runner exit 1 and CPU
+qualification failures were retained because perf core/migration metrics are
+intentionally absent. This is not a new 1.2x acceptance or CPU-profile result.
+Three supplementary P16 pairs averaged native **1535.08**, XTCP **1699.00 Mbps**,
+ratio **1.107** (historical 1.134, about -2.4%); this small multi-flow difference
+is not established as a regression without a dedicated old/new comparison.
+All 12 throughput results passed, with CPU qualification failures retained.
+Private evidence: `build/private/p1-clean-20261101/`; dedicated remote source,
+build and binary directories were cleaned after retrieval. No commit or push.
+
 ## Single-Flow DL Profile (2026-11-01)
 
 See Chinese section 2.4.5 for the full ranked profile and proposals. Frozen worktree
