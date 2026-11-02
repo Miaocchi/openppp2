@@ -21,13 +21,18 @@ namespace ppp {
                 return ExecutorStopped(ex.get_inner_executor());
             }
 
-            template <class Executor>
-            inline bool                                                         ExecutorStopped(const Executor& ex) noexcept {
-                // Polymorphic executors (any_io_executor): resolve the owning
-                // execution context and treat a non-io_context owner as running.
-                boost::asio::execution_context& owner = boost::asio::query(ex, boost::asio::execution::context_as<boost::asio::execution_context&>);
-                boost::asio::io_context* context = dynamic_cast<boost::asio::io_context*>(&owner);
-                return nullptr != context && context->stopped();
+            inline bool                                                         ExecutorStopped(const boost::asio::any_io_executor& ex) noexcept {
+                // Polymorphic executor: unwrap the known io_context-based targets;
+                // any other target is treated as running.
+                if (const boost::asio::io_context::executor_type* inner = ex.target<boost::asio::io_context::executor_type>()) {
+                    return ExecutorStopped(*inner);
+                }
+
+                if (const boost::asio::strand<boost::asio::io_context::executor_type>* strand = ex.target<boost::asio::strand<boost::asio::io_context::executor_type>>()) {
+                    return ExecutorStopped(*strand);
+                }
+
+                return false;
             }
 
             /**
