@@ -107,6 +107,8 @@ struct SubscriptionPayload {
     cache_age_minutes: u64,
     nodes: Vec<NodePayload>,
     sources: Vec<SubscriptionSource>,
+    /// True when any subscription URL uses plain http.
+    insecure_transport: bool,
 }
 
 #[derive(Serialize)]
@@ -317,10 +319,22 @@ impl DesktopState {
             || proxy_recovery_path.exists();
         let recovery_marker = network_recovery_marker(&data_dir);
         let recovery_marker_for_events = recovery_marker.clone();
+        let runtime_config_for_events = data_dir.join("runtime").join("appsettings.json");
         let emitter = app.clone();
         let process = ProcessManager::new(move |event| {
             let exited = matches!(&event.event, ProcessEvent::Exited(_));
             if exited {
+                // The runtime config holds node keys; remove it once the
+                // kernel is gone. Policy v2 keeps it: status/update derive
+                // the policy store identity from this path.
+                let runtime_config = runtime_config_for_events.clone();
+                let keep = fs::read(&runtime_config)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some_and(|config| crate::config::uses_policy_v2(&config));
+                if !keep {
+                    let _ = fs::remove_file(&runtime_config);
+                }
                 let needs_recovery = match &event.event {
                     ProcessEvent::Exited(exit) => {
                         exit.recovery_pending
@@ -901,7 +915,31 @@ async fn subscription_refresh(
         .join(format!("subscription-{}.json", source.id));
     let fetch_url = url.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        let origin_host = Url::parse(&fetch_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+        let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.error("too many redirects");
+            }
+            let host = attempt.url().host_str().map(str::to_ascii_lowercase);
+            if host != origin_host {
+                return attempt.error("cross-host subscription redirect blocked");
+            }
+            if let Some(url::Host::Ipv4(ip)) = attempt.url().host() {
+                if ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() {
+                    return attempt.error("redirect to local address blocked");
+                }
+            }
+            if let Some(url::Host::Ipv6(ip)) = attempt.url().host() {
+                if ip.is_loopback() || ip.is_unspecified() {
+                    return attempt.error("redirect to local address blocked");
+                }
+            }
+            attempt.follow()
+        });
         let client = reqwest::blocking::Client::builder()
+            .redirect(redirect_policy)
             .timeout(Duration::from_secs(15))
             .user_agent("OpenPPP2/Desktop")
             .build()
@@ -1371,7 +1409,13 @@ fn subscription_payload(
         .unwrap_or_default();
     let nodes = merge_nodes(&preferences.manual_nodes, subscription_nodes);
     let fetched_at_ms = stored.map(|stored| stored.fetched_at_ms).unwrap_or(0);
+    let insecure_transport = preferences.subscription_url.starts_with("http://")
+        || preferences
+            .subscriptions
+            .iter()
+            .any(|s| s.enabled && s.url.trim_start().starts_with("http://"));
     SubscriptionPayload {
+        insecure_transport,
         url: preferences.subscription_url.clone(),
         name: stored
             .and_then(|stored| stored.document.name.clone())
@@ -1808,7 +1852,29 @@ fn policy_reset_fake_ip(state: State<'_, DesktopState>) -> Result<String, String
     Ok("Fake-IP storage cleared".into())
 }
 
+/// Elevated runs must not execute a binary chosen through the user-writable
+/// preferences file unless it sits beside the app or under Program Files.
+fn elevated_ppp_path_allowed(path: &Path) -> bool {
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        roots.push(dir);
+    }
+    for var in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+        if let Some(value) = std::env::var_os(var) {
+            roots.push(PathBuf::from(value));
+        }
+    }
+    roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| path.starts_with(root))
+}
+
 fn resolve_ppp_path(configured: &str) -> Result<PathBuf, String> {
+    let elevated = crate::windows::administrator();
     let path = if configured.trim().is_empty() {
         let name = if cfg!(windows) { "ppp.exe" } else { "ppp" };
         std::env::current_exe()
@@ -1821,6 +1887,12 @@ fn resolve_ppp_path(configured: &str) -> Result<PathBuf, String> {
     };
     if !path.is_file() {
         return Err(format!("找不到 ppp 可执行文件: {}", path.display()));
+    }
+    if elevated && !configured.trim().is_empty() && !elevated_ppp_path_allowed(&path) {
+        return Err(format!(
+            "管理员模式下只允许使用应用目录或 Program Files 下的 ppp: {}",
+            path.display()
+        ));
     }
     Ok(path)
 }

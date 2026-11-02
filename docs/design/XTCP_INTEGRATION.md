@@ -24,6 +24,18 @@ The Android fallback now interprets Sendfd's zero result as success; its
 blocking connect/recv path (up to approximately 6 seconds) is not redesigned.
 Validation results must come from the isolated lab run, not prior batch counts.
 
+## CUBIC epoch wrap hardening (0070)
+
+Patch 0070 hardens `plugins/cc_cubic.cpp`. The connection-migration restore
+resets `delivered` to 0 and re-runs the plugin `init`, which already reset
+`epoch_base`, so the reported infinite loop is not reachable on that path;
+however `init` kept stale `recovery_base`, `cnt` and `wmax`. Init now resets
+the whole state, `delivered < epoch_base/recovery_base` re-anchors instead of
+wrapping the unsigned difference, and the growth accumulator is clamped to
+1e6 and applied as one integer increment instead of a decrement loop. BBRv1
+and KCC have no such delivered-minus-base pattern that survives their init.
+`test_cc_bbr` gains a delivered-reset case. IDs 0052-0061 stay reserved.
+
 ## Core review batch 1 (0050-0051)
 
 Patch 0050 guards overlapping retransmissions while a rejected receive

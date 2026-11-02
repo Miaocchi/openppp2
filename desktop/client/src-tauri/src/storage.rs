@@ -1,7 +1,18 @@
 use std::path::Path;
 
 pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let temporary = path.with_extension("tmp");
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let unique = format!(
+        "tmp-{}-{}-{}",
+        std::process::id(),
+        nanos,
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let temporary = path.with_extension(unique);
     let mut file = std::fs::File::create(&temporary).map_err(|e| e.to_string())?;
     use std::io::Write;
     file.write_all(bytes)

@@ -14,6 +14,7 @@
 #include <ppp/net/native/ip.h>
 #include <ppp/net/native/eth.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/TelemetryFwd.h>
 
 #include <Windows.h>
 #include <netcfgx.h>
@@ -1202,30 +1203,47 @@ namespace ppp
                     return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::NetworkInterfaceGetIfIndexEmptyFriendlyName);
                 }
 
-                DWORD dwSize = 0;
-                DWORD dwRetVal = 0;
+                ULONG dwSize = 0;
+                DWORD dwRetVal = ERROR_BUFFER_OVERFLOW;
                 PIP_ADAPTER_ADDRESSES pAddresses = NULL;
                 PIP_ADAPTER_ADDRESSES pCurrAddresses = NULL;
 
-                dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, NULL, &dwSize);
-                if (dwRetVal != ERROR_BUFFER_OVERFLOW)
+                // The adapter list can grow between the size probe and the fetch,
+                // so retry a bounded number of times on ERROR_BUFFER_OVERFLOW.
+                for (int attempt = 0; attempt < 5 && dwRetVal == ERROR_BUFFER_OVERFLOW; attempt++)
                 {
-                    printf("GetAdaptersAddresses (first) failed with error: %d\n", dwRetVal);
-                    return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
+                    if (pAddresses != NULL)
+                    {
+                        free(pAddresses);
+                        pAddresses = NULL;
+                    }
+
+                    dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, NULL, &dwSize);
+                    if (dwRetVal != ERROR_BUFFER_OVERFLOW)
+                    {
+                        break;
+                    }
+
+                    pAddresses = (PIP_ADAPTER_ADDRESSES)malloc(dwSize);
+                    if (pAddresses == NULL)
+                    {
+                        ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                            "windows_network", "GetIfIndexByFriendlyName memory allocation failed");
+                        return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    }
+
+                    dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &dwSize);
                 }
 
-                pAddresses = (PIP_ADAPTER_ADDRESSES)malloc(dwSize);
-                if (pAddresses == NULL)
-                {
-                    printf("Memory allocation failed\n");
-                    return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
-                }
-
-                dwRetVal = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &dwSize);
                 if (dwRetVal != NO_ERROR)
                 {
-                    printf("GetAdaptersAddresses (second) failed with error: %d\n", dwRetVal);
-                    free(pAddresses);
+                    ppp::telemetry::Log(ppp::telemetry::Level::kInfo,
+                        "windows_network", "GetAdaptersAddresses failed: win32_error=%lu",
+                        static_cast<unsigned long>(dwRetVal));
+                    if (pAddresses != NULL)
+                    {
+                        free(pAddresses);
+                    }
                     return ppp::diagnostics::SetLastError<int>(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
                 }
 
@@ -2476,22 +2494,40 @@ namespace ppp
             static bool SetInterfaceMtuIpInterfaceEntry(int interface_index, int mtu) noexcept
             {
                 PIP_ADAPTER_ADDRESSES pAddresses = NULLPTR;
+                char* szBuf = NULLPTR;
                 ULONG ulBufLen = 0;
-                GetAdaptersAddresses(AF_UNSPEC, 0, NULLPTR, pAddresses, &ulBufLen);
+                DWORD dwErr = ERROR_BUFFER_OVERFLOW;
 
-                if (ulBufLen == 0)
+                // Probe and fetch with identical family/flags; retry (bounded) when the
+                // adapter list grows between the two calls.
+                for (int attempt = 0; attempt < 5 && dwErr == ERROR_BUFFER_OVERFLOW; attempt++)
                 {
+                    Mfree(szBuf);
+                    szBuf = NULLPTR;
+
+                    ulBufLen = 0;
+                    dwErr = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST, NULLPTR, NULLPTR, &ulBufLen);
+                    if (dwErr != ERROR_BUFFER_OVERFLOW)
+                    {
+                        break;
+                    }
+
+                    szBuf = (char*)Malloc(ulBufLen);
+                    if (NULLPTR == szBuf)
+                    {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    }
+
+                    pAddresses = (IP_ADAPTER_ADDRESSES*)szBuf;
+                    dwErr = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST, NULLPTR, pAddresses, &ulBufLen); /* NETIOAPI_API */
+                }
+
+                if (dwErr != NO_ERROR)
+                {
+                    Mfree(szBuf);
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable);
                 }
 
-                char* szBuf = (char*)Malloc(ulBufLen);
-                pAddresses = (IP_ADAPTER_ADDRESSES*)szBuf;
-                if (NULLPTR == pAddresses)
-                {
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
-                }
-
-                DWORD dwErr = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST, NULLPTR, pAddresses, &ulBufLen); /* NETIOAPI_API */
                 if (dwErr == NO_ERROR)
                 {
                     while (NULLPTR != pAddresses)

@@ -211,7 +211,7 @@ Android 和 iOS 使用的公开订阅载荷为：
 
 ## 9. Guardian HTTP 和 SSE API
 
-Guardian 路由整体为**实验**。启用鉴权时，普通 `/api/*` 路由要求 `Authorization: Bearer <token>`。auth 路由和 `GET /api/v1/status` 绕过通用中间件。SSE 也绕过该中间件，但会在 handler 中用 query token 或 Bearer token 单独校验 TokenStore/JWT；只有关闭鉴权时才公开。CORS 当前允许 `*`。
+Guardian 路由整体为**实验**。启用鉴权时，普通 `/api/*` 路由要求 `Authorization: Bearer <token>`。auth 路由和 `GET /api/v1/status` 绕过通用中间件。SSE 也绕过该中间件，但会在 handler 中用 query token 或 Bearer token 单独校验 TokenStore/JWT；只有关闭鉴权时才公开。不输出 CORS 头；外域 Origin 的状态变更请求返回 403，回环监听会校验 Host 头。
 
 | 分组 | 路由 |
 |---|---|
@@ -225,7 +225,7 @@ Guardian 路由整体为**实验**。启用鉴权时，普通 `/api/*` 路由要
 
 源码依据：`go/guardian/api/router.go`、`middleware.go`、各 handler 和 `webui/src/lib/api.js`。
 
-Guardian 配置和实例状态以 `0600` 模式写入 JSON；profiles/backups 是 `0644` 普通文件；binary 注册表仅在内存中，重启后依赖重新发现。
+Guardian 配置和实例状态以 `0600` 模式写入 JSON；profiles/backups 以 `0600` 写入（目录 `0700`）；binary 注册表仅在内存中，重启后依赖重新发现。
 
 **缺口：**discover/register 可访问任意主机路径；`PUT /api/v1/guardian/config` 当前忽略请求体；多数 handler 没有直接 API 测试；SSE 凭据可能出现在 URL；WebUI token 存在 `localStorage`；配置档保存/恢复不是原子操作；binary 注册不会持久化。关闭鉴权时，修改密码也是未鉴权的首次初始化入口，因此首次设置只能放在 loopback 或可信网络。
 
@@ -318,7 +318,7 @@ TUI 依赖 TTY，并受 `PPP_NO_TUI` 控制。命令在 ConsoleUI 生命周期�
 | Telemetry facade | log、metric、span、OTLP HTTP callback | **实验** | `ppp/diagnostics/Telemetry.h`、平台桥 | 文档与构建对默认启用状态描述不一致 |
 | 管理器状态 | 带 `version: 1` 的 `manager-data.json` | 独立管理器的**当前持久化格式** | `LocalStore.go` | 无公开 JSON Schema、迁移策略或损坏恢复契约 |
 | Guardian 配置/实例 | 以 `0600` 写入的 JSON | **内部持久化格式** | `go/guardian/config.go`、`guardian.go` | 无公开 schema 或迁移契约 |
-| Guardian profiles/backups | 以 `0644` 写入的文件 | **内部持久化格式** | `go/guardian/profile/manager.go` | 保存/恢复不是原子操作 |
+| Guardian profiles/backups | 以 `0600` 写入的文件 | **内部持久化格式** | `go/guardian/profile/manager.go` | 保存/恢复不是原子操作 |
 | Guardian binary 注册表 | 内存注册加重新发现 | **内部运行状态** | `go/guardian/binary/manager.go` | 显式注册不会跨重启保留 |
 | Android 配置档 | SharedPreferences JSON | **内部** | `profile_store.dart` | 无显式存储 schema/迁移 |
 | iOS 配置档导出 | 版本化 JSON bundle | **稳定** | `ProfileImportExport.swift` | 无独立 JSON Schema |

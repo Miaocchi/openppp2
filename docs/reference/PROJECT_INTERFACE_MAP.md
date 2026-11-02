@@ -204,7 +204,7 @@ The manager caps generated subscription documents at 2 MiB. **Gaps:** client dow
 
 ## 9. Guardian HTTP And SSE API
 
-Guardian routes are **Experimental**. When authentication is enabled, normal `/api/*` routes require `Authorization: Bearer <token>`. Auth routes and `GET /api/v1/status` bypass the common middleware. SSE also bypasses that middleware but performs its own TokenStore/JWT validation using a query token or Bearer token; it is public only when authentication is disabled. CORS currently allows `*`.
+Guardian routes are **Experimental**. When authentication is enabled, normal `/api/*` routes require `Authorization: Bearer <token>`. Auth routes and `GET /api/v1/status` bypass the common middleware. SSE also bypasses that middleware but performs its own TokenStore/JWT validation using a query token or Bearer token; it is public only when authentication is disabled. No CORS headers are emitted; foreign-Origin state-changing requests get 403 and loopback listeners validate the Host header.
 
 | Group | Routes |
 |---|---|
@@ -218,7 +218,7 @@ Guardian routes are **Experimental**. When authentication is enabled, normal `/a
 
 Source truth is `go/guardian/api/router.go`, `middleware.go`, handler files, and `go/guardian/webui/src/lib/api.js`.
 
-Guardian config and instance state are written as JSON with mode `0600`; profiles and backups are ordinary files with mode `0644`; the registered-binary map is in memory and is rebuilt through discovery after restart.
+Guardian config and instance state are written as JSON with mode `0600`; profiles and backups use mode `0600` (directories `0700`); the registered-binary map is in memory and is rebuilt through discovery after restart.
 
 **Gaps:** discover/register can access arbitrary host paths; `PUT /api/v1/guardian/config` currently ignores its request body; most handlers have no direct API tests; SSE credentials can appear in URLs; WebUI tokens use `localStorage`; profile save/restore is not atomic; binary registrations are not persistent. Password change is also the unauthenticated bootstrap path while auth is disabled, so first-time setup must remain on loopback or a trusted network.
 
@@ -311,7 +311,7 @@ Creating a supported native SDK would require a deliberately small installed hea
 | Telemetry facade | Logs, metrics, spans, OTLP HTTP callbacks | **Experimental** | `ppp/diagnostics/Telemetry.h`, platform bridges | Documentation and builds disagree on default enablement |
 | Manager state | `manager-data.json` with `version: 1` | **Current persisted format** for standalone manager | `go/ppp/LocalStore.go` | No published JSON Schema, migration policy, or corruption-recovery contract |
 | Guardian config/instances | JSON written with mode `0600` | **Internal persisted format** | `go/guardian/config.go`, `guardian.go` | No published schema or migration contract |
-| Guardian profiles/backups | Files written with mode `0644` | **Internal persisted format** | `go/guardian/profile/manager.go` | Save/restore is not atomic |
+| Guardian profiles/backups | Files written with mode `0600` | **Internal persisted format** | `go/guardian/profile/manager.go` | Save/restore is not atomic |
 | Guardian binary registry | In-memory registration plus rediscovery | **Internal runtime state** | `go/guardian/binary/manager.go` | Explicit registrations do not survive restart |
 | Android profiles | SharedPreferences JSON | **Internal** | `profile_store.dart` | No explicit storage schema/migration |
 | iOS profile export | Versioned JSON bundle | **Stable** | `ProfileImportExport.swift` | No standalone JSON Schema |

@@ -21,6 +21,16 @@ PPP 同时检查协程投递结果、限制 HTTP 头为 16 KiB，使 UDP 清理�
 约 6 秒的 connect/recv 路径未重新设计。验证须以本批隔离实验机记录为准，
 不能沿用上一批测试计数。
 
+## CUBIC epoch 回绕加固（0070）
+
+0070 加固 `plugins/cc_cubic.cpp`。连接迁移恢复会把 `delivered` 清零并重跑插件
+`init`（原本已重置 `epoch_base`），因此报告的死循环在该路径上不可达；但
+`init` 遗留了过期的 `recovery_base`、`cnt`、`wmax`。现在 init 重置全部状态，
+`delivered` 小于 `epoch_base/recovery_base` 时重新锚定而不是让无符号差回绕，
+增长累加器限幅到 1e6，并以一次整数增量取代递减循环。BBRv1 与 KCC 不存在
+经 init 后仍可回绕的 delivered 减基数模式。`test_cc_bbr` 新增 delivered
+重置用例。编号 0052-0061 仍为其他批次保留。
+
 ## 核心审查第一批（0050-0051）
 
 0050 在保留拒收前沿时阻止重叠重传重复交付；重叠交付成功后恢复接收窗口，
