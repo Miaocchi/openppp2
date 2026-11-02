@@ -103,8 +103,8 @@ ppp policy <子命令> [选项]
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--proxy-http-port=<端口>` | `8080` | 覆盖 `client.http-proxy.port`。 |
-| `--proxy-socks-port=<端口>` | `1080` | 覆盖 `client.socks-proxy.port`。 |
+| `--proxy-http-port=<端口>` | `8080` | 覆盖 `client.http-proxy.port`。必须是 1..65535 的整数，非法值会中止启动。 |
+| `--proxy-socks-port=<端口>` | `1080` | 覆盖 `client.socks-proxy.port`。必须是 1..65535 的整数，非法值会中止启动。 |
 
 `--mode=proxy` 的完整行为见 [代理模式](../guides/PROXY_MODE_CN.md)。
 

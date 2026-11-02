@@ -118,8 +118,9 @@ namespace ppp
                 PMIB_IPFORWARDTABLE pRouteTable = NULLPTR;
                 DWORD dwSize = 0;
                 DWORD dwErr = ::GetIpForwardTable(pRouteTable, &dwSize, true);
-                if (dwErr == ERROR_INSUFFICIENT_BUFFER)
+                for (int attempt = 0; attempt < 5 && dwErr == ERROR_INSUFFICIENT_BUFFER; attempt++)
                 {
+                    Mfree(pRouteTable);
                     pRouteTable = (PMIB_IPFORWARDTABLE)Malloc(dwSize);
                     if (NULLPTR == pRouteTable)
                     {

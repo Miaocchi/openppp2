@@ -267,11 +267,13 @@ namespace ppp
                 {
                     bool enable_ok = false;
                     const DWORD enable = ppp::win32::GetRegistryValueDword(HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"ProxyEnable", &enable_ok);
+                    // AutoConfigURL is optional; a missing value means no PAC and is
+                    // recorded as empty rather than failing an otherwise applied proxy.
                     bool pac_ok = false;
                     const std::wstring pac = ppp::win32::GetRegistryValueString(HKEY_CURRENT_USER, SYSTEM_PROXY_PATH, L"AutoConfigURL", &pac_ok);
                     const std::wstring server_wcs = server_bstr.GetBSTR();
                     const std::wstring bypass_wcs = bypass_bstr.GetBSTR();
-                    b = enable_ok && pac_ok && STATIC_RecordAppliedSystemProxy(server_wcs, pac, enable != 0, bypass_wcs);
+                    b = enable_ok && STATIC_RecordAppliedSystemProxy(server_wcs, pac_ok ? pac : std::wstring(), enable != 0, bypass_wcs);
                 }
                 return b;
             }
@@ -346,7 +348,9 @@ namespace ppp
                     return false;
                 }
 
-                s_system_proxy_engaged.store(enable, std::memory_order_release);
+                // The registry was changed and a snapshot exists, so keep the marker
+                // set even when enable is false; only a successful restore clears it.
+                s_system_proxy_engaged.store(true, std::memory_order_release);
                 return true;
             }
 

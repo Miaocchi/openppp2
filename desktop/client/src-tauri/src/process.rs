@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -105,6 +105,9 @@ pub struct ProcessManager {
     emit: Emitter,
     snapshot: Arc<Mutex<ConnectionSnapshot>>,
     stop_context: Arc<Mutex<StopContext>>,
+    /// Pid whose monitor has taken it from the slot but not yet finished
+    /// emitting the final stats and Exited event.
+    exiting: Arc<(Mutex<Option<u32>>, Condvar)>,
 }
 
 impl ProcessManager {
@@ -117,6 +120,7 @@ impl ProcessManager {
             emit: Arc::new(emit),
             snapshot: Arc::new(Mutex::new(ConnectionSnapshot::default())),
             stop_context: Arc::new(Mutex::new(StopContext::default())),
+            exiting: Arc::new((Mutex::new(None), Condvar::new())),
         }
     }
 
@@ -273,12 +277,23 @@ impl ProcessManager {
             spec.stats_path,
             pid,
             Arc::clone(&self.stop_context),
+            Arc::clone(&self.exiting),
         );
         Ok(pid)
     }
 
     pub fn stop(&mut self) -> Result<(), ProcessError> {
         self.stop_with_timeout(GRACEFUL_STOP_TIMEOUT)
+    }
+
+    /// Blocks until the monitor has emitted Exited for `pid`, so a restart
+    /// cannot bump the session id before the old exit event is delivered.
+    fn wait_exit_emitted(&self, pid: u32) {
+        let (lock, cv) = &*self.exiting;
+        let guard = lock.lock().expect("exiting lock poisoned");
+        let _ = cv
+            .wait_timeout_while(guard, Duration::from_secs(5), |p| *p == Some(pid))
+            .expect("exiting lock poisoned");
     }
 
     fn stop_with_timeout(&mut self, graceful_timeout: Duration) -> Result<(), ProcessError> {
@@ -314,6 +329,7 @@ impl ProcessManager {
         let owns = |slot: &Option<Child>| slot.as_ref().is_some_and(|child| child.id() == pid);
         while Instant::now() < deadline {
             if !owns(&self.child.lock().expect("process lock poisoned")) {
+                self.wait_exit_emitted(pid);
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(25));
@@ -373,6 +389,9 @@ impl ProcessManager {
                 None => None,
             }
         };
+        if exit.is_none() {
+            self.wait_exit_emitted(pid);
+        }
         if let Some(exit) = exit {
             let event = ProcessEvent::Exited(exit);
             let connection = {
@@ -396,6 +415,7 @@ fn monitor_child(
     stats_path: Option<PathBuf>,
     pid: u32,
     stop_context: Arc<Mutex<StopContext>>,
+    exiting: Arc<(Mutex<Option<u32>>, Condvar)>,
 ) {
     thread::spawn(move || {
         let mut offset = 0;
@@ -425,6 +445,7 @@ fn monitor_child(
                 {
                     Some(status) => {
                         slot.take();
+                        *exiting.0.lock().expect("exiting lock poisoned") = Some(pid);
                         Some(exit_info(status, &stop_context))
                     }
                     None => {
@@ -440,6 +461,8 @@ fn monitor_child(
                     read_stats(path, &mut offset, &mut pending, &mut sampler, &emit);
                 }
                 emit(ProcessEvent::Exited(exit));
+                *exiting.0.lock().expect("exiting lock poisoned") = None;
+                exiting.1.notify_all();
                 break;
             }
             thread::sleep(Duration::from_millis(50));

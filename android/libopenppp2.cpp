@@ -89,6 +89,8 @@
 #include <exception>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
+#include <vector>
 
 #ifndef __LIBOPENPPP2__
 #define __LIBOPENPPP2__(JNIType)                                            extern "C" JNIEXPORT __unused JNIType JNICALL
@@ -108,6 +110,128 @@ FILE* stdout = &__sF[1];
 FILE* stderr = &__sF[2];
 #endif
 #endif
+
+// Standard UTF-8 <-> Java String conversion.
+//
+// GetStringUTFChars/NewStringUTF speak "modified UTF-8": supplementary characters
+// (emoji, rare CJK) are encoded as two 3-byte surrogates (CESU-8) and a standard
+// 4-byte UTF-8 sequence is rejected or corrupted.  The pair below goes through the
+// UTF-16 view (GetStringChars / NewString) and does the conversion explicitly.
+// Unpaired surrogates and malformed input become U+FFFD.
+static std::shared_ptr<ppp::string>                                         libopenppp2_jstring_to_utf8(JNIEnv* env, jstring v) noexcept {
+    if (NULLPTR == env || NULLPTR == v) {
+        return NULLPTR;
+    }
+
+    const jsize length = env->GetStringLength(v);
+    const jchar* w = env->GetStringChars(v, NULLPTR);
+    if (NULLPTR == w) {
+        return NULLPTR;
+    }
+
+    std::shared_ptr<ppp::string> result = ppp::make_shared_object<ppp::string>();
+    if (NULLPTR != result) {
+        result->reserve(static_cast<std::size_t>(length) * 3);
+        for (jsize i = 0; i < length; i++) {
+            uint32_t cp = w[i];
+            if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < length && w[i + 1] >= 0xDC00 && w[i + 1] <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (static_cast<uint32_t>(w[i + 1]) - 0xDC00);
+                i++;
+            }
+            else if (cp >= 0xD800 && cp <= 0xDFFF) {
+                cp = 0xFFFD;
+            }
+
+            if (cp < 0x80) {
+                result->push_back(static_cast<char>(cp));
+            }
+            else if (cp < 0x800) {
+                result->push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                result->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+            else if (cp < 0x10000) {
+                result->push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                result->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                result->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+            else {
+                result->push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                result->push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                result->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                result->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+        }
+    }
+
+    env->ReleaseStringChars(v, w);
+    return result;
+}
+
+static jstring                                                              libopenppp2_utf8_to_jstring(JNIEnv* env, const char* s, std::size_t n) noexcept {
+    if (NULLPTR == env || NULLPTR == s) {
+        return NULLPTR;
+    }
+
+    std::vector<jchar> w;
+    w.reserve(n);
+
+    std::size_t i = 0;
+    while (i < n) {
+        const uint8_t c = static_cast<uint8_t>(s[i]);
+        uint32_t cp = 0;
+        std::size_t len = 0;
+        if (c < 0x80) {
+            cp = c;
+            len = 1;
+        }
+        else if (c >= 0xC2 && c <= 0xDF) {
+            cp = c & 0x1F;
+            len = 2;
+        }
+        else if (c >= 0xE0 && c <= 0xEF) {
+            cp = c & 0x0F;
+            len = 3;
+        }
+        else if (c >= 0xF0 && c <= 0xF4) {
+            cp = c & 0x07;
+            len = 4;
+        }
+
+        bool ok = len != 0 && i + len <= n;
+        for (std::size_t k = 1; ok && k < len; k++) {
+            const uint8_t b = static_cast<uint8_t>(s[i + k]);
+            if ((b & 0xC0) != 0x80) {
+                ok = false;
+            }
+            else {
+                cp = (cp << 6) | (b & 0x3F);
+            }
+        }
+
+        if (ok && ((len == 3 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) || (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)))) {
+            ok = false;
+        }
+
+        if (!ok) {
+            w.push_back(static_cast<jchar>(0xFFFD));
+            i++;
+            continue;
+        }
+
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            w.push_back(static_cast<jchar>(0xD800 + (cp >> 10)));
+            w.push_back(static_cast<jchar>(0xDC00 + (cp & 0x3FF)));
+        }
+        else {
+            w.push_back(static_cast<jchar>(cp));
+        }
+
+        i += len;
+    }
+
+    return env->NewString(w.data(), static_cast<jsize>(w.size()));
+}
 
 // Runtime snapshot push bridge.
 //
@@ -186,7 +310,7 @@ static void                                                                 libo
         return;
     }
 
-    jstring json_string = env->NewStringUTF(json.data());
+    jstring json_string = libopenppp2_utf8_to_jstring(env, json.data(), json.size());
     if (NULLPTR != json_string) {
         env->CallStaticVoidMethod(libopenppp2_runtime_clazz, libopenppp2_runtime_method, json_string);
         if (env->ExceptionCheck()) {
@@ -233,20 +357,8 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     }
 }
 
-static inline jstring                                                       JNIENV_NewStringUTF(JNIEnv* env, const char* v) noexcept { return NULLPTR != v ? env->NewStringUTF(v) : NULLPTR; }
-static std::shared_ptr<ppp::string>                                         JNIENV_GetStringUTFChars(JNIEnv* env, const jstring& v) noexcept {
-    std::shared_ptr<ppp::string> result;
-    if (NULLPTR != v) {
-        char* s = (char*)env->GetStringUTFChars(v, NULLPTR);
-        if (NULLPTR != s) {
-            result =
-                ppp::make_shared_object<ppp::string>(s);
-            env->ReleaseStringUTFChars(v, s);
-        }
-    }
-
-    return result;
-}
+static inline jstring                                                       JNIENV_NewStringUTF(JNIEnv* env, const char* v) noexcept { return NULLPTR != v ? libopenppp2_utf8_to_jstring(env, v, strlen(v)) : NULLPTR; }
+static inline std::shared_ptr<ppp::string>                                  JNIENV_GetStringUTFChars(JNIEnv* env, const jstring& v) noexcept { return libopenppp2_jstring_to_utf8(env, v); }
 
 enum {
     LIBOPENPPP2_LINK_STATE_ESTABLISHED                                      = 0,
@@ -299,6 +411,7 @@ enum {
 
     // STOP
     LIBOPENPPP2_ERROR_IT_IS_NOT_RUNING                                      = 401,
+    LIBOPENPPP2_ERROR_STOP_REQUESTED                                        = 402,
 };
 
 static ppp::diagnostics::ErrorCode                                          libopenppp2_translate_error(int err) noexcept {
@@ -343,6 +456,7 @@ static ppp::diagnostics::ErrorCode                                          libo
     case LIBOPENPPP2_ERROR_VETHERNET_PPPD_THREAD_NOT_RUNING:
         return ErrorCode::RuntimeThreadStartFailed;
     case LIBOPENPPP2_ERROR_IT_IS_NOT_RUNING:
+    case LIBOPENPPP2_ERROR_STOP_REQUESTED:
         return ErrorCode::AndroidLibInvalidState;
     case LIBOPENPPP2_ERROR_UNKNOWN:
     default:
@@ -395,6 +509,20 @@ using ppp::app::client::proxys::VEthernetSocksProxySwitcher;
 using ppp::IDisposable;
 
 struct libopenppp2_network_interface final {
+    // The TUN descriptor was detached from the Java ParcelFileDescriptor, so once
+    // native code accepts it, this object owns it until a tap takes it over
+    // (OwnsTun is cleared at that point).  Any failure path that drops the
+    // object before the hand-off closes the descriptor here instead of leaking it.
+    libopenppp2_network_interface() noexcept = default;
+    libopenppp2_network_interface(const libopenppp2_network_interface&) = delete;
+    libopenppp2_network_interface& operator=(const libopenppp2_network_interface&) = delete;
+    ~libopenppp2_network_interface() noexcept {
+        if (OwnsTun && VTun != -1) {
+            ::close(VTun);
+        }
+    }
+
+    bool                                                                    OwnsTun    = false;
     int                                                                     VTun       = -1;
     uint16_t                                                                VMux       = 0;
     bool                                                                    VNet       = false;
@@ -434,6 +562,12 @@ public:
     }                                                                       last_reported_statistics_;
     uint32_t                                                                stats_perf_log_ticks_ = 0;
     ppp::app::runtime::RuntimeLifecycle                                     runtime_lifecycle_;
+
+    // run() is active on the JVM thread (from entry until the io_context returns).
+    std::atomic<bool>                                                       run_active_{ false };
+    // stop() arrived while run() was still connecting, before client_ was published.
+    // run() clears it on entry and polls it between connect phases.
+    std::atomic<bool>                                                       stop_requested_{ false };
 
 private:
     bool                                                                    ReportTransmissionStatistics(uint64_t now) noexcept;
@@ -706,14 +840,30 @@ bool                                                                        libo
         });
 }
 
+// Upper bound for a JNI call that waits on the native run context.
+static constexpr int                                                               LIBOPENPPP2_INVOKE_TIMEOUT_MS = 8000;
+
 static int                                                                         libopenppp2_invoke_on_run_context(const ppp::function<int()>& task) noexcept {
     std::shared_ptr<libopenppp2_application> app = libopenppp2_application::GetDefault();
     if (NULLPTR == app) {
         return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::AppContextUnavailable, LIBOPENPPP2_ERROR_APPLICATIION_UNINITIALIZED);
     }
 
+    // Record the stop request before looking at client_.  run() publishes client_
+    // and then polls the flag, so with both sides sequentially consistent at least
+    // one of them observes the other and a stop issued mid-connect is never lost.
+    const bool run_active = app->run_active_.load();
+    if (run_active) {
+        app->stop_requested_.store(true);
+    }
+
     std::shared_ptr<VEthernetNetworkSwitcher> client = std::atomic_load(&app->client_);
     if (NULLPTR == client) {
+        if (run_active) {
+            // Connect still in progress: run() aborts at its next phase boundary.
+            return LIBOPENPPP2_ERROR_SUCCESS;
+        }
+
         return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::NetworkInterfaceUnavailable, LIBOPENPPP2_ERROR_VETHERNET_PPPD_THREAD_NOT_RUNING);
     }
 
@@ -723,28 +873,41 @@ static int                                                                      
     }
 
     std::shared_ptr<boost::asio::io_context> context = protector->GetContext();
-    if (NULLPTR == context) {
+    if (NULLPTR == context || context->stopped()) {
         return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::RuntimeIoContextMissing, LIBOPENPPP2_ERROR_VETHERNET_PPPD_THREAD_NOT_RUNING);
     }
 
-    std::shared_ptr<Executors::Awaitable> awaitable = ppp::make_shared_object<Executors::Awaitable>();
-    if (NULLPTR == awaitable) {
+    // The wait state is shared with the posted handler, so giving up after the
+    // timeout never leaves the handler writing into a dead stack frame.  The task
+    // handed in here must not capture caller locals by reference.
+    struct WaitState final {
+        std::mutex                  mtx;
+        std::condition_variable     cv;
+        bool                        done = false;
+        int                         err = LIBOPENPPP2_ERROR_UNKNOWN;
+    };
+
+    std::shared_ptr<WaitState> state = ppp::make_shared_object<WaitState>();
+    if (NULLPTR == state) {
         return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, LIBOPENPPP2_ERROR_ALLOCATED_MEMORY);
     }
 
-    int err = LIBOPENPPP2_ERROR_UNKNOWN;
     boost::asio::post(*context,
-        [context, awaitable, &err, task]() noexcept {
-            err = task();
-            awaitable->Processed();
+        [context, state, task]() noexcept {
+            int result = task();
+            std::lock_guard<std::mutex> scope(state->mtx);
+            state->err = result;
+            state->done = true;
+            state->cv.notify_all();
         });
 
-    bool ok = awaitable->Await();
-    if (!ok) {
+    std::unique_lock<std::mutex> lk(state->mtx);
+    if (!state->cv.wait_for(lk, std::chrono::milliseconds(LIBOPENPPP2_INVOKE_TIMEOUT_MS), [&state]() noexcept { return state->done; })) {
+        __android_log_print(ANDROID_LOG_WARN, "libopenppp2", "invoke_on_run_context: timed out after %d ms", LIBOPENPPP2_INVOKE_TIMEOUT_MS);
         return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::RuntimeEventDispatchFailed, LIBOPENPPP2_ERROR_UNKNOWN);
     }
 
-    return err;
+    return state->err;
 }
 
 int                                                                         libopenppp2_application::Invoke(const ppp::function<int()>& task) noexcept {
@@ -754,7 +917,8 @@ int                                                                         libo
     }
 
     std::shared_ptr<boost::asio::io_context> context = Executors::GetDefault();
-    if (NULLPTR == context) {
+    if (NULLPTR == context || context->stopped()) {
+        // A stopped io_context never runs the posted handler, so Await() would hang.
         return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::RuntimeIoContextMissing, LIBOPENPPP2_ERROR_VETHERNET_PPPD_THREAD_NOT_RUNING);
     }
 
@@ -1332,6 +1496,9 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_set_1network_1i
 
     int err = libopenppp2_application::Invoke(
         [&app, &network_interface]() noexcept {
+            // Native takes ownership of the descriptor only here; if the task
+            // never runs, the Java caller still owns (and closes) it.
+            network_interface->OwnsTun = true;
             app->network_interface_ = network_interface;
             return LIBOPENPPP2_ERROR_SUCCESS;
         });
@@ -1581,7 +1748,13 @@ static std::shared_ptr<ITap>                                                    
     bool hosted_network = true;
 
     void* tun = (void*)(std::intptr_t)tun_fd;
-    return ppp::tap::TapLinux::From(context, dev, tun, ip, gw, mask, promisc, hosted_network);
+    std::shared_ptr<ITap> tap = ppp::tap::TapLinux::From(context, dev, tun, ip, gw, mask, promisc, hosted_network);
+    if (NULLPTR != tap) {
+        // The tap owns the descriptor from here on; do not close it twice.
+        network_interface->OwnsTun = false;
+    }
+
+    return tap;
 }
 
 static ppp::string                                                               libopenppp2_routing_source_without_file_uri(
@@ -1816,6 +1989,12 @@ static int                                                                      
     __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
         "open_switcher: before client->Open tap=%p vnet=%d static=%d mux=%d",
         tap.get(), network_interface->VNet ? 1 : 0, network_interface->StaticMode ? 1 : 0, network_interface->VMux);
+    if (app->stop_requested_.load()) {
+        // Do not start the (slow) connect when stop() already arrived; the caller
+        // disposes tap/client and run() unwinds.
+        return LIBOPENPPP2_ERROR_STOP_REQUESTED;
+    }
+
     bool ok = client->Open(tap);
     __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
         "open_switcher: client->Open result=%d last_error=%d",
@@ -1887,6 +2066,12 @@ static int                                                                      
             ? network_interface->IPAddress.to_v4().to_uint() : 0, configuration->client.proxy_only)) {
         return LIBOPENPPP2_ERROR_OPEN_VETHERNET_FAIL;
     }
+    if (app->stop_requested_.load()) {
+        // Checked before the tap takes the TUN descriptor, so network_interface_
+        // (released by run()) still closes it.
+        return LIBOPENPPP2_ERROR_STOP_REQUESTED;
+    }
+
     std::shared_ptr<ITap> tap = libopenppp2_from_tuntap_driver_new(context, network_interface);
     __android_log_print(ANDROID_LOG_INFO, "libopenppp2",
         "try_open_switcher: tap=%p fd=%d ip=%s mask=%s gw=%s",
@@ -1975,10 +2160,34 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
     }
     __android_log_print(ANDROID_LOG_INFO, "libopenppp2", "run() io_context created");
 
+    // Each run starts with a clean stop request; stop() sets it again while the
+    // connect is still in flight (client_ not yet published) and the start phases
+    // below poll it.  run_active_ is what lets stop() tell "connecting" from "idle".
+    {
+        std::shared_ptr<libopenppp2_application> run_app = libopenppp2_application::GetDefault();
+        if (NULLPTR != run_app) {
+            run_app->stop_requested_.store(false);
+            run_app->run_active_.store(true);
+        }
+    }
+
+    struct RunActiveGuard final {
+        ~RunActiveGuard() noexcept {
+            std::shared_ptr<libopenppp2_application> run_app = libopenppp2_application::GetDefault();
+            if (NULLPTR != run_app) {
+                run_app->run_active_.store(false);
+            }
+        }
+    } run_active_guard;
+
     int err = LIBOPENPPP2_ERROR_SUCCESS;
     boost::asio::post(*context,
         [&err, env, context, key_]() noexcept {
             auto start = [env, context](const std::shared_ptr<libopenppp2_application>& app) noexcept -> int {
+                    if (app->stop_requested_.load()) {
+                        return LIBOPENPPP2_ERROR_STOP_REQUESTED;
+                    }
+
                     std::shared_ptr<VEthernetNetworkSwitcher> ethernet = std::atomic_load(&app->client_);
                     if (NULLPTR != ethernet) {
                         __android_log_print(ANDROID_LOG_WARN, "libopenppp2",
@@ -2011,6 +2220,12 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
                         return err;
                     }
 
+                    // client_ is published now, so a stop() from here on takes the
+                    // normal path; one that raced in earlier left the flag behind.
+                    if (app->stop_requested_.load()) {
+                        return LIBOPENPPP2_ERROR_STOP_REQUESTED;
+                    }
+
                     app->runtime_lifecycle_.Transition(
                         runtime_generation,
                         ppp::app::runtime::RuntimePhase::Handshaking,
@@ -2023,6 +2238,10 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
 
                     if (!protector->JoinJNI(context, env)) {
                         return libopenppp2_set_last_error_and_return(ppp::diagnostics::ErrorCode::RuntimeEnvironmentInvalid, LIBOPENPPP2_ERROR_UNKNOWN);
+                    }
+
+                    if (app->stop_requested_.load()) {
+                        return LIBOPENPPP2_ERROR_STOP_REQUESTED;
                     }
 
                     return LIBOPENPPP2_ERROR_SUCCESS;
@@ -2038,6 +2257,14 @@ __LIBOPENPPP2__(jint) Java_supersocksr_ppp_android_c_libopenppp2_run(JNIEnv* env
                         [app, key_](JNIEnv* env) noexcept {
                             app->StartJNI(env, key_);
                         });
+                }
+                else if (err == LIBOPENPPP2_ERROR_STOP_REQUESTED) {
+                    // stop() arrived mid-connect: tear down whatever was built and
+                    // end run() normally instead of completing the connection.
+                    __android_log_print(ANDROID_LOG_INFO, "libopenppp2", "run() connect aborted by stop request");
+                    app->Release();
+                    err = LIBOPENPPP2_ERROR_SUCCESS;
+                    context->stop();
                 }
                 else if (err != LIBOPENPPP2_ERROR_IT_IS_RUNING) {
                     ppp::app::runtime::RuntimeError error;
@@ -2439,7 +2666,17 @@ __LIBOPENPPP2__(jstring) Java_supersocksr_ppp_android_c_libopenppp2_bytes_1to_1a
     }
 
     char sz[INET6_ADDRSTRLEN];
-    const char* r = inet_ntop(length >= 16 ? INET6_ADDRSTRLEN : AF_INET, (struct in_addr*)address_bytes, sz, sizeof(sz)); /* in6_addr */
+    const char* r = NULLPTR;
+    if (length >= 16) {
+        struct in6_addr address6;
+        memcpy(&address6, address_bytes, sizeof(address6));
+        r = inet_ntop(AF_INET6, &address6, sz, sizeof(sz));
+    }
+    else {
+        struct in_addr address4;
+        memcpy(&address4, address_bytes, sizeof(address4));
+        r = inet_ntop(AF_INET, &address4, sz, sizeof(sz));
+    }
     env->ReleaseByteArrayElements(address_, (jbyte*)address_bytes, 0);
 
     if (!r) {

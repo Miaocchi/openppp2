@@ -1505,7 +1505,7 @@ namespace ppp {
             }
 
             route.network = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["network"])));
-            route.prefix = static_cast<int>(JsonAuxiliary::AsInt64(json["prefix"], 0));
+            route.prefix = JsonAuxiliary::AsInt(json["prefix"], 0);
             route.via = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["via"])));
             route.guid = LTrim(RTrim(JsonAuxiliary::AsValue<ppp::string>(json["guid"])));
             return !route.network.empty() && route.prefix > 0 && route.prefix <= ppp::net::native::MAX_PREFIX_VALUE_V4;
@@ -1885,7 +1885,7 @@ namespace ppp {
 
             config.tcp.inactive.timeout = JsonAuxiliary::AsValue<int>(json["tcp"]["inactive"]["timeout"]);
             config.tcp.connect.timeout = JsonAuxiliary::AsValue<int>(json["tcp"]["connect"]["timeout"]);
-            config.tcp.connect.nexcept = (int)JsonAuxiliary::AsInt64(json["tcp"]["connect"]["nexcept"], PPP_TCP_CONNECT_NEXCEPT);
+            config.tcp.connect.nexcept = JsonAuxiliary::AsInt(json["tcp"]["connect"]["nexcept"], PPP_TCP_CONNECT_NEXCEPT);
 
             config.tcp.listen.port = JsonAuxiliary::AsValue<int>(json["tcp"]["listen"]["port"]);
             config.tcp.turbo = JsonAuxiliary::AsValue<bool>(json["tcp"]["turbo"]);
@@ -1896,7 +1896,7 @@ namespace ppp {
 
             config.mux.inactive.timeout = JsonAuxiliary::AsValue<int>(json["mux"]["inactive"]["timeout"]);
             config.mux.connect.timeout = JsonAuxiliary::AsValue<int>(json["mux"]["connect"]["timeout"]);
-            config.mux.congestions = (int)JsonAuxiliary::AsInt64(json["mux"]["congestions"], -1);
+            config.mux.congestions = JsonAuxiliary::AsInt(json["mux"]["congestions"], -1);
             config.mux.mode = JsonAuxiliary::AsValue<ppp::string>(json["mux"]["mode"]);
             config.mux.turbo = JsonAuxiliary::AsValue<bool>(json["mux"]["turbo"]);
             config.mux.flow.reorder.bytes = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["reorder"]["bytes"]);
