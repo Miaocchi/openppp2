@@ -3,6 +3,7 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/diagnostics/DatapathPerfJson.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/Telemetry.h>
 
 /**
  * @file vmux_skt.cpp
