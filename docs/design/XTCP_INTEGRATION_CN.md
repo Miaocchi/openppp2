@@ -4,6 +4,19 @@
 > Type: Design
 > Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
 
+## SYN Cookie MAC 加宽（0054）
+
+0054 将无状态 SYN Cookie 的乘法混合哈希替换为带密钥 SipHash-2-4（128 位
+CSPRNG 密钥），输入为完整 128 位地址、端口、对端 ISN、MSS 索引和时间 epoch。
+32 位 Cookie ISN 现为：`[31..8]` 24 位被验证的哈希位，`[7..3]` 经独立哈希位
+掩码的 5 位时间槽，`[2..0]` MSS 索引（已纳入哈希，捕获的 Cookie 不能被改写成
+其他 MSS）。计数器每 16 s 递增，60 s 窗口最多接受 32 个槽中的 5 个：盲伪造概率
+由约 2^-23 降至约 2^-25，并且 Cookie 不能在 512 s 计数器回绕后被重放（epoch
+参与哈希，`Verify` 会尝试当前与上一个 epoch）。新鲜度窗口按 16 s 刻度量化：
+窗口内的 Cookie 一定被接受，超出约 15 s 以内的也可能被接受。`test_syncookies`
+与 `test_cookie_expiry` 覆盖每个被验证位、MSS 认证、IPv6 四个字、回绕重放和
+epoch 边界往返。
+
 ## 核心审查第二批（0052）
 
 0052 禁止无状态 Cookie SYN+ACK 协商 WSOPT 和 SACK-permitted，因为 Cookie
