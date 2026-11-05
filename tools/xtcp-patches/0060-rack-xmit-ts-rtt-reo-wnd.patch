@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 169ca6c..9a87384 100644
+index a0826df..dc179df 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -132,6 +132,8 @@ if(XTCP_BUILD_TESTS)
@@ -33,7 +33,7 @@ index d2289aa..24f3b0d 100644
           * @brief Total retransmissions on a connection (RTO + fast + RACK).
           */
 diff --git a/include/xtcp/core/tcp.h b/include/xtcp/core/tcp.h
-index 070e4cb..d734b0b 100644
+index 787a7c4..6da84d1 100644
 --- a/include/xtcp/core/tcp.h
 +++ b/include/xtcp/core/tcp.h
 @@ -106,6 +106,40 @@ namespace xtcp {
@@ -77,7 +77,7 @@ index 070e4cb..d734b0b 100644
          /**
           * @brief TCP protocol states (RFC 793).
           */
-@@ -833,6 +867,14 @@ namespace xtcp {
+@@ -837,6 +871,14 @@ namespace xtcp {
              void SetChecksumPartialTx(bool on) noexcept { checksum_partial_tx_ = on; }
              /** @brief Number of unacknowledged segments (diagnostics/tests:
               *         the TSO-direct gate requires an empty queue). */
@@ -92,7 +92,7 @@ index 070e4cb..d734b0b 100644
              UInt32 RetransQueueSize() const noexcept {
                  return static_cast<UInt32>(retrans_queue_.size());
              }
-@@ -1096,6 +1138,15 @@ namespace xtcp {
+@@ -1100,6 +1142,15 @@ namespace xtcp {
                  UInt32      seq = 0;
                  UInt32      len = 0;
                  TimePoint   sent_at = 0;
@@ -108,7 +108,7 @@ index 070e4cb..d734b0b 100644
                  UInt32      rto = 0;       /**< Current per-segment RTO */
                  UInt32      retries = 0;
                  UInt32      sacked = 0;    /**< Bytes SACKed within this segment (RFC 6675 pipe) */
-@@ -1299,6 +1350,8 @@ namespace xtcp {
+@@ -1303,6 +1354,8 @@ namespace xtcp {
              void ResplitRetransQueue(UInt16 payload_cap) noexcept;
              void OnAckReceived(UInt32 ack, bool ece, TimePoint now, const TcpOpts* opts) noexcept;
              void RackDetectLoss(TimePoint now) noexcept;
@@ -117,7 +117,7 @@ index 070e4cb..d734b0b 100644
              UInt32 PipeBytes() const noexcept;
              /**
               * @brief Kernel tcp_packets_in_flight() equivalent in bytes:
-@@ -1675,8 +1728,14 @@ namespace xtcp {
+@@ -1679,8 +1732,14 @@ namespace xtcp {
              bool        tlp_armed_ = false;      /**< A TLP probe is pending */
              TimePoint   first_outstanding_ = 0;  /**< Send time of the oldest unacked segment (TCP_USER_TIMEOUT anchor; immune to the Karn sent_at clear) */
              UInt32      rack_seq_ = 0;           /**< RFC 8985 RACK: seq of the most recently delivered segment */
@@ -131,14 +131,14 @@ index 070e4cb..d734b0b 100644
 +            UInt32      rack_reo_persist_ = 0;   /**< RACK.reo_wnd_persist: recovery rounds left before the multiplier resets */
 +            bool        rack_dsack_round_ = false; /**< A DSACK was already counted in this round */
 +            UInt32      rack_dsack_round_end_ = 0; /**< snd_nxt_ when the DSACK round opened */
+             TimePoint   pool_retry_deadline_ = 0;
              TimePoint   pacing_deadline_ = 0;    /**< Next allowed send time (pacing, bytes/sec) */
              TimePoint   last_rate_sample_ = 0;   /**< Last rate-sample time (for interval_us) */
-             UInt64      last_delivered_ = 0;     /**< cc_.delivered at the last emitted rate sample (delivered-delta base) */
 diff --git a/src/core/tcp_fsm.cpp b/src/core/tcp_fsm.cpp
-index e61a7d8..366d382 100644
+index 5732898..bc75e62 100644
 --- a/src/core/tcp_fsm.cpp
 +++ b/src/core/tcp_fsm.cpp
-@@ -1655,6 +1655,9 @@ namespace xtcp {
+@@ -1656,6 +1656,9 @@ namespace xtcp {
                  // would inflate srtt/min_rtt (hence BDP). Clear sent_at so the
                  // RTT sampler (which skips sent_at == 0) never uses it.
                  seg.sent_at = 0;
@@ -148,7 +148,7 @@ index e61a7d8..366d382 100644
                  // Kernel tcp_event_data_sent runs INSIDE __tcp_transmit_skb,
                  // i.e. BEFORE tcp_retransmit_skb adds retrans_out
                  // (tcp_output_v66.c:3383): the gate uses the pipe snapshot
-@@ -1784,6 +1787,7 @@ namespace xtcp {
+@@ -1785,6 +1788,7 @@ namespace xtcp {
                      ns.seq = seg.seq + off;
                      ns.len = chunk;
                      ns.sent_at = seg.sent_at;
@@ -156,7 +156,7 @@ index e61a7d8..366d382 100644
                      ns.rto = seg.rto;
                      ns.retries = seg.retries;
                      // A split is not a new transmission: inherit the send
-@@ -2876,6 +2880,7 @@ namespace xtcp {
+@@ -2877,6 +2881,7 @@ namespace xtcp {
                              // segment (the ACK is ambiguous), or srtt/min_rtt (and
                              // the BDP derived from it) inflate.
                              seg.sent_at = 0;
@@ -164,7 +164,7 @@ index e61a7d8..366d382 100644
                              seg.sent_delivered = cc_.delivered;
                              seg.sent_delivered_pkts = cc_.delivered_pkts;
                              seg.pkt_count = PktCount(seg.len, peer_mss_);
-@@ -2945,6 +2950,30 @@ namespace xtcp {
+@@ -2946,6 +2951,30 @@ namespace xtcp {
              (void)mss;
          }
  
@@ -195,7 +195,7 @@ index e61a7d8..366d382 100644
          void TcpConn::RackDetectLoss(TimePoint now) noexcept {
              // RFC 8985 RACK: time-based loss detection. A segment is lost
              // when a LATER segment has been delivered (RACK.seq covers it)
-@@ -2967,12 +2996,30 @@ namespace xtcp {
+@@ -2968,12 +2997,30 @@ namespace xtcp {
              // (tcp_66.h:1245-1249). During CWR the reduction snapshot already
              // exists, so a RACK verdict must not run tcp_init_cwnd_reduction a
              // second time and halve ssthresh again (audit B).
@@ -227,7 +227,7 @@ index e61a7d8..366d382 100644
              for (SentSeg& seg : retrans_queue_) {
                  if (seg.sacked >= seg.len) {
                      continue;  // fully SACKed: delivered
-@@ -2998,7 +3045,13 @@ namespace xtcp {
+@@ -2999,7 +3046,13 @@ namespace xtcp {
                  // tcp_packets_in_flight() over-reports the pipe and the
                  // recovery entry derives its window from an inflated flight
                  // (audit D15).
@@ -242,7 +242,7 @@ index e61a7d8..366d382 100644
                      lost = true;
                      // Kernel RACK loss marking (tcp_input.c tcp_mark_skb_lost
                      // -> TCPCB_LOST + tp->lost_out): the LOSS DECISION point
-@@ -3187,6 +3240,7 @@ namespace xtcp {
+@@ -3188,6 +3241,7 @@ namespace xtcp {
                              ? ((ds_len + peer_mss_ - 1) / peer_mss_) : 1u;
                          dsack_dups_ += dup_segs;
                          if (dsack_dups_ <= total_retrans_pkts_) {
@@ -250,7 +250,7 @@ index e61a7d8..366d382 100644
                              sack_new_pkts += dup_segs;
                              // Kernel tcp_check_dsack (tcp_input_66.c:1296-1301):
                              //   if (tp->undo_marker && tp->undo_retrans > 0 &&
-@@ -3289,9 +3343,33 @@ namespace xtcp {
+@@ -3290,9 +3344,33 @@ namespace xtcp {
                          const UInt32 lo = SeqLt(seg.seq, sl) ? sl : seg.seq;
                          const UInt32 hi = SeqLt(seg_end, sr) ? seg_end : sr;
                          if (SeqLt(lo, hi)) {
@@ -287,7 +287,7 @@ index e61a7d8..366d382 100644
                              if (0 < add) {
                                  const UInt32 before = seg.sacked;
                                  const Byte before_lost = seg.lost;
-@@ -3370,7 +3448,10 @@ namespace xtcp {
+@@ -3371,7 +3449,10 @@ namespace xtcp {
                          }
                      }
                  }
@@ -299,7 +299,7 @@ index e61a7d8..366d382 100644
                      // Locate the delivering segment to confirm the frontier
                      // maps to a real queued segment; RACK.time is the
                      // DELIVERY time (RFC 8985: the time the RACK segment was
-@@ -3385,7 +3466,25 @@ namespace xtcp {
+@@ -3386,7 +3467,25 @@ namespace xtcp {
                           it != retrans_queue_.rend(); ++it) {
                          if (it->seq + it->len == delivered_end) {
                              rack_seq_ = delivered_end;
@@ -326,7 +326,7 @@ index e61a7d8..366d382 100644
                              break;
                          }
                          // The queue is seq-ascending, so once a segment ends
-@@ -3394,13 +3493,6 @@ namespace xtcp {
+@@ -3395,13 +3494,6 @@ namespace xtcp {
                              break;
                          }
                      }
@@ -340,7 +340,7 @@ index e61a7d8..366d382 100644
                  }
              }
              // RFC 2883 D-SACK: the FIRST SACK block covering data AT or
-@@ -3922,6 +4014,7 @@ namespace xtcp {
+@@ -3923,6 +4015,7 @@ namespace xtcp {
                                  episode_undone_ = true;  // kernel tcp_undo_cwnd_reduction
                              }
                              if (!hold_reno) {
@@ -348,7 +348,7 @@ index e61a7d8..366d382 100644
                                  fast_recovery_ = false;
                                  sack_retx_next_ = 0;
                                  undo_retrans_ = -1;
-@@ -3964,6 +4057,7 @@ namespace xtcp {
+@@ -3965,6 +4058,7 @@ namespace xtcp {
                          // a spurious fast recovery.
                          const bool hold_reno = (snd_una_ == high_seq_) && !sack_ok_;
                          if (!hold_reno) {
@@ -356,7 +356,7 @@ index e61a7d8..366d382 100644
                              fast_recovery_ = false;
                              sack_retx_next_ = 0;
                              undo_retrans_ = -1;
-@@ -4396,24 +4490,12 @@ namespace xtcp {
+@@ -4397,24 +4491,12 @@ namespace xtcp {
                      // regardless of age).
                      bool sack_no_gap = (NULLPTR != opts && 0 < opts->sack_count);
                      if (sack_no_gap) {
@@ -387,7 +387,7 @@ index e61a7d8..366d382 100644
                              sack_no_gap = false;  // covers everything: no gap
                          }
                      }
-@@ -4545,23 +4627,9 @@ namespace xtcp {
+@@ -4546,23 +4628,9 @@ namespace xtcp {
                          // when the SACKs reveal a gap BEYOND the front.
                          bool sack_zero_info = true;
                          {
@@ -414,7 +414,7 @@ index e61a7d8..366d382 100644
                          }
                          if (!sack_zero_info) {
                              RetransmitEarliestMissing(now, opts);
-@@ -4940,6 +5008,7 @@ namespace xtcp {
+@@ -4942,6 +5010,7 @@ namespace xtcp {
              seg.seq = seq;
              seg.len = len;
              seg.sent_at = now;
@@ -422,7 +422,7 @@ index e61a7d8..366d382 100644
              seg.rto = 0;
              seg.sent_delivered = cc_.delivered;
              seg.sent_delivered_pkts = cc_.delivered_pkts;
-@@ -4983,9 +5052,11 @@ namespace xtcp {
+@@ -4985,9 +5054,11 @@ namespace xtcp {
                  if (tlp < now + 10000) {
                      tlp = now + 10000;  // 10ms floor
                  }
@@ -437,7 +437,7 @@ index e61a7d8..366d382 100644
                  tlp_armed_ = true;
                  timers_dirty_.store(true, std::memory_order_relaxed);
              }
-@@ -5081,6 +5152,7 @@ namespace xtcp {
+@@ -5083,6 +5154,7 @@ namespace xtcp {
                              seg.seq = probe_seq;
                              seg.len = 1;
                              seg.sent_at = now;
@@ -445,7 +445,7 @@ index e61a7d8..366d382 100644
                              seg.rto = 0;
                              seg.sent_delivered = cc_.delivered;
                              seg.sent_delivered_pkts = cc_.delivered_pkts;
-@@ -5121,6 +5193,7 @@ namespace xtcp {
+@@ -5123,6 +5195,7 @@ namespace xtcp {
                              // window reopens. Clone so retrans_queue_ keeps the
                              // original for zero-copy retransmit.
                              SentSeg& front = retrans_queue_.front();
@@ -453,7 +453,7 @@ index e61a7d8..366d382 100644
                              front.sent_delivered = cc_.delivered;
                              front.sent_delivered_pkts = cc_.delivered_pkts;
                              front.pkt_count = PktCount(front.len, peer_mss_);
-@@ -5264,6 +5337,7 @@ namespace xtcp {
+@@ -5266,6 +5339,7 @@ namespace xtcp {
                          // TLP re-sends existing data: it is a retransmission
                          // for the delayed-ACK heuristic even though retries
                          // (the RTO budget) deliberately stays untouched.
@@ -461,7 +461,7 @@ index e61a7d8..366d382 100644
                          tail.sent_delivered = cc_.delivered;
                          tail.sent_delivered_pkts = cc_.delivered_pkts;
                          tail.pkt_count = PktCount(tail.len, peer_mss_);
-@@ -5664,6 +5738,7 @@ namespace xtcp {
+@@ -5669,6 +5743,7 @@ namespace xtcp {
                  seg.seq = seq;
                  seg.len = n;
                  seg.sent_at = now;
@@ -469,7 +469,7 @@ index e61a7d8..366d382 100644
                  seg.rto = 0;
                  seg.sent_delivered = cc_.delivered;
                  seg.sent_delivered_pkts = cc_.delivered_pkts;
-@@ -5781,9 +5856,12 @@ namespace xtcp {
+@@ -5786,9 +5861,12 @@ namespace xtcp {
                  c.seq = s.seq;
                  c.len = s.len;
                  c.sent_at = s.sent_at;
@@ -482,7 +482,7 @@ index e61a7d8..366d382 100644
                  c.pkt_count = s.pkt_count;
                  c.lost = s.lost;
                  // See ApplyCheckpoint: the retransmit marker and the
-@@ -5946,9 +6024,12 @@ namespace xtcp {
+@@ -5951,9 +6029,12 @@ namespace xtcp {
                  c.seq = s.seq;
                  c.len = s.len;
                  c.sent_at = s.sent_at;
@@ -495,7 +495,7 @@ index e61a7d8..366d382 100644
                  c.pkt_count = s.pkt_count;
                  c.lost = s.lost;
                  // TCPCB_RETRANS and the retirement flag travel with the
-@@ -6665,6 +6746,7 @@ namespace xtcp {
+@@ -6669,6 +6750,7 @@ namespace xtcp {
                                  seg.seq = hdr.ack;
                                  seg.len = n;
                                  seg.sent_at = now;
@@ -539,6 +539,7 @@ index 791f773..2250b0e 100644
          // Let every segment age well past the reorder window.
 diff --git a/tests/test_rack_xmit_ts.cpp b/tests/test_rack_xmit_ts.cpp
 new file mode 100644
+index 0000000..2d63653
 --- /dev/null
 +++ b/tests/test_rack_xmit_ts.cpp
 @@ -0,0 +1,260 @@
@@ -804,6 +805,7 @@ new file mode 100644
 +}
 diff --git a/tests/test_sack_scoreboard.cpp b/tests/test_sack_scoreboard.cpp
 new file mode 100644
+index 0000000..c416ac0
 --- /dev/null
 +++ b/tests/test_sack_scoreboard.cpp
 @@ -0,0 +1,246 @@
