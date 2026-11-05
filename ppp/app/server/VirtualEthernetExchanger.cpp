@@ -885,7 +885,9 @@ namespace ppp {
                         return self->DoSendTo(transmission, source, destination, packet, packet_length, y);
                     };
                 host.release_port =
-                    [self](const boost::asio::ip::udp::endpoint& source) noexcept { self->ReleaseDatagramPort(source); };
+                    [self](const boost::asio::ip::udp::endpoint& source, const VirtualEthernetDatagramPort* expected) noexcept {
+                        self->datagram_manager_->ReleaseDatagramPort(source, expected);
+                    };
                 host.get_interface_ip = [self]() noexcept { return self->switcher_->GetInterfaceIP(); };
                 host.namespace_query =
                     [self](const void* packet, int packet_length) noexcept { return NamespaceQueryCache(self->switcher_, packet, packet_length); };
@@ -1329,6 +1331,8 @@ namespace ppp {
             /** @brief Applies VMUX enable/disable request and acknowledges resulting state. */
             bool VirtualEthernetExchanger::OnMux(const ITransmissionPtr& transmission, uint16_t vlan, uint16_t max_connections, bool acceleration, Byte ordering_caps, YieldContext& y) noexcept {
                 bool err = true;
+                constexpr uint16_t max_server_mux_connections = 1024;
+                max_connections = std::min(max_connections, max_server_mux_connections);
 
                 // Negotiated receiver ordering mode (flow v2). agreed == FLOW_V2 only when the
                 // peer advertised the capability AND this end uses a non-compat scheduler.
@@ -1412,8 +1416,8 @@ namespace ppp {
                         // server preset, so raise the ceiling for it as well.
                         if (mux_mode == vmux::vmux_net::mux_mode_flow || peer_requests_flow_v2) {
                             uint32_t hard = (uint32_t)max_connections * (uint32_t)PPP_MUX_TURBO_FACTOR_MAX;
-                            if (hard > UINT16_MAX) {
-                                hard = UINT16_MAX;
+                            if (hard > max_server_mux_connections) {
+                                hard = max_server_mux_connections;
                             }
                             mux->set_pool_hard_max((uint16_t)hard);
                         }

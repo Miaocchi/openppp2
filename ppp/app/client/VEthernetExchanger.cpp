@@ -4479,7 +4479,7 @@ namespace ppp {
                 }
 
                 auto self = shared_from_this();
-                boost::asio::post(*context,
+                const bool posted = ppp::coroutines::asio::PostIfRunning(context->get_executor(),
                     [self, this, context, timeout, status, anchor]() noexcept {
                         bool ok = NewDeadlineTimer(context, timeout,
                             [status, anchor](bool b) noexcept {
@@ -4490,6 +4490,10 @@ namespace ppp {
                             ppp::coroutines::asio::R(anchor, *status, false);
                         }
                     });
+
+                if (!posted) {
+                    return false;
+                }
 
                 y.Suspend(anchor);
                 return status->load() > 0;

@@ -1417,6 +1417,15 @@ public:
             return false;
         }
         const std::uint64_t generation = generation_.load(std::memory_order_acquire);
+        // 按 IP 总长度截掉尾部 padding; 解析失败的包保持原长, 由 ProcessIngress 丢弃。
+        const Byte* ip_bytes = static_cast<const Byte*>(packet);
+        ::xtcp::core::Ip4Hdr ip4;
+        ::xtcp::core::Ip6Hdr ip6;
+        if ((ip_bytes[0] >> 4) == 4 && ::xtcp::core::ParseIp4(ip_bytes, packet_length, ip4)) {
+            packet_length = ip4.total_len;
+        } else if ((ip_bytes[0] >> 4) == 6 && ::xtcp::core::ParseIp6(ip_bytes, packet_length, ip6)) {
+            packet_length = 40 + ip6.payload_len;
+        }
         // XTCP-SHARED-PATH-001 S1: 按 4-tuple hash 路由, 同一 flow (含 SYN)
         // 永远落同一 shard (ordering/ACK 状态/deferred SYN/generation/close
         // 生命周期因此天然保持)。解析失败的包走 shard 0, 在 ProcessIngress

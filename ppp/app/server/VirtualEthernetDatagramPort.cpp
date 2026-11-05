@@ -86,6 +86,9 @@ namespace ppp {
              * @brief Closes socket, sends a close signal when needed, and unregisters this port.
              */
             void VirtualEthernetDatagramPort::Finalize() noexcept {
+                if (disposed_.exchange(true)) {
+                    return;
+                }
                 std::shared_ptr<ITransmission> transmission = std::move(transmission_); 
                 if (sendto_ && !finalize_) {
                     if (NULLPTR != transmission &&
@@ -99,7 +102,7 @@ namespace ppp {
                 finalize_ = true;
                 Socket::Closesocket(socket_);
 
-                ports_.release_port(sourceEP_);
+                ports_.release_port(sourceEP_, this);
             }
 
             /**
