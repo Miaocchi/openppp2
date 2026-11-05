@@ -649,6 +649,8 @@ openppp2_add_cpp_test(vmux_tx_backpressure_test SOURCES
     vmux_tx_backpressure_test.cpp)
 openppp2_add_cpp_test(vmux_flow_context_admission_test SOURCES
     vmux_flow_context_admission_test.cpp)
+openppp2_add_cpp_test(vmux_rx_queue_limit_test SOURCES
+    vmux_rx_queue_limit_test.cpp)
 openppp2_add_cpp_test(peer_route_announce_policy_test SOURCES
     peer_route_announce_policy_test.cpp)
 openppp2_add_cpp_test(vmux_link_churn_test SOURCES

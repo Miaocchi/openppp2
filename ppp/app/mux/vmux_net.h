@@ -16,6 +16,7 @@
 #include <ppp/app/mux/MuxRetransmitBuffer.h>
 #include <ppp/app/mux/MuxFecCodec.h>
 #include <ppp/app/mux/MuxRxBackpressure.h>
+#include <ppp/app/mux/MuxRxQueueLimit.h>
 #include <ppp/app/mux/MuxTxBackpressure.h>
 
 namespace vmux {
