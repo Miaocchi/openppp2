@@ -1040,7 +1040,7 @@ namespace ppp {
                     }
 
                     bool ok = false;
-                    boost::asio::dispatch(socket_->get_executor(),
+                    const bool posted = ppp::coroutines::asio::DispatchIfRunning(socket_->get_executor(),
                         [this, anchor, &ok, packet, packet_length]() noexcept {
                             ppp::diagnostics::datapath_perf::Scope socket_write_scope;
                             boost::asio::async_write(*socket_, boost::asio::buffer(packet.get(), packet_length),
@@ -1052,7 +1052,9 @@ namespace ppp {
                                     anchor.R();
                                 });
                         });
-                    y.Suspend(anchor);
+                    if (posted) {
+                        y.Suspend(anchor);
+                    }
                     if (ok) {
                         packets_to_socket++;
                         bytes_to_socket += packet_length;
@@ -1105,7 +1107,7 @@ namespace ppp {
                     return false;
                 }
                 bool ok = false;
-                boost::asio::dispatch(socket->get_executor(),
+                const bool posted = ppp::coroutines::asio::DispatchIfRunning(socket->get_executor(),
                     [this, socket, anchor, &ok]() noexcept {
                         boost::system::error_code ec;
                         if (!disposed_ && socket->is_open()) {
@@ -1114,7 +1116,9 @@ namespace ppp {
                         }
                         anchor.R();
                     });
-                y.Suspend(anchor);
+                if (posted) {
+                    y.Suspend(anchor);
+                }
                 if (!ok) {
                     return false;
                 }

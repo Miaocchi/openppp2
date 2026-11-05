@@ -8,6 +8,7 @@
 #include <ppp/net/Ipep.h>
 #include <ppp/threading/Executors.h>
 #include <ppp/coroutines/YieldContext.h>
+#include <ppp/coroutines/asio/post_if_running.h>
 
 namespace ppp {
     namespace coroutines {
@@ -77,7 +78,7 @@ namespace ppp {
                 }
 
                 int len = -1;
-                boost::asio::post(stream.get_executor(),
+                const bool posted = PostIfRunning(stream.get_executor(),
                     [&stream, &buffers, anchor, &len]() noexcept {
                         boost::asio::async_read(stream, constantof(buffers),
                             [anchor, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
@@ -85,6 +86,10 @@ namespace ppp {
                                 anchor.R();
                             });
                     });
+
+                if (!posted) {
+                    return false;
+                }
 
                 y.Suspend(anchor);
                 return len == buffers.size();
@@ -106,7 +111,7 @@ namespace ppp {
                 }
 
                 bool ok = false;
-                boost::asio::post(stream.get_executor(),
+                const bool posted = PostIfRunning(stream.get_executor(),
                     [&stream, &buffers, anchor, &ok]() noexcept {
                         boost::asio::async_write(stream, constantof(buffers),
                             [anchor, &ok](const boost::system::error_code& ec, std::size_t sz) noexcept {
@@ -114,6 +119,10 @@ namespace ppp {
                                 anchor.R();
                             });
                     });
+
+                if (!posted) {
+                    return false;
+                }
 
                 y.Suspend(anchor);
                 return ok;
@@ -135,7 +144,7 @@ namespace ppp {
                     return len;
                 }
 
-                boost::asio::post(stream.get_executor(),
+                const bool posted = PostIfRunning(stream.get_executor(),
                     [&stream, &buffers, anchor, &len]() noexcept {
                         stream.async_read_some(constantof(buffers),
                             [anchor, &len](const boost::system::error_code& ec, std::size_t sz) noexcept {
@@ -143,6 +152,10 @@ namespace ppp {
                                 anchor.R();
                             });
                     });
+
+                if (!posted) {
+                    return -1;
+                }
 
                 y.Suspend(anchor);
                 return len;
@@ -182,7 +195,7 @@ namespace ppp {
                 }
 
                 bool ok = false;
-                boost::asio::post(socket.get_executor(), 
+                const bool posted = PostIfRunning(socket.get_executor(), 
                     [&socket, &remoteEP, anchor, &ok]() noexcept {
                         socket.async_connect(remoteEP,
                             [anchor, &ok](const boost::system::error_code& ec) noexcept {
@@ -190,6 +203,10 @@ namespace ppp {
                                 anchor.R();
                             });
                         });
+
+                if (!posted) {
+                    return false;
+                }
 
                 y.Suspend(anchor);
                 return ok;
@@ -215,7 +232,7 @@ namespace ppp {
                 }
 
                 bool ok = false;
-                boost::asio::post(socket.get_executor(),
+                const bool posted = PostIfRunning(socket.get_executor(),
                     [&socket, &protocol, &ok, anchor]() noexcept {
                         boost::system::error_code ec;
                         socket.open(protocol, ec);
@@ -226,6 +243,10 @@ namespace ppp {
 
                         anchor.R();
                     });
+
+                if (!posted) {
+                    return false;
+                }
 
                 y.Suspend(anchor);
                 return ok;
@@ -270,9 +291,27 @@ namespace ppp {
                 }
 
                 boost::asio::ip::basic_endpoint<TProtocol> results = IPEndPoint::AnyAddressV4<TProtocol>(IPEndPoint::MinPort);
+                boost::asio::io_context& context = y.GetContext();
+                boost::asio::strand<boost::asio::io_context::executor_type>* strand = y.GetStrand();
+
+                /**
+                 * @brief Resolve deadline. `status` is the single-wakeup latch shared by the
+                 *        resolver callback, the failure path and this timer, so whichever
+                 *        side wins wakes the coroutine exactly once. A late resolver result
+                 *        finds the latch set and does nothing (the internal resolver of
+                 *        Ipep::GetAddressByHostName is not externally cancellable).
+                 */
+                std::shared_ptr<boost::asio::steady_timer> deadline = strand ?
+                    make_shared_object<boost::asio::steady_timer>(*strand) :
+                    make_shared_object<boost::asio::steady_timer>(context);
+
                 auto processing =
-                    [status, &results, anchor](const std::shared_ptr<IPEndPoint>& ep) noexcept {
+                    [status, &results, anchor, deadline](const std::shared_ptr<IPEndPoint>& ep) noexcept {
                         if (!status->exchange(true)) {
+                            if (NULLPTR != deadline) {
+                                try { deadline->cancel(); } catch (...) {}
+                            }
+
                             if (NULLPTR != ep) {
                                 results = IPEndPoint::ToEndPoint<TProtocol>(*ep);
                             }
@@ -281,17 +320,32 @@ namespace ppp {
                         }
                     };
 
-                boost::asio::io_context& context = y.GetContext();
-                boost::asio::strand<boost::asio::io_context::executor_type>* strand = y.GetStrand();
+                const bool posted = ppp::threading::Executors::Post(addressof(context), strand, 
+                    [anchor, &context, hostname, port, &processing, status, deadline]() noexcept {
+                        if (NULLPTR != deadline) {
+                            deadline->expires_after(std::chrono::milliseconds(PPP_RESOLVE_DNS_TIMEOUT));
+                            deadline->async_wait(
+                                [deadline, status, anchor](const boost::system::error_code& ec) noexcept {
+                                    if (!ec && !status->exchange(true)) {
+                                        anchor.R();
+                                    }
+                                });
+                        }
 
-                ppp::threading::Executors::Post(addressof(context), strand, 
-                    [anchor, &context, hostname, port, &processing, status]() noexcept {
                         if (!Ipep::GetAddressByHostName(context, hostname, port, processing)) {
                             if (!status->exchange(true)) {
+                                if (NULLPTR != deadline) {
+                                    try { deadline->cancel(); } catch (...) {}
+                                }
+
                                 anchor.R();
                             }
                         }
                     });
+
+                if (!posted) {
+                    return results;
+                }
 
                 y.Suspend(anchor);
                 return results;
