@@ -1518,9 +1518,27 @@ public:
             }
             const std::shared_ptr<Impl> self = shared_from_this();
             if (!s.handoff_posted.exchange(true, std::memory_order_acq_rel)) {
-                boost::asio::post(*s.strand, [self, index]() noexcept {
-                    self->DrainIngress(self->shards_[index]);
-                });
+                try {
+                    boost::asio::post(*s.strand, [self, index]() noexcept {
+                        self->DrainIngress(self->shards_[index]);
+                    });
+                }
+                catch (...) {
+                    std::vector<HandoffItem> abandoned;
+                    {
+                        std::lock_guard<std::mutex> lock(s.handoff_sync);
+                        abandoned.swap(s.handoff);
+                        s.handoff_posted.store(false, std::memory_order_release);
+                    }
+                    for (HandoffItem& item : abandoned) {
+                        s.budget.Release(item.packet.IsEmpty() ? 0 : item.packet.Len());
+                        stats_.ingress_dropped.fetch_add(1, std::memory_order_relaxed);
+                        if (perf_json_enabled_.load(std::memory_order_relaxed)) {
+                            stats_.ingress_drop_post.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                    return false;
+                }
             }
             stats_.ingress_enqueued.fetch_add(split_count, std::memory_order_relaxed);
             stats_.ingress_submitted.fetch_add(split_count, std::memory_order_relaxed);
@@ -2475,6 +2493,18 @@ private:
             // The already-armed shard poll owns terminal cleanup if scheduling
             // is temporarily unavailable. Storage is retained until it runs.
             s.spsc_failed.store(true, std::memory_order_release);
+            // Do not depend solely on the poll timer (it may not be armed):
+            // also try to schedule the cleanup directly. If this post fails
+            // too, the poll timer remains the fallback consumer of the flag.
+            try {
+                boost::asio::post(*strand, [self, index]() noexcept {
+                    Shard& shard = self->shards_[index];
+                    if (shard.spsc_failed.exchange(false, std::memory_order_acq_rel)) {
+                        self->DoStopShard(shard);
+                    }
+                });
+            }
+            catch (...) {}
         }
         return posted;
     }
@@ -2620,6 +2650,9 @@ private:
             // Output during resume may close a flow reentrantly; never keep
             // iterators into the live flow map across an external callback.
             if (!IsCurrent(generation) || !s.stack) return;
+            // Tokens are shared across shards; another shard's flow table must
+            // not be read from this strand, so filter on the shard tag first.
+            if (static_cast<std::size_t>(token >> 56) != s.index) continue;
             const std::shared_ptr<Flow> flow = FindFlowGeneration(token);
             if (!flow || flow->shard != s.index) continue;
             const auto needed = flow->upload_budget_blocked_bytes;
