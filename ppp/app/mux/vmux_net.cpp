@@ -1591,7 +1591,10 @@ namespace vmux {
 
         uint32_t connection_id = ntohl(h->connection_id);
         if (cmd == cmd_push) {
-            packet_input_read(connection_id, buffer, buffer_size, now, owner);
+            // An empty PUSH is a no-op; only cmd_fin may end a stream.
+            if (!ppp::app::mux::MuxIsNoopPush(buffer_size)) {
+                packet_input_read(connection_id, buffer, buffer_size, now, owner);
+            }
         }
         elif(cmd == cmd_fin) {
             packet_input_read(connection_id, NULLPTR, 0, now);
@@ -1767,7 +1770,9 @@ namespace vmux {
         Byte* payload = (Byte*)(h + 1);
         uint32_t connection_id = ntohl(h->connection_id);
         if (cmd == cmd_push) {
-            packet_input_read(connection_id, payload, buffer_size, now, owner);
+            if (!ppp::app::mux::MuxIsNoopPush(buffer_size)) {
+                packet_input_read(connection_id, payload, buffer_size, now, owner);
+            }
         }
         else { // cmd_fin
             packet_input_read(connection_id, NULLPTR, 0, now);
@@ -2348,6 +2353,10 @@ namespace vmux {
         }
 
         const uint32_t key_cid = (ordering_mode_ == ordering_compat) ? 0u : connection_id;
+        if (ack_trackers_.size() >= (size_t)PPP_MUX_FLOW_MAX_CONTEXTS && ack_trackers_.find(key_cid) == ack_trackers_.end()) {
+            ppp::telemetry::Count("mux.ack.tracker.cap", 1);
+            return; // Bound tracker growth from forged connection ids.
+        }
         ack_trackers_[key_cid].Add(seq, (size_t)PPP_MUX_ACK_MAX_RANGES);
         if (ack_pending_count_ == 0) {
             ack_first_pending_tick_ = now;
@@ -2369,7 +2378,7 @@ namespace vmux {
         // The pending sequences are already accumulated in ack_trackers_ and will be
         // included in the next emission, so no data is lost.
         if (!force && ack_last_sent_tick_ > 0 &&
-            (now - ack_last_sent_tick_) < (ack_delay_ms_ / 2)) {
+            (now - ack_last_sent_tick_) < std::max<uint64_t>(ack_delay_ms_ / 2, 1)) {
             return;
         }
 
@@ -2413,9 +2422,11 @@ namespace vmux {
         // Best-effort: ACK frames are periodic and cumulative, so a queueing
         // failure must not tear the session down (post() would close_exec).
         PostInternalAsynchronousCallback null_ac;
+        // Stamp the attempt even on failure so a stuck queue cannot make every
+        // inbound frame rebuild and retry the full ACK.
+        ack_last_sent_tick_ = now;
         if (post_internal(packet, (int)(sizeof(vmux_hdr) + payload_len), false, null_ac)) {
             ack_pending_count_ = 0;
-            ack_last_sent_tick_ = now;
             ppp::telemetry::Count("mux.ack.send", 1);
         }
     }
@@ -3061,10 +3072,12 @@ namespace vmux {
         vmux_skt_map::iterator tail = skts_.find(connection_id);
         vmux_skt_map::iterator endl = skts_.end();
         if (tail != endl) {
-            skt = tail->second;
-            if (NULLPTR != skt) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VmuxNetProcessRxConnectingIdConflict);
-                return false;
+            if (NULLPTR != tail->second) {
+                // Duplicate SYN for a live connection: ignore it, never tear the
+                // existing flow down (skt stays empty so the caller does not close it).
+                skt.reset();
+                ppp::telemetry::Count("mux.rx.syn.duplicate", 1);
+                return true;
             }
         }
 
