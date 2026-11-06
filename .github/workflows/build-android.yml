@@ -22,7 +22,7 @@ env:
 jobs:
   build:
     name: Android ${{ matrix.abi }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"abi":"arm64-v8a","ppp_abi":"aarch64"},{"abi":"x86_64","ppp_abi":"x64"}]}' || '{"include":[{"abi":"arm64-v8a","ppp_abi":"aarch64"},{"abi":"armeabi-v7a","ppp_abi":"armv7a"},{"abi":"x86","ppp_abi":"x86"},{"abi":"x86_64","ppp_abi":"x64"}]}') }}
@@ -93,7 +93,7 @@ jobs:
     # It is not gated on the event: skipping pull requests meant an
     # instrumentation regression only surfaced after the merge.
     name: Android P2P socket protection
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     steps:
@@ -184,7 +184,7 @@ jobs:
   build-apk:
     name: Build Flutter APK
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
 
     steps:
