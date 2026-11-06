@@ -31,10 +31,17 @@ find_package(Threads REQUIRED)
 # boost_filesystem, ...).  On Windows/vcpkg the compiled libs carry versioned
 # names, so map them through the CMake targets provided by the toolchain.
 if(NOT TARGET boost_context)
-    find_package(Boost REQUIRED COMPONENTS context system filesystem regex thread)
+    # Boost.System is header-only; Boost >= 1.89 no longer ships a
+    # boost_system CMake component, so only request it when it exists.
+    find_package(Boost REQUIRED COMPONENTS context filesystem regex thread)
+    find_package(Boost QUIET COMPONENTS system)
     if(TARGET Boost::context)
         add_library(boost_context ALIAS Boost::context)
-        add_library(boost_system ALIAS Boost::system)
+        if(TARGET Boost::system)
+            add_library(boost_system ALIAS Boost::system)
+        else()
+            add_library(boost_system ALIAS Boost::headers)
+        endif()
         add_library(boost_filesystem ALIAS Boost::filesystem)
         add_library(boost_regex ALIAS Boost::regex)
         add_library(boost_thread ALIAS Boost::thread)
