@@ -17,7 +17,7 @@ permissions:
 jobs:
   p2p-v2-isolation:
     name: P2P v2 isolated ASan and UBSan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -30,7 +30,7 @@ jobs:
   lifecycle-sanitizers:
     name: Lifecycle ASan and UBSan
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -43,7 +43,7 @@ jobs:
   cpp-tsan:
     name: C++ ThreadSanitizer
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -55,7 +55,7 @@ jobs:
 
   cpp-linux:
     name: C++ unit tests (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -210,7 +210,7 @@ jobs:
 
   go:
     name: Go unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: go/guardian
@@ -242,7 +242,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-2022]
+        os: [ubuntu-24.04, windows-2022]
     defaults:
       run:
         working-directory: desktop/client
@@ -259,6 +259,7 @@ jobs:
         with:
           toolchain: stable
           cache: true
+          cache-workspaces: desktop/client/src-tauri
 
       - name: Install Tauri Linux dependencies
         if: runner.os == 'Linux'
@@ -283,7 +284,7 @@ jobs:
 
   flutter:
     name: Flutter unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: android
@@ -308,7 +309,7 @@ jobs:
 
   ios-simulator:
     name: iOS unit tests (simulator)
-    runs-on: macos-latest
+    runs-on: macos-15
     defaults:
       run:
         working-directory: ios/App
