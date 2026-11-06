@@ -259,6 +259,7 @@ jobs:
         with:
           toolchain: stable
           cache: true
+          cache-workspaces: desktop/client/src-tauri
 
       - name: Install Tauri Linux dependencies
         if: runner.os == 'Linux'

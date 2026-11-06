@@ -2,7 +2,7 @@ use openppp2_client_desktop::process::{CommandSpec, ExitReason, ProcessEvent, Pr
 use openppp2_client_desktop::stats::StatsSampler;
 use openppp2_client_desktop::telemetry::{classify_line, ConnectionSignal, Severity};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[test]
 fn telemetry_preserves_text_and_emits_only_evidence_based_signals() {
@@ -94,9 +94,13 @@ fn process_manager_enforces_single_child_and_reports_stderr_and_exit_code() {
 
     let mut saw_stderr = false;
     let mut exit_code = None;
-    for _ in 0..20 {
-        match rx.recv_timeout(Duration::from_millis(500)) {
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !saw_stderr || exit_code.is_none() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(remaining) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("fixture did not finish: stderr={saw_stderr}, exit={exit_code:?}")
+            }
             Err(error) => panic!("process event channel failed: {error}"),
             Ok(event) => match event.event {
                 ProcessEvent::Telemetry(event) => {
@@ -106,7 +110,6 @@ fn process_manager_enforces_single_child_and_reports_stderr_and_exit_code() {
                     exit_code = exit.code;
                     assert_eq!(exit.reason, ExitReason::Natural);
                     assert!(!exit.recovery_pending);
-                    break;
                 }
                 ProcessEvent::Stats(_) => {}
                 ProcessEvent::State(_) => {}
@@ -118,16 +121,27 @@ fn process_manager_enforces_single_child_and_reports_stderr_and_exit_code() {
     assert!(!manager.is_running());
 }
 
-#[cfg(windows)]
 fn fixture_command() -> CommandSpec {
+    // Use a native child rather than paying for PowerShell startup/module
+    // loading on busy Windows runners. Keep the child alive long enough to
+    // exercise rejection of a second start, and retain a real exit code.
     CommandSpec::new(
-        "powershell",
+        std::env::current_exe().unwrap(),
         [
-            "-NoProfile",
-            "-Command",
-            "[Console]::Error.WriteLine('fixture stderr'); Start-Sleep -Milliseconds 300; exit 7",
+            "--exact",
+            "native_child_fixture",
+            "--ignored",
+            "--nocapture",
         ],
     )
+}
+
+#[test]
+#[ignore = "subprocess fixture; invoked by the process manager tests"]
+fn native_child_fixture() {
+    eprintln!("fixture stderr");
+    std::thread::sleep(Duration::from_millis(300));
+    std::process::exit(7);
 }
 
 #[test]
@@ -155,11 +169,6 @@ fn stop_then_restart_keeps_the_new_session_authoritative() {
     assert_eq!(manager.snapshot().session_id, second);
     assert_eq!(manager.snapshot().pid, None);
     assert_eq!(manager.snapshot().status, "error");
-}
-
-#[cfg(not(windows))]
-fn fixture_command() -> CommandSpec {
-    CommandSpec::new("sh", ["-c", "echo fixture stderr >&2; sleep 0.2; exit 7"])
 }
 
 #[cfg(unix)]

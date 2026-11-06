@@ -51,7 +51,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/third-party
-          key: linux-amd64-third-v2-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}-jemalloc${{ env.JEMALLOC_VERSION }}
+          key: linux-amd64-ubuntu24-third-v3-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}-jemalloc${{ env.JEMALLOC_VERSION }}
 
       - name: Build Boost
         if: steps.cache-third.outputs.cache-hit != 'true'
@@ -307,7 +307,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/third-party
-          key: linux-amd64-asan-third-v1-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}
+          key: linux-amd64-ubuntu24-asan-third-v2-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}
 
       - name: Build Boost
         if: steps.cache-third-asan.outputs.cache-hit != 'true'
