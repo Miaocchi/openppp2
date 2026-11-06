@@ -21,6 +21,22 @@ counted once), makes the dup-ACK hole checks sequence-wrap safe, and re-arms
 the TLP deadline on every tail send (RFC 8985 s7.2). Tests:
 `test_rack_xmit_ts`, `test_sack_scoreboard`.
 
+## SYN-cookie MAC widening (0054)
+
+Patch 0054 replaces the multiply-mix hash of the stateless SYN cookie with
+keyed SipHash-2-4 (128-bit CSPRNG secret) over the full 128-bit addresses,
+ports, peer ISN, MSS index and time epoch. The 32-bit cookie ISN is now
+`[31..8]` 24 verified hash bits, `[7..3]` a 5-bit time-counter slot masked
+with independent hash bits, `[2..0]` the MSS index (now covered by the hash,
+so a captured cookie cannot be re-encoded with another MSS). The counter ticks
+every 16 s, so the 60 s window accepts at most 5 of 32 slots: blind forgery
+drops from about 2^-23 to about 2^-25 per attempt, and cookies can no longer be
+replayed one 512 s counter wrap later (the epoch is hashed; `Verify` tries the
+current and previous epoch). The freshness window is quantized to the tick: a
+cookie within the window is always accepted, one up to about 15 s older may be.
+`test_syncookies` and `test_cookie_expiry` cover every verified bit, MSS
+authentication, all four IPv6 words, wrap replay and epoch-boundary round trip.
+
 ## Core review batch 2 (0052)
 
 Patch 0052 disables WSOPT and SACK-permitted in stateless cookie SYN+ACKs:

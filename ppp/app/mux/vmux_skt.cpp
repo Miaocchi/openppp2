@@ -3,6 +3,7 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/diagnostics/DatapathPerfJson.h>
 #include <ppp/diagnostics/Error.h>
+#include <ppp/diagnostics/Telemetry.h>
 
 /**
  * @file vmux_skt.cpp
@@ -68,6 +69,7 @@ namespace vmux {
 #endif
 
         rx_queue_.clear();
+        rx_queue_bytes_ = 0;
         tx_socket = std::move(tx_socket_);
 
         if (ActiveEventHandler event = std::move(active_event); event) {
@@ -479,6 +481,13 @@ namespace vmux {
 
         std::shared_ptr<Byte> buffer;
         if (payload_size > 0) {
+            // Hard cap: a peer ignoring XOFF must not grow the queue without bound.
+            if (ppp::app::mux::MuxRxQueueOverflows(rx_queue_.size(), rx_queue_bytes_, payload_size, mux_->AppConfiguration->mux.congestions)) {
+                ppp::telemetry::Count("mux.rx.queue.overflow", 1);
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTaskPostFailed);
+                return false;
+            }
+
             if (NULLPTR != owner) {
                 // Zero-copy: alias the owner buffer to reference the payload region.
                 buffer = ppp::wrap_shared_pointer(payload, owner);
@@ -502,6 +511,7 @@ namespace vmux {
         }
 
         rx_queue_.emplace_back(packet{ buffer,  payload_size });
+        rx_queue_bytes_ += payload_size;
         if (payload_size > 0) {
             ppp::diagnostics::datapath_perf::RecordVmuxAccepted(payload_size);
         }
@@ -1028,6 +1038,10 @@ namespace vmux {
         if (NULLPTR != packet_tail) {
             int location = FALSE;
             if (status_.sending_.compare_exchange_strong(location, TRUE)) {
+                rx_queue_bytes_ -= (*packet_tail)->buffer_size;
+                if (rx_queue_bytes_ < 0) {
+                    rx_queue_bytes_ = 0;
+                }
                 rx_queue_.erase(*packet_tail);
             }
             else {

@@ -159,6 +159,7 @@ namespace vmux {
         uint32_t                                        connection_id_ = 0; ///< Immutable logical connection identifier within the mux session.
 
         packet_queue                                    rx_queue_;          ///< Inbound payload queue pending delivery to local socket.
+        int64_t                                         rx_queue_bytes_ = 0; ///< Bytes currently held in rx_queue_ (hard-cap accounting).
         int64_t                                         rx_congestions_;    ///< Signed congestion counter; negative means backpressure applied.
         uint32_t                                        fc_tx_version_ = 0;      ///< Version stamped on the next XON/XOFF this socket sends.
         uint32_t                                        fc_rx_version_ = 0;      ///< Version of the last peer XON/XOFF applied.
