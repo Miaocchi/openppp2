@@ -50,7 +50,7 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn("npm test", workflow)
         self.assertIn("npm run build", workflow)
         self.assertIn("cargo test --locked --manifest-path src-tauri/Cargo.toml", workflow)
-        self.assertIn("os: [ubuntu-latest, windows-2022]", workflow)
+        self.assertIn("os: [ubuntu-24.04, windows-2022]", workflow)
 
     def test_upstream_xtcp_suite_is_blocking_with_one_retry(self) -> None:
         workflow = self.read("test.yml")
