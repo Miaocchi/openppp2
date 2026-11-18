@@ -3,6 +3,11 @@
 #include <ppp/app/client/ClientNetworkInterface.h>
 #include <ppp/net/rinetd/RinetdConnection.h>
 
+#if defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE)
+#include <sys/socket.h>
+#include <netinet/in.h>
+#endif
+
 namespace ppp {
     namespace net {
         class ProtectorNetwork;
@@ -29,15 +34,23 @@ namespace ppp {
                 const ppp::string& interface_name,
                 int interface_index,
                 bool has_protector_network) noexcept {
+                (void)ipv4;
 #if defined(_IPHONE) || defined(IPHONE)
+                // PacketTunnel sockets follow Network Extension route policy.
                 return false;
 #elif defined(_ANDROID)
+                (void)interface_name;
+                (void)interface_index;
                 return has_protector_network;
 #elif defined(_LINUX)
-                return ipv4 && !interface_name.empty();
+                return !interface_name.empty();
 #elif defined(_WIN32) || defined(_MACOS)
-                return ipv4 && interface_index > 0;
+                (void)interface_name;
+                return interface_index > 0;
 #else
+                (void)interface_name;
+                (void)interface_index;
+                (void)has_protector_network;
                 return false;
 #endif
             }
@@ -91,6 +104,38 @@ namespace ppp {
                     return false;
                 }
                 const unsigned int native_index = static_cast<unsigned int>(interface_index);
+                struct sockaddr_storage local{};
+                socklen_t local_size = sizeof(local);
+                if (::getsockname(socket, reinterpret_cast<struct sockaddr*>(&local), &local_size) != 0) {
+                    return false;
+                }
+                if (local.ss_family == AF_INET6) {
+#if defined(IPV6_BOUND_IF)
+                    return ::setsockopt(
+                        socket,
+                        IPPROTO_IPV6,
+                        IPV6_BOUND_IF,
+                        &native_index,
+                        sizeof(native_index)) == 0;
+#else
+                    return false;
+#endif
+                }
+                if (local.ss_family == AF_UNSPEC) {
+                    if (::setsockopt(socket, IPPROTO_IP, IP_BOUND_IF,
+                            &native_index, sizeof(native_index)) == 0) {
+                        return true;
+                    }
+#if defined(IPV6_BOUND_IF)
+                    return ::setsockopt(socket, IPPROTO_IPV6, IPV6_BOUND_IF,
+                        &native_index, sizeof(native_index)) == 0;
+#else
+                    return false;
+#endif
+                }
+                if (local.ss_family != AF_INET) {
+                    return false;
+                }
                 return ::setsockopt(
                     socket,
                     IPPROTO_IP,
