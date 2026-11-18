@@ -353,6 +353,30 @@ openppp2_add_cpp_test(noise_psk_exporter_test SOURCES
     noise_psk_exporter_test.cpp
     "${OPENPPP2_ROOT}/ppp/cryptography/noise/NoisePsk.cpp")
 target_link_libraries(noise_psk_exporter_test PRIVATE OpenSSL::Crypto)
+openppp2_add_cpp_test(multipath_secure_channel_test SOURCES
+    multipath_secure_channel_test.cpp
+    "${OPENPPP2_ROOT}/ppp/cryptography/noise/NoisePsk.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/noise/MultipathSecureChannel.cpp")
+target_link_libraries(multipath_secure_channel_test PRIVATE OpenSSL::Crypto)
+set_tests_properties(multipath_secure_channel_test PROPERTIES LABELS "multipath;offline;security")
+
+openppp2_add_cpp_test(multipath_session_test SOURCES
+    multipath_session_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Session.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Join.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Control.cpp")
+target_link_libraries(multipath_session_test PRIVATE OpenSSL::Crypto)
+set_tests_properties(multipath_session_test PROPERTIES LABELS "multipath;offline")
+
+
+openppp2_add_cpp_test(multipath_wire_protocol_test SOURCES
+    multipath_wire_protocol_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/multipath/WireProtocol.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Session.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Join.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Control.cpp")
+target_link_libraries(multipath_wire_protocol_test PRIVATE OpenSSL::Crypto)
+set_tests_properties(multipath_wire_protocol_test PROPERTIES LABELS "multipath;offline;security")
 openppp2_add_cpp_test(transport_auth_keyring_test SOURCES
     transport_auth_keyring_test.cpp
     "${OPENPPP2_ROOT}/ppp/configurations/TransportAuthConfiguration.cpp")

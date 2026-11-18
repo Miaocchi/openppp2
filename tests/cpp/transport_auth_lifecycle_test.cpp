@@ -2,6 +2,7 @@
 #include <boost/test/included/unit_test.hpp>
 
 #include <ppp/app/protocol/SessionResumeAuthenticator.h>
+#include <ppp/app/client/TransportAuthCompletion.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/cryptography/noise/NoisePsk.h>
 #include <ppp/p2p/P2PRelayOffer.h>
@@ -19,11 +20,14 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <atomic>
+#include <chrono>
 
 namespace asio = boost::asio;
 namespace noise = ppp::cryptography::noise;
 namespace protocol = ppp::app::protocol;
 namespace transmissions = ppp::transmissions;
+namespace client = ppp::app::client;
 using tcp = asio::ip::tcp;
 
 namespace ppp::transmissions {
@@ -33,6 +37,56 @@ std::ostream& operator<<(std::ostream& stream, AuthenticatedCarrierKind value) {
 std::ostream& operator<<(std::ostream& stream, AuthenticatedCarrierMethod value) {
     return stream << static_cast<unsigned>(value);
 }
+}
+
+BOOST_AUTO_TEST_CASE(transport_auth_completion_survives_late_caller_resume) {
+    client::TransportAuthCompletion completion;
+    BOOST_REQUIRE(completion.TryComplete(true,
+        ppp::diagnostics::ErrorCode::Success));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    BOOST_TEST(!completion.TryTimeout());
+    BOOST_TEST((completion.GetState() ==
+        client::TransportAuthCompletion::State::Succeeded));
+}
+
+BOOST_AUTO_TEST_CASE(transport_auth_timeout_wins_when_authentication_is_pending) {
+    client::TransportAuthCompletion completion;
+    BOOST_TEST(completion.TryTimeout());
+    BOOST_TEST(!completion.TryComplete(true,
+        ppp::diagnostics::ErrorCode::Success));
+    BOOST_TEST((completion.GetState() ==
+        client::TransportAuthCompletion::State::TimedOut));
+}
+
+BOOST_AUTO_TEST_CASE(transport_auth_completion_race_has_one_winner) {
+    for (int iteration = 0; iteration < 256; ++iteration) {
+        client::TransportAuthCompletion completion;
+        std::atomic_bool start{ false };
+        bool auth_won = false;
+        bool timeout_won = false;
+        std::thread auth([&]() {
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            auth_won = completion.TryComplete(true,
+                ppp::diagnostics::ErrorCode::Success);
+        });
+        std::thread timer([&]() {
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            timeout_won = completion.TryTimeout();
+        });
+        start.store(true, std::memory_order_release);
+        auth.join();
+        timer.join();
+
+        BOOST_TEST(auth_won != timeout_won);
+        BOOST_TEST((completion.GetState() == (auth_won
+            ? client::TransportAuthCompletion::State::Succeeded
+            : client::TransportAuthCompletion::State::TimedOut)));
+    }
 }
 
 namespace {
@@ -123,6 +177,15 @@ protected:
 private:
     transmissions::AuthenticatedCarrierKind kind_;
     bool handshake_complete_ = false;
+};
+
+class HandshakedTcpTransmission final : public transmissions::ITcpipTransmission {
+public:
+    using transmissions::ITcpipTransmission::ITcpipTransmission;
+
+    bool IsHandshakeComplete() const noexcept override {
+        return true;
+    }
 };
 
 template <typename Callback>
@@ -367,6 +430,8 @@ BOOST_AUTO_TEST_CASE(production_transport_descriptors_are_explicit) {
 
     BOOST_TEST(child->GetAuthenticatedCarrierKind() ==
         transmissions::AuthenticatedCarrierKind::None);
+    BOOST_TEST(child->GetTransportCarrierKind() ==
+        transmissions::AuthenticatedCarrierKind::Tcp);
     BOOST_TEST(main->GetAuthenticatedCarrierKind() ==
         transmissions::AuthenticatedCarrierKind::Tcp);
     BOOST_TEST(server->GetAuthenticatedCarrierKind() ==
@@ -384,6 +449,36 @@ BOOST_AUTO_TEST_CASE(production_transport_descriptors_are_explicit) {
     server->Dispose();
     websocket->Dispose();
     wss->Dispose();
+    context->restart();
+    context->poll();
+}
+
+BOOST_AUTO_TEST_CASE(child_plain_transport_can_bind_without_becoming_recovery_carrier) {
+    auto context = std::make_shared<asio::io_context>();
+    auto strand = std::make_shared<FakeTransmission::StrandPtr::element_type>(
+        asio::make_strand(*context));
+    auto configuration = std::make_shared<ppp::configurations::AppConfiguration>();
+    std::vector<std::shared_ptr<tcp::socket>> peers;
+    auto child = std::make_shared<HandshakedTcpTransmission>(
+        context, strand, ConnectedSocket(context, peers), configuration,
+        transmissions::TcpTransmissionRole::Child);
+
+    BOOST_TEST(child->GetAuthenticatedCarrierKind() ==
+        transmissions::AuthenticatedCarrierKind::None);
+    BOOST_TEST(child->GetTransportCarrierKind() ==
+        transmissions::AuthenticatedCarrierKind::Tcp);
+
+    OnStrand(context, strand, [&]() {
+        auto result = CompleteNoiseResult();
+        BOOST_REQUIRE(child->InstallNoiseAuthenticatedCarrierBinding(std::move(result)));
+        BOOST_TEST(child->GetAuthenticatedCarrierKind() ==
+            transmissions::AuthenticatedCarrierKind::None);
+        BOOST_TEST(child->GetAuthenticatedCarrierMethod() ==
+            transmissions::AuthenticatedCarrierMethod::NoisePskV1);
+        BOOST_TEST(child->IsAuthenticatedCarrierBindingActive());
+    });
+
+    child->Dispose();
     context->restart();
     context->poll();
 }
