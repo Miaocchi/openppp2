@@ -368,6 +368,9 @@ openppp2_add_cpp_test(multipath_session_test SOURCES
 target_link_libraries(multipath_session_test PRIVATE OpenSSL::Crypto)
 set_tests_properties(multipath_session_test PROPERTIES LABELS "multipath;offline")
 
+openppp2_add_cpp_test(multipath_scheduler_test SOURCES
+    multipath_scheduler_test.cpp)
+set_tests_properties(multipath_scheduler_test PROPERTIES LABELS "multipath;offline")
 
 openppp2_add_cpp_test(multipath_wire_protocol_test SOURCES
     multipath_wire_protocol_test.cpp
