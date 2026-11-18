@@ -108,6 +108,10 @@ public:
         owner_.ResetEpoch(epoch);
     }
 
+    bool Supports(PathEffectKind kind) const noexcept override {
+        return kind == PathEffectKind::PublishSnapshot;
+    }
+
     PathAdapterResult Apply(const PathControlIntent& intent) noexcept override {
         const PathControlSnapshot snapshot = owner_.Snapshot();
         if (intent.epoch != snapshot.epoch || intent.generation != snapshot.generation) {

@@ -101,10 +101,16 @@ BOOST_AUTO_TEST_CASE(path_control_adapter_rejects_stale_intents_and_reports_unsu
     intent.epoch = 1;
     intent.generation = 0;
     intent.kind = PathEffectKind::PublishSnapshot;
+    BOOST_TEST(adapter.Supports(intent.kind));
     BOOST_TEST(static_cast<int>(adapter.Apply(intent)) ==
         static_cast<int>(PathAdapterResult::Noop));
 
     intent.kind = PathEffectKind::StartDial;
+    BOOST_TEST(!adapter.Supports(intent.kind));
+    BOOST_TEST(static_cast<int>(adapter.Apply(intent)) ==
+        static_cast<int>(PathAdapterResult::Unsupported));
+    intent.kind = PathEffectKind::DrainCarrier;
+    BOOST_TEST(!adapter.Supports(intent.kind));
     BOOST_TEST(static_cast<int>(adapter.Apply(intent)) ==
         static_cast<int>(PathAdapterResult::Unsupported));
     intent.epoch = 0;
