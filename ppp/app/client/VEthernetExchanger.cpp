@@ -2,10 +2,15 @@
 #include <ppp/transmissions/proxys/IForwarding.h>
 #include <ppp/app/client/VEthernetNetworkSwitcher.h>
 #include <ppp/app/client/VEthernetExchanger.h>
+#include <ppp/app/client/TransportAuthCompletion.h>
 #include <ppp/app/client/PolicyTunnelDnsStream.h>
 #include <ppp/app/client/VEthernetDatagramPort.h>
 #include <ppp/app/client/udp/ClientDatagramPortManager.h>
 #include <ppp/app/client/ClientFrpRegistry.h>
+#include <ppp/app/client/ClientUnderlyingSocketProtector.h>
+#include <ppp/app/multipath/PathDialer.h>
+#include <ppp/app/multipath/WireProtocol.h>
+#include <ppp/transmissions/MultipathTransmission.h>
 #include <ppp/app/client/ClientSessionResumeHandshakePolicy.h>
 #include <ppp/app/protocol/VirtualEthernetPacket.h>
 #include <ppp/app/protocol/VirtualEthernetPathMtu.h>
@@ -728,7 +733,7 @@ namespace ppp {
                 }
 
                 TransportAuthNegotiationContext context;
-                const auto kind = transmission->GetAuthenticatedCarrierKind();
+                const auto kind = transmission->GetTransportCarrierKind();
                 if (kind == ppp::transmissions::AuthenticatedCarrierKind::Tcp) {
                     context.carrier = TransportAuthCarrier::Tcp;
                 }
@@ -1215,6 +1220,23 @@ namespace ppp {
                 if (disposed_.exchange(true, std::memory_order_acq_rel)) {
                     return;
                 }
+                multipath_paths_.Stop();
+                {
+                    std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                    multipath_ticket_ = ppp::app::multipath::SessionTicket();
+                    multipath_create_request_id_.clear();
+                }
+                {
+                    std::lock_guard<std::mutex> lock(multipath_primary_mutex_);
+                    multipath_primary_transmission_.reset();
+                    multipath_primary_mux_channel_.reset();
+                    multipath_primary_path_id_.clear();
+                    multipath_primary_mux_attached_.store(false, std::memory_order_release);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(multipath_link_attempts_mutex_);
+                    multipath_link_attempts_.clear();
+                }
                 ClearSessionResumeState();
                 {
                     std::lock_guard<std::mutex> scope(runtime_state_mutex_);
@@ -1652,6 +1674,467 @@ namespace ppp {
                 return transmission;
             }
 
+            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::OpenMultipathPathTransmission(
+                const ContextPtr& context, const StrandPtr& strand,
+                const ppp::configurations::MultipathConfiguration::Path& path,
+                const std::shared_ptr<ppp::app::multipath::PathAttempt>& attempt,
+                const ppp::app::multipath::PathDialer::AddressLeaseAcquire& acquire_address,
+                ppp::transmissions::TcpTransmissionRole role,
+                YieldContext& y) noexcept {
+                AppConfigurationPtr configuration = GetConfiguration();
+                if (!configuration) {
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::AppConfigurationMissing,
+                        ITransmissionPtr());
+                }
+
+                ppp::app::multipath::PathDialer::AddressLeaseAcquire default_acquire_address =
+                    [this](const boost::asio::ip::address& address, std::shared_ptr<void>& lifetime) noexcept {
+                        auto lease = make_shared_object<ppp::app::multipath::BypassLeaseManager::Lease>();
+                        if (!lease || !multipath_bypass_leases_.AcquireAddress(address, *lease)) {
+                            return false;
+                        }
+                        lifetime = std::static_pointer_cast<void>(lease);
+                        return true;
+                    };
+
+                ppp::app::multipath::PathDialer::Protector protector;
+#if defined(_IPHONE) || defined(IPHONE)
+                protector = [](const ppp::app::multipath::PathDialer::SocketPtr& socket,
+                    const boost::asio::ip::tcp::endpoint&, YieldContext&) noexcept {
+                    return socket && ppp::app::client::IsClientUnderlyingSocketHandleValid(socket->native_handle());
+                };
+#elif defined(_ANDROID)
+                auto protector_network = switcher_->GetProtectorNetwork();
+                protector = [protector_network](const ppp::app::multipath::PathDialer::SocketPtr& socket,
+                    const boost::asio::ip::tcp::endpoint& endpoint, YieldContext& context) noexcept {
+                    auto socket_protector = BuildClientUnderlyingSocketProtector(
+                        endpoint.address().is_v4(), nullptr, protector_network);
+                    return socket && socket_protector && socket_protector(socket->native_handle(), context);
+                };
+#else
+                if (switcher_->ProxyOnly(nullptr)) {
+                    protector = [](const ppp::app::multipath::PathDialer::SocketPtr& socket,
+                        const boost::asio::ip::tcp::endpoint&, YieldContext&) noexcept {
+                        return socket && ppp::app::client::IsClientUnderlyingSocketHandleValid(socket->native_handle());
+                    };
+                }
+                else {
+                    auto network_interface = switcher_->GetUnderlyingNetworkInterface();
+                    protector = [network_interface](const ppp::app::multipath::PathDialer::SocketPtr& socket,
+                        const boost::asio::ip::tcp::endpoint& endpoint, YieldContext& context) noexcept {
+                        auto socket_protector = BuildClientUnderlyingSocketProtector(
+                            endpoint.address().is_v4(), network_interface, nullptr);
+                        return socket && socket_protector && socket_protector(socket->native_handle(), context);
+                    };
+                }
+#endif
+
+                const ppp::app::multipath::PathDialer::TransmissionFactory create_transmission =
+                    [this, context, strand, role](const ppp::configurations::MultipathConfiguration::Path& entry,
+                        const ppp::app::multipath::PathDialer::SocketPtr& socket) noexcept -> ITransmissionPtr {
+                        ProtocolType protocol = ProtocolType::ProtocolType_PPP;
+                        if (entry.transport == "ws") {
+                            protocol = ProtocolType::ProtocolType_WebSocket;
+                        }
+                        elif(entry.transport == "wss") {
+                            protocol = ProtocolType::ProtocolType_WebSocketSSL;
+                        }
+
+                        const ppp::string http_host = entry.http_host.empty()
+                            ? entry.connect_host : entry.http_host;
+                        const ppp::string ws_path = entry.ws_path;
+                        ITransmissionPtr transmission = NewTransmission(
+                            context, strand, socket, protocol, http_host, ws_path,
+                            role);
+                        if (auto websocket = std::dynamic_pointer_cast<IWebsocketTransmission>(transmission)) {
+                            websocket->Host = http_host;
+                            websocket->Path = ws_path;
+                        }
+                        elif(auto websocket = std::dynamic_pointer_cast<ISslWebsocketTransmission>(transmission)) {
+                            websocket->Host = http_host;
+                            websocket->HttpHost = http_host;
+                            websocket->TlsServerName = entry.tls_server_name.empty()
+                                ? entry.connect_host : entry.tls_server_name;
+                            websocket->ForceVerifyPeer = true;
+                            websocket->Path = ws_path;
+                        }
+                        return transmission;
+                    };
+
+                const auto& effective_acquire_address = acquire_address
+                    ? acquire_address : default_acquire_address;
+                return ppp::app::multipath::PathDialer::Connect(
+                    context, strand, configuration, path, attempt, effective_acquire_address,
+                    protector, create_transmission, y);
+            }
+
+            VEthernetExchanger::ITransmissionPtr VEthernetExchanger::OpenMultipathCarrier(
+                const ContextPtr& context, const StrandPtr& strand,
+                const ppp::app::multipath::PathManager::Attempt& path_slot,
+                ppp::transmissions::TcpTransmissionRole role, bool resume,
+                std::shared_ptr<ppp::app::multipath::PathAttempt>& path_attempt_out,
+                YieldContext& y) noexcept {
+                using namespace ppp::app::multipath;
+                using namespace ppp::app::multipath::wire;
+                AppConfigurationPtr configuration = GetConfiguration();
+                if (!configuration || !configuration->transport_auth_keyring || !path_slot.valid) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                    return nullptr;
+                }
+                const auto* key = configuration->transport_auth_keyring->active();
+                if (!key || key->id.empty() || key->secret.size() != Secret32{}.size()) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                    return nullptr;
+                }
+                ppp::configurations::MultipathConfiguration::Path path;
+                if (!multipath_paths_.GetPath(path_slot.path_index, path)) return nullptr;
+
+                std::array<std::uint8_t, 16> random_id{};
+                const auto make_id = [&random_id](const char* prefix, std::string& output) noexcept {
+                    if (RAND_bytes(random_id.data(), static_cast<int>(random_id.size())) != 1) return false;
+                    static constexpr char hex[] = "0123456789abcdef";
+                    try {
+                        output.assign(prefix);
+                        output.reserve(output.size() + random_id.size() * 2);
+                        for (std::uint8_t value : random_id) {
+                            output.push_back(hex[value >> 4]);
+                            output.push_back(hex[value & 15]);
+                        }
+                    } catch (...) { return false; }
+                    return true;
+                };
+                std::string carrier_id;
+                if (!make_id("carrier/", carrier_id)) return nullptr;
+
+                const auto deadline_ms = static_cast<std::uint32_t>(std::max(1000,
+                    configuration->tcp.connect.timeout * 1000 + configuration->transport_auth.handshake_timeout_ms));
+                auto path_attempt = PathAttempt::Start(context, strand, deadline_ms, []() noexcept {});
+                if (!path_attempt) return nullptr;
+                ITransmissionPtr raw = OpenMultipathPathTransmission(context, strand, path,
+                    path_attempt, {}, role, y);
+                if (!raw || !path_attempt->IsActive()) {
+                    path_attempt->Complete();
+                    if (raw) raw->Dispose();
+                    return nullptr;
+                }
+
+                ppp::cryptography::noise::Bytes32 psk_bytes{};
+                std::memcpy(psk_bytes.data(), key->secret.data(), psk_bytes.size());
+                ppp::cryptography::noise::Secret32 psk(std::move(psk_bytes));
+                ppp::cryptography::noise::MultipathHandshakeParameters parameters;
+                parameters.client_identity = key->id;
+                parameters.server_identity = "openppp2-server";
+                parameters.key_id = key->id;
+                parameters.capabilities = { 1 };
+                auto secured = make_shared_object<ppp::transmissions::MultipathTransmission>(
+                    raw, std::move(parameters), std::move(psk),
+                    ppp::cryptography::noise::HandshakeRole::NetworkClientInitiator);
+                if (!secured || !path_attempt->AddCancel([secured]() noexcept { secured->Dispose(); }) ||
+                    !secured->StartSecureClient(y) || !path_attempt->IsActive()) {
+                    path_attempt->Complete();
+                    raw->Dispose();
+                    return nullptr;
+                }
+
+                const SessionId client_session_id = ClientSessionIdFromInt128(GetId());
+                const std::string identity = key->id;
+                const auto bind_candidate = [&secured, &client_session_id](const std::string& request_id,
+                    const std::string& selected_carrier, const Secret32& nonce, Secret32& binding) noexcept {
+                    std::vector<std::uint8_t> context_bytes;
+                    static constexpr char label[] = "multipath-session-join-candidate-v1";
+                    const bool ok = BuildCandidateBindingContext(client_session_id, request_id,
+                        selected_carrier, nonce, context_bytes) && secured->ExportAuthenticatedSessionKey(
+                            label, context_bytes.data(), context_bytes.size(), binding.data(), binding.size());
+                    ClearSensitivePayload(context_bytes);
+                    return ok;
+                };
+                const auto exchange_record = [&secured, &path_attempt, &y](RecordType request_type,
+                    std::vector<std::uint8_t>& request, RecordType response_type,
+                    std::vector<std::uint8_t>& response) noexcept {
+                    std::uint8_t received_type = 0;
+                    const bool ok = path_attempt->IsActive() && secured->WriteSecureRecord(y,
+                        static_cast<std::uint8_t>(request_type), request.data(), request.size()) &&
+                        secured->ReadSecureRecord(y, received_type, response) &&
+                        received_type == static_cast<std::uint8_t>(response_type) && path_attempt->IsActive();
+                    ClearSensitivePayload(request);
+                    if (!ok) ClearSensitivePayload(response);
+                    return ok;
+                };
+
+                SessionTicket ticket;
+                bool has_ticket = false;
+                std::string create_request_id;
+                {
+                    std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                    if (multipath_ticket_.credential.IsSet()) {
+                        ticket.id = multipath_ticket_.id;
+                        ticket.client_session_id = multipath_ticket_.client_session_id;
+                        ticket.generation = multipath_ticket_.generation;
+                        ticket.credential = CleansedSecret(multipath_ticket_.credential.Value());
+                        ticket.grace = multipath_ticket_.grace;
+                        multipath_control_state_.Reset(ticket.generation);
+                        has_ticket = true;
+                    }
+                    create_request_id = multipath_create_request_id_;
+                }
+
+                if (!has_ticket) {
+                    if (create_request_id.empty() && !make_id("create/", create_request_id)) {
+                        path_attempt->Complete(); raw->Dispose(); return nullptr;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                        if (multipath_create_request_id_.empty()) multipath_create_request_id_ = create_request_id;
+                        else create_request_id = multipath_create_request_id_;
+                    }
+                    Secret32 nonce{};
+                    Secret32 binding{};
+                    if (RAND_bytes(nonce.data(), static_cast<int>(nonce.size())) != 1 ||
+                        !bind_candidate(create_request_id, carrier_id, nonce, binding)) {
+                        path_attempt->Complete(); raw->Dispose(); return nullptr;
+                    }
+                    QueryRequest query;
+                    query.operation = QueryOperation::Create;
+                    query.authenticated_identity = identity;
+                    query.request_id = create_request_id;
+                    query.carrier_id = carrier_id;
+                    query.client_session_id = client_session_id;
+                    query.client_nonce = nonce;
+                    query.candidate_binding = binding;
+                    std::vector<std::uint8_t> request_payload, response_payload;
+                    QueryResponse query_response;
+                    bool found_create = EncodeQueryRequest(query, request_payload) &&
+                        exchange_record(RecordType::QueryRequest, request_payload,
+                            RecordType::QueryResponse, response_payload) &&
+                        DecodeQueryResponse(response_payload.data(), response_payload.size(), query_response) &&
+                        query_response.operation == QueryOperation::Create &&
+                        (query_response.create.result == CreateResult::Accepted ||
+                            query_response.create.result == CreateResult::Duplicate);
+                    ClearSensitivePayload(response_payload);
+                    CreateResponse created;
+                    if (found_create) {
+                        created = query_response.create;
+                    }
+                    else {
+                        CreateRequest create;
+                        create.authenticated_identity = identity;
+                        create.request_id = create_request_id;
+                        create.carrier_id = carrier_id;
+                        create.client_session_id = client_session_id;
+                        create.client_nonce = nonce;
+                        create.candidate_binding = binding;
+                        create.failover = configuration->client.multipath.policy == "failover";
+                        request_payload.clear(); response_payload.clear();
+                        if (!EncodeCreateRequest(create, request_payload) ||
+                            !exchange_record(RecordType::CreateRequest, request_payload,
+                                RecordType::CreateResponse, response_payload) ||
+                            !DecodeCreateResponse(response_payload.data(), response_payload.size(), created) ||
+                            (created.result != CreateResult::Accepted && created.result != CreateResult::Duplicate)) {
+                            ClearSensitivePayload(response_payload);
+                            path_attempt->Complete(); raw->Dispose(); return nullptr;
+                        }
+                        ClearSensitivePayload(response_payload);
+                    }
+                    OPENSSL_cleanse(nonce.data(), nonce.size());
+                    OPENSSL_cleanse(binding.data(), binding.size());
+                    if (created.client_session_id != client_session_id || created.generation == 0 ||
+                        created.grace_ms == 0 ||
+                        created.failover != (configuration->client.multipath.policy == "failover")) {
+                        OPENSSL_cleanse(created.credential.data(), created.credential.size());
+                        path_attempt->Complete(); raw->Dispose(); return nullptr;
+                    }
+                    ticket.id = created.session_id;
+                    ticket.client_session_id = created.client_session_id;
+                    ticket.generation = created.generation;
+                    ticket.credential = CleansedSecret(created.credential);
+                    ticket.grace = std::chrono::milliseconds(created.grace_ms);
+                    OPENSSL_cleanse(created.credential.data(), created.credential.size());
+                    {
+                        std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                        multipath_ticket_ = std::move(ticket);
+                        ticket.id = multipath_ticket_.id;
+                        ticket.client_session_id = multipath_ticket_.client_session_id;
+                        ticket.generation = multipath_ticket_.generation;
+                        ticket.credential = CleansedSecret(multipath_ticket_.credential.Value());
+                        ticket.grace = multipath_ticket_.grace;
+                    }
+                }
+
+                std::string join_request_id;
+                if (!make_id(resume ? "resume/" : "join/", join_request_id)) {
+                    path_attempt->Complete(); raw->Dispose(); return nullptr;
+                }
+                JoinRequest join;
+                join.operation = resume ? JoinOperation::Resume : JoinOperation::Join;
+                join.phase = JoinPhase::Reserve;
+                join.authenticated_identity = identity;
+                join.request_id = join_request_id;
+                join.carrier_id = carrier_id;
+                join.session_id = ticket.id;
+                join.client_session_id = ticket.client_session_id;
+                join.generation = ticket.generation;
+                {
+                    std::lock_guard<std::mutex> lock(multipath_control_mutex_);
+                    join.peer_committed_operation_sequence =
+                        multipath_control_state_.ReceiveOperationCommitted();
+                }
+                if (RAND_bytes(join.client_nonce.data(), static_cast<int>(join.client_nonce.size())) != 1 ||
+                    !bind_candidate(join.request_id, carrier_id, join.client_nonce, join.candidate_binding) ||
+                    !ComputeJoinProof(ticket.credential.Value(), join, join.proof)) {
+                    path_attempt->Complete(); raw->Dispose(); return nullptr;
+                }
+                const auto exchange_join_phase = [&exchange_record, &ticket](JoinRequest& current,
+                    JoinResponse& response) noexcept {
+                    std::vector<std::uint8_t> request_payload, response_payload;
+                    const bool ok = EncodeJoinRequest(current, request_payload) &&
+                        exchange_record(RecordType::JoinRequest, request_payload,
+                            RecordType::JoinResponse, response_payload) &&
+                        DecodeJoinResponse(response_payload.data(), response_payload.size(), response);
+                    ClearSensitivePayload(response_payload);
+                    if (!ok) return false;
+                    JoinRequest proof_request = current;
+                    if (current.phase == JoinPhase::Reserve) {
+                        proof_request.phase = JoinPhase::Confirm;
+                    }
+                    proof_request.server_nonce = response.server_nonce;
+                    return VerifyJoinResponseProof(ticket.credential.Value(), proof_request,
+                        response.server_committed_operation_sequence, response.proof);
+                };
+                std::vector<ControlMessage> replay_controls;
+                JoinResponse join_response;
+                if (!exchange_join_phase(join, join_response) ||
+                    (join_response.result != JoinResult::Accepted && join_response.result != JoinResult::Duplicate)) {
+                    path_attempt->Complete(); raw->Dispose(); return nullptr;
+                }
+                join.phase = JoinPhase::Confirm;
+                join.server_nonce = join_response.server_nonce;
+                if (!ComputeJoinProof(ticket.credential.Value(), join, join.proof) ||
+                    !exchange_join_phase(join, join_response) ||
+                    (join_response.result != JoinResult::Accepted && join_response.result != JoinResult::Duplicate)) {
+                    path_attempt->Complete(); raw->Dispose(); return nullptr;
+                }
+                join.phase = JoinPhase::Commit;
+                if (!ComputeJoinProof(ticket.credential.Value(), join, join.proof) ||
+                    !exchange_join_phase(join, join_response) || join_response.result != JoinResult::Committed) {
+                    path_attempt->Complete(); raw->Dispose(); return nullptr;
+                }
+                if (resume && join_response.generation > ticket.generation) {
+                    bool reconciled = false;
+                    {
+                        std::lock_guard<std::mutex> lock(multipath_control_mutex_);
+                        reconciled = multipath_control_state_.AdvanceGeneration(
+                            join_response.generation,
+                            join_response.server_committed_operation_sequence,
+                            replay_controls);
+                    }
+                    if (!reconciled) {
+                        path_attempt->Complete(); raw->Dispose(); return nullptr;
+                    }
+                    std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                    multipath_ticket_.generation = join_response.generation;
+                    multipath_resume_primary_.store(false, std::memory_order_release);
+                }
+                OPENSSL_cleanse(join.client_nonce.data(), join.client_nonce.size());
+                OPENSSL_cleanse(join.candidate_binding.data(), join.candidate_binding.size());
+                OPENSSL_cleanse(join.proof.data(), join.proof.size());
+                std::weak_ptr<VEthernetExchanger> weak_self =
+                    std::static_pointer_cast<VEthernetExchanger>(shared_from_this());
+                std::weak_ptr<ppp::transmissions::MultipathTransmission> weak_secured = secured;
+                if (!secured->SetControlRecordHandler([weak_self, weak_secured](std::uint8_t type,
+                    const std::shared_ptr<const std::vector<std::uint8_t>>& payload) noexcept {
+                    auto self = weak_self.lock();
+                    auto secured = weak_secured.lock();
+                    return self && secured &&
+                        type == ppp::transmissions::MultipathTransmission::ControlRecord &&
+                        self->HandleMultipathControlRecord(secured, payload);
+                }) || !secured->BeginApplicationIO()) {
+                    path_attempt->Complete(); raw->Dispose(); return nullptr;
+                }
+                for (const auto& replay : replay_controls) {
+                    std::vector<std::uint8_t> encoded;
+                    if (!EncodeControlMessage(replay, encoded) ||
+                        !secured->WriteSecureRecord(y,
+                            ppp::transmissions::MultipathTransmission::ControlRecord,
+                            encoded.data(), encoded.size())) {
+                        path_attempt->Complete(); raw->Dispose(); return nullptr;
+                    }
+                }
+                path_attempt_out = path_attempt;
+                return secured;
+            }
+
+            bool VEthernetExchanger::HandleMultipathControlRecord(
+                const std::shared_ptr<ppp::transmissions::MultipathTransmission>& transmission,
+                const std::shared_ptr<const std::vector<std::uint8_t>>& payload) noexcept {
+                using namespace ppp::app::multipath;
+                using namespace ppp::app::multipath::wire;
+                if (!transmission || !payload) return false;
+                try {
+                std::vector<std::vector<std::uint8_t>> outbound;
+                ControlMessage message;
+                std::vector<ControlDelivery> ready;
+                ControlReceive received;
+                {
+                    std::lock_guard<std::mutex> lock(multipath_control_mutex_);
+                    if (!DecodeControlMessage(payload->data(), payload->size(), message)) return false;
+                    if (!message.acknowledgement_only) {
+                        ControlPayload validated_operation;
+                        if (!DecodeControlPayload(message.payload.data(),
+                                message.payload.size(), validated_operation) ||
+                            (validated_operation.opcode != ControlOpcode::Ping &&
+                                validated_operation.opcode != ControlOpcode::Pong)) return false;
+                    }
+                    received = multipath_control_state_.Receive(message, ready);
+                    if (received == ControlReceive::Invalid || received == ControlReceive::OutOfWindow ||
+                        received == ControlReceive::Capacity) return false;
+                    for (const auto& delivery : ready) {
+                        if (delivery.apply_operation) {
+                            ControlPayload operation;
+                            if (!DecodeControlPayload(delivery.message.payload.data(),
+                                delivery.message.payload.size(), operation)) return false;
+                            if (operation.opcode == ControlOpcode::Ping) {
+                                operation.opcode = ControlOpcode::Pong;
+                                std::vector<std::uint8_t> pong_payload, encoded;
+                                ControlMessage pong;
+                                const auto operation_sequence =
+                                    multipath_control_state_.LastOperationAllocated() + 1;
+                                const auto operation_id = MakeControlOperationId(ControlOpcode::Pong,
+                                    delivery.message.session_generation, operation_sequence);
+                                if (!EncodeControlPayload(operation, pong_payload) ||
+                                    !multipath_control_state_.MakeMessage(
+                                        delivery.message.session_generation, operation_sequence,
+                                        operation_id, pong_payload.data(), pong_payload.size(), pong) ||
+                                    !EncodeControlMessage(pong, encoded)) return false;
+                                outbound.emplace_back(std::move(encoded));
+                            }
+                            else if (operation.opcode != ControlOpcode::Pong) {
+                                return false;
+                            }
+                        }
+                        if (!multipath_control_state_.CommitReceived(delivery.message.sequence)) return false;
+                    }
+                    if (received != ControlReceive::AckOnly) {
+                        ControlMessage ack;
+                        std::vector<std::uint8_t> encoded;
+                        if (!multipath_control_state_.MakeAckOnly(ack) ||
+                            !EncodeControlMessage(ack, encoded)) return false;
+                        outbound.emplace_back(std::move(encoded));
+                    }
+                }
+                for (const auto& encoded : outbound) {
+                    if (!transmission->WriteSecureRecord(
+                        ppp::transmissions::MultipathTransmission::ControlRecord,
+                        encoded.data(), encoded.size(),
+                        [transmission](bool ok) noexcept { if (!ok) transmission->Dispose(); })) {
+                        return false;
+                    }
+                }
+                return true;
+                }
+                catch (...) { return false; }
+            }
+
             /** @brief Starts main asynchronous exchanger loop. */
             bool VEthernetExchanger::Open() noexcept {
                 if (disposed_.load(std::memory_order_acquire)) {
@@ -1910,6 +2393,19 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionTransportMissing, VEthernetExchanger::ITransmissionPtr(NULLPTR));
                 }
 
+                AppConfigurationPtr configuration = GetConfiguration();
+                StrandPtr transport_strand = strand;
+                if (configuration && configuration->client.transport_auth.enabled &&
+                    NULLPTR == transport_strand) {
+                    transport_strand = make_shared_object<Executors::Strand>(
+                        boost::asio::make_strand(*context));
+                    if (NULLPTR == transport_strand) {
+                        return ppp::diagnostics::SetLastError(
+                            ppp::diagnostics::ErrorCode::MemoryAllocationFailed,
+                            VEthernetExchanger::ITransmissionPtr(NULLPTR));
+                    }
+                }
+
 #if defined(_IPHONE)
                 const bool ios_child_slot = (NULLPTR != ios_child_slot_generation);
                 uint64_t ios_reserved_generation = 0;
@@ -1932,7 +2428,7 @@ namespace ppp {
                 }
 #endif
 
-                ITransmissionPtr transmission = OpenTransmission(context, strand, y, ppp::transmissions::TcpTransmissionRole::Child, active, register_cancel);
+                ITransmissionPtr transmission = OpenTransmission(context, transport_strand, y, ppp::transmissions::TcpTransmissionRole::Child, active, register_cancel);
                 if (NULLPTR == transmission) {
                     if (register_cancel) register_cancel({});
 #if defined(_IPHONE)
@@ -1956,6 +2452,118 @@ namespace ppp {
                 }
 
                 bool noerror = transmission->HandshakeServer(y, GetId(), false);
+                const auto auth_kind = transmission->GetAuthenticatedCarrierKind();
+                const auto transport_kind = transmission->GetTransportCarrierKind();
+                const bool auth_policy_enabled = configuration &&
+                    configuration->client.transport_auth.enabled;
+                const bool peer_supports_auth = transmission->PeerSupportsTransportAuthV1();
+                const bool peer_enables_auth = transmission->PeerEnablesTransportAuthV1();
+                const bool run_transport_auth = noerror && ShouldRunClientTransportAuth(
+                    transport_kind, auth_policy_enabled, peer_supports_auth, peer_enables_auth);
+                ppp::telemetry::Log(Level::kDebug, "transport_auth",
+                    "client child decision handshake_ok=%u auth_kind=%u transport_kind=%u policy=%u peer_v1=%u peer_enabled=%u run=%u",
+                    noerror ? 1u : 0u, static_cast<unsigned int>(auth_kind),
+                    static_cast<unsigned int>(transport_kind),
+                    auth_policy_enabled ? 1u : 0u, peer_supports_auth ? 1u : 0u,
+                    peer_enables_auth ? 1u : 0u, run_transport_auth ? 1u : 0u);
+                if (noerror && active && !active()) {
+                    noerror = false;
+                }
+                bool transport_auth_ran = false;
+                if (run_transport_auth && noerror) {
+                    StrandPtr auth_strand = transmission->GetStrand();
+                    if (NULLPTR == auth_strand) {
+                        ppp::diagnostics::SetLastErrorCode(
+                            ppp::diagnostics::ErrorCode::SessionAuthFailed);
+                        noerror = false;
+                    }
+                    else {
+                        std::shared_ptr<TransportAuthCompletion> auth_completion =
+                            make_shared_object<TransportAuthCompletion>();
+                        std::shared_ptr<boost::asio::steady_timer> auth_timer =
+                            make_shared_object<boost::asio::steady_timer>(*auth_strand);
+                        if (!auth_completion || !auth_timer) {
+                            ppp::diagnostics::SetLastErrorCode(
+                                ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                            noerror = false;
+                        }
+                        else {
+                            auth_timer->expires_after(std::chrono::milliseconds(std::max<int64_t>(
+                                1, configuration->transport_auth.handshake_timeout_ms)));
+                            auth_timer->async_wait(
+                                [transmission, auth_completion](const boost::system::error_code& ec) noexcept {
+                                    if (ec == boost::system::errc::success &&
+                                        auth_completion->TryTimeout()) {
+                                        transmission->Dispose();
+                                    }
+                                });
+
+                            transport_auth_ran = true;
+                            ppp::diagnostics::ErrorCode auth_error =
+                                ppp::diagnostics::ErrorCode::SessionAuthFailed;
+                            if (auth_strand->running_in_this_thread()) {
+                                noerror = AuthenticatePlainTransport(transmission, y);
+                                auth_error = ppp::diagnostics::GetLastErrorCode();
+                                auth_completion->TryComplete(noerror, auth_error);
+                            }
+                            else {
+                                auto auth_context = transmission->GetContext();
+                                const YieldContext::Anchor completion_anchor = y.Arm();
+                                if (!auth_context || !completion_anchor) {
+                                    ppp::diagnostics::SetLastErrorCode(
+                                        ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);
+                                    noerror = false;
+                                }
+                                else {
+                                    const bool spawned = YieldContext::Spawn(
+                                        transmission->BufferAllocator.get(), *auth_context,
+                                        auth_strand.get(),
+                                        [this, transmission, auth_completion, completion_anchor](
+                                            YieldContext& auth_y) noexcept {
+                                            const bool success = AuthenticatePlainTransport(
+                                                transmission, auth_y);
+                                            auth_completion->TryComplete(success,
+                                                ppp::diagnostics::GetLastErrorCode());
+                                            completion_anchor.R();
+                                        });
+                                    if (!spawned) {
+                                        ppp::diagnostics::SetLastErrorCode(
+                                            ppp::diagnostics::ErrorCode::RuntimeInitializationFailed);
+                                        noerror = false;
+                                    }
+                                    else {
+                                        y.Suspend(completion_anchor);
+                                    }
+                                }
+                            }
+                            const auto auth_state = auth_completion->GetState();
+                            noerror = auth_state == TransportAuthCompletion::State::Succeeded;
+                            const bool timed_out =
+                                auth_state == TransportAuthCompletion::State::TimedOut;
+                            if (!noerror && !timed_out &&
+                                auth_state == TransportAuthCompletion::State::Failed) {
+                                auth_error = auth_completion->GetError();
+                                ppp::diagnostics::SetLastErrorCode(auth_error);
+                            }
+                            boost::system::error_code ignored;
+                            auth_timer->cancel(ignored);
+                            if (timed_out) {
+                                ppp::diagnostics::SetLastErrorCode(
+                                    ppp::diagnostics::ErrorCode::SessionAuthFailed);
+                                noerror = false;
+                            }
+                            if (noerror && active && !active()) {
+                                ppp::diagnostics::SetLastErrorCode(
+                                    ppp::diagnostics::ErrorCode::SessionDisposed);
+                                noerror = false;
+                            }
+                        }
+                    }
+                }
+                ppp::telemetry::Log(Level::kDebug, "transport_auth",
+                    "client child result=%s error=%d",
+                    transport_auth_ran ? (noerror ? "ok" : "failed") : "not_run",
+                    noerror ? 0 : static_cast<int>(ppp::diagnostics::GetLastErrorCode()));
                 if (noerror && (!active || active())) {
                     if (register_cancel) register_cancel({});
 #if defined(_IPHONE)
@@ -1966,7 +2574,14 @@ namespace ppp {
                     return transmission;
                 }
                 else {
-                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionHandshakeFailed);
+                    if (active && !active()) {
+                        ppp::diagnostics::SetLastErrorCode(
+                            ppp::diagnostics::ErrorCode::SessionDisposed);
+                    }
+                    elif(ppp::diagnostics::ErrorCode::Success == ppp::diagnostics::GetLastErrorCode()) {
+                        ppp::diagnostics::SetLastErrorCode(
+                            ppp::diagnostics::ErrorCode::SessionHandshakeFailed);
+                    }
                     transmission->Dispose();
                     if (register_cancel) register_cancel({});
 #if defined(_IPHONE)
@@ -2164,6 +2779,12 @@ namespace ppp {
                 ClientReconnectionPolicy reconnection_policy(
                     base_delay_ms, max_delay_ms,
                     static_cast<uint32_t>(configuration->client.reconnections.jitter_percent));
+                const bool multipath_enabled = configuration->client.multipath.enabled;
+                if (multipath_enabled && !multipath_paths_.IsRunning() &&
+                    !multipath_paths_.Start(configuration->client.multipath)) {
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                }
 
                 bool run_once = false;
                 while (!disposed_.load(std::memory_order_acquire)) {
@@ -2172,8 +2793,57 @@ namespace ppp {
                     bool session_established = false;
 #endif
                     bool mappings_registered = false;
-                    ITransmissionPtr transmission = OpenTransmission(
-                        context, strand, y, ppp::transmissions::TcpTransmissionRole::Main);
+                    ppp::app::multipath::PathManager::Attempt primary_path_slot;
+                    std::shared_ptr<void> primary_path_lifetime;
+                    bool primary_path_joined = false;
+                    ITransmissionPtr transmission;
+                    if (multipath_enabled) {
+                        if (multipath_paths_.BeginAttempt(Executors::GetTickCount(), primary_path_slot)) {
+                            multipath_paths_.MarkAuthenticating(primary_path_slot);
+                            std::shared_ptr<ppp::app::multipath::PathAttempt> path_attempt;
+                            const bool resume = multipath_resume_primary_.load(std::memory_order_acquire);
+                            transmission = OpenMultipathCarrier(context, strand, primary_path_slot,
+                                ppp::transmissions::TcpTransmissionRole::Main,
+                                resume, path_attempt, y);
+                            if (transmission && path_attempt) {
+                                primary_path_lifetime = path_attempt->TakeLifetime();
+                                path_attempt->Complete();
+                                primary_path_joined = multipath_paths_.MarkJoined(
+                                    primary_path_slot, primary_path_lifetime);
+                                if (primary_path_joined) {
+                                    std::lock_guard<std::mutex> lock(multipath_primary_mutex_);
+                                    multipath_primary_transmission_ = transmission;
+                                    multipath_primary_mux_channel_.reset();
+                                    ppp::configurations::MultipathConfiguration::Path primary_path;
+                                    if (multipath_paths_.GetPath(primary_path_slot.path_index, primary_path)) {
+                                        multipath_primary_path_id_.assign(
+                                            primary_path.id.data(), primary_path.id.size());
+                                    }
+                                    else {
+                                        multipath_primary_path_id_.clear();
+                                    }
+                                    multipath_primary_mux_attached_.store(false,
+                                        std::memory_order_release);
+                                }
+                                else {
+                                    multipath_paths_.Fail(primary_path_slot,
+                                        Executors::GetTickCount(),
+                                        ppp::app::multipath::PathManager::Failure::Network);
+                                    transmission->Dispose();
+                                    transmission.reset();
+                                }
+                                primary_path_lifetime.reset();
+                            }
+                            else {
+                                multipath_paths_.Fail(primary_path_slot, Executors::GetTickCount(),
+                                    ppp::app::multipath::PathManager::Failure::Network);
+                            }
+                        }
+                    }
+                    else {
+                        transmission = OpenTransmission(
+                            context, strand, y, ppp::transmissions::TcpTransmissionRole::Main);
+                    }
                     if (NULLPTR == transmission) {
                         server_url_.port = 0;
                         ppp::telemetry::Count("client_exchanger.connect.fail.open_transmission", 1);
@@ -2255,6 +2925,21 @@ namespace ppp {
                                 established = negotiation !=
                                     SessionResumeNegotiationResult::Failed;
                             }
+                            if (established && multipath_enabled) {
+                                multipath_resume_primary_.store(false, std::memory_order_release);
+                                std::uint32_t grace = 0;
+                                {
+                                    std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                                    grace = static_cast<std::uint32_t>(std::min<std::int64_t>(
+                                        30000, std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            multipath_ticket_.grace).count()));
+                                }
+                                if (auto mux = mux_coordinator_->Session(); mux && !mux->is_disposed()) {
+                                    mux->set_carrier_resume_policy(grace != 0, grace);
+                                    mux->set_multipath_scheduler_policy(true,
+                                        configuration->client.multipath.policy == "failover");
+                                }
+                            }
                             if (established) {
                                 if (negotiation == SessionResumeNegotiationResult::Resumed) {
                                     established = datagram_manager_->RebindTransmission(transmission);
@@ -2314,6 +2999,15 @@ namespace ppp {
                         }
 #endif
                         if (!established) {
+                            if (multipath_enabled && primary_path_slot.valid && !primary_path_joined) {
+                                multipath_paths_.Fail(primary_path_slot, Executors::GetTickCount(),
+                                    ppp::app::multipath::PathManager::Failure::Network);
+                                std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                                if (multipath_ticket_.credential.IsSet() &&
+                                    multipath_paths_.JoinedCarriers() == 0) {
+                                    multipath_resume_primary_.store(true, std::memory_order_release);
+                                }
+                            }
                             if (!transport_auth_failed && IsTerminalSessionResumeError(
                                     ppp::diagnostics::GetLastErrorCode())) {
                                 ClearSessionResumeState();
@@ -2363,12 +3057,14 @@ namespace ppp {
                         ExchangeToReconnectingState();
                     }
 
-                    // L3 roaming retains UDP flow state only. VMUX and all other
-                    // carrier-bound state must be closed before reconnect can publish.
-                    std::shared_ptr<vmux::vmux_net> mux = mux_coordinator_->Take();
-                    mux_vlan_ = 0;
-                    if (NULLPTR != mux) {
-                        mux->close_exec();
+                    // Multipath child carriers can keep VMUX alive while the primary
+                    // PPP carrier reconnects. Legacy sessions still retire VMUX here.
+                    if (!multipath_enabled) {
+                        std::shared_ptr<vmux::vmux_net> mux = mux_coordinator_->Take();
+                        mux_vlan_ = 0;
+                        if (NULLPTR != mux) {
+                            mux->close_exec();
+                        }
                     }
                     datagram_manager_->RebindTransmission(NULLPTR);
                     static_echo_.StaticEchoClean();
@@ -2377,6 +3073,20 @@ namespace ppp {
                     }
                     if (transmission_ == transmission) {
                         transmission_.reset();
+                    }
+                    if (multipath_enabled && primary_path_joined) {
+                        const bool lost = multipath_paths_.CarrierLost(primary_path_slot,
+                            Executors::GetTickCount());
+                        if (lost && multipath_paths_.JoinedCarriers() == 0) {
+                            multipath_resume_primary_.store(true, std::memory_order_release);
+                        }
+                        std::lock_guard<std::mutex> lock(multipath_primary_mutex_);
+                        if (multipath_primary_transmission_ == transmission) {
+                            multipath_primary_transmission_.reset();
+                            multipath_primary_mux_channel_.reset();
+                            multipath_primary_mux_attached_.store(false,
+                                std::memory_order_release);
+                        }
                     }
 #if defined(_IPHONE)
                     if (session_established) {
@@ -2405,17 +3115,23 @@ namespace ppp {
             bool VEthernetExchanger::DoMuxEvents() noexcept {
                 bool successes = false;
                 while (!disposed_.load(std::memory_order_acquire)) {
+                    AppConfigurationPtr configuration = GetConfiguration();
+                    if (NULLPTR == configuration) {
+                        break;
+                    }
                     uint16_t max_connections = switcher_->mux_;
+                    if (configuration && configuration->client.multipath.enabled) {
+                        const int available = std::max(0, std::min(
+                            configuration->client.multipath.max_connections,
+                            static_cast<int>(multipath_paths_.SlotCount())));
+                        max_connections = static_cast<std::uint16_t>(available);
+                    }
                     if (max_connections == 0) {
                         break;
                     }
 
-                    if (network_state_.load() != NetworkState_Established) {
-                        break;
-                    }
-
-                    AppConfigurationPtr configuration = GetConfiguration();
-                    if (NULLPTR == configuration) {
+                    if (network_state_.load() != NetworkState_Established &&
+                        !configuration->client.multipath.enabled) {
                         break;
                     }
 
@@ -2446,13 +3162,23 @@ namespace ppp {
                             // and attach each through add_linklayer's established-
                             // session path (single-link, single forwarding coroutine).
                             if (mux->is_established()) {
+                                if (configuration->client.multipath.enabled &&
+                                    (!multipath_primary_mux_attached_.load(std::memory_order_acquire) ||
+                                     multipath_paths_.JoinedCarriers() <
+                                        static_cast<std::size_t>(configuration->client.multipath.max_connections))) {
+                                    MuxConnectAllLinklayers(switcher_->GetBufferAllocator(), mux,
+                                        GetTransmission());
+                                }
                                 int grow = mux->take_turbo_pending_grow();
-                                if (grow > 0) {
+                                if (grow > 0 && !configuration->client.multipath.enabled) {
                                     MuxGrowLinklayers(switcher_->GetBufferAllocator(), mux, grow);
                                 }
                             }
                             break;
                         }
+                    }
+                    if (network_state_.load() != NetworkState_Established) {
+                        break;
                     }
 
                     ppp::threading::Executors::StrandPtr vmux_strand;
@@ -2471,6 +3197,49 @@ namespace ppp {
                         mux = make_shared_object<vmux::vmux_net>(vmux_context, vmux_strand, max_connections, false, (switcher_->mux_acceleration_ & PPP_MUX_ACCELERATION_LOCAL) != 0, mux_mode);
                         if (NULLPTR == mux) {
                             break;
+                        }
+                        if (configuration->client.multipath.enabled) {
+                            std::weak_ptr<VEthernetExchanger> weak_self =
+                                std::static_pointer_cast<VEthernetExchanger>(shared_from_this());
+                            mux->set_link_exit_callback([weak_self](const ITransmissionPtr& transmission) noexcept {
+                                auto self = weak_self.lock();
+                                if (!self || !transmission) return;
+                                {
+                                    std::lock_guard<std::mutex> lock(self->multipath_primary_mutex_);
+                                    if (self->multipath_primary_mux_channel_ == transmission) {
+                                        self->multipath_primary_mux_channel_.reset();
+                                        self->multipath_primary_mux_attached_.store(false,
+                                            std::memory_order_release);
+                                        return;
+                                    }
+                                }
+                                ppp::app::multipath::PathManager::Attempt attempt;
+                                {
+                                    std::lock_guard<std::mutex> lock(self->multipath_link_attempts_mutex_);
+                                    auto found = self->multipath_link_attempts_.find(transmission.get());
+                                    if (found == self->multipath_link_attempts_.end()) return;
+                                    attempt = found->second;
+                                    self->multipath_link_attempts_.erase(found);
+                                }
+                                self->multipath_paths_.CarrierLost(attempt,
+                                    Executors::GetTickCount());
+                                if (self->multipath_paths_.JoinedCarriers() == 0) {
+                                    self->multipath_resume_primary_.store(true,
+                                        std::memory_order_release);
+                                }
+                            });
+                            std::uint32_t grace_ms = 0;
+                            {
+                                std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                                if (multipath_ticket_.credential.IsSet()) {
+                                    grace_ms = static_cast<std::uint32_t>(std::min<std::int64_t>(
+                                        30000, std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            multipath_ticket_.grace).count()));
+                                }
+                            }
+                            mux->set_carrier_resume_policy(grace_ms != 0, grace_ms);
+                            mux->set_multipath_scheduler_policy(true,
+                                configuration->client.multipath.policy == "failover");
                         }
 
                         // turbo dynamic pool: raise the carrier-link ceiling to
@@ -2531,12 +3300,16 @@ namespace ppp {
                                 // from its own preset and may keep a compat global sequence space
                                 // under this client's multi-link competition.
                                 if (NULLPTR != configuration &&
-                                    vmux::vmux_net::mode_requires_flow_v2(mux->get_mode(), configuration->mux.turbo)) {
+                                    (configuration->client.multipath.enabled ||
+                                     vmux::vmux_net::mode_requires_flow_v2(
+                                         mux->get_mode(), configuration->mux.turbo))) {
                                     ordering_caps |= (Byte)vmux::vmux_net::ordering_caps_flow_v2_request;
                                 }
                                 // Advertise reliability / FEC when enabled locally; the server
                                 // intersects both ends and echoes the authoritative result.
-                                if (NULLPTR != configuration && configuration->mux.reliability.enabled) {
+                                if (NULLPTR != configuration &&
+                                    (configuration->mux.reliability.enabled ||
+                                        configuration->client.multipath.enabled)) {
                                     ordering_caps |= (Byte)vmux::vmux_net::ordering_caps_reliability;
                                     if (configuration->mux.fec.enabled) {
                                         ordering_caps |= (Byte)vmux::vmux_net::ordering_caps_fec;
@@ -2607,7 +3380,10 @@ namespace ppp {
             }
 
             /** @brief Establishes all required vmux child linklayers. */
-            bool VEthernetExchanger::MuxConnectAllLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& session) noexcept {
+            bool VEthernetExchanger::MuxConnectAllLinklayers(
+                const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator,
+                const std::shared_ptr<void>& session,
+                const ITransmissionPtr& primary_transmission) noexcept {
                 using ppp::app::protocol::VirtualEthernetTcpipConnection;
                 const std::shared_ptr<vmux::vmux_net> mux =
                     std::static_pointer_cast<vmux::vmux_net>(session);
@@ -2619,9 +3395,19 @@ namespace ppp {
 
                 auto self = shared_from_this();
                 auto strand = mux->get_strand();
+                const auto configuration = GetConfiguration();
+                const bool multipath_enabled = configuration && configuration->client.multipath.enabled;
+                if (multipath_enabled && multipath_child_connecting_.exchange(true, std::memory_order_acq_rel)) {
+                    return true;
+                }
 
-                return YieldContext::Spawn(allocator.get(), *context, strand.get(),
-                    [self, this, mux, context, strand](YieldContext& y) noexcept -> bool {
+                const bool spawned = YieldContext::Spawn(allocator.get(), *context, strand.get(),
+                    [self, this, mux, context, strand, multipath_enabled,
+                        primary_transmission](YieldContext& y) noexcept -> bool {
+                        struct ConnectGuard final {
+                            std::atomic_bool* active;
+                            ~ConnectGuard() { if (active) active->store(false, std::memory_order_release); }
+                        } connect_guard{multipath_enabled ? &multipath_child_connecting_ : nullptr};
                         if (disposed_.load(std::memory_order_acquire) || !mux_coordinator_->IsCurrent(mux)) {
                             mux->close_exec();
                             return false;
@@ -2632,13 +3418,131 @@ namespace ppp {
 
                         const uint32_t& tx_seq = mux->get_tx_seq();
                         const uint32_t& rx_ack = mux->get_rx_ack();
-                        if (!mux->ftt(vmux::vmux_net::ftt_random_aid(1, INT32_MAX), vmux::vmux_net::ftt_random_aid(1, INT32_MAX))) {
+                        if (!mux->is_established() && !mux->ftt(vmux::vmux_net::ftt_random_aid(1, INT32_MAX), vmux::vmux_net::ftt_random_aid(1, INT32_MAX))) {
                             mux->close_exec();
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
                         }
 
                         auto context = mux->get_context();
                         auto strand = mux->get_strand();
+
+                        if (auto configuration = GetConfiguration(); configuration &&
+                            configuration->client.multipath.enabled) {
+                            int attached_count = 0;
+                            ITransmissionPtr main = primary_transmission;
+                            std::string primary_path_id;
+                            {
+                                std::lock_guard<std::mutex> lock(multipath_primary_mutex_);
+                                if (!main) main = multipath_primary_transmission_;
+                                primary_path_id = multipath_primary_path_id_;
+                            }
+                            if (main && !multipath_primary_mux_attached_.load(std::memory_order_acquire)) {
+                                auto secured = std::dynamic_pointer_cast<ppp::transmissions::MultipathTransmission>(main);
+                                ITransmissionPtr mux_channel = secured ? secured->CreateMuxSubchannel() : nullptr;
+                                std::shared_ptr<boost::asio::ip::tcp::socket> default_socket;
+                                auto connection = mux_channel ? make_shared_object<VirtualEthernetTcpipConnection>(
+                                    mux->AppConfiguration, context, strand, GetId(), default_socket) : nullptr;
+                                if (connection && connection->ConnectMux(y, mux_channel,
+                                    mux->Vlan, rx_ack, tx_seq)) {
+                                    {
+                                        std::lock_guard<std::mutex> lock(multipath_primary_mutex_);
+                                        multipath_primary_mux_channel_ = mux_channel;
+                                        multipath_primary_mux_attached_.store(true,
+                                            std::memory_order_release);
+                                    }
+                                    const bool attached = mux->do_yield(y,
+                                        [self, mux, connection, primary_path_id]() noexcept -> bool {
+                                            vmux::vmux_net::vmux_linklayer_ptr linklayer;
+                                            vmux::vmux_net::vmux_native_add_linklayer_after_success_before_callback handling;
+                                            auto transport = ppp::app::mux::MakeMuxTransport(
+                                                connection, {}, primary_path_id);
+                                            return mux->add_linklayer(transport, linklayer, handling);
+                                        });
+                                    if (attached) ++attached_count;
+                                    else {
+                                        std::lock_guard<std::mutex> lock(multipath_primary_mutex_);
+                                        multipath_primary_mux_channel_.reset();
+                                        multipath_primary_mux_attached_.store(false,
+                                            std::memory_order_release);
+                                        mux_channel->Dispose();
+                                    }
+                                }
+                            }
+                            const int child_limit = std::max(0, max_connections - attached_count);
+                            for (int i = 0; i < child_limit; ++i) {
+                                if (disposed_.load(std::memory_order_acquire) ||
+                                    !mux_coordinator_->IsCurrent(mux) || mux->is_disposed()) break;
+                                ppp::app::multipath::PathManager::Attempt path_slot;
+                                if (!multipath_paths_.BeginAttempt(Executors::GetTickCount(), path_slot)) break;
+                                multipath_paths_.MarkAuthenticating(path_slot);
+                                std::shared_ptr<ppp::app::multipath::PathAttempt> path_attempt;
+                                ITransmissionPtr transmission = OpenMultipathCarrier(
+                                    context, strand, path_slot,
+                                    ppp::transmissions::TcpTransmissionRole::Child,
+                                    false, path_attempt, y);
+                                if (!transmission || !path_attempt) {
+                                    multipath_paths_.Fail(path_slot, Executors::GetTickCount(),
+                                        ppp::app::multipath::PathManager::Failure::Network);
+                                    continue;
+                                }
+                                std::shared_ptr<void> lease = path_attempt->TakeLifetime();
+                                path_attempt->Complete();
+
+                                std::shared_ptr<boost::asio::ip::tcp::socket> default_socket;
+                                auto connection = make_shared_object<VirtualEthernetTcpipConnection>(
+                                    mux->AppConfiguration, context, strand, GetId(), default_socket);
+                                if (!connection || !connection->ConnectMux(y, transmission,
+                                    mux->Vlan, rx_ack, tx_seq)) {
+                                    multipath_paths_.Fail(path_slot, Executors::GetTickCount(),
+                                        ppp::app::multipath::PathManager::Failure::Network);
+                                    transmission->Dispose();
+                                    continue;
+                                }
+                                const auto carrier = connection->GetTransmission();
+                                if (!carrier || !multipath_paths_.MarkJoined(path_slot, lease)) {
+                                    multipath_paths_.Fail(path_slot, Executors::GetTickCount(),
+                                        ppp::app::multipath::PathManager::Failure::Network);
+                                    transmission->Dispose();
+                                    continue;
+                                }
+                                try {
+                                    std::lock_guard<std::mutex> lock(multipath_link_attempts_mutex_);
+                                    multipath_link_attempts_.emplace(carrier.get(), path_slot);
+                                }
+                                catch (...) {
+                                    multipath_paths_.CarrierLost(path_slot, Executors::GetTickCount());
+                                    transmission->Dispose();
+                                    continue;
+                                }
+                                ppp::configurations::MultipathConfiguration::Path attached_path;
+                                std::string path_id;
+                                if (multipath_paths_.GetPath(path_slot.path_index, attached_path)) {
+                                    path_id.assign(attached_path.id.data(), attached_path.id.size());
+                                }
+                                const bool attached = mux->do_yield(y,
+                                    [self, mux, connection, path_id]() noexcept -> bool {
+                                        vmux::vmux_net::vmux_linklayer_ptr linklayer;
+                                        vmux::vmux_net::vmux_native_add_linklayer_after_success_before_callback handling;
+                                        auto transport = ppp::app::mux::MakeMuxTransport(
+                                            connection, {}, path_id);
+                                        return mux->add_linklayer(transport, linklayer, handling);
+                                    });
+                                if (!attached) {
+                                    {
+                                        std::lock_guard<std::mutex> lock(multipath_link_attempts_mutex_);
+                                        multipath_link_attempts_.erase(carrier.get());
+                                    }
+                                    multipath_paths_.CarrierLost(path_slot, Executors::GetTickCount());
+                                    transmission->Dispose();
+                                    continue;
+                                }
+                                ++bok_connections;
+                            }
+                            if (mux->is_established() || attached_count > 0 || bok_connections > 0) return true;
+                            mux->close_exec();
+                            return ppp::diagnostics::SetLastError(
+                                ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
+                        }
 
                         for (int i = 0; i < max_connections; i++) {
                             if (disposed_.load(std::memory_order_acquire) || !mux_coordinator_->IsCurrent(mux)) {
@@ -2700,6 +3604,10 @@ namespace ppp {
                         }
                         return false;
                     });
+                if (!spawned && multipath_enabled) {
+                    multipath_child_connecting_.store(false, std::memory_order_release);
+                }
+                return spawned;
             }
 
             /** @brief Connects `count` extra carrier links at runtime (turbo grow, C-B3 caller). */
@@ -2923,6 +3831,108 @@ namespace ppp {
                 return snapshot;
             }
 
+            ppp::app::multipath::RuntimeState VEthernetExchanger::GetMultipathRuntimeState() noexcept {
+                using MultipathState = ppp::app::multipath::PathManager::State;
+                using MultipathFailure = ppp::app::multipath::PathManager::Failure;
+                ppp::app::multipath::RuntimeState state;
+                AppConfigurationPtr configuration = GetConfiguration();
+                if (!configuration || !configuration->client.multipath.enabled) {
+                    state.state = "disabled";
+                    return state;
+                }
+
+                const auto& multipath = configuration->client.multipath;
+                state.enabled = true;
+                state.policy.assign(multipath.policy.data(), multipath.policy.size());
+                state.paths.reserve(multipath.paths.size());
+                for (const auto& configured_path : multipath.paths) {
+                    ppp::app::multipath::RuntimePathState path;
+                    path.id.assign(configured_path.id.data(), configured_path.id.size());
+                    path.state = "waiting";
+                    state.paths.emplace_back(std::move(path));
+                }
+
+                for (std::size_t slot_index = 0; slot_index < multipath_paths_.SlotCount(); ++slot_index) {
+                    ppp::app::multipath::PathManager::SlotSnapshot slot;
+                    if (!multipath_paths_.GetSlot(slot_index, slot) || slot.path_index >= state.paths.size()) {
+                        continue;
+                    }
+                    auto& path = state.paths[slot.path_index];
+                    path.reconnect_attempts = std::max(path.reconnect_attempts, slot.failures);
+                    if (slot.state == MultipathState::Joined) {
+                        ++path.carriers;
+                        path.state = "joined";
+                    }
+                    elif(slot.state == MultipathState::Authenticating && path.state != "joined") {
+                        path.state = "authenticating";
+                    }
+                    elif(slot.state == MultipathState::Connecting && path.state != "joined" && path.state != "authenticating") {
+                        path.state = "connecting";
+                    }
+                    elif(slot.state == MultipathState::Backoff && path.state == "waiting") {
+                        path.state = "backoff";
+                    }
+                    if (slot.state == MultipathState::Backoff) {
+                        switch (slot.failure) {
+                        case MultipathFailure::Authentication: path.error_code = "authentication_failed"; break;
+                        case MultipathFailure::Configuration: path.error_code = "configuration_invalid"; break;
+                        case MultipathFailure::Capacity: path.error_code = "capacity_exceeded"; break;
+                        case MultipathFailure::Timeout: path.error_code = "attempt_timeout"; break;
+                        case MultipathFailure::Network: path.error_code = "network_unavailable"; break;
+                        default: break;
+                        }
+                    }
+                }
+
+                for (const auto& path : state.paths) {
+                    if (path.carriers != 0) {
+                        ++state.active_paths;
+                    }
+                }
+                const auto mux = mux_coordinator_->Session();
+                if (mux && !mux->is_disposed()) {
+                    for (const auto& mux_path : mux->get_multipath_path_runtime_stats()) {
+                        auto found = std::find_if(state.paths.begin(), state.paths.end(),
+                            [&mux_path](const auto& path) { return path.id == mux_path.path_id; });
+                        if (found == state.paths.end()) continue;
+                        found->tx_bytes = mux_path.tx_bytes;
+                        found->rx_bytes = mux_path.rx_bytes;
+                        found->inflight_bytes = mux_path.inflight_bytes;
+                        found->retransmit_bytes = mux_path.retransmit_bytes;
+                        if (mux_path.has_rtt) found->rtt_ms = mux_path.rtt_ms;
+                    }
+                    const auto remaining = mux->get_carrier_resume_remaining_ms();
+                    if (remaining != 0) {
+                        state.remaining_grace_ms = remaining;
+                    }
+                    if (mux->get_ordering_mode() == vmux::vmux_net::ordering_flow_v2) {
+                        state.capabilities.emplace_back("flow_v2");
+                    }
+                    if (mux->reliability_agreed()) {
+                        state.capabilities.emplace_back("reliability");
+                    }
+                    if (mux->fec_agreed()) {
+                        state.capabilities.emplace_back("fec");
+                    }
+                }
+                if (disposed_.load(std::memory_order_acquire)) {
+                    state.state = "stopped";
+                }
+                elif(state.active_paths != 0) {
+                    state.state = "active";
+                }
+                elif(multipath_paths_.ActiveAttempts() != 0) {
+                    state.state = "connecting";
+                }
+                elif(multipath_paths_.IsRunning()) {
+                    state.state = "recovering";
+                }
+                else {
+                    state.state = "waiting";
+                }
+                return state;
+            }
+
             void VEthernetExchanger::SetP2PPeerPriority(ppp::p2p::P2PPeerPriority priority) noexcept {
                 p2p_peer_priority_.store(priority, std::memory_order_release);
                 std::lock_guard<std::mutex> scope(p2p_offer_mutex_);
@@ -3086,14 +4096,27 @@ namespace ppp {
             /** @brief Handles mux negotiation callback and starts vmux linking. */
             bool VEthernetExchanger::OnMux(const ITransmissionPtr& transmission, uint16_t vlan, uint16_t max_connections, bool acceleration, Byte ordering_caps, YieldContext& y) noexcept {
                 std::shared_ptr<vmux::vmux_net> mux = mux_coordinator_->Session();
+                const auto configuration = GetConfiguration();
+                if (configuration && configuration->client.multipath.enabled && NULLPTR == mux) {
+                    return ppp::diagnostics::SetLastError(
+                        ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
+                }
                 if (NULLPTR != mux) {
                     bool successed = false;
                     if (vlan != 0 && max_connections > 0 && mux->Vlan == vlan && max_connections == mux->get_max_connections() && !mux->is_disposed()) {
                         bool established = mux->is_established();
                         successed = true;
 
-                        if (!established) {
-                            auto configuration = GetConfiguration();
+                        constexpr Byte multipath_required_caps =
+                            vmux::vmux_net::ordering_caps_flow_v2 |
+                            vmux::vmux_net::ordering_caps_reliability;
+                        if (configuration && configuration->client.multipath.enabled &&
+                            (ordering_caps & multipath_required_caps) != multipath_required_caps) {
+                            mux->close_exec();
+                            return ppp::diagnostics::SetLastError(
+                                ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
+                        }
+                        if (!established || (configuration && configuration->client.multipath.enabled)) {
                             auto allocator = configuration->GetBufferAllocator();
 
                             // Apply the negotiated receiver ordering mode (flow v2) before linking.
@@ -3103,15 +4126,18 @@ namespace ppp {
                             // or older peer falls back to
                             // compat global ordering.
                             // Capability is always true on this build; usage depends on mode+turbo.
-                            const bool agreed_flow_v2 =
-                                (ordering_caps & vmux::vmux_net::ordering_caps_flow_v2) != 0;
-                            const bool agreed_reliability =
-                                (ordering_caps & vmux::vmux_net::ordering_caps_reliability) != 0;
-                            const bool agreed_fec =
-                                (ordering_caps & vmux::vmux_net::ordering_caps_fec) != 0;
-                            mux->apply_agreed_ordering(agreed_flow_v2, agreed_reliability, agreed_fec);
+                            if (!established) {
+                                const bool agreed_flow_v2 =
+                                    (ordering_caps & vmux::vmux_net::ordering_caps_flow_v2) != 0;
+                                const bool agreed_reliability =
+                                    (ordering_caps & vmux::vmux_net::ordering_caps_reliability) != 0;
+                                const bool agreed_fec =
+                                    (ordering_caps & vmux::vmux_net::ordering_caps_fec) != 0;
+                                mux->apply_agreed_ordering(agreed_flow_v2, agreed_reliability, agreed_fec);
+                            }
 
-                            successed = MuxConnectAllLinklayers(allocator, mux);
+                            successed = MuxConnectAllLinklayers(allocator, mux, transmission);
+                            if (established && !successed) successed = true;
                         }
                     }
 
