@@ -447,27 +447,49 @@ public:
         auto client_mux = client_secure_->CreateMuxSubchannel();
         auto server_mux = server_secure_->CreateMuxSubchannel();
         if (!client_mux || !server_mux) return false;
+
+        // Drive the mux receive-queue bound directly.  The server application pump
+        // moves records from the carrier into the mux channel but nothing consumes
+        // that channel, so saturation is decided by the queue bound itself
+        // (MaxLogicalRecords = 128 queued records) instead of loopback socket
+        // buffer luck.  Small payloads keep the whole in-flight amount far below
+        // any TCP receive window, so the carrier write path never stalls on flow
+        // control and the saturation exit becomes deterministic.  Write failures
+        // after the carrier closes are part of the expected outcome, not a flake.
         std::atomic<bool> write_done{false};
-        std::atomic<bool> write_ok{false};
-        const std::string payload(30000, 'b');
-        const bool spawned = ppp::coroutines::YieldContext::Spawn(nullptr, *context_, client_strand_.get(),
-            [client_mux, &write_done, &write_ok, &payload](ppp::coroutines::YieldContext& y) noexcept {
-                bool ok = true;
-                for (int i = 0; i < 150 && ok; ++i) {
-                    ok = client_mux->Write(y, payload.data(), static_cast<int>(payload.size()));
+        const std::string payload(1024, 'b');
+        const bool write_spawned = ppp::coroutines::YieldContext::Spawn(nullptr, *context_, client_strand_.get(),
+            [client_mux, &write_done, &payload](ppp::coroutines::YieldContext& y) noexcept {
+                for (int i = 0; i < 256; ++i) {
+                    if (!client_mux->Write(y, payload.data(), static_cast<int>(payload.size()))) break;
                 }
-                write_ok.store(ok);
                 write_done.store(true);
             });
-        if (!spawned || !WaitFor([&]() { return write_done.load(); })) return false;
+        if (!write_spawned) return false;
+
+        // Contract: mux receive-queue saturation disposes the whole carrier, which
+        // clears the secure channel and flips IsSecureReady to false.
+        const bool closed = WaitFor([&]() { return !server_secure_->IsSecureReady(); });
+
+        // The original case spawned one reader before the flood and waited for that
+        // single read attempt to fail.  That raced in two ways: if Dispose woke the
+        // parked read too late the waiter never observed the failure, and a live
+        // reader also drains the mux queue as records arrive, so the receive bound
+        // may never trip at all.  A reader spawned after saturation is deterministic
+        // instead: ReadLogicalBytes reports the closed channel immediately, so this
+        // read can never park waiting for data, while still verifying that a mux
+        // reader on the saturated side observes the closure.
         std::atomic<bool> read_failed{false};
         const bool read_spawned = ppp::coroutines::YieldContext::Spawn(nullptr, *context_, server_strand_.get(),
             [server_mux, &read_failed](ppp::coroutines::YieldContext& y) noexcept {
                 int length = 0;
                 read_failed.store(!server_mux->Read(y, length));
             });
-        return read_spawned && WaitFor([&]() { return read_failed.load(); }) &&
-            !server_secure_->IsSecureReady();
+
+        // Wait for the writer coroutine to finish before returning so it can never
+        // outlive this scope (its captured locals are on this frame).
+        return read_spawned && closed && WaitFor([&]() { return read_failed.load(); }) &&
+            WaitFor([&]() { return write_done.load(); }) && !server_secure_->IsSecureReady();
     }
 
     bool ExportersMatch() {
