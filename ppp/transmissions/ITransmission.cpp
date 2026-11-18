@@ -192,6 +192,15 @@ namespace ppp {
                     return NULLPTR;
                 }
 
+                {
+                    std::lock_guard<std::mutex> lock(transmission->prefetched_read_mutex_);
+                    if (transmission->prefetched_read_packet_) {
+                        std::shared_ptr<Byte> packet = std::move(transmission->prefetched_read_packet_);
+                        outlen = std::exchange(transmission->prefetched_read_length_, 0);
+                        return packet;
+                    }
+                }
+
                 std::shared_ptr<Byte> packet;
                 AppConfigurationPtr& cfg = transmission->configuration_;
                 if (!handshaked || cfg->key.plaintext) {
@@ -1449,7 +1458,7 @@ namespace ppp {
 
         bool ITransmission::InstallNoiseAuthenticatedCarrierBinding(
             ppp::cryptography::noise::NoisePskHandshakeResult&& result) noexcept {
-            const AuthenticatedCarrierKind carrier = GetAuthenticatedCarrierKind();
+            const AuthenticatedCarrierKind carrier = GetTransportCarrierKind();
             if ((carrier != AuthenticatedCarrierKind::Tcp &&
                     carrier != AuthenticatedCarrierKind::WebSocket) ||
                 IsServerLoopbackIngress() ||
@@ -1999,6 +2008,19 @@ namespace ppp {
             }
 
             return ok;
+        }
+
+        bool ITransmission::SetPrefetchedReadPacket(const std::shared_ptr<Byte>& packet, int length) noexcept {
+            if (!packet || length < 1 || length > PPP_BUFFER_SIZE) {
+                return false;
+            }
+            std::lock_guard<std::mutex> lock(prefetched_read_mutex_);
+            if (prefetched_read_packet_) {
+                return false;
+            }
+            prefetched_read_packet_ = packet;
+            prefetched_read_length_ = length;
+            return true;
         }
 
         // -----------------------------------------------------------------------------

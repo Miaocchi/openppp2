@@ -37,15 +37,17 @@ namespace ppp {
                 SslvWebSocketPtr&                                           ssl_websocket,
                 bool                                                        verify_peer,
                 bool                                                        binary,
-                const ppp::string&                                          host,
+                const ppp::string&                                          tls_server_name,
+                const ppp::string&                                          http_host,
                 const ppp::string&                                          path,
                 const std::string&                                          certificate_file,
                 const std::string&                                          certificate_key_file,
                 const std::string&                                          certificate_chain_file,
                 const std::string&                                          certificate_key_password,
                 const std::string&                                          ciphersuites) noexcept
-                : SslSocket(tcp_socket, ssl_context, ssl_websocket, verify_peer, host, certificate_file, certificate_key_file, certificate_chain_file, certificate_key_password, ciphersuites)
+                : SslSocket(tcp_socket, ssl_context, ssl_websocket, verify_peer, tls_server_name, certificate_file, certificate_key_file, certificate_chain_file, certificate_key_password, ciphersuites)
                 , path_(path)
+                , http_host_(http_host)
                 , reference_(reference)
                 , binary_(binary) {
 

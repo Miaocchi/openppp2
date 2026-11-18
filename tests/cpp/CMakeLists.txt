@@ -617,6 +617,16 @@ get_target_property(OPENPPP2_PRODUCTION_WSS_TEST_SOURCES
     session_resume_production_wss_lifecycle_test SOURCES)
 list(REMOVE_ITEM OPENPPP2_PRODUCTION_WSS_TEST_SOURCES
     session_resume_production_wss_lifecycle_test.cpp)
+openppp2_add_cpp_test(multipath_transmission_test SOURCES
+    multipath_transmission_test.cpp
+    ${OPENPPP2_PRODUCTION_WSS_TEST_SOURCES}
+    "${OPENPPP2_ROOT}/ppp/transmissions/ITcpipTransmission.cpp"
+    "${OPENPPP2_ROOT}/ppp/transmissions/MultipathTransmission.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/noise/MultipathSecureChannel.cpp")
+target_link_libraries(multipath_transmission_test PRIVATE
+    boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+set_tests_properties(multipath_transmission_test PROPERTIES
+    LABELS "multipath;isolated;security")
 openppp2_add_cpp_test(transport_auth_lifecycle_test SOURCES
     transport_auth_lifecycle_test.cpp
     ${OPENPPP2_PRODUCTION_WSS_TEST_SOURCES}
@@ -628,6 +638,7 @@ if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     # linking the allocator implementation that owns its RTTI key function.
     foreach(_target transport_auth_configuration_test
                     session_resume_production_wss_lifecycle_test
+                    multipath_transmission_test
                     transport_auth_lifecycle_test)
         target_compile_options(${_target} PRIVATE -fno-sanitize=vptr)
     endforeach()

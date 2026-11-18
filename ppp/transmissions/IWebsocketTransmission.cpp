@@ -248,16 +248,24 @@ namespace ppp {
              */
             ppp::string host = std::move(this->Host);
             ppp::string path = std::move(this->Path);
+            ppp::string tls_server_name = std::move(this->TlsServerName);
+            ppp::string http_host = std::move(this->HttpHost);
+            const bool verify_peer = configuration->websocket.ssl.verify_peer || ForceVerifyPeer;
             const char* role = (handshake_type == HandshakeType::HandshakeType_Client) ? "client" : "server";
 
-            if (host.size() > 0 && path.size() > 0) {
+            if (path.size() > 0 && (host.size() > 0 || tls_server_name.size() > 0 || http_host.size() > 0)) {
                 auto& cfg = configuration->websocket;
-                ppp::telemetry::Log(Level::kDebug, "websocket", "wss handshake start role=%s host=%s path=%s", role, host.c_str(), path.c_str());
+                if (tls_server_name.empty()) tls_server_name = host;
+                if (http_host.empty()) http_host = host;
+                if (tls_server_name.empty()) tls_server_name = cfg.host;
+                if (http_host.empty()) http_host = cfg.host;
+                ppp::telemetry::Log(Level::kDebug, "websocket", "wss handshake start role=%s path=%s", role, path.c_str());
                 auto handshake_started = std::chrono::steady_clock::now();
                 bool ok = socket->Run(handshake_type,
-                    host,
+                    tls_server_name,
+                    http_host,
                     path,
-                    cfg.ssl.verify_peer,
+                    verify_peer,
                     cfg.ssl.certificate_file,
                     cfg.ssl.certificate_key_file,
                     cfg.ssl.certificate_chain_file,
@@ -288,12 +296,15 @@ namespace ppp {
             }
             else {
                 auto& cfg = configuration->websocket;
+                tls_server_name = cfg.host;
+                http_host = cfg.host;
                 ppp::telemetry::Log(Level::kDebug, "websocket", "wss handshake start role=%s host=%s path=%s", role, cfg.host.c_str(), cfg.path.c_str());
                 auto handshake_started = std::chrono::steady_clock::now();
                 bool ok = socket->Run(handshake_type,
-                    cfg.host,
+                    tls_server_name,
+                    http_host,
                     cfg.path,
-                    cfg.ssl.verify_peer,
+                    verify_peer,
                     cfg.ssl.certificate_file,
                     cfg.ssl.certificate_key_file,
                     cfg.ssl.certificate_chain_file,

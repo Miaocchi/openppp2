@@ -142,7 +142,24 @@ namespace ppp {
                 std::string                                                         certificate_key_password,
                 std::string                                                         ciphersuites,
                 YieldContext&                                                       y) noexcept {
-                if (host.empty() || path.empty()) {
+                return Run(type, host, host, path, verify_peer, std::move(certificate_file),
+                    std::move(certificate_key_file), std::move(certificate_chain_file),
+                    std::move(certificate_key_password), std::move(ciphersuites), y);
+            }
+
+            bool sslwebsocket::Run(
+                HandshakeType                                                       type,
+                const ppp::string&                                                  tls_server_name,
+                const ppp::string&                                                  http_host,
+                const ppp::string&                                                  path,
+                bool                                                                verify_peer,
+                std::string                                                         certificate_file,
+                std::string                                                         certificate_key_file,
+                std::string                                                         certificate_chain_file,
+                std::string                                                         certificate_key_password,
+                std::string                                                         ciphersuites,
+                YieldContext&                                                       y) noexcept {
+                if ((verify_peer && tls_server_name.empty()) || http_host.empty() || path.empty()) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SslWebSocketRunInvalidHostOrPath);
                     return false;
                 }
@@ -165,7 +182,8 @@ namespace ppp {
                     ssl_websocket_,
                     verify_peer,
                     binary,
-                    host,
+                    tls_server_name,
+                    http_host,
                     path,
                     certificate_file,
                     certificate_key_file,

@@ -86,6 +86,14 @@ namespace ppp {
                 virtual ~WebSocket()                                        noexcept { Finalize(); }
 
             public:
+                /** Completes only the HTTP/WebSocket (and TLS, for WSS) upgrade. */
+                bool UpgradeOnly(bool network_client, YieldContext& y) noexcept {
+                    if (websocket_upgraded_.load(std::memory_order_acquire)) return true;
+                    if (!HandshakeWebsocket(network_client, y)) return false;
+                    websocket_upgraded_.store(true, std::memory_order_release);
+                    return true;
+                }
+
                 /** @brief Gets the underlying websocket object (atomic load). */
                 std::shared_ptr<IWebsocket>                                 GetSocket() noexcept { return std::atomic_load(&socket_); }
                 /** @brief Gets the underlying websocket object without mutating the wrapper. */
@@ -104,7 +112,7 @@ namespace ppp {
                 }
                 /** @brief Performs websocket client handshake then transmission-level handshake. */
                 virtual Int128                                              HandshakeClient(YieldContext& y, bool& mux) noexcept {
-                    if (!HandshakeWebsocket(false, y)) {
+                    if (!UpgradeOnly(false, y)) {
                         return 0;
                     }
                     
@@ -112,7 +120,7 @@ namespace ppp {
                 }
                 /** @brief Performs websocket server handshake then transmission-level handshake. */
                 virtual bool                                                HandshakeServer(YieldContext& y, const Int128& session_id, bool mux) noexcept {
-                    if (!HandshakeWebsocket(true, y)) {
+                    if (!UpgradeOnly(true, y)) {
                         return false;
                     }
 
@@ -294,6 +302,7 @@ namespace ppp {
                 std::shared_ptr<ppp::net::QoSS>                             qoss_;
 #endif
                 std::atomic_bool                                                    disposed_{false};
+                std::atomic_bool                                                    websocket_upgraded_{false};
                 std::shared_ptr<IWebsocket>                                 socket_;
                 boost::asio::ip::tcp::endpoint                              remoteEP_;
             };

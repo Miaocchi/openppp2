@@ -56,6 +56,9 @@ namespace ppp {
                     ? AuthenticatedCarrierKind::None
                     : AuthenticatedCarrierKind::Tcp;
             }
+            AuthenticatedCarrierKind                                                            GetTransportCarrierKind() const noexcept override {
+                return AuthenticatedCarrierKind::Tcp;
+            }
             /** @brief Only raw per-flow TCP carriers can preserve receive after send shutdown. */
             bool                                                                                SupportsSendHalfClose() const noexcept override;
             /** @brief Sends TCP FIN after pending writes have drained on this transmission's strand. */

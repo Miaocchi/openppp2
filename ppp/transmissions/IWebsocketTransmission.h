@@ -34,6 +34,11 @@ namespace ppp {
             }
 
         public:
+            /** Performs only the WebSocket upgrade, leaving PPP handshake to the caller. */
+            bool UpgradeOnly(bool network_client, YieldContext& y) noexcept {
+                return WebSocket::UpgradeOnly(network_client, y);
+            }
+
             /** @brief Optional host override for websocket handshake. */
             ppp::string                                                 Host;
             /** @brief Optional path override for websocket handshake. */
@@ -88,8 +93,19 @@ namespace ppp {
             virtual ~ISslWebsocketTransmission()                                       noexcept;
 
         public:
+            /** Performs only the TLS/WebSocket upgrade, leaving PPP handshake to the caller. */
+            bool UpgradeOnly(bool network_client, YieldContext& y) noexcept {
+                return WebSocket::UpgradeOnly(network_client, y);
+            }
+
             /** @brief Optional host override for websocket handshake. */
             ppp::string                                                 Host;
+            /** @brief Optional TLS SNI and certificate verification name. */
+            ppp::string                                                 TlsServerName;
+            /** @brief Optional HTTP Host header, independent from TLS server name. */
+            ppp::string                                                 HttpHost;
+            /** @brief Forces peer and hostname verification for this WSS client connection. */
+            bool                                                        ForceVerifyPeer = false;
             /** @brief Optional path override for websocket handshake. */
             ppp::string                                                 Path;
 
