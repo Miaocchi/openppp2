@@ -431,6 +431,39 @@ namespace ppp {
                 return recovery_state_.GetGeneration();
             }
 
+            void VirtualEthernetExchanger::OnMultipathCarrierStopped(
+                const ITransmissionPtr& transmission) noexcept {
+                bool detached = false;
+                {
+                    std::lock_guard<std::mutex> lock(carrier_mutex_);
+                    if (transmission_ == transmission) {
+                        transmission_.reset();
+                        recovery_armed_ = false;
+                        retained_root_.Clear();
+                        pending_fresh_root_.Clear();
+                        OPENSSL_cleanse(pending_fresh_server_nonce_.data(),
+                            pending_fresh_server_nonce_.size());
+                        pending_fresh_transmission_.reset();
+                        pending_fresh_deadline_ = 0;
+                        resume_attempt_.Clear();
+                        resume_candidate_.reset();
+                        detached = true;
+                    }
+                }
+                if (detached) datagram_manager_->RebindTransmission(NULLPTR);
+            }
+
+            bool VirtualEthernetExchanger::OnMultipathCarrierStarted(
+                const ITransmissionPtr& transmission) noexcept {
+                if (disposed_ || NULLPTR == transmission) return false;
+                std::lock_guard<std::mutex> lock(carrier_mutex_);
+                if (transmission_ != nullptr && transmission_ != transmission) return false;
+                transmission_ = transmission;
+                if (NULLPTR != statistics_) transmission->Statistics = statistics_;
+                datagram_manager_->RebindTransmission(transmission);
+                return true;
+            }
+
             bool VirtualEthernetExchanger::PrepareFreshResumeOffer(
                 const ITransmissionPtr& transmission, SessionResumeControl& offer) noexcept {
                 AppConfigurationPtr configuration = GetConfiguration();
@@ -1353,7 +1386,11 @@ namespace ppp {
                 // and only takes effect when the peer advertises the bits too.
                 bool peer_supports_reliability = (ordering_caps & vmux::vmux_net::ordering_caps_reliability) != 0;
                 bool peer_supports_fec = (ordering_caps & vmux::vmux_net::ordering_caps_fec) != 0;
-                bool local_reliability = NULLPTR != configuration && configuration->mux.reliability.enabled;
+                const bool multipath_carrier = NULLPTR != transmission &&
+                    transmission->GetAuthenticatedCarrierMethod() ==
+                        ppp::transmissions::AuthenticatedCarrierMethod::MultipathNoiseV1;
+                bool local_reliability = multipath_carrier ||
+                    (NULLPTR != configuration && configuration->mux.reliability.enabled);
                 bool local_fec = NULLPTR != configuration && configuration->mux.fec.enabled;
                 // Provisional agreed ordering; apply_negotiation is authoritative once mux exists.
                 bool turbo = NULLPTR != configuration && configuration->mux.turbo &&

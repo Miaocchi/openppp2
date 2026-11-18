@@ -391,6 +391,30 @@ struct vmux_net_test_access {
         });
     }
 
+    static void PublishPathRuntimeStats(
+        vmux_net& mux,
+        const std::string& path_id,
+        const std::vector<std::pair<vmux_net::vmux_linklayer_ptr, uint64_t>>& links,
+        uint64_t tx_bytes,
+        uint64_t rx_bytes,
+        uint64_t retransmit_bytes) {
+        RunOnStrandVoid(mux, [&]() {
+            auto counters = std::make_shared<vmux_net::vmux_linklayer::PathRuntimeCounters>();
+            counters->tx_bytes.store(tx_bytes, std::memory_order_relaxed);
+            counters->rx_bytes.store(rx_bytes, std::memory_order_relaxed);
+            counters->retransmit_bytes.store(retransmit_bytes, std::memory_order_relaxed);
+            mux.path_runtime_counters_[path_id] = counters;
+            for (const auto& item : links) {
+                item.first->path_id_ = path_id;
+                item.first->path_runtime_counters_ = counters;
+                item.first->queued_bytes_ = static_cast<std::size_t>(item.second);
+                item.first->has_rtt_sample_ = true;
+                item.first->srtt_ms_ = item.second;
+            }
+            mux.publish_multipath_path_runtime_stats();
+        });
+    }
+
     static void OnLinkExit(vmux_net& mux, const vmux_net::vmux_linklayer_ptr& link, const char* reason) {
         RunOnStrandVoid(mux, [&]() { mux.on_link_exit(link, reason); });
     }
@@ -486,6 +510,24 @@ struct vmux_net_test_access {
 
     static vmux_net::vmux_linklayer_ptr PickLink(vmux_net& mux, int len) {
         return RunOnStrand(mux, [&]() { return mux.tx_link_pick(len); });
+    }
+
+    static bool TrackOutstanding(vmux_net& mux, std::uint16_t id, int bytes) {
+        return RunOnStrand(mux, [&]() {
+            return mux.rtx_.Track(0, id, mux.make_byte_array(bytes), bytes,
+                vmux_net::now_tick(), 1024 * 1024, id);
+        });
+    }
+
+    static std::size_t LinkOutstanding(vmux_net& mux, std::uint16_t id) {
+        return RunOnStrand(mux, [&]() { return mux.rtx_.LinkBytes(id); });
+    }
+
+    static void RetireAndReap(vmux_net& mux, const vmux_net::vmux_linklayer_ptr& link) {
+        RunOnStrandVoid(mux, [&]() {
+            link->drain_.BeginRetire();
+            mux.reap_retired_linklayers();
+        });
     }
 
     /** Post one push frame through post_internal (no acceleration, no completion). */
@@ -1580,8 +1622,130 @@ void TestPausedCarrierExitReleasesPause() {
     Require(vmux::vmux_net_test_access::PausedLinkCount(*mux) == 0, "an exited carrier is never paused again");
 }
 
+class SchedulerTestTransport final : public ppp::app::mux::IMuxTransport {
+public:
+    bool linked = true;
+    bool IsLinked() noexcept override { return linked; }
+    ContextPtr GetContext() noexcept override { return {}; }
+    StrandPtr GetStrand() noexcept override { return {}; }
+    ITransmissionPtr GetTransmission() noexcept override { return {}; }
+    ppp::Int128 GetId() noexcept override { return 0; }
+    void Update() noexcept override {}
+    void Dispose() noexcept override { linked = false; }
+};
+
+void TestMultipathSchedulerUsesPeerOutstandingAndFailoverCredit() {
+    auto mux = MakeMux();
+    auto fast = vmux::vmux_net_test_access::MakeDeadLink(true);
+    auto slow = vmux::vmux_net_test_access::MakeDeadLink(true);
+    auto fast_transport = std::make_shared<SchedulerTestTransport>();
+    fast->connection = fast_transport;
+    slow->connection = std::make_shared<SchedulerTestTransport>();
+    fast->id_ = 1;
+    slow->id_ = 2;
+    for (const auto& link : {fast, slow}) {
+        link->has_rtt_sample_ = true;
+        link->srtt_ms_ = link == fast ? 5 : 80;
+        link->delivery_rate_bytes_per_second_ = 1000000;
+        link->delivery_updated_ms_ = ppp::threading::Executors::GetTickCount();
+        link->last_active_ = link->delivery_updated_ms_;
+        vmux::vmux_net_test_access::AttachLink(*mux, link);
+    }
+    mux->set_multipath_scheduler_policy(true, false);
+    Require(vmux::vmux_net_test_access::PickLink(*mux, 1024) == fast,
+        "adaptive initially favors low RTT");
+    Require(vmux::vmux_net_test_access::TrackOutstanding(*mux, 1, 200000),
+        "retain fast path bytes until peer acknowledgment");
+    Require(vmux::vmux_net_test_access::PickLink(*mux, 1024) == slow,
+        "peer outstanding bytes matter even after local writes complete");
+    mux->set_multipath_scheduler_policy(true, true);
+    Require(vmux::vmux_net_test_access::PickLink(*mux, 1024) == fast,
+        "failover retains the healthy primary despite backlog");
+    vmux::vmux_net_test_access::WithdrawLink(*mux, fast);
+    Require(!vmux::vmux_net_test_access::PickLink(*mux, 1024),
+        "primary without credit applies backpressure");
+    fast_transport->linked = false;
+    Require(vmux::vmux_net_test_access::PickLink(*mux, 1024) == slow,
+        "failover switches when the primary is no longer linked");
+}
+
+void TestGracefulShrinkOrphansProtocolOutstandingBeforeIdReuse() {
+    auto mux = MakeMux();
+    vmux::vmux_net_test_access::EnableCompatReliability(*mux, false);
+    auto retired = vmux::vmux_net_test_access::MakeDeadLink(true);
+    retired->id_ = 3;
+    retired->connection = std::make_shared<SchedulerTestTransport>();
+    vmux::vmux_net_test_access::AttachLink(*mux, retired);
+    Require(vmux::vmux_net_test_access::TrackOutstanding(*mux, 3, 100), "track retiring carrier");
+    vmux::vmux_net_test_access::RetireAndReap(*mux, retired);
+    Require(vmux::vmux_net_test_access::LinkOutstanding(*mux, 3) == 0,
+        "retirement orphans peer-unacknowledged bytes before releasing ID");
+    Require(vmux::vmux_net_test_access::PendingRtx(*mux) == 1,
+        "orphaned bytes remain queued for retransmission");
+    auto replacement = vmux::vmux_net_test_access::MakeDeadLink(true);
+    replacement->id_ = 3;
+    replacement->connection = std::make_shared<SchedulerTestTransport>();
+    vmux::vmux_net_test_access::AttachLink(*mux, replacement);
+    Require(vmux::vmux_net_test_access::LinkOutstanding(*mux, 3) == 0,
+        "replacement does not inherit an earlier physical carrier's load");
+}
+
+void TestLateAckAfterShrinkDoesNotUpdateReplacementLinkMetrics() {
+    auto mux = MakeMux();
+    vmux::vmux_net_test_access::EnableCompatReliability(*mux, false);
+    auto retired = vmux::vmux_net_test_access::MakeDeadLink(true);
+    retired->id_ = 3;
+    retired->connection = std::make_shared<SchedulerTestTransport>();
+    vmux::vmux_net_test_access::AttachLink(*mux, retired);
+    Require(vmux::vmux_net_test_access::TrackSentCompat(*mux, 42, 3, 17000),
+        "track a frame sent on the retiring carrier");
+
+    vmux::vmux_net_test_access::RetireAndReap(*mux, retired);
+    auto replacement = vmux::vmux_net_test_access::MakeDeadLink(true);
+    replacement->id_ = 3;
+    replacement->connection = std::make_shared<SchedulerTestTransport>();
+    replacement->delivery_sample_start_ms_ = 17000;
+    vmux::vmux_net_test_access::AttachLink(*mux, replacement);
+
+    vmux::vmux_net_test_access::InjectCompatAck(*mux, 42, 42, 17100);
+    Require(vmux::vmux_net_test_access::RtxSize(*mux) == 0,
+        "late ACK still releases the retained frame");
+    Require(!replacement->has_rtt_sample_ && replacement->srtt_ms_ == 0,
+        "late ACK does not create an RTT sample for the replacement carrier");
+    Require(replacement->delivery_sample_bytes_ == 0 &&
+        replacement->delivery_rate_bytes_per_second_ == 0 &&
+        replacement->delivery_updated_ms_ == 0,
+        "late ACK does not create a delivery-rate sample for the replacement carrier");
+}
+
+void TestPathRuntimeStatsAggregateCarriersByStablePathId() {
+    auto mux = MakeMux();
+    auto first = vmux::vmux_net_test_access::MakeDeadLink(true);
+    auto second = vmux::vmux_net_test_access::MakeDeadLink(true);
+    vmux::vmux_net_test_access::AttachLink(*mux, first);
+    vmux::vmux_net_test_access::AttachLink(*mux, second);
+    vmux::vmux_net_test_access::PublishPathRuntimeStats(
+        *mux, "edge-a", {{first, 10}, {second, 20}}, 900, 700, 100);
+
+    const auto paths = mux->get_multipath_path_runtime_stats();
+    Require(paths.size() == 1, "same stable path ID produces one runtime row");
+    Require(paths.front().path_id == "edge-a", "runtime row retains the configured path ID");
+    Require(paths.front().tx_bytes == 900 && paths.front().rx_bytes == 700,
+        "path byte counters are cumulative across its carriers");
+    Require(paths.front().retransmit_bytes == 100,
+        "retransmit bytes remain separately identified");
+    Require(paths.front().inflight_bytes == 30,
+        "in-flight bytes aggregate across active carriers");
+    Require(paths.front().has_rtt && paths.front().rtt_ms == 10,
+        "path RTT uses the lowest sampled SRTT across active carriers");
+}
+
 int main() {
     try {
+        TestMultipathSchedulerUsesPeerOutstandingAndFailoverCredit();
+        TestGracefulShrinkOrphansProtocolOutstandingBeforeIdReuse();
+        TestLateAckAfterShrinkDoesNotUpdateReplacementLinkMetrics();
+        TestPathRuntimeStatsAggregateCarriersByStablePathId();
         TestTxFlowDrrPrefersOtherCidAfterQuantum();
         TestTxFlowDrrDrainsBytesWithinQuantumBeforeRotating();
         TestTxFlowDrrSendsFrameLargerThanQuantumImmediately();

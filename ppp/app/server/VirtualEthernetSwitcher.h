@@ -1,6 +1,8 @@
 #pragma once
 
 #include <map>
+#include <deque>
+#include <atomic>
 
 /**
  * @file VirtualEthernetSwitcher.h
@@ -37,15 +39,20 @@
 #include <ppp/net/Firewall.h>
 #include <ppp/net/native/rib.h>
 #include <ppp/threading/Timer.h>
+#include <ppp/threading/Executors.h>
 #include <ppp/cryptography/Ciphertext.h>
 #include <ppp/coroutines/YieldContext.h>
 #include <ppp/transmissions/ITransmission.h>
 namespace ppp::configurations { class AppConfiguration; }
+namespace ppp::transmissions { class MultipathTransmission; }
 #include <ppp/app/protocol/VirtualEthernetPacket.h>
 #include <ppp/app/protocol/VirtualEthernetLogger.h>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 #include <ppp/app/server/IPv4LeasePool.h>
+#include <ppp/app/multipath/Join.h>
+#include <ppp/app/multipath/Session.h>
+#include <ppp/app/multipath/WireProtocol.h>
 #include <ppp/p2p/P2PNatClassifier.h>
 #include <ppp/p2p/P2PV2ServerCoordination.h>
 #include <ppp/tap/ITap.h>
@@ -199,6 +206,41 @@ namespace ppp {
                 typedef std::shared_ptr<VirtualEthernetExchanger>       VirtualEthernetExchangerPtr;
                 typedef ppp::unordered_map<Int128,
                     VirtualEthernetExchangerPtr>                        VirtualEthernetExchangerTable;
+                struct MultipathCarrierRegistration final {
+                    ppp::string                                          carrier_id;
+                    std::uint64_t                                        session_generation = 0;
+                    std::uint64_t                                        connection_generation = 0;
+                    bool                                                  failover = false;
+                    bool                                                  resume = false;
+                };
+                struct MultipathSessionEntry final {
+                    ~MultipathSessionEntry() noexcept;
+                    struct Carrier final {
+                        std::uint64_t session_generation = 0;
+                        std::uint64_t connection_generation = 0;
+                        std::weak_ptr<ppp::transmissions::ITransmission> transmission;
+                    };
+                    ppp::app::multipath::SessionState                    session;
+                    ppp::app::multipath::JoinCoordinator                  joins;
+                    ppp::app::multipath::ReliableControlState              control;
+                    ppp::app::multipath::wire::CreateResponse             create_result;
+                    ppp::string                                          create_request_id;
+                    ppp::app::multipath::TimePoint                       create_deadline{};
+                    ppp::threading::Executors::ContextPtr                owner_context;
+                    ppp::threading::Executors::StrandPtr                 owner_strand;
+                    std::uint64_t                                        next_connection_generation = 0;
+                    std::uint64_t                                        next_control_operation_sequence = 0;
+                    bool                                                  exchanger_claimed = false;
+                    std::map<ppp::string, Carrier>                        carriers;
+                    std::map<ppp::string, MultipathCarrierRegistration>   committed_requests;
+                    std::map<ppp::string, ppp::app::multipath::Secret32> committed_candidate_bindings;
+                    std::deque<ppp::string>                               committed_order;
+                    std::atomic_bool                                      tick_pending{ false };
+                    std::atomic_uint                                      control_pending{ 0 };
+                };
+                typedef std::shared_ptr<MultipathSessionEntry>           MultipathSessionEntryPtr;
+                typedef ppp::unordered_map<Int128,
+                    MultipathSessionEntryPtr>                            MultipathSessionTable;
                 typedef std::shared_ptr<VirtualEthernetManagedServer>   VirtualEthernetManagedServerPtr;
                 typedef std::shared_ptr<ppp::tap::ITap>                 ITapPtr;
                 typedef ppp::app::protocol::VirtualEthernetLogger       VirtualEthernetLogger;
@@ -414,7 +456,7 @@ namespace ppp {
                  * @param y            Coroutine yield context.
                  * @return True if the session is successfully established.
                  */
-                virtual bool                                            Establish(const ITransmissionPtr& transmission, const Int128& session_id, const VirtualEthernetInformationPtr& i, YieldContext& y) noexcept;
+                virtual bool                                            Establish(const ITransmissionPtr& transmission, const Int128& session_id, const VirtualEthernetInformationPtr& i, YieldContext& y, const MultipathCarrierRegistration* multipath_carrier = nullptr) noexcept;
 
                 /**
                  * @brief Performs the protocol connect handshake for a new transmission.
@@ -424,7 +466,7 @@ namespace ppp {
                  * @param y            Coroutine yield context.
                  * @return 0 on success; negative on protocol error; positive on soft failure.
                  */
-                virtual int                                             Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept;
+                virtual int                                             Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y, const MultipathCarrierRegistration* multipath_carrier = nullptr) noexcept;
 
                 /**
                  * @brief Handles one periodic maintenance tick.
@@ -491,6 +533,14 @@ namespace ppp {
                  * @return 0 on clean exit; non-zero on error.
                  */
                 int                                                     Run(const ContextPtr& context, const ITransmissionPtr& transmission, YieldContext& y) noexcept;
+                int                                                     RunMultipath(const ContextPtr& context, const ITransmissionPtr& carrier, const std::shared_ptr<Byte>& first_frame, int first_frame_length, const ppp::string& key_id, YieldContext& y) noexcept;
+                void                                                    OnMultipathCarrierLeft(const Int128& session_id, const ppp::string& carrier_id, std::uint64_t session_generation, std::uint64_t connection_generation) noexcept;
+                void                                                    TickMultipathSessions(UInt64 now) noexcept;
+                void                                                    HandleMultipathControl(const MultipathSessionEntryPtr& entry,
+                    const std::shared_ptr<ppp::transmissions::MultipathTransmission>& transmission,
+                    const Int128& session_id, const ppp::string& carrier_id,
+                    std::uint64_t session_generation, std::uint64_t connection_generation,
+                    const std::shared_ptr<const std::vector<std::uint8_t>>& payload) noexcept;
                 /**
                  * @brief Authenticates a negotiated plain TCP/WebSocket carrier before session dispatch.
                  * @return True for a completed authentication or a policy-gated legacy bypass.
@@ -889,6 +939,7 @@ namespace ppp {
                 ppp::p2p::P2PNatClassifier                              p2p_nat_classifier_;            ///< Server-side NAT type inference from relay traffic.
                 FirewallPtr                                             firewall_;                      ///< Packet firewall.
                 VirtualEthernetExchangerTable                           exchangers_;                    ///< Active session exchangers (key = session_id).
+                MultipathSessionTable                                    multipath_sessions_;            ///< Authenticated ticket state keyed by logical client session ID.
                 TimerPtr                                                timeout_;                       ///< Global maintenance timer.
                 AppConfigurationPtr                                     configuration_;                 ///< Immutable configuration snapshot.
                 ContextPtr                                              context_;                       ///< Primary Boost.Asio io_context.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ppp/transmissions/ITransmission.h>
+#include <string>
 
 namespace ppp::app::mux {
 
@@ -16,6 +17,10 @@ public:
     virtual StrandPtr GetStrand() noexcept = 0;
     virtual ITransmissionPtr GetTransmission() noexcept = 0;
     virtual Int128 GetId() noexcept = 0;
+    virtual const std::string& GetPathId() noexcept {
+        static const std::string empty;
+        return empty;
+    }
     virtual void Update() noexcept = 0;
     virtual void Dispose() noexcept = 0;
 };

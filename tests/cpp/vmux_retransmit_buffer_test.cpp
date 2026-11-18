@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include <ppp/app/mux/MuxRetransmitBuffer.h>
@@ -31,6 +32,23 @@ BOOST_AUTO_TEST_CASE(track_retain_and_release_on_ack) {
     BOOST_TEST(rtx.size() == 1u);
     BOOST_TEST(rtx.bytes() == 100u);
     BOOST_TEST(fast.empty());
+}
+
+BOOST_AUTO_TEST_CASE(orphaned_carrier_cannot_measure_a_replacement_with_the_same_id) {
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_REQUIRE(rtx.Track(7, 1, make_frame(1), 100, 1000, 1024, 3));
+    std::vector<std::uint64_t> pending;
+    rtx.TakeLinkInflight(3, pending);
+    BOOST_REQUIRE_EQUAL(pending.size(), 1u);
+    BOOST_TEST(rtx.LinkBytes(3) == 0u);
+    BOOST_REQUIRE(rtx.Track(7, 2, make_frame(2), 50, 1050, 1024, 3));
+    std::vector<std::uint64_t> fast;
+    std::uint16_t sample_link = 9;
+    std::unordered_map<std::uint16_t, std::size_t> acknowledged;
+    rtx.Ack(7, 1, {{1, 1}}, 1100, 3, 0, fast, &sample_link, &acknowledged);
+    BOOST_TEST(sample_link == 0u);
+    BOOST_TEST(acknowledged.empty());
+    BOOST_TEST(rtx.LinkBytes(3) == 50u);
 }
 
 BOOST_AUTO_TEST_CASE(track_refuses_to_exceed_the_byte_cap) {
@@ -194,4 +212,81 @@ BOOST_AUTO_TEST_CASE(cid_bytes_follow_track_ack_and_erase) {
 
     rtx.Clear();
     BOOST_TEST(rtx.CidBytes(7) == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(link_bytes_follow_ack_and_report_new_bytes_by_original_link) {
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_TEST(rtx.Track(1, 1, make_frame(1), 100, 1000, 1 << 20, 2));
+    BOOST_TEST(rtx.Track(1, 2, make_frame(2), 200, 1010, 1 << 20, 3));
+    BOOST_TEST(rtx.Track(1, 3, make_frame(3), 50, 1020, 1 << 20, 2));
+    BOOST_TEST(rtx.LinkBytes(2) == 150u);
+    BOOST_TEST(rtx.LinkBytes(3) == 200u);
+    BOOST_TEST(rtx.LinkBytes(0) == 0u);
+
+    std::vector<std::uint64_t> fast;
+    std::vector<mux::MuxAckRange> ranges = { {1, 2} };
+    std::unordered_map<std::uint16_t, std::size_t> newly_acked = { {99, 1} };
+    rtx.Ack(1, 2, ranges, 1100, 1000, 0, fast, nullptr, &newly_acked);
+    BOOST_REQUIRE_EQUAL(newly_acked.size(), 2u);
+    BOOST_TEST(newly_acked[2] == 100u);
+    BOOST_TEST(newly_acked[3] == 200u);
+    BOOST_TEST(rtx.LinkBytes(2) == 50u);
+    BOOST_TEST(rtx.LinkBytes(3) == 0u);
+
+    newly_acked[99] = 9;
+    rtx.Ack(1, 2, ranges, 1200, 1000, 0, fast, nullptr, &newly_acked);
+    BOOST_TEST(newly_acked.empty()); // repeated ACK produces no new bytes
+    BOOST_TEST(rtx.LinkBytes(2) == 50u);
+}
+
+BOOST_AUTO_TEST_CASE(link_bytes_move_on_retransmit_but_ack_credit_uses_original_link) {
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_TEST(rtx.Track(4, 1, make_frame(1), 120, 1000, 1 << 20, 2));
+    BOOST_TEST(rtx.Track(4, 2, make_frame(2), 80, 1010, 1 << 20, 2));
+    rtx.MarkRetransmitted(mux::MuxRetransmitBuffer::Key(4, 1), 1100, 3);
+    BOOST_TEST(rtx.LinkBytes(2) == 80u);
+    BOOST_TEST(rtx.LinkBytes(3) == 120u);
+
+    std::vector<std::uint64_t> fast;
+    std::vector<mux::MuxAckRange> ranges = { {1, 2} };
+    std::unordered_map<std::uint16_t, std::size_t> newly_acked;
+    rtx.Ack(4, 2, ranges, 1200, 1000, 0, fast, nullptr, &newly_acked);
+    BOOST_REQUIRE_EQUAL(newly_acked.size(), 1u);
+    BOOST_TEST(newly_acked[2] == 80u);
+    BOOST_TEST(newly_acked.count(3) == 0u); // retransmitted frames get no throughput/RTT credit
+    BOOST_TEST(rtx.LinkBytes(2) == 0u);
+    BOOST_TEST(rtx.LinkBytes(3) == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(link_exit_and_flow_clear_keep_reused_id_accounting_exact) {
+    mux::MuxRetransmitBuffer rtx;
+    const auto old_key = mux::MuxRetransmitBuffer::Key(10, 1);
+    const auto new_key = mux::MuxRetransmitBuffer::Key(11, 1);
+    BOOST_TEST(rtx.Track(10, 1, make_frame(1), 10, 1000, 1 << 20, 5));
+    std::vector<std::uint64_t> lost;
+    rtx.TakeLinkInflight(5, lost);
+    BOOST_REQUIRE_EQUAL(lost.size(), 1u);
+    BOOST_TEST(lost[0] == old_key);
+    BOOST_TEST(rtx.LinkBytes(5) == 0u);
+
+    BOOST_TEST(rtx.Track(11, 1, make_frame(2), 20, 1100, 1 << 20, 5));
+    BOOST_TEST(rtx.LinkBytes(5) == 20u);
+    std::vector<std::uint64_t> reused;
+    rtx.TakeLinkInflight(5, reused);
+    BOOST_REQUIRE_EQUAL(reused.size(), 1u);
+    BOOST_TEST(reused[0] == new_key); // old orphan cannot be claimed by reused id
+    BOOST_TEST(rtx.LinkBytes(5) == 0u);
+
+    BOOST_TEST(rtx.Track(10, 2, make_frame(3), 30, 1200, 1 << 20, 5));
+    BOOST_TEST(rtx.Track(11, 2, make_frame(4), 40, 1201, 1 << 20, 5));
+    rtx.EraseCid(10);
+    BOOST_TEST(rtx.LinkBytes(5) == 40u);
+    rtx.EraseCid(11);
+    BOOST_TEST(rtx.LinkBytes(5) == 0u);
+    BOOST_TEST(rtx.LinkBytes(2) == 0u);
+    BOOST_TEST(rtx.LinkBytes(3) == 0u);
+
+    BOOST_TEST(rtx.Track(12, 1, make_frame(5), 50, 1300, 1 << 20, 5));
+    rtx.Clear();
+    BOOST_TEST(rtx.LinkBytes(5) == 0u);
 }

@@ -88,6 +88,7 @@ public:
         entries_.emplace(key, std::move(entry));
         bytes_ += static_cast<std::size_t>(length);
         cid_bytes_[connection_id] += static_cast<std::size_t>(length);
+        AddLinkBytes(link_id, static_cast<std::size_t>(length));
         return true;
     }
 
@@ -109,10 +110,14 @@ public:
         std::uint32_t fast_threshold,
         std::uint64_t fast_time_threshold,
         std::vector<std::uint64_t>& fast_candidates,
-        std::uint16_t* out_link_id = nullptr) {
+        std::uint16_t* out_link_id = nullptr,
+        std::unordered_map<std::uint16_t, std::size_t>* out_link_acked_bytes = nullptr) {
         std::uint64_t rtt_sample = 0;
         if (nullptr != out_link_id) {
             *out_link_id = 0;
+        }
+        if (nullptr != out_link_acked_bytes) {
+            out_link_acked_bytes->clear();
         }
 
         // Collect keys first: erasing while iterating the map is fine, but the
@@ -142,6 +147,12 @@ public:
                     *out_link_id = it->second.orig_link_id;
                 }
             }
+            if (nullptr != out_link_acked_bytes && it->second.attempts == 0 &&
+                it->second.orig_link_id != 0) {
+                (*out_link_acked_bytes)[it->second.orig_link_id] +=
+                    static_cast<std::size_t>(it->second.length);
+            }
+            ReleaseLinkBytes(it->second.last_link_id, static_cast<std::size_t>(it->second.length));
             bytes_ -= static_cast<std::size_t>(it->second.length);
             ReleaseCidBytes(connection_id, static_cast<std::size_t>(it->second.length));
             order_.erase(it->second.order);
@@ -228,6 +239,18 @@ public:
         std::uint16_t link_id = 0) noexcept {
         MuxRtxEntry* entry = Find(key);
         if (nullptr != entry) {
+            if (entry->last_link_id != link_id) {
+                try {
+                    AddLinkBytes(link_id, static_cast<std::size_t>(entry->length));
+                } catch (...) {
+                    ReleaseLinkBytes(entry->last_link_id, static_cast<std::size_t>(entry->length));
+                    entry->last_link_id = 0;
+                    entry->attempts++;
+                    entry->last_sent_tick = now;
+                    return;
+                }
+                ReleaseLinkBytes(entry->last_link_id, static_cast<std::size_t>(entry->length));
+            }
             entry->attempts++;
             entry->last_sent_tick = now;
             entry->last_link_id = link_id;
@@ -250,6 +273,10 @@ public:
             if (it == entries_.end() || it->second.last_link_id != link_id) {
                 continue;
             }
+            ReleaseLinkBytes(link_id, static_cast<std::size_t>(it->second.length));
+            // The numeric ID may be reused before this frame is retransmitted.
+            // A late ACK must not supply an RTT/rate sample to its replacement.
+            it->second.orig_link_id = 0;
             it->second.last_link_id = 0;
             it->second.last_sent_tick = 0;
             out.push_back(key);
@@ -262,6 +289,7 @@ public:
         for (auto it = entries_.begin(); it != entries_.end();) {
             if (KeyCid(it->first) == connection_id) {
                 bytes_ -= static_cast<std::size_t>(it->second.length);
+                ReleaseLinkBytes(it->second.last_link_id, static_cast<std::size_t>(it->second.length));
                 order_.erase(it->second.order);
                 it = entries_.erase(it);
             }
@@ -275,6 +303,7 @@ public:
         entries_.clear();
         order_.clear();
         cid_bytes_.clear();
+        link_bytes_.clear();
         bytes_ = 0;
     }
 
@@ -287,7 +316,28 @@ public:
         return it == cid_bytes_.end() ? 0 : it->second;
     }
 
+    /** Unacked bytes whose most recent transmission is assigned to @p link_id. */
+    std::size_t LinkBytes(std::uint16_t link_id) const noexcept {
+        if (link_id == 0) return 0;
+        auto it = link_bytes_.find(link_id);
+        return it == link_bytes_.end() ? 0 : it->second;
+    }
+
 private:
+    void AddLinkBytes(std::uint16_t link_id, std::size_t length) {
+        if (link_id != 0) {
+            link_bytes_[link_id] += length;
+        }
+    }
+
+    void ReleaseLinkBytes(std::uint16_t link_id, std::size_t length) noexcept {
+        if (link_id == 0) return;
+        auto it = link_bytes_.find(link_id);
+        if (it == link_bytes_.end()) return;
+        if (it->second <= length) it->second = 0;
+        else it->second -= length;
+    }
+
     void ReleaseCidBytes(std::uint32_t connection_id, std::size_t length) noexcept {
         auto it = cid_bytes_.find(connection_id);
         if (it == cid_bytes_.end()) {
@@ -306,6 +356,7 @@ private:
     std::list<std::uint64_t>                                       order_;
     std::unordered_map<std::uint64_t, MuxRtxEntry>                 entries_;
     std::unordered_map<std::uint32_t, std::size_t>                 cid_bytes_;
+    std::unordered_map<std::uint16_t, std::size_t>                 link_bytes_;
     std::size_t                                                    bytes_ = 0;
 };
 

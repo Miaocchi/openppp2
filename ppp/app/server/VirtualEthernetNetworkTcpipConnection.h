@@ -50,6 +50,9 @@ namespace ppp {
                 AppConfigurationPtr                                         GetConfiguration() noexcept { return configuration_; }
                 std::shared_ptr<VirtualEthernetSwitcher>                    GetSwitcher()      noexcept { return switcher_; }
                 bool                                                        IsMux()            noexcept { return mux_; }
+                void                                                        SetMultipathCarrier(std::uint64_t session_generation,
+                    std::uint64_t connection_generation, const ppp::string& carrier_id,
+                    bool failover, bool notify_carrier_leave = true) noexcept;
 
             public:
                 /**
@@ -103,6 +106,12 @@ namespace ppp {
                 ITransmissionPtr                                            transmission_;
                 std::shared_ptr<VirtualEthernetTcpipConnection>             connection_;
                 AppConfigurationPtr                                         configuration_;
+                std::uint64_t                                               multipath_session_generation_ = 0;
+                std::uint64_t                                               multipath_connection_generation_ = 0;
+                bool                                                        multipath_failover_ = false;
+                bool                                                        multipath_transport_ = false;
+                bool                                                        notify_multipath_carrier_leave_ = true;
+                ppp::string                                                 multipath_carrier_id_;
             };
         }
     }

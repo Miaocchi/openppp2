@@ -18,6 +18,8 @@
 #include <ppp/app/mux/MuxRxBackpressure.h>
 #include <ppp/app/mux/MuxRxQueueLimit.h>
 #include <ppp/app/mux/MuxTxBackpressure.h>
+#include <ppp/app/multipath/Scheduler.h>
+#include <string>
 
 namespace vmux {
     class vmux_skt;
@@ -29,6 +31,16 @@ namespace vmux {
      */
     class vmux_net final : public std::enable_shared_from_this<vmux_net> {
     public:
+        struct MultipathPathRuntimeStats final {
+            std::string path_id;
+            uint64_t tx_bytes = 0; ///< VMUX frame bytes submitted to carrier writes, including retries.
+            uint64_t rx_bytes = 0; ///< VMUX frame bytes received from carriers.
+            uint64_t inflight_bytes = 0; ///< Queued plus unacknowledged VMUX frame bytes.
+            uint64_t retransmit_bytes = 0; ///< VMUX frame bytes explicitly resent.
+            uint64_t rtt_ms = 0; ///< Lowest sampled SRTT across active carriers; zero means unknown.
+            bool has_rtt = false;
+        };
+
         /** @brief Callback used when an async connect attempt finishes. */
         typedef ppp::function<void(vmux_skt*, bool)>                                ConnectAsynchronousCallback;
         /** @brief Host-neutral carrier transport interface. */
@@ -36,6 +48,7 @@ namespace vmux {
         typedef ppp::app::mux::IMuxTransportPtr                                     IMuxTransportPtr;
         /** @brief Shared pointer to transmission metadata object. */
         typedef std::shared_ptr<ppp::transmissions::ITransmission>                  ITransmissionPtr;
+        using LinkExitCallback = ppp::function<void(const ITransmissionPtr&)>;
 
         std::shared_ptr<ppp::threading::BufferswapAllocator>                        BufferAllocator;    ///< Shared byte-buffer pool used for packet allocation.
         std::shared_ptr<ppp::configurations::AppConfiguration>                      AppConfiguration;   ///< Application-wide runtime configuration snapshot.
@@ -48,7 +61,14 @@ namespace vmux {
          * @brief Pair of vmux protocol connection and server-side transport wrapper.
          */
         typedef struct vmux_linklayer {
+            struct PathRuntimeCounters final {
+                std::atomic<uint64_t> tx_bytes{0};
+                std::atomic<uint64_t> rx_bytes{0};
+                std::atomic<uint64_t> retransmit_bytes{0};
+            };
             IMuxTransportPtr                                                        connection;
+            std::string                                                             path_id_;
+            std::shared_ptr<PathRuntimeCounters>                                    path_runtime_counters_;
             uint16_t                                                                id_ = 0; ///< Server-assigned carrier-link id used by MUXON handshake; 0 means unassigned. Protected by syncobj_ (written by the carrier handshake under it).
             std::atomic<uint64_t>                                                   last_active_{0}; ///< Tick of the most recent inbound frame on this link; turbo's approximate "best link" signal (recency, NOT RTT). Atomic: written by both the vmux strand and the carrier forwarding coroutine.
             size_t                                                                  queued_bytes_ = 0; ///< Outstanding local write bytes (not peer ACK). Strand-affine.
@@ -67,6 +87,10 @@ namespace vmux {
             uint64_t                                                                rttvar_ms_ = 0;     ///< RTT variance (EWMA 3/4).
             uint64_t                                                                min_rtt_ms_ = 0;    ///< Minimum observed RTT (floor).
             bool                                                                    has_rtt_sample_ = false; ///< True after first RTT sample.
+            uint64_t                                                                delivery_rate_bytes_per_second_ = 0;
+            uint64_t                                                                delivery_sample_start_ms_ = 0;
+            uint64_t                                                                delivery_sample_bytes_ = 0;
+            uint64_t                                                                delivery_updated_ms_ = 0;
 
             /** Unified "can this link accept new work?" predicate. All schedulability
              *  checks (count_live_carriers, turbo, shrink, scheduler) MUST use this
@@ -408,6 +432,23 @@ namespace vmux {
         const uint32_t&                                                             get_rx_ack()          noexcept { return status_.rx_ack_; }
         bool                                                                        is_disposed()         noexcept { return base_.disposed_.load(std::memory_order_acquire); }
         bool                                                                        is_established()      noexcept { return !base_.disposed_.load(std::memory_order_acquire) && base_.established_; }
+        std::vector<MultipathPathRuntimeStats>                                      get_multipath_path_runtime_stats() const noexcept;
+        /** Keep an established logical mux alive during a bounded carrier outage. */
+        void                                                                        set_carrier_resume_policy(bool enabled, uint32_t grace_ms) noexcept;
+        void                                                                        set_link_exit_callback(const LinkExitCallback& callback) noexcept {
+            link_exit_callback_ = callback;
+        }
+        void                                                                        set_multipath_scheduler_policy(bool enabled, bool failover) noexcept {
+            multipath_scheduler_policy_.store(enabled ? (failover ? 1 : 0) : -1,
+                std::memory_order_release);
+        }
+        uint32_t                                                                    get_carrier_resume_remaining_ms() noexcept {
+            const std::uint64_t deadline = carrier_resume_deadline_ms_.load(std::memory_order_acquire);
+            const std::uint64_t now = now_tick();
+            if (deadline <= now) return 0;
+            const std::uint64_t remaining = deadline - now;
+            return static_cast<uint32_t>(remaining > 30000 ? 30000 : remaining);
+        }
 
         /** @brief Handle fast transport training/control frame. */
         bool                                                                        ftt(uint32_t seq, uint32_t ack) noexcept;
@@ -771,6 +812,7 @@ namespace vmux {
         void                                                                        clear_flow_tx() noexcept;
         /** @brief Publish a lock-free runtime snapshot (call on strand or under mutex). */
         void                                                                        publish_runtime_snapshot_locked() noexcept;
+        void                                                                        publish_multipath_path_runtime_stats() noexcept;
 
         /** @brief Validate and post outgoing connect request command. */
         bool                                                                        connect_require(
@@ -900,6 +942,12 @@ namespace vmux {
 
         vmux_linklayer_vector                                                       rx_links_;          ///< All link-layer endpoints available for inbound.
         vmux_linklayer_list                                                         tx_links_;          ///< Link-layer endpoints ordered by transmit usage.
+        vmux::unordered_map<std::string, std::shared_ptr<vmux_linklayer::PathRuntimeCounters>> path_runtime_counters_;
+        mutable std::shared_ptr<const std::vector<MultipathPathRuntimeStats>>       multipath_path_runtime_snapshot_;
+        std::atomic<bool>                                                           carrier_resume_enabled_{false};
+        std::atomic<std::uint32_t>                                                  carrier_resume_grace_ms_{0};
+        std::atomic<std::uint64_t>                                                  carrier_resume_deadline_ms_{0};
+        LinkExitCallback                                                            link_exit_callback_;
 
         /** @brief One pending receive-side FEC group (parity + slots for covered frames). */
         struct fec_rx_group {
@@ -928,6 +976,8 @@ namespace vmux {
         bool                                                                        fec_flush_due_ = false;   ///< Full FEC group awaiting deferred emission on the maintenance tick.
 
         ppp::app::mux::MuxRetransmitBuffer                                          rtx_;               ///< Sender-side retransmit buffer (strand-affine).
+        std::atomic<int>                                                            multipath_scheduler_policy_{-1};
+        ppp::app::multipath::PathScheduler                                          multipath_scheduler_;
         vmux::unordered_map<uint32_t, ppp::app::mux::MuxAckTracker>                 ack_trackers_;      ///< Received-sequence trackers; cid 0 = compat global space (strand-affine).
         uint32_t                                                                    ack_pending_count_ = 0;      ///< Reliable frames received since the last emitted ACK.
         uint64_t                                                                    ack_first_pending_tick_ = 0; ///< Tick the oldest un-ACKed frame arrived (delayed-ACK base).

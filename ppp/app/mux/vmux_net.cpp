@@ -168,6 +168,14 @@ namespace vmux {
             normalized == ordering_flow_v2 ? "flow-v2" : "compat");
     }
 
+    void vmux_net::set_carrier_resume_policy(bool enabled, uint32_t grace_ms) noexcept {
+        carrier_resume_grace_ms_.store(std::min<std::uint32_t>(grace_ms, 30000U), std::memory_order_release);
+        carrier_resume_enabled_.store(enabled && grace_ms > 0, std::memory_order_release);
+        if (!enabled || grace_ms == 0) {
+            carrier_resume_deadline_ms_.store(0, std::memory_order_release);
+        }
+    }
+
     void vmux_net::apply_negotiation(bool local_supports_flow_v2, bool peer_supports_flow_v2, bool local_reliability, bool peer_reliability, bool local_fec, bool peer_fec, bool peer_requests_flow_v2) noexcept {
         ppp::app::mux::MuxRuntimeState state;
         {
@@ -242,6 +250,61 @@ namespace vmux {
         }
         ppp::app::mux::FillMuxPresentation(state);
         return state;
+    }
+
+    std::vector<vmux_net::MultipathPathRuntimeStats>
+    vmux_net::get_multipath_path_runtime_stats() const noexcept {
+        try {
+            auto snapshot = std::atomic_load_explicit(
+                &multipath_path_runtime_snapshot_, std::memory_order_acquire);
+            return snapshot ? *snapshot : std::vector<MultipathPathRuntimeStats>();
+        }
+        catch (...) {
+            return {};
+        }
+    }
+
+    void vmux_net::publish_multipath_path_runtime_stats() noexcept {
+        if (path_runtime_counters_.empty()) return;
+        try {
+            std::vector<MultipathPathRuntimeStats> snapshot;
+            snapshot.reserve(path_runtime_counters_.size());
+            for (const auto& item : path_runtime_counters_) {
+                if (!item.second) continue;
+                MultipathPathRuntimeStats path;
+                path.path_id = item.first;
+                path.tx_bytes = item.second->tx_bytes.load(std::memory_order_relaxed);
+                path.rx_bytes = item.second->rx_bytes.load(std::memory_order_relaxed);
+                path.retransmit_bytes = item.second->retransmit_bytes.load(std::memory_order_relaxed);
+                snapshot.emplace_back(std::move(path));
+            }
+
+            for (const vmux_linklayer_ptr& link : rx_links_) {
+                if (!link || !link->schedulable() || link->path_id_.empty()) continue;
+                auto found = std::find_if(snapshot.begin(), snapshot.end(), [&link](const auto& path) {
+                    return path.path_id == link->path_id_;
+                });
+                if (found == snapshot.end()) continue;
+                if (reliability_on_ && link->id_ != 0) {
+                    found->inflight_bytes += static_cast<uint64_t>(rtx_.LinkBytes(link->id_));
+                }
+                else {
+                    found->inflight_bytes += static_cast<uint64_t>(link->queued_bytes_);
+                }
+                if (link->has_rtt_sample_ &&
+                    (!found->has_rtt || link->srtt_ms_ < found->rtt_ms)) {
+                    found->rtt_ms = link->srtt_ms_;
+                    found->has_rtt = true;
+                }
+            }
+            auto published = std::make_shared<const std::vector<MultipathPathRuntimeStats>>(
+                std::move(snapshot));
+            std::atomic_store_explicit(&multipath_path_runtime_snapshot_,
+                std::move(published), std::memory_order_release);
+        }
+        catch (...) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+        }
     }
 
     void vmux_net::refresh_runtime_active_links() noexcept {
@@ -670,6 +733,44 @@ namespace vmux {
     }
 
     vmux_net::vmux_linklayer_ptr vmux_net::tx_link_pick(int length) noexcept {
+        const int multipath_policy = multipath_scheduler_policy_.load(std::memory_order_acquire);
+        if (multipath_policy >= 0) {
+            using Scheduler = ppp::app::multipath::PathScheduler;
+            std::vector<Scheduler::Candidate> candidates;
+            candidates.reserve(rx_links_.size());
+            std::uint16_t preferred = std::numeric_limits<std::uint16_t>::max();
+            for (const auto& link : rx_links_) {
+                if (is_linklayer_active(link)) preferred = std::min(preferred, link->id_);
+            }
+            const auto now = now_tick();
+            for (const auto& link : rx_links_) {
+                if (!link || link->id_ == 0) continue;
+                Scheduler::Candidate candidate;
+                candidate.id = link->id_;
+                candidate.eligible = is_linklayer_active(link);
+                candidate.preferred = link->id_ == preferred;
+                candidate.queue_bytes = link->queued_bytes_;
+                candidate.unacked_bytes = rtx_.LinkBytes(link->id_);
+                candidate.send_credit_bytes = link->in_tx_links_
+                    ? (link->queued_bytes_ < static_cast<size_t>(PPP_MUX_LINK_BYTE_HIGH_WATER)
+                        ? static_cast<size_t>(PPP_MUX_LINK_BYTE_HIGH_WATER) - link->queued_bytes_ : 0)
+                    : 0;
+                if (link->has_rtt_sample_) candidate.rtt_ms = link->srtt_ms_;
+                if (link->delivery_rate_bytes_per_second_ != 0)
+                    candidate.throughput_bytes_per_second = link->delivery_rate_bytes_per_second_;
+                candidate.last_active_ms = link->last_active_.load(std::memory_order_acquire);
+                candidate.metrics_updated_ms = link->delivery_updated_ms_;
+                candidates.emplace_back(std::move(candidate));
+            }
+            const auto selected = multipath_scheduler_.Select(multipath_policy == 1
+                ? Scheduler::Policy::Failover : Scheduler::Policy::Adaptive,
+                candidates, now, static_cast<std::uint64_t>(std::max(0, length)));
+            if (selected.status != Scheduler::Status::Selected) return {};
+            for (const auto& link : rx_links_) {
+                if (link && link->id_ == selected.carrier_id) return link;
+            }
+            return {};
+        }
         // Least bytes in flight first: "free" used to mean "its last local write
         // completed", which a carrier with a bloated socket buffer reports just
         // as quickly as a fast one.
@@ -753,10 +854,24 @@ namespace vmux {
         remove_linklayer(linklayer);
         rx_forget_paused_link(linklayer);
         if (NULLPTR != linklayer && NULLPTR != linklayer->connection) {
+            if (link_exit_callback_) {
+                try { link_exit_callback_(linklayer->connection->GetTransmission()); }
+                catch (...) {}
+            }
             linklayer->connection->Dispose();
         }
 
         if (remaining == 0) {
+            if (carrier_resume_enabled_.load(std::memory_order_acquire)) {
+                const std::uint64_t grace = carrier_resume_grace_ms_.load(std::memory_order_acquire);
+                carrier_resume_deadline_ms_.store(now_tick() + grace, std::memory_order_release);
+                ppp::telemetry::Count("mux.link.exit.resume_window", 1);
+                ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "mux",
+                    "last carrier exited; retaining session for bounded resume window");
+                reinject_link_inflight(linklayer, now_tick());
+                process_tx_all_packets();
+                return;
+            }
             ppp::telemetry::Count("mux.link.exit.session", 1);
             ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "mux",
                 "last carrier exit reason=%s; closing session", why);
@@ -1155,6 +1270,12 @@ namespace vmux {
 
         linklayer->queued_bytes_ += (size_t)packet_length;
         linklayer->total_sent_bytes_ += (uint64_t)packet_length;
+        if (linklayer->path_runtime_counters_) {
+            linklayer->path_runtime_counters_->tx_bytes.fetch_add(
+                static_cast<uint64_t>(packet_length), std::memory_order_relaxed);
+        }
+        if (linklayer->delivery_sample_start_ms_ == 0)
+            linklayer->delivery_sample_start_ms_ = now_tick();
         const int accounted_length = packet_length;
 
         bool queued = transmission_write(self, transmission, packet, packet_length,
@@ -1253,6 +1374,12 @@ namespace vmux {
                 uint64_t max_tcp_connect_timeout = ((uint64_t)AppConfiguration->tcp.connect.timeout) * 1000ULL;
 
                 uint64_t now = now_tick();
+                const uint64_t carrier_resume_deadline = carrier_resume_deadline_ms_.load(std::memory_order_acquire);
+                if (carrier_resume_deadline != 0 && now >= carrier_resume_deadline) {
+                    carrier_resume_deadline_ms_.store(0, std::memory_order_release);
+                    close_exec();
+                    return;
+                }
                 if (base_.established_) {
                     for (const std::pair<uint32_t, vmux_skt_ptr>& kv : skts_) {
                         bool is_port_aging = false;
@@ -1281,7 +1408,9 @@ namespace vmux {
                 uint64_t max_mux_inactive_timeout = ((uint64_t)AppConfiguration->mux.inactive.timeout) * 1000ULL;
                 uint64_t max_mux_connect_timeout = ((uint64_t)AppConfiguration->mux.connect.timeout) * 1000ULL;
 
-                if ((now - status_.last_) >= (base_.established_ ? max_mux_inactive_timeout : max_mux_connect_timeout)) {
+                const bool carrier_resume_pending = carrier_resume_deadline_ms_.load(std::memory_order_acquire) != 0;
+                if (!carrier_resume_pending &&
+                    (now - status_.last_) >= (base_.established_ ? max_mux_inactive_timeout : max_mux_connect_timeout)) {
                     close_exec();
                 }
                 elif(base_.established_ && (now - status_.last_heartbeat_) >= status_.heartbeat_timeout_) {
@@ -1336,6 +1465,7 @@ namespace vmux {
                     // turbo dynamic pool controller: move the pool one step toward
                     // the quality-derived target (grow request / shrink retire).
                     turbo_controller_tick(now);
+                    publish_multipath_path_runtime_stats();
 
                     // D11 stall watchdog: if the data tx queue stays at/over the
                     // high-water mark for longer than the stall timeout, the send
@@ -2451,13 +2581,32 @@ namespace vmux {
             const uint32_t key_cid = (ordering_mode_ == ordering_compat) ? 0u : block.connection_id;
             std::vector<uint64_t> candidates;
             uint16_t ack_link_id = 0;
+            std::unordered_map<std::uint16_t, std::size_t> link_acked_bytes;
             // Fast-RTX time threshold: QUIC-style max(SRTT/4, 1ms) to suppress
             // spurious fast retransmits on heterogeneous multi-path links where
             // a DSN gap may simply be reordering, not loss.
             const uint64_t fast_time_threshold = (srtt_ms_ > 0)
                 ? (srtt_ms_ / 4 > 0 ? srtt_ms_ / 4 : 1) : 0;
             const uint64_t sample = rtx_.Ack(key_cid, block.largest, block.ranges, now,
-                (uint32_t)PPP_MUX_FAST_RETX_THRESHOLD, fast_time_threshold, candidates, &ack_link_id);
+                (uint32_t)PPP_MUX_FAST_RETX_THRESHOLD, fast_time_threshold, candidates,
+                &ack_link_id, &link_acked_bytes);
+            for (const auto& acknowledged : link_acked_bytes) {
+                for (const auto& link : rx_links_) {
+                    if (!link || link->id_ != acknowledged.first) continue;
+                    link->delivery_sample_bytes_ += acknowledged.second;
+                    if (now < link->delivery_sample_start_ms_) break;
+                    const auto elapsed = now - link->delivery_sample_start_ms_;
+                    if (elapsed >= 50) {
+                        const auto rate = link->delivery_sample_bytes_ * 1000 / elapsed;
+                        link->delivery_rate_bytes_per_second_ = link->delivery_rate_bytes_per_second_ == 0
+                            ? rate : (link->delivery_rate_bytes_per_second_ * 7 + rate) / 8;
+                        link->delivery_sample_start_ms_ = now;
+                        link->delivery_sample_bytes_ = 0;
+                    }
+                    link->delivery_updated_ms_ = now;
+                    break;
+                }
+            }
             if (sample > 0) {
                 // Session-level SRTT (fallback for single-link / no link_id).
                 srtt_ms_ = (srtt_ms_ == 0) ? sample : (srtt_ms_ * 7 + sample) / 8;
@@ -2684,6 +2833,10 @@ namespace vmux {
                 tx_link_withdraw(chosen); // the refusing carrier is going away
                 leftover.emplace_back(key);
                 continue;
+            }
+            if (chosen->path_runtime_counters_) {
+                chosen->path_runtime_counters_->retransmit_bytes.fetch_add(
+                    static_cast<uint64_t>(entry->length), std::memory_order_relaxed);
             }
             if (chosen->queued_bytes_ >= (size_t)PPP_MUX_LINK_BYTE_HIGH_WATER) {
                 tx_link_withdraw(chosen);
@@ -3631,6 +3784,10 @@ namespace vmux {
             }
         }
 
+        if (multipath_scheduler_policy_.load(std::memory_order_acquire) >= 0) {
+            return process_tx_compat_packets();
+        }
+
         switch (mode_) {
         case mux_mode_flow:
             return process_tx_flow_packets();
@@ -3725,6 +3882,26 @@ namespace vmux {
         }
 
         linklayer->connection = connection;
+        try {
+            linklayer->path_id_ = connection->GetPathId();
+            if (!linklayer->path_id_.empty()) {
+                auto found = path_runtime_counters_.find(linklayer->path_id_);
+                if (found == path_runtime_counters_.end()) {
+                    auto counters = std::make_shared<vmux_linklayer::PathRuntimeCounters>();
+                    found = path_runtime_counters_.emplace(linklayer->path_id_,
+                        std::move(counters)).first;
+                }
+                if (found->second) linklayer->path_runtime_counters_ = found->second;
+            }
+        }
+        catch (...) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+            return false;
+        }
+        if (!linklayer->path_id_.empty() && !linklayer->path_runtime_counters_) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+            return false;
+        }
         linklayer->in_tx_links_ = true; // base carriers are listed before their handshake; post requires establishment
         tx_links_.emplace_back(linklayer);
         rx_links_.emplace_back(linklayer);
@@ -3996,6 +4173,7 @@ namespace vmux {
             ppp::telemetry::Count("mux.link.retire.done", 1);
             ppp::telemetry::Log(Level::kInfo, "mux", "link retired (runtime shrink), links=%d", (int)rx_links_.size());
         }
+        if (!reaped.empty()) retransmit_pending(now_tick());
         return true;
     }
 
@@ -4009,6 +4187,9 @@ namespace vmux {
         for (vmux_linklayer_vector::iterator it = rx_links_.begin(); it != rx_links_.end();) {
             vmux_linklayer_ptr linklayer = *it;
             if (NULLPTR != linklayer && linklayer->drain_.reapable()) {
+                if (reliability_on_) {
+                    rtx_.TakeLinkInflight(linklayer->id_, rtx_pending_);
+                }
                 it = rx_links_.erase(it);
                 erased_any = true;
 
@@ -4044,6 +4225,7 @@ namespace vmux {
             ppp::telemetry::Count("mux.link.retire.done", 1);
             ppp::telemetry::Log(Level::kInfo, "mux", "link retired (runtime shrink), links=%d", (int)rx_links_.size());
         }
+        if (!reaped.empty()) retransmit_pending(now_tick());
     }
 
     /**
@@ -4240,6 +4422,7 @@ namespace vmux {
         {
             SynchronizationObjectScope __SCOPE__(syncobj_);
             linklayer->handshake_complete_ = true;
+            carrier_resume_deadline_ms_.store(0, std::memory_order_release);
             if (!base_.established_ && status_.opened_connections < status_.max_connections) {
                 status_.opened_connections++;
             }
@@ -4348,6 +4531,10 @@ namespace vmux {
             bool posted = vmux_post_exec(context_, strand_,
                 [self, this, linklayer, buffer_memory, h, buffer_size]() noexcept {
                     uint64_t now = now_tick();
+                    if (linklayer->path_runtime_counters_ && buffer_size > 0) {
+                        linklayer->path_runtime_counters_->rx_bytes.fetch_add(
+                            static_cast<uint64_t>(buffer_size), std::memory_order_relaxed);
+                    }
                     note_inbound_reliability_frame(linklayer, buffer_memory, h, buffer_size, now);
                     bool delivered = (ordering_mode_ == ordering_flow_v2)
                         ? packet_input_flow(linklayer, h, buffer_size, now, buffer_memory)

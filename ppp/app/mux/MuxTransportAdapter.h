@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ppp/app/mux/IMuxTransport.h>
+#include <string>
 
 namespace ppp::app::mux {
 
@@ -8,8 +9,10 @@ template <typename TConnection>
 class MuxTransportAdapter final : public IMuxTransport {
 public:
     MuxTransportAdapter(std::shared_ptr<TConnection> connection,
-                        ppp::function<void()> owner_dispose) noexcept
-        : connection_(std::move(connection)), owner_dispose_(std::move(owner_dispose)) {}
+                        ppp::function<void()> owner_dispose,
+                        std::string path_id) noexcept
+        : connection_(std::move(connection)), owner_dispose_(std::move(owner_dispose)),
+          path_id_(std::move(path_id)) {}
 
     bool IsLinked() noexcept override {
         return !disposed_.load(std::memory_order_acquire) && connection_ && connection_->IsLinked();
@@ -30,6 +33,8 @@ public:
     Int128 GetId() noexcept override {
         return connection_ ? connection_->GetId() : Int128{};
     }
+
+    const std::string& GetPathId() noexcept override { return path_id_; }
 
     void Update() noexcept override {
         if (IsLinked()) {
@@ -52,18 +57,20 @@ public:
 private:
     std::shared_ptr<TConnection> connection_;
     ppp::function<void()> owner_dispose_;
+    std::string path_id_;
     std::atomic_bool disposed_{false};
 };
 
 template <typename TConnection>
 IMuxTransportPtr MakeMuxTransport(
     const std::shared_ptr<TConnection>& connection,
-    ppp::function<void()> owner_dispose = {}) noexcept {
+    ppp::function<void()> owner_dispose = {},
+    std::string path_id = {}) noexcept {
     if (!connection) {
         return nullptr;
     }
     return ppp::make_shared_object<MuxTransportAdapter<TConnection>>(
-        connection, std::move(owner_dispose));
+        connection, std::move(owner_dispose), std::move(path_id));
 }
 
 } // namespace ppp::app::mux

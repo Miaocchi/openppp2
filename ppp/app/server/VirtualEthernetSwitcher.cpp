@@ -45,6 +45,9 @@
 #include <ppp/net/asio/SharedBufferReceive.h>
 #include <ppp/transmissions/ITcpipTransmission.h>
 #include <ppp/transmissions/IWebsocketTransmission.h>
+#include <ppp/transmissions/MultipathTransmission.h>
+#include <openssl/crypto.h>
+#include <cstring>
 
 /**
  * @file VirtualEthernetSwitcher.cpp
@@ -60,6 +63,41 @@ using ppp::threading::Executors;
 using ppp::coroutines::YieldContext;
 using ppp::collections::Dictionary;
 using ppp::telemetry::Level;
+
+ppp::app::server::VirtualEthernetSwitcher::MultipathSessionEntry::~MultipathSessionEntry() noexcept {
+    OPENSSL_cleanse(create_result.credential.data(), create_result.credential.size());
+    for (auto& item : committed_candidate_bindings) {
+        OPENSSL_cleanse(item.second.data(), item.second.size());
+    }
+}
+
+template <typename TResult, typename TFunction>
+static bool RunOnMultipathOwner(
+    const ppp::threading::Executors::ContextPtr& context,
+    const ppp::threading::Executors::StrandPtr& strand,
+    ppp::coroutines::YieldContext& y,
+    TFunction function,
+    TResult& result) noexcept {
+    struct Completion final {
+        TResult result{};
+        std::atomic_bool completed{ false };
+    };
+    if (!context || !strand || !y) return false;
+    auto completion = ppp::make_shared_object<Completion>();
+    auto callback = ppp::make_shared_object<TFunction>(std::move(function));
+    if (!completion || !callback) return false;
+    const auto anchor = y.Arm();
+    if (!anchor) return false;
+    const bool posted = ppp::threading::Executors::Post(context, strand,
+        [completion, callback, anchor]() noexcept {
+            completion->result = (*callback)();
+            completion->completed.store(true, std::memory_order_release);
+            anchor.R();
+        });
+    if (!posted || !y.Suspend(anchor) || !completion->completed.load(std::memory_order_acquire)) return false;
+    result = std::move(completion->result);
+    return true;
+}
 
 static bool BuildSessionResumeId(const ppp::Int128& id,
     ppp::app::protocol::SessionResumeId& output) noexcept {
@@ -1802,10 +1840,17 @@ namespace ppp {
                     transmission->GetAuthenticatedCarrierKind();
                 const bool plain_carrier = kind == AuthenticatedCarrierKind::Tcp ||
                     kind == AuthenticatedCarrierKind::WebSocket;
-                if (!plain_carrier || transmission->IsServerLoopbackIngress() ||
-                    !configuration_->server.transport_auth.enabled ||
-                    !transmission->PeerSupportsTransportAuthV1() ||
-                    !transmission->PeerEnablesTransportAuthV1()) {
+                const bool loopback = transmission->IsServerLoopbackIngress();
+                const bool policy_enabled = configuration_->server.transport_auth.enabled;
+                const bool peer_supports = transmission->PeerSupportsTransportAuthV1();
+                const bool peer_enables = transmission->PeerEnablesTransportAuthV1();
+                const bool required = plain_carrier && !loopback && policy_enabled &&
+                    peer_supports && peer_enables;
+                ppp::telemetry::Log(Level::kInfo, "server",
+                    "transport auth gate kind=%d loopback=%d policy=%d peer_support=%d peer_enable=%d required=%d",
+                    static_cast<int>(kind), loopback ? 1 : 0, policy_enabled ? 1 : 0,
+                    peer_supports ? 1 : 0, peer_enables ? 1 : 0, required ? 1 : 0);
+                if (!required) {
                     return true;
                 }
 
@@ -1813,6 +1858,9 @@ namespace ppp {
                 if (!BuildSessionResumeId(session_id, binary_session_id)) {
                     ppp::diagnostics::SetLastErrorCode(
                         ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
+                    ppp::telemetry::Log(Level::kInfo, "server",
+                        "transport auth failed stage=setup error=%d",
+                        static_cast<int>(ppp::diagnostics::GetLastErrorCode()));
                     return false;
                 }
 
@@ -1820,6 +1868,9 @@ namespace ppp {
                 if (NULLPTR == strand) {
                     ppp::diagnostics::SetLastErrorCode(
                         ppp::diagnostics::ErrorCode::SessionTransportMissing);
+                    ppp::telemetry::Log(Level::kInfo, "server",
+                        "transport auth failed stage=setup error=%d",
+                        static_cast<int>(ppp::diagnostics::GetLastErrorCode()));
                     return false;
                 }
 
@@ -1833,6 +1884,9 @@ namespace ppp {
                 if (NULLPTR == handshake_state || NULLPTR == handshake_timer) {
                     ppp::diagnostics::SetLastErrorCode(
                         ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    ppp::telemetry::Log(Level::kInfo, "server",
+                        "transport auth failed stage=setup error=%d",
+                        static_cast<int>(ppp::diagnostics::GetLastErrorCode()));
                     return false;
                 }
 
@@ -1926,12 +1980,14 @@ namespace ppp {
 
                 bool advertisement_received = false;
                 bool proof_received = false;
+                int auth_stage = 1;
                 TransportAuthControl advertisement;
                 TransportAuthControl response;
                 bool authenticated = read_control(
                     advertisement, advertisement_received);
                 bool reject_sent = false;
                 if (authenticated) {
+                    auth_stage = 2;
                     authenticated = responder.ConsumeAdvertisement(
                         advertisement, response);
                     if (!authenticated) {
@@ -1940,14 +1996,17 @@ namespace ppp {
                     }
                 }
                 if (authenticated) {
+                    auth_stage = 3;
                     authenticated = send_control(response);
                 }
 
                 TransportAuthControl proof;
                 if (authenticated) {
+                    auth_stage = 4;
                     authenticated = read_control(proof, proof_received);
                 }
                 if (authenticated) {
+                    auth_stage = 5;
                     authenticated = responder.ConsumeClientProof(proof, response);
                     if (!authenticated) {
                         (void)send_control(response);
@@ -1957,11 +2016,13 @@ namespace ppp {
 
                 ppp::cryptography::noise::NoisePskHandshakeResult result;
                 if (authenticated) {
+                    auth_stage = 6;
                     authenticated = responder.TakeNoiseResult(result) &&
                         transmission->InstallNoiseAuthenticatedCarrierBinding(
                             std::move(result));
                 }
                 if (authenticated) {
+                    auth_stage = 7;
                     authenticated = send_control(response);
                 }
 
@@ -1978,7 +2039,14 @@ namespace ppp {
                         ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
                 }
                 (void)proof_received;
-                return finish() && authenticated;
+                const bool completed = finish();
+                ppp::telemetry::Log(Level::kInfo, "server",
+                    "transport auth result ok=%d stage=%d advertisement=%d proof=%d binding=%d error=%d",
+                    completed && authenticated ? 1 : 0, auth_stage,
+                    advertisement_received ? 1 : 0, proof_received ? 1 : 0,
+                    transmission->IsAuthenticatedCarrierBindingActive() ? 1 : 0,
+                    static_cast<int>(ppp::diagnostics::GetLastErrorCode()));
+                return completed && authenticated;
             }
 
             /**
@@ -1991,6 +2059,48 @@ namespace ppp {
             int VirtualEthernetSwitcher::Run(const ContextPtr& context, const ITransmissionPtr& transmission, YieldContext& y) noexcept {
                 if (disposed_) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionDisposed);
+                    return STATUS_ERROR;
+                }
+
+                using ppp::transmissions::AuthenticatedCarrierKind;
+                const AuthenticatedCarrierKind carrier_kind = transmission->GetAuthenticatedCarrierKind();
+                if (carrier_kind == AuthenticatedCarrierKind::WebSocket) {
+                    auto websocket = std::dynamic_pointer_cast<ppp::transmissions::IWebsocketTransmission>(transmission);
+                    if (!websocket || !websocket->UpgradeOnly(false, y)) return STATUS_ERROR;
+                }
+                elif(carrier_kind == AuthenticatedCarrierKind::TlsWebSocket) {
+                    auto websocket = std::dynamic_pointer_cast<ppp::transmissions::ISslWebsocketTransmission>(transmission);
+                    if (!websocket || !websocket->UpgradeOnly(false, y)) return STATUS_ERROR;
+                }
+
+                int first_frame_length = 0;
+                std::shared_ptr<Byte> first_frame = transmission->Read(y, first_frame_length);
+                if (NULLPTR == first_frame || first_frame_length <= 0) {
+                    return STATUS_ERROR;
+                }
+
+                bool multipath_version_supported = false;
+                if (ppp::transmissions::MultipathTransmission::IsPreface(
+                        first_frame.get(), first_frame_length, multipath_version_supported)) {
+                    ppp::string key_id;
+                    std::size_t message_offset = 0;
+                    if (!multipath_version_supported ||
+                        !ppp::transmissions::MultipathTransmission::ParsePreface(
+                            first_frame.get(), first_frame_length, multipath_version_supported,
+                            key_id, message_offset) || !multipath_version_supported || key_id.empty()) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
+                        return STATUS_ERROR;
+                    }
+                    if (!configuration_->server.multipath.enabled) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                        return STATUS_ERROR;
+                    }
+                    return RunMultipath(context, transmission, first_frame, first_frame_length,
+                        key_id, y);
+                }
+
+                if (!transmission->SetPrefetchedReadPacket(first_frame, first_frame_length)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionHandshakeFailed);
                     return STATUS_ERROR;
                 }
 
@@ -2029,12 +2139,23 @@ namespace ppp {
                     return STATUS_ERROR;
                 }
 
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    if (multipath_sessions_.find(session_id) != multipath_sessions_.end()) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                        return STATUS_ERROR;
+                    }
+                }
+
                 if (!AuthenticatePlainTransport(transmission, session_id, y)) {
                     ppp::telemetry::Count("server.transport_auth.rejected", 1);
                     return STATUS_ERROR;
                 }
 
                 if (!mux) {
+                    ppp::telemetry::Log(Level::kInfo, "server",
+                        "transport auth passed; entering connect auth_binding=%d",
+                        transmission->IsAuthenticatedCarrierBindingActive() ? 1 : 0);
                     return Connect(transmission, session_id, y);
                 }
 
@@ -2067,6 +2188,659 @@ namespace ppp {
                             transmission->Dispose();
                         }
                     }) ? STATUS_RUNNING_SWAP : STATUS_ERROR;
+            }
+
+            int VirtualEthernetSwitcher::RunMultipath(const ContextPtr& context,
+                const ITransmissionPtr& carrier, const std::shared_ptr<Byte>& first_frame,
+                int first_frame_length, const ppp::string& key_id, YieldContext& y) noexcept {
+                using namespace ppp::app::multipath;
+                using namespace ppp::app::multipath::wire;
+                using ppp::cryptography::noise::HandshakeRole;
+                using ppp::cryptography::noise::MultipathHandshakeParameters;
+                using ppp::cryptography::noise::Secret32;
+                using ppp::configurations::TransportAuthKeyState;
+
+                const AppConfigurationPtr configuration = configuration_;
+                const auto keyring = configuration ? configuration->transport_auth_keyring : nullptr;
+                const auto key = keyring ? keyring->FindVerifyKey(std::string(key_id.begin(), key_id.end())) : nullptr;
+                if (!configuration || !configuration->server.multipath.enabled || !key ||
+                    (key->state != TransportAuthKeyState::Active && key->state != TransportAuthKeyState::VerifyOnly)) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                    return STATUS_ERROR;
+                }
+
+                Secret32 psk;
+                ppp::cryptography::noise::Bytes32 psk_bytes{};
+                std::memcpy(psk_bytes.data(), key->secret.data(), psk_bytes.size());
+                psk.Assign(std::move(psk_bytes));
+                MultipathHandshakeParameters parameters;
+                parameters.client_identity.assign(key_id.begin(), key_id.end());
+                parameters.server_identity = "openppp2-server";
+                parameters.key_id.assign(key_id.begin(), key_id.end());
+                parameters.capabilities = { 1 };
+
+                auto secured = make_shared_object<ppp::transmissions::MultipathTransmission>(
+                    carrier, std::move(parameters), std::move(psk),
+                    HandshakeRole::NetworkServerResponder, first_frame, first_frame_length);
+                if (!secured || !secured->StartSecureServer(y)) {
+                    return STATUS_ERROR;
+                }
+
+                const auto verify_candidate = [&](const SessionId& client_session_id,
+                    const std::string& request_id, const std::string& carrier_id,
+                    const ppp::app::multipath::Secret32& client_nonce,
+                    const ppp::app::multipath::Secret32& candidate_binding) noexcept {
+                    std::vector<std::uint8_t> context_bytes;
+                    ppp::app::multipath::Secret32 expected{};
+                    static constexpr char label[] = "multipath-session-join-candidate-v1";
+                    const bool exported = BuildCandidateBindingContext(client_session_id,
+                        request_id, carrier_id, client_nonce, context_bytes) &&
+                        secured->ExportAuthenticatedSessionKey(label, context_bytes.data(),
+                            context_bytes.size(), expected.data(), expected.size());
+                    const bool valid = exported && CRYPTO_memcmp(expected.data(),
+                        candidate_binding.data(), expected.size()) == 0;
+                    OPENSSL_cleanse(expected.data(), expected.size());
+                    ClearSensitivePayload(context_bytes);
+                    return valid;
+                };
+                const auto read_record = [&](std::uint8_t& type,
+                    std::vector<std::uint8_t>& payload) noexcept {
+                    return secured->ReadSecureRecord(y, type, payload);
+                };
+                const auto write_record = [&](RecordType type,
+                    std::vector<std::uint8_t>& payload) noexcept {
+                    const bool ok = secured->WriteSecureRecord(y,
+                        static_cast<std::uint8_t>(type), payload.data(), payload.size());
+                    ClearSensitivePayload(payload);
+                    return ok;
+                };
+                const auto find_entry = [&](const Int128& logical_id) noexcept {
+                    SynchronizedObjectScope scope(syncobj_);
+                    auto found = multipath_sessions_.find(logical_id);
+                    return found == multipath_sessions_.end() ? MultipathSessionEntryPtr() : found->second;
+                };
+                const auto create_or_find_entry = [&](const Int128& logical_id,
+                    MultipathSessionEntryPtr& entry) noexcept {
+                    {
+                        SynchronizedObjectScope scope(syncobj_);
+                        auto found = multipath_sessions_.find(logical_id);
+                        if (found != multipath_sessions_.end()) {
+                            entry = found->second;
+                            return true;
+                        }
+                    }
+                    if (GetExchanger(logical_id)) return false;
+                    SynchronizedObjectScope scope(syncobj_);
+                    auto found = multipath_sessions_.find(logical_id);
+                    if (found != multipath_sessions_.end()) {
+                        entry = found->second;
+                        return true;
+                    }
+                    if (disposed_ || exchangers_.find(logical_id) != exchangers_.end() ||
+                        multipath_sessions_.size() >= static_cast<std::size_t>(configuration->server.multipath.max_sessions)) {
+                        return false;
+                    }
+                    auto candidate = make_shared_object<MultipathSessionEntry>();
+                    if (!candidate) return false;
+                    candidate->owner_context = context_;
+                    candidate->owner_strand = make_shared_object<Executors::Strand>(context_->get_executor());
+                    if (!candidate->owner_context || !candidate->owner_strand) return false;
+                    try {
+                        auto inserted = multipath_sessions_.emplace(logical_id, candidate);
+                        if (!inserted.second) return false;
+                        entry = std::move(candidate);
+                        return true;
+                    } catch (...) { return false; }
+                };
+
+                std::uint8_t initial_type = 0;
+                std::vector<std::uint8_t> initial_payload;
+                if (!read_record(initial_type, initial_payload)) return STATUS_ERROR;
+
+                MultipathSessionEntryPtr entry;
+                Int128 logical_id = 0;
+                bool committed_on_this_carrier = false;
+                MultipathCarrierRegistration registration;
+                std::string authenticated_identity(key_id.begin(), key_id.end());
+
+                if (initial_type == static_cast<std::uint8_t>(RecordType::CreateRequest)) {
+                    CreateRequest request;
+                    const bool decoded = DecodeCreateRequest(initial_payload.data(),
+                        initial_payload.size(), request);
+                    ClearSensitivePayload(initial_payload);
+                    if (!decoded || request.authenticated_identity != authenticated_identity ||
+                        !verify_candidate(request.client_session_id, request.request_id,
+                            request.carrier_id, request.client_nonce, request.candidate_binding) ||
+                        key->state != TransportAuthKeyState::Active) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                        return STATUS_ERROR;
+                    }
+                    logical_id = ClientSessionIdToInt128(request.client_session_id);
+                    if (logical_id == 0 || !create_or_find_entry(logical_id, entry)) {
+                        CreateResponse rejected;
+                        rejected.result = GetExchanger(logical_id) ? CreateResult::Conflict : CreateResult::Capacity;
+                        rejected.client_session_id = request.client_session_id;
+                        std::vector<std::uint8_t> response;
+                        if (EncodeCreateResponse(rejected, response)) {
+                            (void)write_record(RecordType::CreateResponse, response);
+                        }
+                        OPENSSL_cleanse(rejected.credential.data(), rejected.credential.size());
+                        return STATUS_ERROR;
+                    }
+
+                    struct CreateOutcome final {
+                        bool accepted = false;
+                        CreateResponse response;
+                        ~CreateOutcome() noexcept {
+                            OPENSSL_cleanse(response.credential.data(), response.credential.size());
+                        }
+                    } outcome;
+                    const auto owner_context = entry->owner_context;
+                    const auto owner_strand = entry->owner_strand;
+                    const auto requested = request;
+                    const auto grace = std::chrono::milliseconds(configuration->server.multipath.resume_grace_ms);
+                    if (!RunOnMultipathOwner(owner_context, owner_strand, y,
+                        [entry, requested, authenticated_identity, grace]() noexcept {
+                            CreateOutcome result;
+                            const auto snapshot = entry->session.Snapshot();
+                            if (snapshot.status == SessionStatus::Active && snapshot.carrier_count == 0 &&
+                                entry->create_deadline != TimePoint{} && Clock::now() >= entry->create_deadline) {
+                                entry->session.Close();
+                            }
+                            if (entry->session.Snapshot().status != SessionStatus::Closed) {
+                                if (std::string(entry->create_request_id.begin(), entry->create_request_id.end()) == requested.request_id &&
+                                    entry->session.AuthenticatedIdentity() == authenticated_identity &&
+                                    entry->create_result.failover == requested.failover &&
+                                    entry->session.Snapshot().status != SessionStatus::Expired) {
+                                    result.accepted = true;
+                                    result.response = entry->create_result;
+                                    result.response.result = CreateResult::Duplicate;
+                                }
+                                else {
+                                    result.response.result = CreateResult::Conflict;
+                                    result.response.client_session_id = requested.client_session_id;
+                                }
+                                return result;
+                            }
+                            SessionTicket ticket;
+                            if (!entry->session.Create(authenticated_identity,
+                                    requested.client_session_id, Clock::now(), grace, ticket)) {
+                                result.response.result = CreateResult::Rejected;
+                                result.response.client_session_id = requested.client_session_id;
+                                return result;
+                            }
+                            result.response.result = CreateResult::Accepted;
+                            result.response.client_session_id = ticket.client_session_id;
+                            result.response.session_id = ticket.id;
+                            result.response.generation = ticket.generation;
+                            result.response.credential = ticket.credential.Value();
+                            result.response.grace_ms = static_cast<std::uint32_t>(
+                                std::chrono::duration_cast<std::chrono::milliseconds>(ticket.grace).count());
+                            result.response.failover = requested.failover;
+                            OPENSSL_cleanse(entry->create_result.credential.data(),
+                                entry->create_result.credential.size());
+                            entry->create_request_id.assign(requested.request_id.begin(), requested.request_id.end());
+                            entry->create_result = result.response;
+                            entry->create_deadline = Clock::now() + std::chrono::seconds(5);
+                            entry->control.Reset(ticket.generation);
+                            result.accepted = true;
+                            return result;
+                        }, outcome)) {
+                        return STATUS_ERROR;
+                    }
+                    CreateResponse response_value = outcome.response;
+                    std::vector<std::uint8_t> response_payload;
+                    const bool encoded = EncodeCreateResponse(response_value, response_payload);
+                    OPENSSL_cleanse(response_value.credential.data(), response_value.credential.size());
+                    if (!encoded || !write_record(RecordType::CreateResponse, response_payload) || !outcome.accepted) {
+                        return STATUS_ERROR;
+                    }
+                    if (response_value.result == CreateResult::Conflict ||
+                        response_value.result == CreateResult::Rejected) return STATUS_ERROR;
+                    logical_id = ClientSessionIdToInt128(request.client_session_id);
+                    entry = find_entry(logical_id);
+                    if (!entry) return STATUS_ERROR;
+                }
+                elif(initial_type == static_cast<std::uint8_t>(RecordType::QueryRequest)) {
+                    QueryRequest request;
+                    const bool decoded = DecodeQueryRequest(initial_payload.data(),
+                        initial_payload.size(), request);
+                    ClearSensitivePayload(initial_payload);
+                    if (!decoded || request.authenticated_identity != authenticated_identity ||
+                        !verify_candidate(request.client_session_id, request.request_id,
+                            request.carrier_id, request.client_nonce, request.candidate_binding)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                        return STATUS_ERROR;
+                    }
+                    logical_id = ClientSessionIdToInt128(request.client_session_id);
+                    entry = find_entry(logical_id);
+                    QueryResponse response;
+                    response.operation = request.operation;
+                    if (entry) {
+                        const auto owner_context = entry->owner_context;
+                        const auto owner_strand = entry->owner_strand;
+                        const auto query = request;
+                        if (!RunOnMultipathOwner(owner_context, owner_strand, y,
+                        [entry, query, authenticated_identity]() noexcept {
+                                QueryResponse result;
+                                result.operation = query.operation;
+                                if (query.operation == QueryOperation::Create) {
+                                    if (std::string(entry->create_request_id.begin(), entry->create_request_id.end()) == query.request_id &&
+                                        entry->session.AuthenticatedIdentity() == authenticated_identity &&
+                                        entry->session.Snapshot().status != SessionStatus::Expired &&
+                                        entry->session.Snapshot().status != SessionStatus::Closed) {
+                                        result.create = entry->create_result;
+                                        result.create.result = CreateResult::Duplicate;
+                                    }
+                                    else {
+                                        result.create.result = CreateResult::Rejected;
+                                        result.create.client_session_id = query.client_session_id;
+                                    }
+                                }
+                                else {
+                                    entry->joins.Query(authenticated_identity, query.request_id,
+                                        Clock::now(), result.join);
+                                }
+                                return result;
+                            }, response)) return STATUS_ERROR;
+                    }
+                    else if (request.operation == QueryOperation::Create) {
+                        response.create.result = CreateResult::Rejected;
+                        response.create.client_session_id = request.client_session_id;
+                    }
+                    else {
+                        response.join.result = JoinResult::NotFound;
+                    }
+                    std::vector<std::uint8_t> response_payload;
+                    const bool encoded = EncodeQueryResponse(response, response_payload);
+                    const bool sent = encoded && write_record(RecordType::QueryResponse, response_payload);
+                    if (request.operation == QueryOperation::Create) {
+                        OPENSSL_cleanse(response.create.credential.data(), response.create.credential.size());
+                    }
+                    if (!sent) return STATUS_ERROR;
+                    if (request.operation == QueryOperation::Create) {
+                        if (response.create.result != CreateResult::Duplicate &&
+                            response.create.result != CreateResult::Accepted) return STATUS_ERROR;
+                        entry = find_entry(logical_id);
+                        if (!entry) return STATUS_ERROR;
+                    }
+                    else {
+                        if (response.join.result != JoinResult::Committed || !entry) return STATUS_ERROR;
+                        const auto owner_context = entry->owner_context;
+                        const auto owner_strand = entry->owner_strand;
+                        struct QueryCarrier final { bool matches = false; MultipathCarrierRegistration registration; };
+                        QueryCarrier query_carrier;
+                        if (!RunOnMultipathOwner(owner_context, owner_strand, y,
+                            [entry, request, &verify_candidate]() noexcept {
+                                QueryCarrier result;
+                                const ppp::string request_id(request.request_id.begin(), request.request_id.end());
+                                auto registered = entry->committed_requests.find(request_id);
+                                auto binding = entry->committed_candidate_bindings.find(request_id);
+                                if (registered != entry->committed_requests.end() &&
+                                    binding != entry->committed_candidate_bindings.end() &&
+                                    std::string(registered->second.carrier_id.begin(), registered->second.carrier_id.end()) == request.carrier_id &&
+                                    CRYPTO_memcmp(binding->second.data(), request.candidate_binding.data(),
+                                        request.candidate_binding.size()) == 0) {
+                                    result.matches = true;
+                                    result.registration = registered->second;
+                                }
+                                return result;
+                            }, query_carrier) || !query_carrier.matches) return STATUS_ERROR;
+                        registration = query_carrier.registration;
+                        committed_on_this_carrier = true;
+                    }
+                }
+                elif(initial_type != static_cast<std::uint8_t>(RecordType::JoinRequest)) {
+                    ClearSensitivePayload(initial_payload);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                    return STATUS_ERROR;
+                }
+
+                std::vector<ControlMessage> replay_control_messages;
+                if (!committed_on_this_carrier) {
+                    JoinRequest reserve_request;
+                    if (initial_type == static_cast<std::uint8_t>(RecordType::JoinRequest)) {
+                        if (!DecodeJoinRequest(initial_payload.data(), initial_payload.size(), reserve_request)) {
+                            ClearSensitivePayload(initial_payload);
+                            return STATUS_ERROR;
+                        }
+                        ClearSensitivePayload(initial_payload);
+                    }
+                    else {
+                        std::uint8_t type = 0;
+                        std::vector<std::uint8_t> payload;
+                        if (!read_record(type, payload) || type != static_cast<std::uint8_t>(RecordType::JoinRequest) ||
+                            !DecodeJoinRequest(payload.data(), payload.size(), reserve_request)) {
+                            ClearSensitivePayload(payload);
+                            return STATUS_ERROR;
+                        }
+                        ClearSensitivePayload(payload);
+                    }
+                    if (reserve_request.phase != JoinPhase::Reserve ||
+                        reserve_request.authenticated_identity != authenticated_identity ||
+                        !verify_candidate(reserve_request.client_session_id, reserve_request.request_id,
+                            reserve_request.carrier_id, reserve_request.client_nonce,
+                            reserve_request.candidate_binding)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
+                        return STATUS_ERROR;
+                    }
+                    logical_id = ClientSessionIdToInt128(reserve_request.client_session_id);
+                    entry = find_entry(logical_id);
+                    if (!entry) return STATUS_ERROR;
+
+                    const auto run_join_phase = [&](const JoinRequest& request, JoinPhase phase,
+                        JoinResponse& response_value, MultipathCarrierRegistration* out_registration,
+                        std::vector<ControlMessage>* out_replay) noexcept {
+                        struct PhaseOutcome final {
+                            JoinResponse response;
+                            MultipathCarrierRegistration registration;
+                            std::vector<ControlMessage> replay;
+                            bool accepted = false;
+                        } outcome;
+                        const auto owner_context = entry->owner_context;
+                        const auto owner_strand = entry->owner_strand;
+                        const auto server_connection_limit = static_cast<std::size_t>(
+                            configuration->server.multipath.max_connections);
+                        const auto connection = secured;
+                        if (!RunOnMultipathOwner(owner_context, owner_strand, y,
+                            [entry, request, phase, server_connection_limit, connection]() noexcept {
+                                PhaseOutcome result;
+                                const TimePoint now = Clock::now();
+                                if (phase == JoinPhase::Reserve) {
+                                    const auto state = entry->session.Snapshot();
+                                    if (state.status == SessionStatus::Active && state.carrier_count == 0 &&
+                                        entry->create_deadline != TimePoint{} && now >= entry->create_deadline) {
+                                        entry->session.Close();
+                                    }
+                                    if (entry->session.Snapshot().carrier_count >= server_connection_limit) {
+                                        result.response.result = JoinResult::Capacity;
+                                        return result;
+                                    }
+                                    result.accepted = entry->joins.Reserve(entry->session,
+                                        request, now, result.response,
+                                        entry->control.ReceiveOperationCommitted(),
+                                        entry->control.LastOperationAllocated()) == JoinResult::Accepted ||
+                                        result.response.result == JoinResult::Duplicate ||
+                                        result.response.result == JoinResult::Committed;
+                                }
+                                elif(phase == JoinPhase::Confirm) {
+                                    const JoinResult status = entry->joins.Confirm(entry->session,
+                                        request, now, result.response);
+                                    result.accepted = status == JoinResult::Accepted ||
+                                        status == JoinResult::Duplicate || status == JoinResult::Committed;
+                                }
+                                else {
+                                    const auto snap = entry->session.Snapshot();
+                                    if (snap.carrier_count >= server_connection_limit ||
+                                        entry->next_connection_generation == std::numeric_limits<std::uint64_t>::max()) {
+                                        result.response.result = JoinResult::Capacity;
+                                        return result;
+                                    }
+                                    const std::uint64_t connection_generation =
+                                        ++entry->next_connection_generation;
+                                    const JoinResult status = entry->joins.Commit(entry->session,
+                                        request, connection_generation, now, result.response);
+                                    result.accepted = status == JoinResult::Committed;
+                                    if (result.accepted) {
+                                        const auto committed = entry->session.Snapshot();
+                                        if (request.operation == JoinOperation::Resume &&
+                                            !entry->control.AdvanceGeneration(committed.generation,
+                                                request.peer_committed_operation_sequence, result.replay)) {
+                                            entry->session.OnCarrierLeft(request.carrier_id,
+                                                committed.generation, connection_generation, now);
+                                            entry->session.Close();
+                                            result.accepted = false;
+                                            result.response.result = JoinResult::Rejected;
+                                            return result;
+                                        }
+                                        result.registration.carrier_id.assign(request.carrier_id.begin(), request.carrier_id.end());
+                                        result.registration.session_generation = committed.generation;
+                                        result.registration.connection_generation = connection_generation;
+                                        result.registration.failover = entry->create_result.failover;
+                                        result.registration.resume = request.operation == JoinOperation::Resume;
+                                        const ppp::string carrier_key(request.carrier_id.begin(), request.carrier_id.end());
+                                        entry->carriers[carrier_key] =
+                                            MultipathSessionEntry::Carrier{committed.generation,
+                                                connection_generation, connection};
+                                        const ppp::string request_key(request.request_id.begin(), request.request_id.end());
+                                        entry->committed_requests[request_key] = result.registration;
+                                        entry->committed_candidate_bindings[request_key] =
+                                            request.candidate_binding;
+                                        entry->committed_order.push_back(request_key);
+                                        while (entry->committed_order.size() > ppp::app::multipath::MaxControlWindow) {
+                                            const ppp::string oldest = std::move(entry->committed_order.front());
+                                            entry->committed_order.pop_front();
+                                            auto binding = entry->committed_candidate_bindings.find(oldest);
+                                            if (binding != entry->committed_candidate_bindings.end()) {
+                                                OPENSSL_cleanse(binding->second.data(), binding->second.size());
+                                                entry->committed_candidate_bindings.erase(binding);
+                                            }
+                                            entry->committed_requests.erase(oldest);
+                                        }
+                                        if (entry->control.LastReceived() == 0 &&
+                                            entry->control.LastOperationAllocated() == 0) {
+                                            entry->control.Reset(committed.generation);
+                                        }
+                                        result.response.generation = committed.generation;
+                                    }
+                                }
+                                return result;
+                            }, outcome)) return false;
+                        response_value = outcome.response;
+                        if (out_registration) *out_registration = outcome.registration;
+                        if (out_replay) *out_replay = std::move(outcome.replay);
+                        return outcome.accepted;
+                    };
+
+                    JoinResponse join_response;
+                    bool phase_ok = run_join_phase(reserve_request, JoinPhase::Reserve,
+                        join_response, nullptr, nullptr);
+                    std::vector<std::uint8_t> response_payload;
+                    if (!EncodeJoinResponse(join_response, response_payload) ||
+                        !write_record(RecordType::JoinResponse, response_payload) || !phase_ok) {
+                        return STATUS_ERROR;
+                    }
+
+                    JoinRequest confirm_request;
+                    std::uint8_t type = 0;
+                    std::vector<std::uint8_t> payload;
+                    if (!read_record(type, payload) || type != static_cast<std::uint8_t>(RecordType::JoinRequest) ||
+                        !DecodeJoinRequest(payload.data(), payload.size(), confirm_request)) {
+                        ClearSensitivePayload(payload);
+                        return STATUS_ERROR;
+                    }
+                    ClearSensitivePayload(payload);
+                    JoinResponse confirm_response;
+                    phase_ok = run_join_phase(confirm_request, JoinPhase::Confirm,
+                        confirm_response, nullptr, nullptr);
+                    response_payload.clear();
+                    if (!EncodeJoinResponse(confirm_response, response_payload) ||
+                        !write_record(RecordType::JoinResponse, response_payload) || !phase_ok) {
+                        return STATUS_ERROR;
+                    }
+
+                    JoinRequest commit_request;
+                    if (!read_record(type, payload) || type != static_cast<std::uint8_t>(RecordType::JoinRequest) ||
+                        !DecodeJoinRequest(payload.data(), payload.size(), commit_request)) {
+                        ClearSensitivePayload(payload);
+                        return STATUS_ERROR;
+                    }
+                    ClearSensitivePayload(payload);
+                    JoinResponse commit_response;
+                    phase_ok = run_join_phase(commit_request, JoinPhase::Commit,
+                        commit_response, &registration, &replay_control_messages);
+                    if (!phase_ok || commit_response.result != JoinResult::Committed) {
+                        response_payload.clear();
+                        if (EncodeJoinResponse(commit_response, response_payload))
+                            (void)write_record(RecordType::JoinResponse, response_payload);
+                        return STATUS_ERROR;
+                    }
+                    response_payload.clear();
+                    if (!EncodeJoinResponse(commit_response, response_payload) ||
+                        !write_record(RecordType::JoinResponse, response_payload)) {
+                        OnMultipathCarrierLeft(logical_id, registration.carrier_id,
+                            registration.session_generation, registration.connection_generation);
+                        return STATUS_ERROR;
+                    }
+                    committed_on_this_carrier = true;
+                }
+
+                if (!committed_on_this_carrier || registration.connection_generation == 0) {
+                    return STATUS_ERROR;
+                }
+
+                auto self = shared_from_this();
+                const auto committed_entry = entry;
+                const std::uint64_t joined_generation = registration.session_generation;
+                const std::uint64_t connection_generation = registration.connection_generation;
+                const ppp::string carrier_id = registration.carrier_id;
+                const std::weak_ptr<ppp::transmissions::MultipathTransmission> weak_secured = secured;
+                const bool handler_installed = secured->SetControlRecordHandler(
+                    [self, committed_entry, weak_secured, logical_id, carrier_id,
+                        joined_generation, connection_generation](std::uint8_t type,
+                        const std::shared_ptr<const std::vector<std::uint8_t>>& payload) noexcept {
+                        if (!self || !payload || type != ppp::transmissions::MultipathTransmission::ControlRecord)
+                            return false;
+                        const auto secured = weak_secured.lock();
+                        if (!secured) return false;
+                        const unsigned pending = committed_entry->control_pending.fetch_add(
+                            1, std::memory_order_acq_rel);
+                        if (pending >= 64) {
+                            committed_entry->control_pending.fetch_sub(1, std::memory_order_acq_rel);
+                            return false;
+                        }
+                        const auto entry_context = committed_entry->owner_context;
+                        const auto entry_strand = committed_entry->owner_strand;
+                        const bool posted = Executors::Post(entry_context, entry_strand,
+                            [self, committed_entry, secured, logical_id, carrier_id,
+                                joined_generation, connection_generation, payload]() noexcept {
+                                struct PendingRelease final {
+                                    std::atomic_uint& pending;
+                                    ~PendingRelease() noexcept { pending.fetch_sub(1, std::memory_order_acq_rel); }
+                                } release{ committed_entry->control_pending };
+                                self->HandleMultipathControl(committed_entry, secured,
+                                    logical_id, carrier_id, joined_generation,
+                                    connection_generation, payload);
+                            });
+                        if (!posted) committed_entry->control_pending.fetch_sub(1, std::memory_order_acq_rel);
+                        return posted;
+                    });
+                if (!handler_installed || !secured->BeginApplicationIO()) {
+                    OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                        connection_generation);
+                    return STATUS_ERROR;
+                }
+
+                for (auto& replay : replay_control_messages) {
+                    std::vector<std::uint8_t> encoded;
+                    if (!EncodeControlMessage(replay, encoded) ||
+                        !secured->WriteSecureRecord(y,
+                            ppp::transmissions::MultipathTransmission::ControlRecord,
+                            encoded.data(), encoded.size())) {
+                        OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                            connection_generation);
+                        return STATUS_ERROR;
+                    }
+                    OPENSSL_cleanse(encoded.data(), encoded.size());
+                }
+
+                bool mux = false;
+                const Int128 handshake_session_id = secured->HandshakeClient(y, mux);
+                if (handshake_session_id == 0 || handshake_session_id != logical_id) {
+                    OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                        connection_generation);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionHandshakeFailed);
+                    return STATUS_ERROR;
+                }
+
+                VirtualEthernetExchangerPtr exchanger = GetExchanger(logical_id);
+                if (!mux) {
+                    if (NULLPTR == exchanger) {
+                        OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                            connection_generation);
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionNotFound);
+                        return STATUS_ERROR;
+                    }
+                    const int status = Connect(secured, logical_id, y, &registration);
+                    if (status < 0) {
+                        OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                            connection_generation);
+                        return STATUS_ERROR;
+                    }
+                    return status;
+                }
+                if ((exchanger != nullptr) != registration.resume) {
+                    OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                        connection_generation);
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionHandshakeFailed);
+                    return STATUS_ERROR;
+                }
+
+                struct ClaimResult final { bool claimed = false; } claim;
+                if (!RunOnMultipathOwner(entry->owner_context, entry->owner_strand, y,
+                    [entry]() noexcept {
+                        ClaimResult result;
+                        const auto state = entry->session.Snapshot().status;
+                        if (state == SessionStatus::Active && !entry->exchanger_claimed) {
+                            entry->exchanger_claimed = true;
+                            result.claimed = true;
+                        }
+                        return result;
+                    }, claim) || !claim.claimed) {
+                    OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                        connection_generation);
+                    return STATUS_ERROR;
+                }
+
+                VirtualEthernetManagedServerPtr managed_server = managed_server_;
+                if (NULLPTR == managed_server) {
+                    const bool established = Establish(secured, logical_id, NULLPTR, y, &registration);
+                    OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                        connection_generation);
+                    if (!established && !GetExchanger(logical_id)) {
+                        Executors::Post(entry->owner_context, entry->owner_strand,
+                            [entry]() noexcept { entry->exchanger_claimed = false; });
+                    }
+                    if (!established) {
+                        OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                            connection_generation);
+                        return STATUS_ERROR;
+                    }
+                    return STATUS_RUNING;
+                }
+
+                auto allocator = secured->BufferAllocator;
+                const bool started = managed_server->AuthenticationToManagedServer(logical_id,
+                    [self, this, context, secured, logical_id, registration, entry,
+                        allocator](bool ok, VirtualEthernetManagedServer::VirtualEthernetInformationPtr& info) noexcept {
+                        if (ok) {
+                            ok = YieldContext::Spawn(allocator.get(), *context,
+                                [self, this, context, secured, logical_id, info, registration,
+                                    entry](YieldContext& owner_y) noexcept {
+                                    if (owner_y) {
+                                        const bool established = Establish(secured, logical_id, info, owner_y, &registration);
+                                        OnMultipathCarrierLeft(logical_id, registration.carrier_id,
+                                            registration.session_generation,
+                                            registration.connection_generation);
+                                        if (!established) secured->Dispose();
+                                    }
+                                });
+                        }
+                        if (!ok) {
+                            OnMultipathCarrierLeft(logical_id, registration.carrier_id,
+                                registration.session_generation,
+                                registration.connection_generation);
+                            secured->Dispose();
+                            Executors::Post(entry->owner_context, entry->owner_strand,
+                                [entry]() noexcept { entry->exchanger_claimed = false; });
+                        }
+                    });
+                if (!started) {
+                    OnMultipathCarrierLeft(logical_id, carrier_id, joined_generation,
+                        connection_generation);
+                    return STATUS_ERROR;
+                }
+                return STATUS_RUNNING_SWAP;
             }
 
             /**
@@ -2257,7 +3031,7 @@ namespace ppp {
              * @param y Coroutine context for protocol exchange.
              * @return true if the carrier lifecycle is accepted or suspended; false on terminal failure.
              */
-            bool VirtualEthernetSwitcher::Establish(const ITransmissionPtr& transmission, const Int128& session_id, const VirtualEthernetInformationPtr& i, YieldContext& y) noexcept {
+            bool VirtualEthernetSwitcher::Establish(const ITransmissionPtr& transmission, const Int128& session_id, const VirtualEthernetInformationPtr& i, YieldContext& y, const MultipathCarrierRegistration* multipath_carrier) noexcept {
                 ppp::string session_guid = auxiliary::StringAuxiliary::Int128ToGuidString(session_id);
                 ppp::telemetry::SpanScope span("server.session.establish", session_guid.c_str());
                 struct ScopedEstablishHistogram final {
@@ -2275,7 +3049,13 @@ namespace ppp {
 
                 bool fresh = false;
                 VirtualEthernetExchangerPtr channel = GetExchanger(session_id);
-                if (NULLPTR != channel) {
+                if (multipath_carrier != nullptr && channel == nullptr && multipath_carrier->resume)
+                    return false;
+                if (multipath_carrier != nullptr && channel != nullptr) {
+                    if (!multipath_carrier->resume || !channel->OnMultipathCarrierStarted(transmission))
+                        return false;
+                }
+                elif(NULLPTR != channel) {
                     ppp::app::protocol::SessionResumePendingAttempt candidate_material;
                     ppp::app::protocol::SessionResumeCandidateBinding& candidate =
                         candidate_material.fields.candidate_binding;
@@ -2466,7 +3246,8 @@ namespace ppp {
                         ppp::telemetry::Log(Level::kInfo, "server", "session accepted");
                     }
                 }
-                else {
+
+                if (channel == nullptr) {
                     channel = AddNewExchanger(transmission, session_id);
                     if (NULLPTR == channel) {
                         return false;
@@ -2476,6 +3257,28 @@ namespace ppp {
                     ppp::telemetry::Gauge("server.active_sessions", (int64_t)exchangers_.size());
                     ppp::telemetry::Count("server.session.accepted", 1);
                     ppp::telemetry::Log(Level::kInfo, "server", "session accepted");
+                }
+
+                if (multipath_carrier != nullptr) {
+                    auto secured = std::dynamic_pointer_cast<ppp::transmissions::MultipathTransmission>(transmission);
+                    ITransmissionPtr mux_stream = secured ? secured->CreateMuxSubchannel() : ITransmissionPtr();
+                    if (!mux_stream) return false;
+                    MultipathCarrierRegistration mux_registration = *multipath_carrier;
+                    mux_registration.carrier_id.clear();
+                    auto mux_context = mux_stream->GetContext();
+                    auto mux_strand = mux_stream->GetStrand();
+                    auto mux_allocator = mux_stream->BufferAllocator;
+                    auto self = shared_from_this();
+                    if (!mux_context || !mux_strand || !mux_allocator ||
+                        !YieldContext::Spawn(mux_allocator.get(), *mux_context, mux_strand.get(),
+                            [self, mux_stream, session_id, mux_registration](YieldContext& mux_y) noexcept {
+                                const int result = self->Connect(mux_stream, session_id, mux_y,
+                                    &mux_registration);
+                                if (result < 0) mux_stream->Dispose();
+                            })) {
+                        mux_stream->Dispose();
+                        return false;
+                    }
                 }
 
                 bool run = true;
@@ -2520,7 +3323,7 @@ namespace ppp {
                         }
 
                         ppp::app::protocol::SessionResumeControl offer;
-                        if (channel->PrepareFreshResumeOffer(transmission, offer)) {
+                        if (multipath_carrier == nullptr && channel->PrepareFreshResumeOffer(transmission, offer)) {
                             envelope.Extensions.SessionResume = offer;
                         }
                         envelope.ExtendedJson = envelope.Extensions.ToJson();
@@ -2531,6 +3334,16 @@ namespace ppp {
                                 const_cast<VirtualEthernetInformation*>(established_information), (UInt32)time(NULL));
                         }
                     }
+                }
+
+                if (multipath_carrier != nullptr && !fresh && NULLPTR != i) {
+                    InformationEnvelope envelope = BuildInformationEnvelope(session_id, *i);
+                    const auto remote_endpoint = transmission->GetRemoteEndPoint();
+                    if (!remote_endpoint.address().is_unspecified())
+                        envelope.Extensions.ClientExitIP = remote_endpoint.address();
+                    envelope.ExtendedJson = envelope.Extensions.ToJson();
+                    run = channel->DoInformation(transmission, envelope, y) &&
+                        VirtualEthernetInformation::Valid(i.get(), static_cast<UInt32>(time(NULL)));
                 }
 
                 if (!run) {
@@ -2546,6 +3359,10 @@ namespace ppp {
                 const std::uint64_t generation = channel->GetCarrierGeneration();
                 run = channel->Run(transmission, y);
                 const ppp::diagnostics::ErrorCode run_error = ppp::diagnostics::GetLastErrorCode();
+                if (multipath_carrier != nullptr) {
+                    channel->OnMultipathCarrierStopped(transmission);
+                    return true;
+                }
                 VirtualEthernetExchanger::CarrierStopResult stop =
                     channel->OnCarrierStopped(transmission, generation, run_error, Executors::GetTickCount());
                 if (stop == VirtualEthernetExchanger::CarrierStopResult::Terminal) {
@@ -2570,7 +3387,7 @@ namespace ppp {
              * @param y Coroutine context.
              * @return Internal status code describing run/scheduler ownership.
              */
-            int VirtualEthernetSwitcher::Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
+            int VirtualEthernetSwitcher::Connect(const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y, const MultipathCarrierRegistration* multipath_carrier) noexcept {
                 // VPN client A link can be created only after a link is established between the local switch and the remote VPN server.
                 if (y) {
                     VirtualEthernetExchangerPtr exchanger = GetExchanger(session_id);
@@ -2594,17 +3411,26 @@ namespace ppp {
                     }
                 }
 
+                const bool is_multipath = multipath_carrier != nullptr;
+                const MultipathCarrierRegistration carrier_registration = is_multipath
+                    ? *multipath_carrier : MultipathCarrierRegistration{};
                 auto self = shared_from_this();
                 /**
                  * @brief Creates and runs transient TCP/IP connection wrappers.
                  */
                 auto run =
-                    [self, this](const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
+                    [self, this, is_multipath, carrier_registration](const ITransmissionPtr& transmission, const Int128& session_id, YieldContext& y) noexcept {
                         VirtualEthernetNetworkTcpipConnectionPtr connection = AddNewConnection(transmission, session_id);
                         if (NULLPTR == connection) {
                             return -1;
                         }
-                        elif(connection->Run(y)) {
+                        if (is_multipath) {
+                            connection->SetMultipathCarrier(carrier_registration.session_generation,
+                                carrier_registration.connection_generation,
+                                carrier_registration.carrier_id, carrier_registration.failover,
+                                !carrier_registration.carrier_id.empty());
+                        }
+                        if (connection->Run(y)) {
                             if (connection->IsMux()) {
                                 SynchronizedObjectScope scope(syncobj_);
                                 if (Dictionary::RemoveValueByKey(connections_, (void*)connection.get())) {
@@ -2674,6 +3500,185 @@ namespace ppp {
 
                 connection->Dispose();
                 return NULLPTR;
+            }
+
+            void VirtualEthernetSwitcher::OnMultipathCarrierLeft(const Int128& session_id,
+                const ppp::string& carrier_id, std::uint64_t session_generation,
+                std::uint64_t connection_generation) noexcept {
+                MultipathSessionEntryPtr entry;
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    auto found = multipath_sessions_.find(session_id);
+                    if (found == multipath_sessions_.end()) return;
+                    entry = found->second;
+                }
+                auto self = shared_from_this();
+                Executors::Post(entry->owner_context, entry->owner_strand,
+                    [self, entry, session_id, carrier_id, session_generation,
+                        connection_generation]() noexcept {
+                        auto current = entry->carriers.find(carrier_id);
+                        if (current == entry->carriers.end() ||
+                            current->second.session_generation != session_generation ||
+                            current->second.connection_generation != connection_generation) return;
+                        ITransmissionPtr transmission = current->second.transmission.lock();
+                        entry->carriers.erase(current);
+                        entry->session.OnCarrierLeft(std::string(carrier_id.begin(), carrier_id.end()),
+                            session_generation, connection_generation, ppp::app::multipath::Clock::now());
+                        if (entry->session.Snapshot().carrier_count == 0)
+                            entry->exchanger_claimed = false;
+                        if (transmission) {
+                            auto exchanger = self->GetExchanger(session_id);
+                            if (exchanger) exchanger->OnMultipathCarrierStopped(transmission);
+                        }
+                    });
+            }
+
+            void VirtualEthernetSwitcher::TickMultipathSessions(UInt64) noexcept {
+                ppp::vector<std::pair<Int128, MultipathSessionEntryPtr>> entries;
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    try {
+                        entries.reserve(multipath_sessions_.size());
+                        for (const auto& item : multipath_sessions_) entries.emplace_back(item.first, item.second);
+                    } catch (...) { return; }
+                }
+                auto self = shared_from_this();
+                for (const auto& item : entries) {
+                    const Int128 logical_id = item.first;
+                    const auto entry = item.second;
+                    bool expected = false;
+                    if (!entry->tick_pending.compare_exchange_strong(expected, true,
+                            std::memory_order_acq_rel)) continue;
+                    const bool posted = Executors::Post(entry->owner_context, entry->owner_strand,
+                        [self, entry, logical_id]() noexcept {
+                            struct PendingRelease final {
+                                std::atomic_bool& pending;
+                                ~PendingRelease() noexcept { pending.store(false, std::memory_order_release); }
+                            } release{ entry->tick_pending };
+                            const auto now = ppp::app::multipath::Clock::now();
+                            auto snapshot = entry->session.Snapshot();
+                            bool remove = false;
+                            if (snapshot.status == ppp::app::multipath::SessionStatus::Closed ||
+                                snapshot.status == ppp::app::multipath::SessionStatus::Expired) {
+                                remove = true;
+                            } else if (snapshot.status == ppp::app::multipath::SessionStatus::Active &&
+                                snapshot.carrier_count == 0 && entry->create_deadline !=
+                                    ppp::app::multipath::TimePoint{} && now >= entry->create_deadline) {
+                                entry->session.Close();
+                                remove = true;
+                            } else if (entry->session.Expire(now)) {
+                                entry->session.Close();
+                                remove = true;
+                            }
+                            if (!remove) return;
+                            for (auto& binding : entry->committed_candidate_bindings)
+                                OPENSSL_cleanse(binding.second.data(), binding.second.size());
+                            entry->committed_candidate_bindings.clear();
+                            entry->committed_requests.clear();
+                            entry->committed_order.clear();
+                            VirtualEthernetExchangerPtr exchanger = self->GetExchanger(logical_id);
+                            if (exchanger) {
+                                self->DeleteExchanger(exchanger.get());
+                                exchanger->Finalize();
+                            }
+                            SynchronizedObjectScope scope(self->syncobj_);
+                            auto found = self->multipath_sessions_.find(logical_id);
+                            if (found != self->multipath_sessions_.end() && found->second == entry)
+                                self->multipath_sessions_.erase(found);
+                        });
+                    if (!posted) entry->tick_pending.store(false, std::memory_order_release);
+                }
+            }
+
+            void VirtualEthernetSwitcher::HandleMultipathControl(const MultipathSessionEntryPtr& entry,
+                const std::shared_ptr<ppp::transmissions::MultipathTransmission>& transmission,
+                const Int128& session_id, const ppp::string& carrier_id, std::uint64_t session_generation,
+                std::uint64_t connection_generation,
+                const std::shared_ptr<const std::vector<std::uint8_t>>& payload) noexcept {
+                using namespace ppp::app::multipath;
+                using namespace ppp::app::multipath::wire;
+                if (!entry || !transmission || !payload) return;
+                (void)session_id;
+                auto carrier = entry->carriers.find(carrier_id);
+                if (carrier == entry->carriers.end() ||
+                    carrier->second.session_generation != session_generation ||
+                    carrier->second.connection_generation != connection_generation ||
+                    carrier->second.transmission.lock() != transmission) return;
+                ControlMessage message;
+                std::vector<ControlDelivery> ready;
+                if (!DecodeControlMessage(payload->data(), payload->size(), message) ||
+                    message.session_generation != session_generation) {
+                    transmission->Dispose();
+                    return;
+                }
+                ControlPayload decoded_operation;
+                if (!message.acknowledgement_only &&
+                    !DecodeControlPayload(message.payload.data(), message.payload.size(), decoded_operation)) {
+                    transmission->Dispose();
+                    return;
+                }
+                const ControlReceive received = entry->control.Receive(message, ready);
+                if (received == ControlReceive::Invalid || received == ControlReceive::OutOfWindow ||
+                    received == ControlReceive::Capacity) {
+                    transmission->Dispose();
+                    return;
+                }
+                if (received == ControlReceive::AckOnly) return;
+                for (const auto& delivery : ready) {
+                    if (delivery.apply_operation) {
+                        ControlPayload operation;
+                        if (!DecodeControlPayload(delivery.message.payload.data(),
+                                delivery.message.payload.size(), operation)) {
+                            transmission->Dispose();
+                            return;
+                        }
+                        if (operation.opcode == ControlOpcode::Ping) {
+                            operation.opcode = ControlOpcode::Pong;
+                            std::vector<std::uint8_t> pong_payload;
+                            ControlMessage pong;
+                            const std::uint64_t op_sequence = entry->control.LastOperationAllocated() + 1;
+                            entry->next_control_operation_sequence = op_sequence;
+                            const std::string operation_id = MakeControlOperationId(
+                                ControlOpcode::Pong, session_generation, op_sequence);
+                            if (entry->next_control_operation_sequence == 0 ||
+                                !EncodeControlPayload(operation, pong_payload) ||
+                                !entry->control.MakeMessage(session_generation, op_sequence,
+                                    operation_id, pong_payload.data(), pong_payload.size(), pong)) {
+                                transmission->Dispose();
+                                return;
+                            }
+                            pong.acknowledged_operation_sequence = entry->control.ReceiveOperationCommitted();
+                            std::vector<std::uint8_t> encoded;
+                            if (!EncodeControlMessage(pong, encoded) ||
+                                !transmission->WriteSecureRecord(
+                                    ppp::transmissions::MultipathTransmission::ControlRecord,
+                                    encoded.data(), encoded.size(),
+                                    [transmission](bool ok) noexcept { if (!ok) transmission->Dispose(); })) {
+                                transmission->Dispose();
+                                return;
+                            }
+                        }
+                        else if (operation.opcode == ControlOpcode::Pong) {
+                            transmission->Dispose();
+                            return;
+                        }
+                    }
+                    if (!entry->control.CommitReceived(delivery.message.sequence)) {
+                        transmission->Dispose();
+                        return;
+                    }
+                }
+                ControlMessage ack;
+                std::vector<std::uint8_t> encoded_ack;
+                if (!entry->control.MakeAckOnly(ack)) return;
+                ack.acknowledged_operation_sequence = entry->control.ReceiveOperationCommitted();
+                if (!EncodeControlMessage(ack, encoded_ack) ||
+                    !transmission->WriteSecureRecord(
+                        ppp::transmissions::MultipathTransmission::ControlRecord,
+                        encoded_ack.data(), encoded_ack.size(),
+                        [transmission](bool ok) noexcept { if (!ok) transmission->Dispose(); })) {
+                    transmission->Dispose();
+                }
             }
 
             /**
@@ -3904,6 +4909,7 @@ namespace ppp {
                 VirtualEthernetLoggerPtr logger;
                 VirtualEthernetExchangerTable exchangers;
                 VirtualEthernetNetworkTcpipConnectionTable connections;
+                MultipathSessionTable multipath_sessions;
                 ppp::unordered_set<ppp::string> ipv6_cleanup_keys;
                 ppp::unordered_set<ppp::string> ipv6_cleanup_owned_neighbors;
 
@@ -3942,6 +4948,8 @@ namespace ppp {
 
                     connections = std::move(connections_);
                     connections_.clear();
+                    multipath_sessions = std::move(multipath_sessions_);
+                    multipath_sessions_.clear();
 
                     p2p_peers_.clear();
                     p2p_v2_pairs_.clear();
@@ -3997,6 +5005,8 @@ namespace ppp {
                 CloseAlwaysTimeout();
                 CloseIPv6NeighborProxyIfNeed();
                 ppp::ipv6::auxiliary::FinalizeServerEnvironment(configuration_, preferred_nic_, ipv6_transit_tap ? ipv6_transit_tap->GetId() : tun_name_);
+
+                multipath_sessions.clear();
 
                 if (NULLPTR != cache) {
                     cache->Clear();
@@ -4382,6 +5392,7 @@ namespace ppp {
                 TickAllExchangers(now);
                 TickAllConnections(now);
                 TickIPv6Leases(now);
+                TickMultipathSessions(now);
                 RefreshIPv6NeighborProxyIfNeed();
 
                 VirtualEthernetNamespaceCachePtr cache = namespace_cache_;
