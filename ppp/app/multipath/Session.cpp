@@ -8,6 +8,11 @@
 
 namespace ppp::app::multipath {
 namespace {
+bool ValidBinding(const SessionPathBinding* binding) noexcept {
+    return binding == nullptr || (binding->sink != nullptr && !binding->path_id.empty() &&
+        binding->path_id.size() <= 128);
+}
+
 TimePoint AddBounded(TimePoint now, Duration duration) noexcept {
     const Duration remaining = TimePoint::max() - now;
     return duration > remaining ? TimePoint::max() : now + duration;
@@ -89,18 +94,33 @@ void SessionState::ExpireIfDue(TimePoint now) noexcept {
 
 bool SessionState::OnCarrierJoined(const std::string& carrier_id, std::uint64_t session_gen,
                                    std::uint64_t conn_gen,
-                                   TimePoint now) noexcept {
+                                   TimePoint now,
+                                   const SessionPathBinding* binding) noexcept {
+    if (!ValidBinding(binding)) return false;
     ExpireIfDue(now);
     if (status_ != SessionStatus::Active || session_gen != generation_ ||
         carrier_id.empty() || carrier_id.size() > 128 ||
         carriers_.size() >= MaxCarriers || carriers_.find(carrier_id) != carriers_.end()) return false;
-    try { return carriers_.emplace(carrier_id, Carrier{session_gen, conn_gen}).second; }
-    catch (...) { return false; }
+    try {
+        if (!carriers_.emplace(carrier_id, Carrier{session_gen, conn_gen}).second) return false;
+    } catch (...) { return false; }
+    if (binding != nullptr && binding->sink != nullptr) {
+        PathEventEnvelope event;
+        event.path_id = binding->path_id;
+        event.epoch = binding->epoch;
+        event.generation = binding->generation;
+        event.monotonic_ms = binding->monotonic_ms;
+        event.kind = PathEvent::Joined;
+        (void)binding->sink->Publish(event);
+    }
+    return true;
 }
 
 bool SessionState::OnCarrierLeft(const std::string& carrier_id, std::uint64_t session_gen,
                                  std::uint64_t conn_gen,
-                                 TimePoint now) noexcept {
+                                 TimePoint now,
+                                 const SessionPathBinding* binding) noexcept {
+    if (!ValidBinding(binding)) return false;
     ExpireIfDue(now);
     auto found = carriers_.find(carrier_id);
     if (found == carriers_.end() || found->second.session_generation != session_gen ||
@@ -111,6 +131,15 @@ bool SessionState::OnCarrierLeft(const std::string& carrier_id, std::uint64_t se
         deadline_ = AddBounded(now, grace_);
         status_ = SessionStatus::Suspended;
         resume_request_id_.clear();
+    }
+    if (binding != nullptr && binding->sink != nullptr) {
+        PathEventEnvelope event;
+        event.path_id = binding->path_id;
+        event.epoch = binding->epoch;
+        event.generation = binding->generation;
+        event.monotonic_ms = binding->monotonic_ms;
+        event.kind = PathEvent::CarrierLost;
+        (void)binding->sink->Publish(event);
     }
     return true;
 }
@@ -133,7 +162,9 @@ bool SessionState::BeginResume(const SessionId& id, std::uint64_t expected_gener
 }
 
 bool SessionState::CommitResume(const std::string& request_id, const std::string& carrier_id,
-                                std::uint64_t conn_gen, TimePoint now) noexcept {
+                                std::uint64_t conn_gen, TimePoint now,
+                                const SessionPathBinding* binding) noexcept {
+    if (!ValidBinding(binding)) return false;
     ExpireIfDue(now);
     if (status_ != SessionStatus::Resuming || request_id != resume_request_id_ ||
         carrier_id.empty() || carrier_id.size() > 128 || carriers_.size() >= MaxCarriers ||
@@ -147,6 +178,15 @@ bool SessionState::CommitResume(const std::string& request_id, const std::string
     resume_attempt_deadline_ = TimePoint{};
     resume_request_id_.clear();
     status_ = SessionStatus::Active;
+    if (binding != nullptr && binding->sink != nullptr) {
+        PathEventEnvelope event;
+        event.path_id = binding->path_id;
+        event.epoch = binding->epoch;
+        event.generation = binding->generation;
+        event.monotonic_ms = binding->monotonic_ms;
+        event.kind = PathEvent::Joined;
+        (void)binding->sink->Publish(event);
+    }
     return true;
 }
 

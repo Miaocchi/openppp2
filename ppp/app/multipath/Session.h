@@ -89,15 +89,18 @@ public:
 
     bool OnCarrierJoined(const std::string& carrier_id, std::uint64_t session_generation,
                          std::uint64_t connection_generation,
-                         TimePoint now) noexcept;
+                         TimePoint now,
+                         const SessionPathBinding* binding = nullptr) noexcept;
     bool OnCarrierLeft(const std::string& carrier_id, std::uint64_t session_generation,
                        std::uint64_t connection_generation,
-                       TimePoint now) noexcept;
+                       TimePoint now,
+                       const SessionPathBinding* binding = nullptr) noexcept;
     bool BeginResume(const SessionId& id, std::uint64_t expected_generation,
                      const std::string& authenticated_identity,
                      const std::string& request_id, TimePoint now) noexcept;
     bool CommitResume(const std::string& request_id, const std::string& carrier_id,
-                      std::uint64_t connection_generation, TimePoint now) noexcept;
+                      std::uint64_t connection_generation, TimePoint now,
+                      const SessionPathBinding* binding = nullptr) noexcept;
     bool AbortResume(const std::string& request_id, TimePoint now) noexcept;
     bool Expire(TimePoint now) noexcept;
     bool Close() noexcept;

@@ -120,6 +120,20 @@ struct PathEventEnvelope final {
     PathEventData data;
 };
 
+class IPathControlEventSink {
+public:
+    virtual ~IPathControlEventSink() = default;
+    virtual bool Publish(const PathEventEnvelope& event) noexcept = 0;
+};
+
+struct SessionPathBinding final {
+    std::string path_id;
+    std::uint64_t epoch = 0;
+    std::uint64_t generation = 0;
+    std::uint64_t monotonic_ms = 0;
+    IPathControlEventSink* sink = nullptr;
+};
+
 enum class PathEffectKind : std::uint8_t {
     PublishSnapshot,
     StartDial,

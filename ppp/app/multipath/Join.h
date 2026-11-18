@@ -64,7 +64,8 @@ public:
                        JoinResponse& response) noexcept;
     JoinResult Commit(SessionState& session, const JoinRequest& request,
                       std::uint64_t connection_generation, TimePoint now,
-                      JoinResponse& response) noexcept;
+                      JoinResponse& response,
+                      const SessionPathBinding* binding = nullptr) noexcept;
     JoinResult Query(const std::string& authenticated_identity,
                      const std::string& request_id, TimePoint now,
                      JoinResponse& response) noexcept;

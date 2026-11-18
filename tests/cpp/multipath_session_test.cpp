@@ -15,6 +15,15 @@ namespace mp = ppp::app::multipath;
 using namespace std::chrono_literals;
 
 namespace {
+struct Sink final : mp::IPathControlEventSink {
+    mp::PathEventEnvelope event;
+    int count = 0;
+    bool Publish(const mp::PathEventEnvelope& value) noexcept override {
+        event = value;
+        ++count;
+        return true;
+    }
+};
 mp::TimePoint T(std::int64_t ms) { return mp::TimePoint{} + std::chrono::milliseconds(ms); }
 
 mp::JoinRequest MakeRequest(const mp::SessionTicket& ticket, mp::JoinOperation op,
@@ -44,6 +53,33 @@ mp::SessionTicket Create(mp::SessionState& session, mp::TimePoint now) {
     BOOST_CHECK(ticket.grace == std::chrono::duration_cast<mp::Duration>(30s));
     return ticket;
 }
+}
+
+BOOST_AUTO_TEST_CASE(session_path_binding_publishes_only_after_success) {
+    mp::SessionState session;
+    auto ticket = Create(session, T(0));
+    Sink sink;
+    mp::SessionPathBinding binding{"path-a", 9, 4, 77, &sink};
+    BOOST_REQUIRE(session.OnCarrierJoined("carrier-a", ticket.generation, 3, T(1), &binding));
+    BOOST_TEST(sink.count == 1);
+    BOOST_TEST(sink.event.path_id == "path-a");
+    BOOST_TEST(sink.event.epoch == 9u);
+    BOOST_TEST(sink.event.generation == 4u);
+    BOOST_TEST(sink.event.monotonic_ms == 77u);
+    BOOST_TEST(static_cast<int>(sink.event.kind) == static_cast<int>(mp::PathEvent::Joined));
+    BOOST_TEST(!session.OnCarrierJoined("carrier-a", ticket.generation, 3, T(2), &binding));
+    BOOST_TEST(sink.count == 1);
+    BOOST_REQUIRE(session.OnCarrierLeft("carrier-a", ticket.generation, 3, T(3), &binding));
+    BOOST_TEST(sink.count == 2);
+    BOOST_TEST(static_cast<int>(sink.event.kind) == static_cast<int>(mp::PathEvent::CarrierLost));
+}
+
+BOOST_AUTO_TEST_CASE(session_path_binding_rejects_invalid_binding_without_mutation) {
+    mp::SessionState session;
+    auto ticket = Create(session, T(0));
+    mp::SessionPathBinding invalid{"", 1, 1, 9, nullptr};
+    BOOST_TEST(!session.OnCarrierJoined("carrier-a", ticket.generation, 3, T(1), &invalid));
+    BOOST_TEST(session.Snapshot().carrier_count == 0u);
 }
 
 BOOST_AUTO_TEST_CASE(create_generates_ticket_and_clamps_grace_without_exposing_secret) {

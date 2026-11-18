@@ -258,7 +258,8 @@ JoinResult JoinCoordinator::Confirm(SessionState& session, const JoinRequest& r,
 
 JoinResult JoinCoordinator::Commit(SessionState& session, const JoinRequest& r,
                                    std::uint64_t conn_gen, TimePoint now,
-                                   JoinResponse& response) noexcept {
+                                   JoinResponse& response,
+                                   const SessionPathBinding* binding) noexcept {
     response = JoinResponse{};
     Prune(now);
     auto it = transactions_.find(r.request_id);
@@ -278,9 +279,9 @@ JoinResult JoinCoordinator::Commit(SessionState& session, const JoinRequest& r,
         return response.result = JoinResult::Rejected;
     bool committed = false;
     if (r.operation == JoinOperation::Resume) {
-        committed = session.CommitResume(r.request_id, r.carrier_id, conn_gen, now);
+        committed = session.CommitResume(r.request_id, r.carrier_id, conn_gen, now, binding);
     } else if (r.generation == session.Snapshot().generation) {
-        committed = session.OnCarrierJoined(r.carrier_id, r.generation, conn_gen, now);
+        committed = session.OnCarrierJoined(r.carrier_id, r.generation, conn_gen, now, binding);
     }
     if (!committed) {
         OPENSSL_cleanse(commit_proof.data(), commit_proof.size());
