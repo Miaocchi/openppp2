@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ppp/app/multipath/PathControlTypes.h>
+
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -50,6 +52,18 @@ struct SessionTicket final {
 };
 
 enum class SessionStatus : std::uint8_t { Active, Suspended, Resuming, Expired, Closed };
+
+inline PathState PathStateForSessionStatus(SessionStatus status) noexcept {
+    switch (status) {
+    case SessionStatus::Active: return PathState::Active;
+    case SessionStatus::Suspended: return PathState::Degraded;
+    case SessionStatus::Resuming: return PathState::Warming;
+    case SessionStatus::Expired:
+    case SessionStatus::Closed: return PathState::Stopped;
+    }
+    return PathState::Stopped;
+}
+
 struct SessionSnapshot final {
     SessionId id{};
     SessionId client_session_id{};
@@ -69,6 +83,7 @@ public:
                 TimePoint now,
                 Duration requested_grace, SessionTicket& ticket) noexcept;
     SessionSnapshot Snapshot() const noexcept;
+    PathState ControlState() const noexcept { return PathStateForSessionStatus(status_); }
     const std::string& AuthenticatedIdentity() const noexcept { return identity_; }
     const CleansedSecret& Credential() const noexcept { return credential_; }
 

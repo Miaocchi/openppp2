@@ -9,12 +9,15 @@
 #include <optional>
 #include <vector>
 
+#include "PathControlTypes.h"
+
 namespace ppp::app::multipath {
 
 class PathScheduler final {
 public:
     enum class Policy : std::uint8_t { Adaptive, Failover };
     enum class Status : std::uint8_t { Selected, NoEligible, Backpressure, InvalidInput };
+    enum class CandidateState : std::uint8_t { Active, Warming, Degraded, Draining, Unavailable };
 
     struct Candidate final {
         std::uint16_t id = 0;
@@ -27,6 +30,11 @@ public:
         std::optional<std::uint64_t> throughput_bytes_per_second;
         std::uint64_t last_active_ms = 0;
         std::uint64_t metrics_updated_ms = 0;
+        // Active preserves the legacy API behavior for callers without a
+        // PathControl snapshot.
+        CandidateState state = CandidateState::Active;
+        bool probe_eligible = true;
+        std::optional<std::uint64_t> probe_budget_bytes;
     };
 
     struct Selection final {
@@ -44,6 +52,57 @@ public:
     explicit PathScheduler(std::uint64_t probe_interval_ms = 1000) noexcept
         : probe_interval_ms_(std::max<std::uint64_t>(1,
             std::min<std::uint64_t>(probe_interval_ms, 60000))) {}
+
+    // Adapts the control-plane snapshot to the legacy scheduler contract.
+    // Callers retain ownership of the carrier id and send-credit policy.
+    static Candidate ProjectCandidate(std::uint16_t id,
+                                      const PathControlSnapshot& snapshot,
+                                      std::uint64_t now_ms,
+                                      std::optional<std::uint64_t> send_credit = {},
+                                      bool preferred = false) noexcept {
+        Candidate candidate;
+        candidate.id = id;
+        candidate.preferred = preferred;
+        candidate.send_credit_bytes = send_credit;
+        candidate.queue_bytes = snapshot.telemetry.local_queue_bytes;
+        candidate.unacked_bytes = snapshot.telemetry.wire_inflight_bytes;
+        candidate.last_active_ms = snapshot.telemetry.updated_ms;
+        candidate.metrics_updated_ms = snapshot.telemetry.updated_ms;
+        candidate.probe_eligible = snapshot.capabilities.active_probe &&
+            IsEligibleState(snapshot.state);
+        candidate.state = ToCandidateState(snapshot.state);
+        candidate.eligible = IsEligibleState(snapshot.state) &&
+            snapshot.last_failure != FailureClass::InvalidTransition;
+
+        // Confidence is part of freshness: an old or untrusted sample must
+        // fall back to the scheduler's conservative estimates.
+        const bool fresh = snapshot.telemetry.has_sample &&
+            snapshot.telemetry.updated_ms != 0 &&
+            snapshot.telemetry.updated_ms <= now_ms &&
+            now_ms - snapshot.telemetry.updated_ms <= MetricsMaxAgeMs &&
+            snapshot.telemetry.confidence > 0;
+        if (fresh) {
+            if (snapshot.telemetry.srtt_ms != 0) {
+                candidate.rtt_ms = snapshot.telemetry.srtt_ms;
+            } else if (snapshot.telemetry.min_rtt_ms != 0) {
+                candidate.rtt_ms = snapshot.telemetry.min_rtt_ms;
+            }
+            if (snapshot.capabilities.payload_delivery_rate &&
+                snapshot.telemetry.current_rate_bytes_per_second != 0) {
+                candidate.throughput_bytes_per_second =
+                    snapshot.telemetry.current_rate_bytes_per_second;
+            }
+        }
+        return candidate;
+    }
+
+    static Candidate CandidateFromSnapshot(std::uint16_t id,
+                                           const PathControlSnapshot& snapshot,
+                                           std::uint64_t now_ms,
+                                           std::optional<std::uint64_t> send_credit = {},
+                                           bool preferred = false) noexcept {
+        return ProjectCandidate(id, snapshot, now_ms, send_credit, preferred);
+    }
 
     Selection Select(Policy policy, const std::vector<Candidate>& candidates,
                     std::uint64_t now_ms, std::uint64_t payload_bytes) noexcept {
@@ -64,6 +123,28 @@ public:
     }
 
 private:
+    static CandidateState ToCandidateState(PathState state) noexcept {
+        switch (state) {
+        case PathState::Warming:
+        case PathState::Probing:
+            return CandidateState::Warming;
+        case PathState::Degraded:
+            return CandidateState::Degraded;
+        case PathState::Draining:
+        case PathState::Retiring:
+            return CandidateState::Draining;
+        case PathState::Active:
+            return CandidateState::Active;
+        default:
+            return CandidateState::Unavailable;
+        }
+    }
+
+    static bool IsEligibleState(PathState state) noexcept {
+        return state == PathState::Active || state == PathState::Warming ||
+            state == PathState::Probing || state == PathState::Degraded;
+    }
+
     struct Tracker final {
         std::uint16_t id = 0;
         std::uint64_t last_selected_ms = 0;
@@ -81,6 +162,25 @@ private:
 
     static bool HasCredit(const Candidate& candidate, std::uint64_t payload_bytes) noexcept {
         return candidate.send_credit_bytes && *candidate.send_credit_bytes >= payload_bytes;
+    }
+
+    static bool CanCarry(const Candidate& candidate) noexcept {
+        return candidate.state != CandidateState::Draining &&
+            candidate.state != CandidateState::Unavailable;
+    }
+
+    static bool CanFailover(const Candidate& candidate) noexcept {
+        return candidate.state == CandidateState::Active ||
+            candidate.state == CandidateState::Warming;
+    }
+
+    static bool CanProbe(const Candidate& candidate, std::uint64_t payload_bytes) noexcept {
+        if (!candidate.probe_eligible ||
+            (candidate.state != CandidateState::Active &&
+             candidate.state != CandidateState::Warming)) {
+            return false;
+        }
+        return !candidate.probe_budget_bytes || *candidate.probe_budget_bytes >= payload_bytes;
     }
 
     static std::uint64_t SaturatingAdd(std::uint64_t a, std::uint64_t b) noexcept {
@@ -129,7 +229,7 @@ private:
         const Candidate* preferred = nullptr;
         bool any_eligible = false;
         for (const Candidate& candidate : candidates) {
-            if (!candidate.eligible) continue;
+            if (!candidate.eligible || !CanFailover(candidate)) continue;
             any_eligible = true;
             if (candidate.preferred && (!preferred || candidate.id < preferred->id)) {
                 preferred = &candidate;
@@ -145,7 +245,8 @@ private:
 
         const Candidate* fallback = nullptr;
         for (const Candidate& candidate : candidates) {
-            if (candidate.eligible && (!fallback || candidate.id < fallback->id)) {
+            if (candidate.eligible && CanFailover(candidate) &&
+                (!fallback || candidate.id < fallback->id)) {
                 fallback = &candidate;
             }
         }
@@ -162,7 +263,7 @@ private:
         const Candidate* best = nullptr;
         std::uint64_t best_cost = std::numeric_limits<std::uint64_t>::max();
         for (const Candidate& candidate : candidates) {
-            if (!candidate.eligible) continue;
+            if (!candidate.eligible || !CanCarry(candidate)) continue;
             any_eligible = true;
             if (!HasCredit(candidate, payload_bytes)) continue;
             const std::uint64_t cost = EstimateArrival(candidate, now_ms, payload_bytes);
@@ -185,7 +286,8 @@ private:
         Tracker* probe_tracker = nullptr;
         if (now_ms >= last_probe_ms_ && now_ms - last_probe_ms_ >= probe_interval_ms_) {
             for (const Candidate& candidate : candidates) {
-                if (!candidate.eligible || candidate.id == best->id ||
+                if (!candidate.eligible || !CanCarry(candidate) ||
+                    !CanProbe(candidate, payload_bytes) || candidate.id == best->id ||
                     !HasCredit(candidate, payload_bytes)) continue;
                 Tracker* tracker = FindTracker(candidate.id);
                 if (!tracker || now_ms < tracker->last_selected_ms ||

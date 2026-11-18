@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include <ppp/app/mux/MuxRetransmitBuffer.h>
@@ -188,6 +189,40 @@ BOOST_AUTO_TEST_CASE(mark_retransmitted_default_link_id_is_zero) {
     BOOST_REQUIRE(entry != nullptr);
     BOOST_TEST(entry->last_link_id == 0u);
     BOOST_TEST(entry->attempts == 1u);
+}
+
+BOOST_AUTO_TEST_CASE(ack_delivery_bytes_follow_final_retransmission_link) {
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_TEST(rtx.Track(0, 1, make_frame(1), 10, 1000, 1 << 20, 5));
+    BOOST_TEST(rtx.Track(0, 2, make_frame(2), 20, 1000, 1 << 20, 7));
+
+    const uint64_t key = mux::MuxRetransmitBuffer::Key(0, 1);
+    rtx.MarkRetransmitted(key, 1100, 9);
+
+    std::vector<uint64_t> fast;
+    std::vector<mux::MuxAckRange> ranges = {{1, 2}};
+    std::unordered_map<std::uint16_t, std::size_t> delivered;
+    std::uint16_t rtt_link = 0;
+    rtx.Ack(0, 2, ranges, 1200, 3, 0, fast, &rtt_link, &delivered);
+
+    BOOST_TEST(rtt_link == 7u);
+    BOOST_TEST(delivered[9] == 10u);
+    BOOST_TEST(delivered[7] == 20u);
+    BOOST_TEST(delivered.count(5) == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(ack_after_link_orphan_does_not_attribute_to_reused_link) {
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_TEST(rtx.Track(0, 1, make_frame(1), 10, 1000, 1 << 20, 5));
+    std::vector<uint64_t> orphaned;
+    rtx.TakeLinkInflight(5, orphaned);
+    BOOST_REQUIRE_EQUAL(orphaned.size(), 1u);
+
+    std::vector<uint64_t> fast;
+    std::vector<mux::MuxAckRange> ranges = {{1, 1}};
+    std::unordered_map<std::uint16_t, std::size_t> delivered;
+    rtx.Ack(0, 1, ranges, 1200, 3, 0, fast, nullptr, &delivered);
+    BOOST_TEST(delivered.empty());
 }
 
 // ---------------------------------------------------------------------------

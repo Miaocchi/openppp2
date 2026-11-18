@@ -1,7 +1,9 @@
 #pragma once
 
 #include <ppp/configurations/MultipathConfiguration.h>
+#include <ppp/app/multipath/PathAdapter.h>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -56,6 +58,9 @@ namespace ppp::app::multipath {
         std::size_t SlotCount() const noexcept;
         bool GetPath(std::size_t index, ppp::configurations::MultipathConfiguration::Path& path) const noexcept;
         bool GetSlot(std::size_t index, SlotSnapshot& slot) const noexcept;
+        // Read-only compatibility projection for the PathControl facade.
+        bool GetPathControlSnapshot(std::size_t index,
+            PathControlSnapshot& snapshot) const noexcept;
 
     private:
         struct Slot final {
@@ -63,9 +68,13 @@ namespace ppp::app::multipath {
             std::uint32_t retry_round = 0;
             std::uint32_t attempt_generation = 0;
             std::shared_ptr<void> lifetime;
+            std::unique_ptr<PathControlAdapter> control;
         };
 
         void ScheduleRetry(Slot& slot, std::uint64_t now_ms, Failure failure) noexcept;
+        bool ApplyControlEvent(Slot& slot, PathEvent kind, std::uint64_t now_ms,
+                               std::uint64_t generation,
+                               PathEventData data = {}) noexcept;
         bool IsCurrentLocked(const Attempt& attempt) const noexcept;
         static std::uint32_t Jitter(std::uint32_t delay_ms, std::uint32_t seed) noexcept;
 

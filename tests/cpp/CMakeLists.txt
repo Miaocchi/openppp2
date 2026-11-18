@@ -158,6 +158,7 @@ openppp2_add_cpp_test(websocket_buffered_upgrade_test SOURCES websocket_buffered
 target_link_libraries(websocket_buffered_upgrade_test PRIVATE boost_system Threads::Threads)
 
 openppp2_add_cpp_test(xtcp_direct_bridge_policy_test SOURCES xtcp_direct_bridge_policy_test.cpp)
+openppp2_add_cpp_test(vmux_path_estimator_test SOURCES vmux_path_estimator_test.cpp)
 
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
@@ -372,6 +373,13 @@ openppp2_add_cpp_test(multipath_scheduler_test SOURCES
     multipath_scheduler_test.cpp)
 set_tests_properties(multipath_scheduler_test PROPERTIES LABELS "multipath;offline")
 
+openppp2_add_cpp_test(multipath_path_control_test SOURCES
+    multipath_path_control_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/multipath/PathControl.cpp")
+set_tests_properties(multipath_path_control_test PROPERTIES LABELS "multipath;offline")
+openppp2_add_cpp_test(pool_controller_test SOURCES pool_controller_test.cpp)
+set_tests_properties(pool_controller_test PROPERTIES LABELS "multipath;offline")
+
 openppp2_add_cpp_test(multipath_wire_protocol_test SOURCES
     multipath_wire_protocol_test.cpp
     "${OPENPPP2_ROOT}/ppp/app/multipath/WireProtocol.cpp"
@@ -490,6 +498,7 @@ set_tests_properties(multipath_configuration_test PROPERTIES LABELS "multipath;o
 
 openppp2_add_cpp_test(multipath_path_manager_test SOURCES
     multipath_path_manager_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/multipath/PathControl.cpp"
     "${OPENPPP2_ROOT}/ppp/app/multipath/PathManager.cpp"
     ${OPENPPP2_VMUX_CONFIG_SOURCES})
 target_link_libraries(multipath_path_manager_test PRIVATE

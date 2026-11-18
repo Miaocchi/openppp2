@@ -3845,6 +3845,26 @@ namespace ppp {
                 state.enabled = true;
                 state.policy.assign(multipath.policy.data(), multipath.policy.size());
                 state.paths.reserve(multipath.paths.size());
+                const auto control_rank = [](ppp::app::multipath::PathState value) noexcept {
+                    switch (value) {
+                    case ppp::app::multipath::PathState::Active: return 6;
+                    case ppp::app::multipath::PathState::Warming: return 5;
+                    case ppp::app::multipath::PathState::Probing: return 4;
+                    case ppp::app::multipath::PathState::Degraded: return 3;
+                    case ppp::app::multipath::PathState::Backoff: return 2;
+                    case ppp::app::multipath::PathState::Disabled: return 1;
+                    default: return 0;
+                    }
+                };
+                const auto control_state_rank = [](const std::string& value) noexcept {
+                    if (value == "active") return 6;
+                    if (value == "warming") return 5;
+                    if (value == "probing") return 4;
+                    if (value == "degraded") return 3;
+                    if (value == "backoff") return 2;
+                    if (value == "disabled") return 1;
+                    return 0;
+                };
                 for (const auto& configured_path : multipath.paths) {
                     ppp::app::multipath::RuntimePathState path;
                     path.id.assign(configured_path.id.data(), configured_path.id.size());
@@ -3858,6 +3878,11 @@ namespace ppp {
                         continue;
                     }
                     auto& path = state.paths[slot.path_index];
+                    ppp::app::multipath::PathControlSnapshot control_snapshot;
+                    if (multipath_paths_.GetPathControlSnapshot(slot_index, control_snapshot) &&
+                        control_rank(control_snapshot.state) > control_state_rank(path.control_state)) {
+                        path.control_state = ppp::app::multipath::PathStateName(control_snapshot.state);
+                    }
                     path.reconnect_attempts = std::max(path.reconnect_attempts, slot.failures);
                     if (slot.state == MultipathState::Joined) {
                         ++path.carriers;
@@ -3900,6 +3925,14 @@ namespace ppp {
                         found->inflight_bytes = mux_path.inflight_bytes;
                         found->retransmit_bytes = mux_path.retransmit_bytes;
                         if (mux_path.has_rtt) found->rtt_ms = mux_path.rtt_ms;
+                        if (mux_path.has_telemetry) {
+                            found->capacity_rate_bytes_per_second =
+                                mux_path.capacity_rate_bytes_per_second;
+                            found->queue_delay_ms = mux_path.queue_delay_ms;
+                            found->bdp_bytes = mux_path.bdp_bytes;
+                            found->confidence = mux_path.confidence;
+                            found->at_capacity = mux_path.at_capacity;
+                        }
                     }
                     const auto remaining = mux->get_carrier_resume_remaining_ms();
                     if (remaining != 0) {

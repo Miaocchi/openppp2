@@ -10,6 +10,7 @@ namespace ppp::app::multipath {
 struct RuntimePathState final {
     std::string id;
     std::string state;
+    std::string control_state;
     std::uint32_t carriers = 0;
     std::uint32_t reconnect_attempts = 0;
     std::string error_code;
@@ -18,12 +19,20 @@ struct RuntimePathState final {
     std::optional<std::uint64_t> tx_bytes;
     std::optional<std::uint64_t> inflight_bytes;
     std::optional<std::uint64_t> retransmit_bytes;
+    std::optional<std::uint64_t> capacity_rate_bytes_per_second;
+    std::optional<std::uint64_t> queue_delay_ms;
+    std::optional<std::uint64_t> bdp_bytes;
+    std::optional<std::uint64_t> confidence;
+    bool at_capacity = false;
 
     bool operator==(const RuntimePathState& other) const noexcept {
-        return id == other.id && state == other.state && carriers == other.carriers &&
+        return id == other.id && state == other.state && control_state == other.control_state && carriers == other.carriers &&
             reconnect_attempts == other.reconnect_attempts && error_code == other.error_code &&
             rtt_ms == other.rtt_ms && rx_bytes == other.rx_bytes && tx_bytes == other.tx_bytes &&
-            inflight_bytes == other.inflight_bytes && retransmit_bytes == other.retransmit_bytes;
+            inflight_bytes == other.inflight_bytes && retransmit_bytes == other.retransmit_bytes &&
+            capacity_rate_bytes_per_second == other.capacity_rate_bytes_per_second &&
+            queue_delay_ms == other.queue_delay_ms && bdp_bytes == other.bdp_bytes &&
+            confidence == other.confidence && at_capacity == other.at_capacity;
     }
 };
 

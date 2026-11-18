@@ -195,3 +195,111 @@ BOOST_AUTO_TEST_CASE(adaptive_tracks_dynamic_carriers_and_reinitializes_reused_i
     BOOST_TEST(selected.carrier_id == 2);
     BOOST_TEST(selected.probe);
 }
+
+BOOST_AUTO_TEST_CASE(probe_respects_state_and_explicit_budget) {
+    Scheduler scheduler(1000);
+    Candidate fast = Measured(1, 5, 10 * 1024 * 1024, 1000);
+    Candidate degraded = Measured(2, 200, 10 * 1024 * 1024, 1000);
+    degraded.state = Scheduler::CandidateState::Degraded;
+    degraded.probe_eligible = true;
+    std::vector<Candidate> candidates{fast, degraded};
+
+    auto selected = scheduler.Select(Scheduler::Policy::Adaptive, candidates, 1000, 1200);
+    BOOST_TEST(selected.carrier_id == 1);
+    selected = scheduler.Select(Scheduler::Policy::Adaptive, candidates, 2000, 1200);
+    BOOST_TEST(selected.carrier_id == 1);
+    BOOST_TEST(!selected.probe);
+
+    degraded.state = Scheduler::CandidateState::Warming;
+    degraded.probe_budget_bytes = 1000;
+    candidates[1] = degraded;
+    selected = scheduler.Select(Scheduler::Policy::Adaptive, candidates, 3000, 1200);
+    BOOST_TEST(selected.carrier_id == 1);
+    BOOST_TEST(!selected.probe);
+
+    degraded.probe_budget_bytes = 1200;
+    candidates[1] = degraded;
+    scheduler.Reset();
+    selected = scheduler.Select(Scheduler::Policy::Adaptive, candidates, 3000, 1200);
+    selected = scheduler.Select(Scheduler::Policy::Adaptive, candidates, 4000, 1200);
+    BOOST_TEST(selected.carrier_id == 2);
+    BOOST_TEST(selected.probe);
+}
+
+BOOST_AUTO_TEST_CASE(draining_candidate_is_not_selected_but_legacy_active_default_is) {
+    Scheduler scheduler;
+    Candidate draining = Measured(1, 5, 10 * 1024 * 1024, 1000);
+    draining.state = Scheduler::CandidateState::Draining;
+    Candidate fallback = Measured(2, 50, 10 * 1024 * 1024, 1000);
+    auto selected = scheduler.Select(Scheduler::Policy::Failover,
+        std::vector<Candidate>{draining, fallback}, 1000, 1200);
+    BOOST_TEST(IsStatus(selected.status, Scheduler::Status::Selected));
+    BOOST_TEST(selected.carrier_id == 2);
+
+    Candidate legacy = Measured(3, 5, 10 * 1024 * 1024, 1000);
+    selected = scheduler.Select(Scheduler::Policy::Failover,
+        std::vector<Candidate>{legacy}, 1000, 1200);
+    BOOST_TEST(selected.carrier_id == 3);
+}
+
+BOOST_AUTO_TEST_CASE(snapshot_projection_preserves_state_and_capability_gates) {
+    mp::PathControlSnapshot snapshot;
+    snapshot.state = mp::PathState::Active;
+    snapshot.telemetry.has_sample = true;
+    snapshot.telemetry.updated_ms = 5000;
+    snapshot.telemetry.confidence = 80;
+    snapshot.telemetry.min_rtt_ms = 12;
+    snapshot.telemetry.current_rate_bytes_per_second = 9000;
+    snapshot.telemetry.local_queue_bytes = 17;
+    snapshot.telemetry.wire_inflight_bytes = 23;
+    snapshot.capabilities.active_probe = true;
+    snapshot.capabilities.payload_delivery_rate = true;
+
+    const Candidate candidate = Scheduler::ProjectCandidate(7, snapshot, 5001, 4096, true);
+    BOOST_TEST(candidate.id == 7);
+    BOOST_TEST(candidate.eligible);
+    BOOST_TEST(candidate.preferred);
+    BOOST_TEST(static_cast<unsigned>(candidate.state) ==
+        static_cast<unsigned>(Scheduler::CandidateState::Active));
+    BOOST_TEST(candidate.probe_eligible);
+    BOOST_TEST(*candidate.rtt_ms == 12);
+    BOOST_TEST(*candidate.throughput_bytes_per_second == 9000);
+    BOOST_TEST(candidate.queue_bytes == 17);
+    BOOST_TEST(candidate.unacked_bytes == 23);
+}
+
+BOOST_AUTO_TEST_CASE(snapshot_projection_discards_stale_or_low_confidence_metrics) {
+    mp::PathControlSnapshot snapshot;
+    snapshot.state = mp::PathState::Degraded;
+    snapshot.telemetry.has_sample = true;
+    snapshot.telemetry.updated_ms = 1;
+    snapshot.telemetry.confidence = 100;
+    snapshot.telemetry.min_rtt_ms = 1;
+    snapshot.telemetry.current_rate_bytes_per_second = 1000000;
+    snapshot.capabilities.payload_delivery_rate = true;
+    snapshot.capabilities.active_probe = false;
+
+    auto candidate = Scheduler::CandidateFromSnapshot(3, snapshot, 10000);
+    BOOST_TEST(candidate.eligible);
+    BOOST_TEST(static_cast<unsigned>(candidate.state) ==
+        static_cast<unsigned>(Scheduler::CandidateState::Degraded));
+    BOOST_TEST(!candidate.rtt_ms);
+    BOOST_TEST(!candidate.throughput_bytes_per_second);
+    BOOST_TEST(!candidate.probe_eligible);
+
+    snapshot.telemetry.updated_ms = 10000;
+    snapshot.telemetry.confidence = 0;
+    candidate = Scheduler::ProjectCandidate(3, snapshot, 10000);
+    BOOST_TEST(!candidate.rtt_ms);
+}
+
+BOOST_AUTO_TEST_CASE(snapshot_projection_blocks_non_running_states) {
+    mp::PathControlSnapshot snapshot;
+    snapshot.state = mp::PathState::Backoff;
+    snapshot.capabilities.active_probe = true;
+    const auto candidate = Scheduler::ProjectCandidate(4, snapshot, 100);
+    BOOST_TEST(!candidate.eligible);
+    BOOST_TEST(static_cast<unsigned>(candidate.state) ==
+        static_cast<unsigned>(Scheduler::CandidateState::Unavailable));
+    BOOST_TEST(!candidate.probe_eligible);
+}

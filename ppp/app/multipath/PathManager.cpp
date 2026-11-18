@@ -26,15 +26,24 @@ namespace ppp::app::multipath {
                 for (int connection = 0; connection < entry.connections; ++connection) {
                     slots_.emplace_back();
                     slots_.back().snapshot.path_index = static_cast<std::uint16_t>(path);
+                    slots_.back().control = std::make_unique<PathControlAdapter>(
+                        std::string(entry.id));
                 }
             }
         }
         catch (...) {
-            Stop();
+            slots_.clear();
+            running_ = false;
+            ++generation_;
+            active_attempts_ = 0;
+            joined_carriers_ = 0;
             return false;
         }
 
         ++generation_;
+        for (Slot& slot : slots_) {
+            if (slot.control) slot.control->ResetEpoch(generation_);
+        }
         active_attempts_ = 0;
         joined_carriers_ = 0;
         running_ = !slots_.empty();
@@ -43,6 +52,12 @@ namespace ppp::app::multipath {
 
     void PathManager::Stop() noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
+        for (Slot& slot : slots_) {
+            if (slot.control) {
+                const std::uint64_t control_generation = slot.control->Snapshot().generation;
+                ApplyControlEvent(slot, PathEvent::Stop, 0, control_generation);
+            }
+        }
         running_ = false;
         ++generation_;
         active_attempts_ = 0;
@@ -78,6 +93,19 @@ namespace ppp::app::multipath {
             attempt.slot = static_cast<std::uint16_t>(i);
             attempt.path_index = slot.snapshot.path_index;
             attempt.valid = true;
+            if (slot.control) {
+                const PathControlSnapshot control = slot.control->Snapshot();
+                std::uint64_t control_generation = attempt.slot_generation;
+                if (control.state == PathState::Backoff) {
+                    ApplyControlEvent(slot, PathEvent::RetryDue,
+                        std::max(now_ms, control.retry_at_ms), slot.attempt_generation);
+                    control_generation = slot.control->Snapshot().generation;
+                }
+                else if (control.state == PathState::Disabled) {
+                    ApplyControlEvent(slot, PathEvent::Enable, now_ms, slot.attempt_generation);
+                }
+                ApplyControlEvent(slot, PathEvent::DialStarted, now_ms, control_generation);
+            }
             return true;
         }
         return false;
@@ -89,6 +117,10 @@ namespace ppp::app::multipath {
             return false;
         }
         slots_[attempt.slot].snapshot.state = State::Authenticating;
+        const std::uint64_t control_generation = slots_[attempt.slot].control
+            ? slots_[attempt.slot].control->Snapshot().generation : attempt.slot_generation;
+        ApplyControlEvent(slots_[attempt.slot], PathEvent::Authenticated,
+            0, control_generation, AuthData{true});
         return true;
     }
 
@@ -111,6 +143,9 @@ namespace ppp::app::multipath {
             --active_attempts_;
         }
         ++joined_carriers_;
+        const std::uint64_t control_generation = slot.control
+            ? slot.control->Snapshot().generation : attempt.slot_generation;
+        ApplyControlEvent(slot, PathEvent::Joined, 0, control_generation);
         return true;
     }
 
@@ -128,6 +163,20 @@ namespace ppp::app::multipath {
             --active_attempts_;
         }
         ScheduleRetry(slot, now_ms, failure);
+        const std::uint64_t control_generation = slot.control
+            ? slot.control->Snapshot().generation : attempt.slot_generation;
+        ApplyControlEvent(slot, PathEvent::CarrierLost, now_ms, control_generation,
+            FailureData{[&]() noexcept {
+                switch (failure) {
+                case Failure::Network: return FailureClass::Network;
+                case Failure::Timeout: return FailureClass::Timeout;
+                case Failure::Authentication: return FailureClass::Authentication;
+                case Failure::Configuration: return FailureClass::Configuration;
+                case Failure::Capacity: return FailureClass::Capacity;
+                case Failure::None: return FailureClass::None;
+                }
+                return FailureClass::InvalidTransition;
+            }(), slot.snapshot.retry_at_ms});
         return true;
     }
 
@@ -141,6 +190,11 @@ namespace ppp::app::multipath {
         }
         slots_[attempt.slot].lifetime.reset();
         ScheduleRetry(slots_[attempt.slot], now_ms, Failure::Network);
+        const std::uint64_t control_generation = slots_[attempt.slot].control
+            ? slots_[attempt.slot].control->Snapshot().generation : attempt.slot_generation;
+        ApplyControlEvent(slots_[attempt.slot], PathEvent::CarrierLost, now_ms,
+            control_generation, FailureData{FailureClass::Network,
+                slots_[attempt.slot].snapshot.retry_at_ms});
         return true;
     }
 
@@ -189,6 +243,77 @@ namespace ppp::app::multipath {
         if (index >= slots_.size()) return false;
         slot = slots_[index].snapshot;
         return true;
+    }
+
+    bool PathManager::GetPathControlSnapshot(std::size_t index,
+        PathControlSnapshot& snapshot) const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (index >= slots_.size() || slots_[index].snapshot.path_index >= configuration_.paths.size()) {
+            return false;
+        }
+
+        const SlotSnapshot& source = slots_[index].snapshot;
+        const auto& path = configuration_.paths[source.path_index];
+        snapshot = PathControlSnapshot();
+        try {
+            snapshot.path_id = path.id;
+        } catch (...) {
+            return false;
+        }
+        snapshot.epoch = generation_;
+        snapshot.generation = source.generation;
+        snapshot.retry_at_ms = source.retry_at_ms;
+        snapshot.last_failure = [&]() noexcept {
+            switch (source.failure) {
+            case Failure::Network: return FailureClass::Network;
+            case Failure::Timeout: return FailureClass::Timeout;
+            case Failure::Authentication: return FailureClass::Authentication;
+            case Failure::Configuration: return FailureClass::Configuration;
+            case Failure::Capacity: return FailureClass::Capacity;
+            case Failure::None: return FailureClass::None;
+            }
+            return FailureClass::InvalidTransition;
+        }();
+        switch (source.state) {
+        case State::Waiting: snapshot.state = PathState::Disabled; break;
+        case State::Connecting: snapshot.state = PathState::Probing; break;
+        case State::Authenticating: snapshot.state = PathState::Warming; break;
+        case State::Joined: snapshot.state = PathState::Active; break;
+        case State::Backoff: snapshot.state = PathState::Backoff; break;
+        case State::Stopped: snapshot.state = PathState::Stopped; break;
+        }
+        if (slots_[index].control) {
+            const PathControlSnapshot control = slots_[index].control->Snapshot();
+            snapshot.state = control.state;
+            snapshot.generation = control.generation;
+            snapshot.telemetry = control.telemetry;
+            snapshot.capabilities = control.capabilities;
+            snapshot.deadline_ms = control.deadline_ms;
+            snapshot.stale_events = control.stale_events;
+            snapshot.rejected_events = control.rejected_events;
+        }
+        return true;
+    }
+
+    bool PathManager::ApplyControlEvent(Slot& slot, PathEvent kind,
+        std::uint64_t now_ms, std::uint64_t generation, PathEventData data) noexcept {
+        if (!slot.control) return true;
+        try {
+            PathEventEnvelope event;
+            event.path_id = std::string(configuration_.paths[slot.snapshot.path_index].id);
+            event.epoch = generation_;
+            event.generation = generation;
+            event.monotonic_ms = now_ms;
+            event.kind = kind;
+            event.data = std::move(data);
+            if (!slot.control->Enqueue(event)) return false;
+            std::vector<PathTransition> transitions;
+            slot.control->Pump(1, transitions);
+            return true;
+        }
+        catch (...) {
+            return false;
+        }
     }
 
     void PathManager::ScheduleRetry(Slot& slot, std::uint64_t now_ms, Failure failure) noexcept {

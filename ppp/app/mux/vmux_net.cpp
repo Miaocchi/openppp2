@@ -267,6 +267,11 @@ namespace vmux {
     void vmux_net::publish_multipath_path_runtime_stats() noexcept {
         if (path_runtime_counters_.empty()) return;
         try {
+            const uint64_t now = now_tick();
+            const auto saturating_add = [](uint64_t left, uint64_t right) noexcept {
+                const uint64_t maximum = std::numeric_limits<uint64_t>::max();
+                return right > maximum - left ? maximum : left + right;
+            };
             std::vector<MultipathPathRuntimeStats> snapshot;
             snapshot.reserve(path_runtime_counters_.size());
             for (const auto& item : path_runtime_counters_) {
@@ -290,6 +295,40 @@ namespace vmux {
                 }
                 else {
                     found->inflight_bytes += static_cast<uint64_t>(link->queued_bytes_);
+                }
+                ppp::app::multipath::VmuxPathSample sample;
+                sample.epoch = 1;
+                sample.timestamp_ms = link->delivery_updated_ms_ != 0
+                    ? link->delivery_updated_ms_ : now;
+                if (link->delivery_rate_bytes_per_second_ != 0) {
+                    sample.delivery_rate_bytes_per_second =
+                        link->delivery_rate_bytes_per_second_;
+                }
+                if (link->has_rtt_sample_) {
+                    sample.srtt_ms = link->srtt_ms_;
+                    sample.min_rtt_ms = link->min_rtt_ms_;
+                }
+                sample.wire_inflight_bytes = reliability_on_ && link->id_ != 0
+                    ? static_cast<uint64_t>(rtx_.LinkBytes(link->id_))
+                    : static_cast<uint64_t>(link->queued_bytes_);
+                sample.local_queue_bytes = static_cast<uint64_t>(link->queued_bytes_);
+                link->path_estimator_.Observe(sample);
+                const auto telemetry = link->path_estimator_.SnapshotAt(now);
+                found->delivery_rate_bytes_per_second = saturating_add(
+                    found->delivery_rate_bytes_per_second,
+                    telemetry.current_rate_bytes_per_second);
+                found->capacity_rate_bytes_per_second = saturating_add(
+                    found->capacity_rate_bytes_per_second,
+                    telemetry.capacity_rate_bytes_per_second);
+                found->queue_delay_ms = std::max(found->queue_delay_ms,
+                    telemetry.queue_delay_ms);
+                found->bdp_bytes = saturating_add(found->bdp_bytes, telemetry.bdp_bytes);
+                found->confidence = std::max(found->confidence, telemetry.confidence);
+                found->has_telemetry = found->has_telemetry || telemetry.has_sample;
+                found->at_capacity = found->at_capacity || telemetry.at_capacity;
+                if (telemetry.min_rtt_ms != 0 &&
+                    (found->min_rtt_ms == 0 || telemetry.min_rtt_ms < found->min_rtt_ms)) {
+                    found->min_rtt_ms = telemetry.min_rtt_ms;
                 }
                 if (link->has_rtt_sample_ &&
                     (!found->has_rtt || link->srtt_ms_ < found->rtt_ms)) {
@@ -745,21 +784,40 @@ namespace vmux {
             const auto now = now_tick();
             for (const auto& link : rx_links_) {
                 if (!link || link->id_ == 0) continue;
-                Scheduler::Candidate candidate;
-                candidate.id = link->id_;
-                candidate.eligible = is_linklayer_active(link);
-                candidate.preferred = link->id_ == preferred;
-                candidate.queue_bytes = link->queued_bytes_;
-                candidate.unacked_bytes = rtx_.LinkBytes(link->id_);
-                candidate.send_credit_bytes = link->in_tx_links_
+                ppp::app::multipath::PathControlSnapshot control_snapshot;
+                control_snapshot.path_id = link->path_id_;
+                control_snapshot.state = is_linklayer_active(link)
+                    ? ppp::app::multipath::PathState::Active
+                    : ppp::app::multipath::PathState::Draining;
+                control_snapshot.telemetry.local_queue_bytes = link->queued_bytes_;
+                control_snapshot.telemetry.wire_inflight_bytes = rtx_.LinkBytes(link->id_);
+                control_snapshot.telemetry.updated_ms = link->delivery_updated_ms_ != 0
+                    ? link->delivery_updated_ms_ : now;
+                control_snapshot.telemetry.has_sample = link->has_rtt_sample_ ||
+                    link->delivery_rate_bytes_per_second_ != 0;
+                control_snapshot.telemetry.confidence = control_snapshot.telemetry.has_sample ? 255 : 0;
+                if (link->has_rtt_sample_) {
+                    control_snapshot.telemetry.srtt_ms = link->srtt_ms_;
+                    control_snapshot.telemetry.min_rtt_ms = link->min_rtt_ms_;
+                }
+                if (link->delivery_rate_bytes_per_second_ != 0) {
+                    control_snapshot.telemetry.current_rate_bytes_per_second =
+                        link->delivery_rate_bytes_per_second_;
+                    control_snapshot.telemetry.capacity_rate_bytes_per_second =
+                        link->delivery_rate_bytes_per_second_;
+                }
+                control_snapshot.capabilities.active_probe = true;
+                control_snapshot.capabilities.payload_delivery_rate =
+                    link->delivery_rate_bytes_per_second_ != 0;
+
+                const auto send_credit = link->in_tx_links_
                     ? (link->queued_bytes_ < static_cast<size_t>(PPP_MUX_LINK_BYTE_HIGH_WATER)
                         ? static_cast<size_t>(PPP_MUX_LINK_BYTE_HIGH_WATER) - link->queued_bytes_ : 0)
                     : 0;
-                if (link->has_rtt_sample_) candidate.rtt_ms = link->srtt_ms_;
-                if (link->delivery_rate_bytes_per_second_ != 0)
-                    candidate.throughput_bytes_per_second = link->delivery_rate_bytes_per_second_;
+                Scheduler::Candidate candidate = Scheduler::ProjectCandidate(link->id_,
+                    control_snapshot, now, send_credit, link->id_ == preferred);
+                candidate.eligible = is_linklayer_active(link);
                 candidate.last_active_ms = link->last_active_.load(std::memory_order_acquire);
-                candidate.metrics_updated_ms = link->delivery_updated_ms_;
                 candidates.emplace_back(std::move(candidate));
             }
             const auto selected = multipath_scheduler_.Select(multipath_policy == 1
@@ -4307,6 +4365,30 @@ namespace vmux {
             if (NULLPTR != l && l->schedulable()) {
                 live++;
             }
+        }
+
+        ppp::app::multipath::PoolDemand pool_demand;
+        pool_demand.active_carriers = static_cast<std::uint32_t>(
+            std::min<std::size_t>(live, UINT32_MAX));
+        pool_demand.warming_carriers = turbo_pending_grow_ > 0
+            ? static_cast<std::uint32_t>(turbo_pending_grow_) : 0;
+        pool_demand.all_at_capacity = depth >= hw;
+        ppp::app::multipath::PoolCapacity pool_capacity;
+        pool_capacity.carrier_pressure = depth >= grow_depth && grow_depth > 0;
+        pool_capacity.aggregate_capacity_shortage = depth >= hw;
+        pool_capacity.warmup_until_ms = grow_ready ? 0 : now + 1;
+        pool_capacity.marginal_gain_bytes_per_second = 1;
+        pool_capacity.marginal_gain_window_bytes_per_second = 1;
+        pool_capacity.floor = base;
+        pool_capacity.soft_limit = shrink_ready ? base : hard_max;
+        pool_capacity.hard_limit = hard_max;
+        const auto pool_decision = ppp::app::multipath::PoolController::Decide(
+            pool_demand, pool_capacity, now);
+        if ((grow_ready && pool_decision.decision !=
+                ppp::app::multipath::PoolDecision::Add) ||
+            (shrink_ready && !grow_ready && pool_decision.decision !=
+                ppp::app::multipath::PoolDecision::Retire)) {
+            factor = 0;
         }
 
         size_t effective = live + (size_t)(turbo_pending_grow_ > 0 ? turbo_pending_grow_ : 0);

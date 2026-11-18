@@ -130,6 +130,70 @@ BOOST_AUTO_TEST_CASE(stop_invalidates_tokens_and_resets_attempt_accounting) {
     BOOST_TEST(!manager.BeginAttempt(1, attempt));
 }
 
+BOOST_AUTO_TEST_CASE(stop_transitions_path_control_to_stopped) {
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(MakeConfig(1, 1, 1, 1)));
+    mp::PathManager::Attempt attempt;
+    BOOST_REQUIRE(manager.BeginAttempt(0, attempt));
+
+    manager.Stop();
+    mp::PathControlSnapshot snapshot;
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, snapshot));
+    BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(mp::PathState::Stopped));
+}
+
+BOOST_AUTO_TEST_CASE(path_control_snapshot_projects_legacy_slot_state) {
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(MakeConfig(1, 1, 1, 1)));
+
+    mp::PathControlSnapshot snapshot;
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, snapshot));
+    BOOST_TEST(snapshot.path_id == "path-0");
+    BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(mp::PathState::Disabled));
+    BOOST_TEST(static_cast<int>(snapshot.last_failure) == static_cast<int>(mp::FailureClass::None));
+    BOOST_TEST(snapshot.deadline_ms == 0u);
+    BOOST_TEST(snapshot.telemetry.sample_count == 0u);
+    BOOST_TEST(!snapshot.capabilities.pacing);
+
+    mp::PathManager::Attempt attempt;
+    BOOST_REQUIRE(manager.BeginAttempt(100, attempt));
+    BOOST_REQUIRE(manager.Fail(attempt, 100, mp::PathManager::Failure::Authentication));
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, snapshot));
+    BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(mp::PathState::Backoff));
+    BOOST_TEST(static_cast<int>(snapshot.last_failure) == static_cast<int>(mp::FailureClass::Authentication));
+    BOOST_TEST(snapshot.retry_at_ms == 30100u);
+}
+
+BOOST_AUTO_TEST_CASE(path_control_owner_tracks_legacy_lifecycle) {
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(MakeConfig(1, 1, 1, 1)));
+
+    mp::PathManager::Attempt attempt;
+    BOOST_REQUIRE(manager.BeginAttempt(100, attempt));
+    mp::PathControlSnapshot snapshot;
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, snapshot));
+    BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(mp::PathState::Probing));
+
+    BOOST_REQUIRE(manager.MarkAuthenticating(attempt));
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, snapshot));
+    BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(mp::PathState::Warming));
+
+    BOOST_REQUIRE(manager.MarkJoined(attempt));
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, snapshot));
+    BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(mp::PathState::Warming));
+
+    BOOST_REQUIRE(manager.CarrierLost(attempt, 200));
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, snapshot));
+    BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(mp::PathState::Backoff));
+
+    mp::PathManager::Attempt retry;
+    mp::PathManager::SlotSnapshot slot;
+    BOOST_REQUIRE(manager.GetSlot(0, slot));
+    BOOST_REQUIRE(manager.BeginAttempt(slot.retry_at_ms, retry));
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, snapshot));
+    BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(mp::PathState::Probing));
+}
+
 BOOST_AUTO_TEST_CASE(concurrent_snapshots_and_late_attempts_survive_stop_restart) {
     mp::PathManager manager;
     const auto config = MakeConfig(4, 2, 8, 4);

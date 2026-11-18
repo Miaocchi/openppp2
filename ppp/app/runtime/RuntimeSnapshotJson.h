@@ -34,6 +34,13 @@ namespace ppp {
                     return FromRuntimeJsonString(root[name].asString());
                 }
 
+                inline bool ValidPathControlState(const std::string& state) noexcept {
+                    return state.empty() || state == "disabled" || state == "probing" ||
+                        state == "warming" || state == "active" || state == "degraded" ||
+                        state == "draining" || state == "retiring" || state == "backoff" ||
+                        state == "rejected" || state == "stopped";
+                }
+
                 inline void WriteRuntimeError(
                     Json::Value& root,
                     const RuntimeError& error) noexcept {
@@ -190,6 +197,9 @@ namespace ppp {
                             path.state == "authenticating" || path.state == "joined" ||
                             path.state == "backoff" || path.state == "stopped" || path.state == "unknown";
                         item["state"] = ToRuntimeJsonString(valid_state ? path.state : "unknown");
+                        if (SafeRuntimeToken(path.control_state, 32)) {
+                            item["control_state"] = ToRuntimeJsonString(path.control_state);
+                        }
                         item["carriers"] = Json::UInt(std::min<std::uint32_t>(path.carriers, 32));
                         item["reconnect_attempts"] = Json::UInt(std::min<std::uint32_t>(path.reconnect_attempts, 1000000));
                         item["error_code"] = ToRuntimeJsonString(
@@ -199,6 +209,12 @@ namespace ppp {
                         WriteOptionalRuntimeNumber(item, "tx_bytes", path.tx_bytes);
                         WriteOptionalRuntimeNumber(item, "inflight_bytes", path.inflight_bytes);
                         WriteOptionalRuntimeNumber(item, "retransmit_bytes", path.retransmit_bytes);
+                        WriteOptionalRuntimeNumber(item, "capacity_rate_bytes_per_second",
+                            path.capacity_rate_bytes_per_second);
+                        WriteOptionalRuntimeNumber(item, "queue_delay_ms", path.queue_delay_ms);
+                        WriteOptionalRuntimeNumber(item, "bdp_bytes", path.bdp_bytes);
+                        WriteOptionalRuntimeNumber(item, "confidence", path.confidence);
+                        item["at_capacity"] = path.at_capacity;
                         paths.append(std::move(item));
                     }
                     value["paths"] = std::move(paths);
@@ -245,9 +261,11 @@ namespace ppp {
                         RuntimePathState path;
                         path.id = RuntimeJsonString(item, "id");
                         path.state = RuntimeJsonString(item, "state");
+                        path.control_state = RuntimeJsonString(item, "control_state");
                         path.error_code = RuntimeJsonString(item, "error_code");
                         if (!SafeRuntimeToken(path.id, 64) ||
                             (!path.error_code.empty() && !SafeRuntimeToken(path.error_code, 64)) ||
+                            !ValidPathControlState(path.control_state) ||
                             (path.state != "waiting" && path.state != "connecting" &&
                              path.state != "authenticating" && path.state != "joined" &&
                              path.state != "backoff" && path.state != "stopped" && path.state != "unknown") ||
@@ -262,7 +280,16 @@ namespace ppp {
                             !ReadOptionalRuntimeNumber(item, "rx_bytes", path.rx_bytes) ||
                             !ReadOptionalRuntimeNumber(item, "tx_bytes", path.tx_bytes) ||
                             !ReadOptionalRuntimeNumber(item, "inflight_bytes", path.inflight_bytes) ||
-                            !ReadOptionalRuntimeNumber(item, "retransmit_bytes", path.retransmit_bytes)) return false;
+                            !ReadOptionalRuntimeNumber(item, "retransmit_bytes", path.retransmit_bytes) ||
+                            !ReadOptionalRuntimeNumber(item, "capacity_rate_bytes_per_second",
+                                path.capacity_rate_bytes_per_second) ||
+                            !ReadOptionalRuntimeNumber(item, "queue_delay_ms", path.queue_delay_ms) ||
+                            !ReadOptionalRuntimeNumber(item, "bdp_bytes", path.bdp_bytes) ||
+                            !ReadOptionalRuntimeNumber(item, "confidence", path.confidence)) return false;
+                        if (item.isMember("at_capacity")) {
+                            if (!item["at_capacity"].isBool()) return false;
+                            path.at_capacity = item["at_capacity"].asBool();
+                        }
                         state.paths.emplace_back(std::move(path));
                     }
                     if (state.enabled && state.paths.empty()) return false;

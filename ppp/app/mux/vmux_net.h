@@ -19,6 +19,8 @@
 #include <ppp/app/mux/MuxRxQueueLimit.h>
 #include <ppp/app/mux/MuxTxBackpressure.h>
 #include <ppp/app/multipath/Scheduler.h>
+#include <ppp/app/multipath/VmuxPathEstimator.h>
+#include <ppp/app/multipath/PoolController.h>
 #include <string>
 
 namespace vmux {
@@ -39,6 +41,14 @@ namespace vmux {
             uint64_t retransmit_bytes = 0; ///< VMUX frame bytes explicitly resent.
             uint64_t rtt_ms = 0; ///< Lowest sampled SRTT across active carriers; zero means unknown.
             bool has_rtt = false;
+            uint64_t delivery_rate_bytes_per_second = 0;
+            uint64_t capacity_rate_bytes_per_second = 0;
+            uint64_t min_rtt_ms = 0;
+            uint64_t queue_delay_ms = 0;
+            uint64_t bdp_bytes = 0;
+            uint8_t confidence = 0;
+            bool has_telemetry = false;
+            bool at_capacity = false;
         };
 
         /** @brief Callback used when an async connect attempt finishes. */
@@ -91,6 +101,7 @@ namespace vmux {
             uint64_t                                                                delivery_sample_start_ms_ = 0;
             uint64_t                                                                delivery_sample_bytes_ = 0;
             uint64_t                                                                delivery_updated_ms_ = 0;
+            ppp::app::multipath::VmuxPathEstimator                                  path_estimator_;
 
             /** Unified "can this link accept new work?" predicate. All schedulability
              *  checks (count_live_carriers, turbo, shrink, scheduler) MUST use this

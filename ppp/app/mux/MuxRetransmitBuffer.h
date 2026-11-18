@@ -147,9 +147,11 @@ public:
                     *out_link_id = it->second.orig_link_id;
                 }
             }
-            if (nullptr != out_link_acked_bytes && it->second.attempts == 0 &&
-                it->second.orig_link_id != 0) {
-                (*out_link_acked_bytes)[it->second.orig_link_id] +=
+            // Delivery belongs to the link carrying the final transmission.
+            // RTT sampling above intentionally remains tied to orig_link_id
+            // and Karn's rule; these are separate accounting concepts.
+            if (nullptr != out_link_acked_bytes && it->second.last_link_id != 0) {
+                (*out_link_acked_bytes)[it->second.last_link_id] +=
                     static_cast<std::size_t>(it->second.length);
             }
             ReleaseLinkBytes(it->second.last_link_id, static_cast<std::size_t>(it->second.length));

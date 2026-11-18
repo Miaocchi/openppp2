@@ -51,6 +51,7 @@ BOOST_AUTO_TEST_CASE(create_generates_ticket_and_clamps_grace_without_exposing_s
     auto ticket = Create(session, T(10));
     auto snapshot = session.Snapshot();
     BOOST_CHECK(snapshot.status == mp::SessionStatus::Active);
+    BOOST_CHECK(static_cast<int>(session.ControlState()) == static_cast<int>(mp::PathState::Active));
     BOOST_TEST(snapshot.generation == 1u);
     BOOST_TEST(snapshot.carrier_count == 0u);
     BOOST_CHECK(snapshot.id == ticket.id);
@@ -233,6 +234,7 @@ BOOST_AUTO_TEST_CASE(last_carrier_departure_sets_one_fixed_deadline_failed_candi
     BOOST_CHECK(joins.Confirm(session, failed_confirm, T(6001), response) == mp::JoinResult::Rejected);
     BOOST_CHECK(session.Snapshot().deadline == deadline);
     BOOST_CHECK(session.Snapshot().status == mp::SessionStatus::Resuming);
+    BOOST_CHECK(static_cast<int>(session.ControlState()) == static_cast<int>(mp::PathState::Warming));
 
     BOOST_REQUIRE(joins.Reserve(session, resume, T(16001), response) == mp::JoinResult::Accepted);
     auto confirm = resume;
@@ -259,6 +261,7 @@ BOOST_AUTO_TEST_CASE(expiry_clears_credentials_and_rejects_old_async_callbacks) 
     BOOST_TEST(!session.Expire(T(30001)));
     BOOST_TEST(session.Expire(T(30002)));
     BOOST_CHECK(session.Snapshot().status == mp::SessionStatus::Expired);
+    BOOST_CHECK(static_cast<int>(session.ControlState()) == static_cast<int>(mp::PathState::Stopped));
     BOOST_TEST(!session.Credential().IsSet());
     BOOST_TEST(!session.OnCarrierJoined("late", 1, 9, T(30003)));
     BOOST_TEST(!session.OnCarrierLeft("first", 1, 8, T(30003)));

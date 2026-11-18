@@ -569,6 +569,7 @@
     <ClCompile Include="ppp\app\multipath\Control.cpp" />
     <ClCompile Include="ppp\app\multipath\Join.cpp" />
     <ClCompile Include="ppp\app\multipath\PathDialer.cpp" />
+    <ClCompile Include="ppp\app\multipath\PathControl.cpp" />
     <ClCompile Include="ppp\app\multipath\PathManager.cpp" />
     <ClCompile Include="ppp\app\multipath\Session.cpp" />
     <ClCompile Include="ppp\app\multipath\WireProtocol.cpp" />
@@ -1044,6 +1045,11 @@
     <ClInclude Include="ppp\app\multipath\Control.h" />
     <ClInclude Include="ppp\app\multipath\Join.h" />
     <ClInclude Include="ppp\app\multipath\PathDialer.h" />
+    <ClInclude Include="ppp\app\multipath\PathControl.h" />
+    <ClInclude Include="ppp\app\multipath\PathAdapter.h" />
+    <ClInclude Include="ppp\app\multipath\PathControlTypes.h" />
+    <ClInclude Include="ppp\app\multipath\PoolController.h" />
+    <ClInclude Include="ppp\app\multipath\VmuxPathEstimator.h" />
     <ClInclude Include="ppp\app\multipath\PathManager.h" />
     <ClInclude Include="ppp\app\multipath\RuntimeState.h" />
     <ClInclude Include="ppp\app\multipath\Session.h" />

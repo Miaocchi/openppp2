@@ -315,6 +315,9 @@
     <ClCompile Include="ppp\app\multipath\PathDialer.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ppp\app\multipath\PathControl.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ppp\app\multipath\PathManager.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -1622,6 +1625,21 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\multipath\PathDialer.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\multipath\PathControl.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\multipath\PathAdapter.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\multipath\PathControlTypes.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\multipath\PoolController.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ppp\app\multipath\VmuxPathEstimator.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ppp\app\multipath\PathManager.h">
