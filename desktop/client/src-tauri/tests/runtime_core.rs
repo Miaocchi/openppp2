@@ -230,3 +230,34 @@ fn stats_sampler_reports_p2p_state_and_per_peer_paths() {
     assert_eq!(legacy.p2p_state, "");
     assert!(legacy.peers.is_empty());
 }
+
+#[test]
+fn stats_sampler_preserves_optional_multipath_runtime_fields_and_legacy_records() {
+    let mut sampler = StatsSampler::default();
+    let mut value: serde_json::Value = serde_json::from_str(&stats_line(1000, 1, 1)).unwrap();
+    value["runtime"]["multipath"] = serde_json::json!({
+        "enabled": true,
+        "policy": "adaptive",
+        "state": "active",
+        "active_paths": 1,
+        "remaining_grace_ms": null,
+        "capabilities": ["vmux-reorder-v1"],
+        "paths": [{
+            "id": "edge-a", "state": "joined", "carriers": 1,
+            "reconnect_attempts": 2, "error_code": "",
+            "rtt_ms": null, "rx_bytes": null, "tx_bytes": null,
+            "inflight_bytes": null, "retransmit_bytes": null
+        }]
+    });
+    let view = sampler.consume_line(&value.to_string()).unwrap();
+    let multipath = view.multipath.unwrap();
+    assert!(multipath.enabled);
+    assert_eq!(multipath.policy, "adaptive");
+    assert_eq!(multipath.active_paths, 1);
+    assert_eq!(multipath.paths[0].id, "edge-a");
+    assert_eq!(multipath.paths[0].reconnect_attempts, 2);
+    assert_eq!(multipath.paths[0].rtt_ms, None);
+
+    let legacy = sampler.consume_line(&stats_line(2000, 2, 2)).unwrap();
+    assert!(legacy.multipath.is_none());
+}

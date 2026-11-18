@@ -61,6 +61,7 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
       state.connection.connectedAt = null
       state.connection.statsAvailable = false
       state.connection.pid = null
+      state.stats = { ...state.stats, multipath: null }
       if (recoveryPending) {
         state.connection.lastError = 'network recovery is pending'
       } else if (state.connection.status === 'error' && !event.payload.success && !state.connection.lastError) {

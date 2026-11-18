@@ -4,7 +4,11 @@
   export let current = 'connection'
   export let navigate
   export let version = ''
-  const items = [['connection','Connection','连接',ArrowRightLeft], ['nodes','Nodes','节点',Waypoints], ['subscription','Subscriptions','订阅',RadioTower], ['routing','Routing','分流',Route], ['dns','DNS','DNS',Globe], ['logs','Logs','日志',Logs], ['settings','Settings','设置',Settings]]
+  export let multipathVisible = false
+  const baseItems = [['connection','Connection','连接',ArrowRightLeft], ['nodes','Nodes','节点',Waypoints], ['subscription','Subscriptions','订阅',RadioTower], ['routing','Routing','分流',Route], ['dns','DNS','DNS',Globe], ['logs','Logs','日志',Logs], ['settings','Settings','设置',Settings]]
+  $: items = multipathVisible
+    ? [...baseItems.slice(0, 3), ['paths','Paths','多路径',Waypoints], ...baseItems.slice(3)]
+    : baseItems
 </script>
 <aside class="sidebar">
   <div class="brand"><img src="/icon.ico" alt="" width="24" height="24"/><strong>OpenPPP2</strong></div>

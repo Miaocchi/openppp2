@@ -59,6 +59,45 @@ struct RuntimeRecord {
     peers: Vec<PeerRecord>,
     #[serde(default)]
     last_error: RuntimeError,
+    #[serde(default)]
+    multipath: Option<MultipathView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultipathView {
+    pub enabled: bool,
+    pub policy: String,
+    pub state: String,
+    #[serde(alias = "active_paths")]
+    pub active_paths: u32,
+    #[serde(alias = "remaining_grace_ms")]
+    pub remaining_grace_ms: Option<u64>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    pub paths: Vec<MultipathPathView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultipathPathView {
+    pub id: String,
+    pub state: String,
+    pub carriers: u32,
+    #[serde(alias = "reconnect_attempts")]
+    pub reconnect_attempts: u32,
+    #[serde(alias = "error_code")]
+    pub error_code: String,
+    #[serde(alias = "rtt_ms", skip_serializing_if = "Option::is_none")]
+    pub rtt_ms: Option<u64>,
+    #[serde(alias = "rx_bytes", skip_serializing_if = "Option::is_none")]
+    pub rx_bytes: Option<u64>,
+    #[serde(alias = "tx_bytes", skip_serializing_if = "Option::is_none")]
+    pub tx_bytes: Option<u64>,
+    #[serde(alias = "inflight_bytes", skip_serializing_if = "Option::is_none")]
+    pub inflight_bytes: Option<u64>,
+    #[serde(alias = "retransmit_bytes", skip_serializing_if = "Option::is_none")]
+    pub retransmit_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -132,6 +171,7 @@ pub struct StatsView {
     pub peers: Vec<PeerView>,
     pub tcp_stack: String,
     pub last_error: RuntimeError,
+    pub multipath: Option<MultipathView>,
 }
 
 #[derive(Default)]
@@ -194,6 +234,7 @@ impl StatsSampler {
             peers: record.runtime.peers.iter().map(PeerView::from).collect(),
             tcp_stack: record.tcp_stack.as_ref().map(|stack| stack.active.clone()).unwrap_or_default(),
             last_error: record.runtime.last_error.clone(),
+            multipath: record.runtime.multipath.clone(),
         };
         self.previous = Some(record);
         self.current = Some(view.clone());

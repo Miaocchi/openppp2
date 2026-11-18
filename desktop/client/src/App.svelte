@@ -9,6 +9,7 @@
   import Settings from './routes/Settings.svelte'
   import Routing from './routes/Routing.svelte'
   import Dns from './routes/Dns.svelte'
+  import Paths from './routes/Paths.svelte'
   import { language } from './lib/i18n.js'
   import { createRuntime } from './lib/runtime/index.js'
 
@@ -20,6 +21,8 @@
   let systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches
   $: if (state) language.set(state.settings.language)
   $: theme = state?.settings.appearance || 'system'
+  $: multipathConfigEnabled = (() => { try { return JSON.parse(state?.config || '{}')?.client?.multipath?.enabled === true } catch { return false } })()
+  $: multipathVisible = multipathConfigEnabled || (['connected', 'reconnecting'].includes(state?.connection?.status) && state?.stats?.multipath?.enabled === true)
   $: if(state && initialized) { localStorage.setItem('openppp2-appearance',theme); document.documentElement.lang=state.settings.language === 'English' ? 'en' : 'zh-CN' }
   $: if(initialized) document.documentElement.dataset.theme = theme === 'light' || theme === '浅色' ? 'light' : theme === 'dark' || theme === '深色' ? 'dark' : systemDark ? 'dark' : 'light'
 
@@ -55,7 +58,7 @@
 
 {#if state}
   <div class="shell">
-    <Sidebar current={state.route} navigate={(route) => runtime.navigate(route)} version={state.kernel?.version} />
+    <Sidebar current={state.route} navigate={(route) => runtime.navigate(route)} version={state.kernel?.version} {multipathVisible} />
     <main>
       <Topbar {state} {runtime} />
       <div class="content">
@@ -72,6 +75,8 @@
           <Routing {state} {runtime} />
         {:else if state.route === 'dns'}
           <Dns {state} {runtime} />
+        {:else if state.route === 'paths' && multipathVisible}
+          <Paths {state} />
         {:else if state.route === 'settings'}
           <Settings {state} {runtime} />
         {/if}
