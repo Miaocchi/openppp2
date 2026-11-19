@@ -47,11 +47,11 @@
 | DNS 与绕行 | IPv4/IPv6 候选拨号前保护，引用计数，更新与取消释放，多平台行为明确 | 已在当前源码重编并通过：`multipath_bypass_lease_test`、`client_underlying_socket_protector_test`。多平台行为仍**未验证** |
 | 调度与背压 | adaptive/failover 双向调度，单流并行，异构 RTT 下在途与重排预算有界 | 已在当前源码重编并通过：`multipath_scheduler_test`。异构 RTT 下的实测在途/重排上界仍**未验证**（隔离 netns 矩阵未跑） |
 | TCP 连续性 | 双向字节完整且无重复，SYN/FIN/RST、半关闭、慢目标与受限重传 | 已在当前源码重编并通过：`transport_auth_lifecycle_test`（含新增 `transport_auth_completion_survives_late_caller_resume` 竞态用例）、`vmux_receive_semantics_test`；`multipath_transmission_test` 的 mux 饱和竞态修复已合入 `10c76d75`，提交验证记录为 15/15 通过。慢目标与受限重传的真实业务实测仍**未验证** |
-| 控制与恢复 | 主物理连接失效仍可用；控制序号/ACK/幂等；全断恢复和固定宽限期 | 已在当前源码重编并通过：`multipath_wire_protocol_test`（含非零 operation watermark）、完整内核 VMUX 行为目标的迟到 ACK/承载 ID 复用回归。主连接失效连续性与全断恢复仍**未验证** |
+| 控制与恢复 | 主物理连接失效仍可用；控制序号/ACK/幂等；全断恢复和固定宽限期 | 已在当前源码重编并通过：`multipath_wire_protocol_test`（含非零 operation watermark；codec 证明范围为 v1 自洽 round-trip 与严格拒绝，不含跨版本字节级互解，不主张向后兼容）、完整内核 VMUX 行为目标的迟到 ACK/承载 ID 复用回归。主连接失效连续性与全断恢复仍**未验证** |
 | 过期与重启 | 失败候选不续期；进程重启后旧流明确失败；无旧数据注入新会话 | 待验收 |
 | 非 TCP 范围 | UDP 选健康承载与允许丢包；原始 IP/P2P/FRP 的适用范围逐项说明 | 待验收 |
 | 运维与产品 | 配置/UI 接入，路径与会话状态/指标，秘密不落日志，受控启停与发布回退文档 | 已在当前源码重编并通过：`runtime_snapshot_test` 的多路径快照字段；桌面前端 `npm test` 42 项与 `npm run build`。Cargo 缺失使 Rust 后端未测；启停回退文档与秘密审计仍**未验证** |
-| 平台与质量 | 全内核编译、相关回归、ASan/UBSan/TSan、跨平台构建和资源回落 | 已在当前源码重编并通过：Linux 完整内核编译/链接、八个 multipath 离线测试加 `runtime_snapshot_test`（传输套件另有 `10c76d75` 的 15/15 与全套件两轮提交验证）、八个受影响目标的 ASan/UBSan 构建与运行、`multipath_session_test`/`multipath_scheduler_test`/`multipath_path_control_test` 的 TSan 构建与运行、`transport_auth_lifecycle_test`、独立密码学向量。ASan/UBSan 本轮使用 `ASAN_OPTIONS=detect_leaks=0`，LeakSanitizer 受 ptrace 环境限制。未验证：TSan `bypass_lease`、Windows/macOS/移动端构建与运行 |
+| 平台与质量 | 全内核编译、相关回归、ASan/UBSan/TSan、跨平台构建和资源回落 | 已在当前源码重编并通过：Linux 完整内核编译/链接、八个 multipath 离线测试加 `runtime_snapshot_test`（传输套件另有 `10c76d75` 的 15/15 与全套件两轮提交验证）、八个受影响目标的 ASan/UBSan 构建与运行、2026-11-19 九个 `multipath_*` 目标 TSan 重建复跑：8 通过；`multipath_transmission_test` 断言全过但报告 6 处 data race（同一根因：Beast websocket stream 的完成回调在 io_context 普通 executor 上执行、操作发起在 strand/测试线程，违反 stream 须同 strand 的使用契约；产品 `ppp/net/asio/websocket` 的线程契约待澄清修复）、`transport_auth_lifecycle_test`、独立密码学向量。ASan/UBSan 本轮使用 `ASAN_OPTIONS=detect_leaks=0`，LeakSanitizer 受 ptrace 环境限制；全树 ASan 并发构建会 OOM 杀 cc1plus，非 multipath 目标需 `-j2` 重试。未验证：Windows/macOS/移动端构建与运行 |
 | 真实入口 | 直连与反代/CDN 场景业务数据验证；本地 TLS 终止模拟须单独标识 | 待验收 |
 
 ## 隔离网络矩阵
