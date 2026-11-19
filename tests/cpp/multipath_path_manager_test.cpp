@@ -242,3 +242,94 @@ BOOST_AUTO_TEST_CASE(concurrent_snapshots_and_late_attempts_survive_stop_restart
     BOOST_TEST(manager.ActiveAttempts() == 0u);
     BOOST_TEST(manager.JoinedCarriers() == 0u);
 }
+
+namespace {
+void CheckSlotProjection(mp::PathManager& manager, std::size_t index,
+    mp::PathState control_state, mp::PathManager::State slot_state) {
+    mp::PathManager::SlotSnapshot slot;
+    mp::PathControlSnapshot control;
+    BOOST_REQUIRE(manager.GetSlot(index, slot));
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(index, control));
+    BOOST_TEST(static_cast<int>(control.state) == static_cast<int>(control_state));
+    BOOST_TEST(static_cast<int>(slot.state) == static_cast<int>(slot_state));
+    BOOST_TEST(slot.retry_at_ms == control.retry_at_ms);
+}
+}
+
+BOOST_AUTO_TEST_CASE(slot_snapshot_is_a_pure_projection_of_path_control) {
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(MakeConfig(1, 1, 1, 1)));
+    CheckSlotProjection(manager, 0, mp::PathState::Disabled, mp::PathManager::State::Waiting);
+
+    mp::PathManager::Attempt attempt;
+    BOOST_REQUIRE(manager.BeginAttempt(1000, attempt));
+    CheckSlotProjection(manager, 0, mp::PathState::Probing, mp::PathManager::State::Connecting);
+
+    BOOST_REQUIRE(manager.MarkAuthenticating(attempt));
+    CheckSlotProjection(manager, 0, mp::PathState::Warming, mp::PathManager::State::Authenticating);
+
+    BOOST_REQUIRE(manager.MarkJoined(attempt));
+    CheckSlotProjection(manager, 0, mp::PathState::Warming, mp::PathManager::State::Joined);
+
+    BOOST_REQUIRE(manager.CarrierLost(attempt, 2000));
+    CheckSlotProjection(manager, 0, mp::PathState::Backoff, mp::PathManager::State::Backoff);
+
+    mp::PathControlSnapshot control;
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, control));
+    BOOST_TEST(control.retry_at_ms >= 3000u);
+    BOOST_TEST(control.retry_at_ms <= 3200u);
+    BOOST_TEST(static_cast<int>(control.last_failure) == static_cast<int>(mp::FailureClass::Network));
+    mp::PathManager::SlotSnapshot slot;
+    BOOST_REQUIRE(manager.GetSlot(0, slot));
+    BOOST_TEST(static_cast<int>(slot.failure) == static_cast<int>(mp::PathManager::Failure::Network));
+    BOOST_TEST(slot.failures == 1u);
+
+    mp::PathManager::Attempt too_early;
+    BOOST_TEST(!manager.BeginAttempt(control.retry_at_ms - 1, too_early));
+    mp::PathManager::Attempt retry;
+    BOOST_REQUIRE(manager.BeginAttempt(control.retry_at_ms, retry));
+    CheckSlotProjection(manager, 0, mp::PathState::Probing, mp::PathManager::State::Connecting);
+    BOOST_TEST(manager.IsCurrent(retry));
+
+    BOOST_REQUIRE(manager.GetPathControlSnapshot(0, control));
+    BOOST_TEST(control.rejected_events == 0u);
+    BOOST_TEST(control.stale_events == 0u);
+    BOOST_TEST(manager.ActiveAttempts() == 1u);
+}
+
+BOOST_AUTO_TEST_CASE(control_rejections_are_visible_to_callers) {
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(MakeConfig(1, 1, 1, 1)));
+    mp::PathManager::Attempt attempt;
+    BOOST_REQUIRE(manager.BeginAttempt(0, attempt));
+    manager.Stop();
+    BOOST_TEST(!manager.BeginAttempt(1, attempt));
+    BOOST_TEST(!manager.MarkAuthenticating(attempt));
+    BOOST_TEST(!manager.MarkJoined(attempt));
+    BOOST_TEST(!manager.CarrierLost(attempt, 1));
+    CheckSlotProjection(manager, 0, mp::PathState::Stopped, mp::PathManager::State::Stopped);
+
+    BOOST_REQUIRE(manager.Start(MakeConfig(1, 1, 1, 1)));
+    mp::PathManager::Attempt undialed;
+    BOOST_TEST(!manager.MarkJoined(undialed));
+    CheckSlotProjection(manager, 0, mp::PathState::Disabled, mp::PathManager::State::Waiting);
+
+    mp::PathManager::Attempt failed;
+    BOOST_REQUIRE(manager.BeginAttempt(0, failed));
+    BOOST_REQUIRE(manager.Fail(failed, 0, mp::PathManager::Failure::Network));
+    BOOST_TEST(!manager.MarkJoined(failed));
+    BOOST_TEST(!manager.MarkAuthenticating(failed));
+    CheckSlotProjection(manager, 0, mp::PathState::Backoff, mp::PathManager::State::Backoff);
+    BOOST_TEST(manager.ActiveAttempts() == 0u);
+
+    mp::PathManager::SlotSnapshot slot;
+    BOOST_REQUIRE(manager.GetSlot(0, slot));
+    mp::PathManager::Attempt retry;
+    BOOST_REQUIRE(manager.BeginAttempt(slot.retry_at_ms, retry));
+    BOOST_REQUIRE(manager.MarkJoined(retry));
+    BOOST_TEST(!manager.MarkJoined(retry));
+    BOOST_TEST(!manager.Fail(retry, slot.retry_at_ms + 1, mp::PathManager::Failure::Network));
+    CheckSlotProjection(manager, 0, mp::PathState::Warming, mp::PathManager::State::Joined);
+    BOOST_TEST(manager.JoinedCarriers() == 1u);
+    BOOST_TEST(manager.ActiveAttempts() == 0u);
+}

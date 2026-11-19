@@ -58,7 +58,8 @@ namespace ppp::app::multipath {
         std::size_t SlotCount() const noexcept;
         bool GetPath(std::size_t index, ppp::configurations::MultipathConfiguration::Path& path) const noexcept;
         bool GetSlot(std::size_t index, SlotSnapshot& slot) const noexcept;
-        // Read-only compatibility projection for the PathControl facade.
+        // The PathControl state machine is authoritative; this returns its live
+        // snapshot with the current manager epoch.
         bool GetPathControlSnapshot(std::size_t index,
             PathControlSnapshot& snapshot) const noexcept;
 
@@ -71,10 +72,17 @@ namespace ppp::app::multipath {
             std::unique_ptr<PathControlAdapter> control;
         };
 
-        void ScheduleRetry(Slot& slot, std::uint64_t now_ms, Failure failure) noexcept;
+        // Backoff policy input: jittered delay in milliseconds. The resulting
+        // retry deadline lives only in the PathControl snapshot.
+        std::uint32_t ComputeRetryDelay(const Slot& slot, Failure failure) const noexcept;
+        void ProjectSlot(Slot& slot) const noexcept;
         bool ApplyControlEvent(Slot& slot, PathEvent kind, std::uint64_t now_ms,
                                std::uint64_t generation,
+                               PathTransition& transition,
                                PathEventData data = {}) noexcept;
+        static Failure FromControlFailure(FailureClass failure) noexcept;
+        static FailureClass ToControlFailure(Failure failure) noexcept;
+        static std::shared_ptr<void> JoinedPlaceholder() noexcept;
         bool IsCurrentLocked(const Attempt& attempt) const noexcept;
         static std::uint32_t Jitter(std::uint32_t delay_ms, std::uint32_t seed) noexcept;
 
