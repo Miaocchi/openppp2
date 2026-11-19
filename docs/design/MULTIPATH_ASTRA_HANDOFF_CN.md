@@ -10,8 +10,9 @@
 
 ## 当前状态
 
-- 正式基线为 `codex/multipath-production` 的 `10c76d75`；多路径实现、客户端接入、编译修复、文档纠偏和测试设施修复已拆成 13 个提交。当前工作区仍包含统一 Path Control、PathManager/VMUX 集成及其测试等未提交改动，验收文档同步也尚未形成最终提交。
-- `multipath_transmission_test` 的 mux 饱和竞态与清理挂死已由最后一个提交修复；提交验证记录为该用例 15/15 通过、完整套件连续两轮通过。
+- 本交付镜像（分支 `codex/multipath-production`）HEAD 为 `ef966bd4`（feat(multipath): publish session path control events），工作区干净。正式工作树 `/root/.codex/worktrees/multipath-production/openppp2` 的基线为 `10c76d75`（含 13 个提交的历史拆分）；镜像在克隆自该基线后另加三个提交：`baf8255` 统一 Path Control 集成、`d384307` 默认 adapter 能力门控、`ef966bd4` 发布 session path control 事件。此前工作树中的未提交改动已在镜像中提交化，`ppp/`、`tests/`、`docs/`、`ppp.vcxproj` 与正式工作树当前工作状态逐字节一致。
+- `multipath_transmission_test` 的 mux 饱和竞态与清理挂死由 `10c76d75` 修复（提交记录：该用例 15/15、完整套件连续两轮）。2026-11-19 在正式工作树以当前源码重建后独立复核：单用例 40/40、完整二进制 5/5、并发 8 实例 0 失败、`ctest -R '^multipath_'` 9/9 通过、ASan 版单用例 10/10。早于 2026-11-18 22:19 构建的测试二进制不含该修复，复跑前必须重建。
+- `builds/openppp2-linux-amd64-*` 为各 Linux 变体（sysnat/io-uring/simd 组合）的 CMake 构建定义文件，与主线仓库逐字节一致，CI 变体矩阵使用相同后缀命名；它们不是可执行产物，本镜像不含 Linux `ppp` 二进制，验收方不应将其当作构建输出核对。
 - 当前可复用的离线证据包括配置、会话、路径管理、调度、绕行租约、wire codec、安全通道、运行快照、传输认证和 VMUX 接收语义测试；详见[验收清单](../testing/MULTIPATH_ACCEPTANCE_CN.md)。
 - 真实 CDN/VPN 业务、多路径实际带宽/尾延迟、主承载故障连续性、全断恢复、跨平台构建和 ASan/UBSan/TSan 新鲜度仍未全部闭环，不能据局部单测宣布生产可用。
 
