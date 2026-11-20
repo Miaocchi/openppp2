@@ -135,21 +135,6 @@ namespace ppp
             std::shared_ptr<MIB_IFTABLE>                        GetIfTable() noexcept;
             std::shared_ptr<MIB_IFROW>                          GetIfEntry(int interface_index) noexcept;
 
-            /**
-             * Applies DNS to the interfaces represented by the supplied
-             * snapshot map. The return value is the number of successful
-             * interface operations; failed snapshots remain in the map for a
-             * later retry.
-             */
-            int                                                 SetAllNicsDnsAddresses(ppp::unordered_map<int, ppp::vector<boost::asio::ip::address>>& addresses) noexcept;
-
-            /**
-             * Captures the DNS state of eligible interfaces before applying
-             * the requested servers. The captured map is also the exact
-             * authorization set used by the apply operation.
-             */
-            int                                                 SetAllNicsDnsAddresses(ppp::vector<boost::asio::ip::address>& servers, ppp::unordered_map<int, ppp::vector<boost::asio::ip::address>>& addresses) noexcept;
-
             bool                                                AddAllRoutes(std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept;
             bool                                                AddAllRoutes(ppp::vector<MIB_IPFORWARDROW>& routes) noexcept;
             bool                                                DeleteAllRoutes(std::shared_ptr<ppp::net::native::RouteInformationTable> rib) noexcept;

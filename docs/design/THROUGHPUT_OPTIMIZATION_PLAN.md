@@ -12,6 +12,51 @@ Current pin: c9dd56013842 (2026-10-31), with 33 local patches. PRs #3-#8
 fully absorb 0037-0040 and 0048; 0042/0043/0045/0046 retain local integration
 residuals only. The old pin and measurements below remain historical.
 
+## RACK 0060 Throughput A/B (2026-11-06)
+
+**Decision: no throughput regression from xtcp patch 0060 (RACK RFC 8985
+timing + SACK scoreboard) on a clean loopback-class path; loss recovery itself
+is not exercised here.** A=main `b2888d98`, B=PR #145 branch `1fceaa15`
+(main merged in; only 0060 and its tests differ at the XTCP layer). Interleaved
+ABBA/BAAB, two groups, four 45 s samples per version and cell, XTCP only.
+Rack/main ratio of medians (rack/main, Mbps):
+
+| Cell | main median | rack median | rack/main | Spread main / rack |
+| --- | ---: | ---: | ---: | ---: |
+| UL P1 | 1229.3 | 1227.8 | 0.9987 | 3.71% / 2.27% |
+| UL P16 | 999.9 | 997.2 | 0.9974 | 0.32% / 1.32% |
+| DL P1 | 1682.4 | 1677.3 | 0.9969 | 2.44% / 5.24% |
+| DL P16 | 1807.3 | 1776.1 | 0.9827 | 5.16% / 5.53% |
+| UL P1, netem 20 ms (30 s) | 1170.9 | 1164.5 | 0.9945 | 2.87% / 1.88% |
+| DL P1, netem 20 ms (30 s) | 1647.5 | 1628.2 | 0.9883 | 1.33% / 2.76% |
+
+Spread is `(max-min)/median` within a version. Every ratio sits inside the
+version's own spread; the largest gap (DL P16, -1.7%) is below both versions'
+~5% spread. Ratios of means differ by under 1.2 points from the medians
+(DL P16 0.9879). Raw samples: UL P1 main 1228.5/1250.3/1230.1/1204.6, rack
+1213.4/1222.7/1241.3/1232.8; DL P16 main 1729.6/1822.9/1812.5/1802.1, rack
+1782.8/1714.9/1813.1/1769.3.
+
+Setup: both trees from `git archive`, `tools/prepare_xtcp.sh` (c9dd560 plus
+39/40 patches), Release/Ninja/GCC 14.2, same dependency root, built under
+`flock /tmp/ppp-m2-build.lock taskset -c 0-15 nice -n 10`, -j16. Binary SHA-256:
+main `ca9f592512f6979fe3b9c474ab482c6e93c181cee2d61e087a3ae98fb673d2f2`, rack `bb030f04dfa237f0ffd1b9b5d1f058e755e3f6e5106b2f29eb40703622556d9c`.
+Measurement used `/home/ppp-m2/measure.py` guard/run with the #126 settings:
+CPU49 client single-core, omit 2 s, KCC, AES-256-CFB, one shard, memory bridge,
+GRO 12288, gather 65536/1 ms, GSO cap32, snd_buf 1 MiB, kernel steering on, all
+through `tools/run_m3_isolated.sh` (with the external tmpfs `isolated.sh` of
+#126 for the `ismount` check). All 48 cells: result=pass, qualification=pass,
+zero zero-rate flows, exit 0, no runtime faults, cleanup ok, binaries unchanged.
+
+Limits: the legacy runner has no loss/reorder knob, only `--netem-delay-ms`,
+and it lacks strict qdisc readback. The 20 ms rows left throughput close to the
+no-netem rows and iperf RTT stayed local, so whether the delay reached the
+measured path is unverified. They are not a loss or RTT-sensitivity result, and
+RACK recovery benefits (tail loss, reordering) are not measured. Native stack
+and non-Linux platforms were not run. Evidence:
+`/home/ppp-m2/ab0060-{main,rack}-20261106-1053/` (trees and `bin/ppp`) and
+`/home/ppp-m2/ab0060-campaign/` (`campaign.py`, `runs/`, `summary.txt/json`).
+
 ## TUN Write Diagnostics (2026-11-01)
 
 Chinese section 2.4.7 records diagnostic-only relaxed counters exposed in

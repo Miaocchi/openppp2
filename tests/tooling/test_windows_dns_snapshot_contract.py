@@ -25,24 +25,14 @@ class WindowsDnsSnapshotContractTests(unittest.TestCase):
             ROOT / "windows/ppp/win32/network/NetworkInterface.cpp"
         ).read_text(encoding="utf-8")
 
-    def test_apply_is_limited_to_captured_authorization_set(self) -> None:
-        apply_body = function_body(
-            self.source,
-            "int SetAllNicsDnsAddresses(ppp::vector<boost::asio::ip::address>& servers",
+    def test_all_interface_dns_writer_is_removed(self) -> None:
+        # DNS writes are limited to the TAP snapshot path; the legacy
+        # all-interface writer must not come back.
+        header = (ROOT / "windows/ppp/win32/network/NetworkInterface.h").read_text(
+            encoding="utf-8"
         )
-        self.assertIn("for (const auto& [interface_index, ignored] : addresses)", apply_body)
-        self.assertIn("SetDnsAddresses(interface_index, servers_string)", apply_body)
-        self.assertNotIn("SetDnsAddresses(ni->InterfaceIndex, servers_string)", apply_body)
-        self.assertNotIn("addresses.clear()", apply_body)
-
-    def test_failed_restore_keeps_snapshot_for_retry(self) -> None:
-        restore_body = function_body(
-            self.source,
-            "int SetAllNicsDnsAddresses(ppp::unordered_map<int, ppp::vector<boost::asio::ip::address>>& addresses)",
-        )
-        self.assertIn("it = addresses.erase(it)", restore_body)
-        self.assertIn("Retain failed snapshots", restore_body)
-        self.assertNotIn("addresses.clear()", restore_body)
+        self.assertNotIn("SetAllNicsDnsAddresses", self.source)
+        self.assertNotIn("SetAllNicsDnsAddresses", header)
 
     def test_snapshot_records_stable_identity_and_dns_mode(self) -> None:
         header = (ROOT / "windows/ppp/win32/network/NetworkInterface.h").read_text(

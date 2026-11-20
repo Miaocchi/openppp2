@@ -6,6 +6,19 @@
 > **状态边界：**本页记录设计、实现说明与有界证据，不是当前用户合同；“已实现”不自动等于跨平台或发布级保证。当前受支持行为、配置与操作请以[架构](../architecture/README_CN.md)、[参考](../reference/README_CN.md)、[指南](../guides/README_CN.md)、[运维](../operations/README_CN.md)及对应发行/测试页面为准；持久决策见[ADR](../adr/README_CN.md)。验证仅限本页列明的源码、提交或实验记录，未覆盖的生产、跨平台或部署条件不能由本页推出。
 
 
+## RACK 时间基准与 SACK 记分板（0060）
+
+补丁 0060 按 RFC 8985 修正 xtcp 的 RACK 丢包检测。RACK 现在记录最近被交付
+报文的发送时间（`RACK.xmit_ts`）及其 RTT（`RACK.rtt`，不取自重传报文）。仅当
+`RACK.xmit_ts >= seg.xmit_ts` 且 `now >= seg.xmit_ts + RACK.rtt + reo_wnd`
+时才判丢，因此约一个 RTT 龄的乱序包不再被误判，重传报文按自身发送时间判定
+（重传时刷新 `xmit_ts`，Karn 清零的 `sent_at` 保持不变）。`reo_wnd` 为
+`min_rtt/4` 乘以 DSACK 倍数（每个出现 DSACK 的轮次加 1，连续 16 次无 DSACK
+的恢复后复位），上限为 SRTT。xtcp 没有独立的乱序定时器，判定仍在 ACK 路径
+执行，RTO 作为兜底。同一补丁还修复 RACK 锚点哨兵（`rack_seq_ == 0` 加回绕比较使约一半 ISN 上 RACK 静默失效），让 SACK 字节计数幂等（重复通告的部分块只计
+一次）、让 dup-ACK 空洞检查对序号回绕安全，并在每次尾部发送时重新武装 TLP
+截止时间（RFC 8985 s7.2）。测试：`test_rack_xmit_ts`、`test_sack_scoreboard`。
+
 ## SYN Cookie MAC 加宽（0054）
 
 0054 将无状态 SYN Cookie 的乘法混合哈希替换为带密钥 SipHash-2-4（128 位

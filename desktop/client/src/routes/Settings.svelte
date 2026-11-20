@@ -3,6 +3,7 @@
   import { t } from '../lib/i18n.js'
   import { downloadText, redactText } from '../lib/security.js'
   import { effective, setPath as setIn, parseBase, completeListeners } from '../lib/overrides.js'
+  import { normalizeProxyForwards } from '../lib/proxyForwards.js'
   import Config from './Config.svelte'
   export let state
   export let runtime
@@ -99,11 +100,13 @@
       <p class="subtle small">{$t('Listener and P2P edits use Save under Network overrides. Bind to loopback to restrict listeners to this computer.','监听与 P2P 修改由「网络覆盖」中的保存按钮保存。使用回环地址可将监听限制在本机。')}</p>
       <p class="subtle small">{$t('P2P direct on Windows has not been accepted on real NATs yet. The server must also allow direct-preferred; otherwise traffic stays on the relay.','Windows 上的 P2P 直连尚未经过真实 NAT 验收。服务器也需允许 direct-preferred，否则流量仍经服务器中转。')}</p>
     </div></section>
+    {#if state.settings.connectionMode === 'proxy'}
     <section class="card"><div class="card-head"><h2>{$t('Proxy-mode access','代理模式访问范围')}</h2><span class="subtle">{$t('Saved automatically · next connection','自动保存 · 下次连接生效')}</span></div><div class="card-body">
       <label class="setting-row"><span>{$t('Join the virtual subnet in proxy mode','代理模式下接入虚拟子网')}<small class="subtle block">{$t('No adapter is created: the client joins inside its own process, and traffic to other clients through the local proxy goes P2P or via the server.','不创建网卡，在客户端进程内接入；经本地代理访问其他客户端，走 P2P 或经服务器中转。')}</small></span><input type="checkbox" role="switch" checked={state.launchOptions?.proxySubnet !== false} disabled={busy} on:change={(event) => run(() => runtime.updateLaunchOptions({...state.launchOptions,proxySubnet:event.currentTarget.checked}))}/></label>
-      <label class="setting-row"><span>{$t('Proxy Internet in proxy mode','代理模式下代理上网')}<small class="subtle block">{$t('Off: the local proxy only reaches other clients and the system proxy is not set.','关闭后本地代理只能访问其他客户端，也不再设置系统代理。')}</small></span><input type="checkbox" role="switch" checked={state.launchOptions?.proxyInternet !== false} disabled={busy} on:change={(event) => run(() => runtime.updateLaunchOptions({...state.launchOptions,proxyInternet:event.currentTarget.checked}))}/></label>
-      <label class="field"><span class="label">{$t('Ports open to other clients','开放给其他客户端的端口')}</span><input class="text-input mono" placeholder="22, 8080:3000" value={state.launchOptions?.proxyForwards || ''} disabled={busy || state.launchOptions?.proxySubnet === false} on:change={(event) => run(() => runtime.updateLaunchOptions({...state.launchOptions,proxyForwards:event.currentTarget.value.trim()}))}/><small class="subtle">{$t('TCP only. "8080:3000" forwards port 8080 of your virtual IP to 127.0.0.1:3000; unlisted ports stay closed.','仅 TCP。"8080:3000" 表示把本机虚拟 IP 的 8080 端口转发到 127.0.0.1:3000；未列出的端口一律拒绝。')}</small></label>
+      <label class="setting-row"><span>{$t('Proxy Internet in proxy mode','代理模式下代理上网')}<small class="subtle block">{$t('Off: Internet destinations are refused and the system proxy is not set.','关闭后拒绝访问互联网，也不设置系统代理。')}</small></span><input type="checkbox" role="switch" checked={state.launchOptions?.proxyInternet !== false} disabled={busy} on:change={(event) => run(() => runtime.updateLaunchOptions({...state.launchOptions,proxyInternet:event.currentTarget.checked}))}/></label>
+      <label class="field"><span class="label">{$t('Ports open to other clients','开放给其他客户端的端口')}</span><input class="text-input mono" placeholder="22, 8080:3000" value={state.launchOptions?.proxyForwards || ''} disabled={busy || state.launchOptions?.proxySubnet === false} on:change={(event) => { const forwards=normalizeProxyForwards(event.currentTarget.value); if (forwards.error) { error=$t('Ports must be comma-separated port or port:localPort items (1-65535).','端口必须是逗号分隔的 端口 或 端口:本机端口（1-65535）。'); return } run(() => runtime.updateLaunchOptions({...state.launchOptions,proxyForwards:forwards.value})) }}/><small class="subtle">{$t('TCP only. "8080:3000" forwards port 8080 of your virtual IP to 127.0.0.1:3000; unlisted ports stay closed.','仅 TCP。"8080:3000" 表示把本机虚拟 IP 的 8080 端口转发到 127.0.0.1:3000；未列出的端口一律拒绝。')}</small></label>
     </div></section>
+    {/if}
     <section class="card"><div class="card-body">{#if state.settings.connectionMode === 'proxy'}<p class="subtle small">{$t('In proxy mode, TUN IP, mask and gateway set the virtual-subnet address of this client; the other adapter options apply to adapter mode only.','代理模式下，TUN IP、子网掩码和网关决定本机在虚拟子网中的地址；其余选项只用于网卡模式。')}</p>{/if}<Config {state} {runtime} section="adapter" bind:dirty={configDirty}/></div></section>
 
   {:else}

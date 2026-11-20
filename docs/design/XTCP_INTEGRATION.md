@@ -6,6 +6,23 @@
 > **Status boundary:** This page records design, implementation notes, and bounded evidence; it is not the current user contract, and an implemented item is not automatically a cross-platform or release guarantee. For supported behavior, configuration, and operations, use [Architecture](../architecture/README.md), [Reference](../reference/README.md), [Guides](../guides/README.md), [Operations](../operations/README.md), and the applicable release/testing pages; durable decisions belong in [ADRs](../adr/README.md). Verification is limited to the sources, commits, and lab records named here; untested production, cross-platform, or deployment conditions are not implied.
 
 
+## RACK time base and SACK scoreboard (0060)
+
+Patch 0060 fixes xtcp RACK loss detection per RFC 8985. RACK now keeps the
+send time of the most recently delivered segment (`RACK.xmit_ts`) and its RTT
+(`RACK.rtt`, never taken from a retransmitted segment). A segment is lost only
+when `RACK.xmit_ts >= seg.xmit_ts` and `now >= seg.xmit_ts + RACK.rtt +
+reo_wnd`, so a reordered packet that is about one RTT old is no longer marked
+lost and a retransmission is judged from its own send time (`xmit_ts` is
+refreshed on retransmit; the Karn-zeroed `sent_at` is untouched). `reo_wnd` is
+`min_rtt/4` times a DSACK multiplier (one step per DSACK round, reset after 16
+DSACK-free recoveries), capped at SRTT. xtcp has no separate reorder timer;
+the verdict still runs on the ACK path with the RTO as fallback. The same
+patch also fixes the RACK anchor sentinel (`rack_seq_ == 0` plus wrap-compare left RACK silently off on about half of all ISNs), makes SACK byte accounting idempotent (a re-advertised partial block is
+counted once), makes the dup-ACK hole checks sequence-wrap safe, and re-arms
+the TLP deadline on every tail send (RFC 8985 s7.2). Tests:
+`test_rack_xmit_ts`, `test_sack_scoreboard`.
+
 ## SYN-cookie MAC widening (0054)
 
 Patch 0054 replaces the multiply-mix hash of the stateless SYN cookie with
