@@ -30,9 +30,9 @@ $env:PLAYWRIGHT_MODULE='build/gui-tools/node_modules/playwright/index.mjs'
 node desktop/client/test/gui-smoke.mjs
 ```
 
-For an offline run against Playwright's installed Chromium headless shell, set `GUI_BROWSER_CHANNEL` to the empty string. This exercises the browser UI and simulated native replies, not Windows or the VPN kernel.
+For an offline run against Playwright's Chromium headless shell instead of Edge, install it with `playwright install chromium --only-shell` and set `GUI_BROWSER_CHANNEL` to the empty string. This exercises the browser UI and simulated native replies, not Windows or the VPN kernel.
 
-The script checks light/dark layouts at 1120, 720 and 375 pixels, loaded logo, navigation, manual-node and subscription creation, routing template and rule add, DNS save, settings tabs, language changes, keyboard modal dismissal, logs and page errors. Screenshots go to ignored `build/gui-checks`.
+The script checks light/dark layouts at 1120, 720 and 375 pixels, loaded logo, navigation, manual-node and subscription creation, routing template and rule add, DNS save, settings tabs, language changes, keyboard modal dismissal, logs and page errors. It also switches the demo from subnet-only to Internet-only: the Internet switch must remain usable with the subnet off, while port forwarding stays disabled. Screenshots go to ignored `build/gui-checks`.
 
 ## Isolated native commands
 
