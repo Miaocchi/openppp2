@@ -699,6 +699,45 @@ P16 均值比 1.107，历史 1740/1534≈1.134，约 -2.4%；三轮 XTCP 跨度�
 远端 `src/`、`bin/` 和临时 isolation 目录，保留结果归档，不动其他任务目录。
 没有运行正确性/soak、实网、Windows/mobile 验证，没有提交或推送。
 
+#### 2.4.9 RACK 0060 吞吐 A/B（2026-11-06）
+
+**结论：xtcp 补丁 0060（RACK RFC 8985 时序 + SACK 记分板）在无损路径上未造成吞吐回归；
+丢包恢复收益本次没有被测到。** A=main `b2888d98`，B=PR #145 分支 `1fceaa15`
+（已合并 main，XTCP 层仅 0060 及其测试不同）。交错 ABBA/BAAB，两组，每版本每格
+4 个 45 s 样本，仅 XTCP。rack/main 为中位数之比（Mbps）：
+
+| 场景 | main 中位 | rack 中位 | rack/main | 极差 main / rack |
+| --- | ---: | ---: | ---: | ---: |
+| UL P1 | 1229.3 | 1227.8 | 0.9987 | 3.71% / 2.27% |
+| UL P16 | 999.9 | 997.2 | 0.9974 | 0.32% / 1.32% |
+| DL P1 | 1682.4 | 1677.3 | 0.9969 | 2.44% / 5.24% |
+| DL P16 | 1807.3 | 1776.1 | 0.9827 | 5.16% / 5.53% |
+| UL P1，netem 20 ms（30 s） | 1170.9 | 1164.5 | 0.9945 | 2.87% / 1.88% |
+| DL P1，netem 20 ms（30 s） | 1647.5 | 1628.2 | 0.9883 | 1.33% / 2.76% |
+
+极差为同版本 `(max-min)/median`。所有比值都在各自版本自身极差之内；最大差距
+（DL P16，-1.7%）小于两个版本约 5% 的极差。均值比与中位数比相差不足 1.2 个百分点
+（DL P16 均值比 0.9879）。
+
+**方法**：两棵树均由 `git archive` 取得，`tools/prepare_xtcp.sh`（c9dd560 + 39/40 个补丁），
+Release/Ninja/GCC 14.2，同一依赖根，经
+`flock /tmp/ppp-m2-build.lock taskset -c 0-15 nice -n 10`、-j16 构建。二进制 SHA-256：
+main `ca9f592512f6979fe3b9c474ab482c6e93c181cee2d61e087a3ae98fb673d2f2`，
+rack `bb030f04dfa237f0ffd1b9b5d1f058e755e3f6e5106b2f29eb40703622556d9c`。
+测量沿用 `/home/ppp-m2/measure.py` 守卫/run 与 #126 设置：CPU49 client single-core、
+omit 2 s、KCC、AES-256-CFB、单 shard、memory bridge、GRO 12288、gather 65536/1 ms、
+GSO cap32、snd_buf 1 MiB、kernel steering on，全部经 `tools/run_m3_isolated.sh`
+（沿用 #126 的外部 tmpfs `isolated.sh` 绕过 `ismount` 检查）。48 个格全部
+result=pass、qualification=pass、零零速流、exit 0、无 runtime fault、cleanup ok、
+二进制 hash 不变。
+
+**局限**：旧 runner 没有丢包/乱序参数，只有 `--netem-delay-ms`，且无严格 qdisc 回读。
+20 ms 行吞吐与无 netem 行接近，iperf RTT 仍为本地值，延迟是否作用到被测路径
+**未验证**；它们不是丢包或 RTT 敏感性结论，RACK 的恢复收益（尾丢包、乱序）没有测量。
+未测 native 与非 Linux 平台。证据：
+`/home/ppp-m2/ab0060-{main,rack}-20261106-1053/`（源码树与 `bin/ppp`）和
+`/home/ppp-m2/ab0060-campaign/`（`campaign.py`、`runs/`、`summary.txt/json`）。
+
 ### 2.5 文档与代码不一致
 
 XTCP 集成说明 §0 写"直连桥未设置 `OPENPPP2_XTCP_MEMORY_BRIDGE` 时默认尝试"，但
