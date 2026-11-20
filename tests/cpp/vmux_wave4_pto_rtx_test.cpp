@@ -342,3 +342,28 @@ BOOST_AUTO_TEST_CASE(backoff_per_entry_isolation) {
     }
     BOOST_TEST(found_a);
 }
+
+BOOST_AUTO_TEST_CASE(ack_sampling_uses_payload_and_latest_unambiguous_send_stamp) {
+    mux::MuxRetransmitBuffer buffer;
+    BOOST_REQUIRE(buffer.Track(0, 1, make_frame(1), 110, 10, 1024, 1,
+        {0, 10, 10, false, true}, 100));
+    BOOST_REQUIRE(buffer.Track(0, 2, make_frame(2), 210, 20, 1024, 1,
+        {50, 15, 10, true, true}, 200));
+    BOOST_REQUIRE(buffer.Track(0, 3, make_frame(3), 310, 25, 1024, 2,
+        {0, 25, 25, false, true}, 300));
+    buffer.MarkRetransmitted(buffer.Key(0, 3), 30, 1);
+    BOOST_REQUIRE(buffer.Track(0, 4, make_frame(4), 60, 30, 1024, 2,
+        {0, 30, 30, false, true}, 50));
+    std::vector<std::uint64_t> unused;
+    std::unordered_map<std::uint16_t, std::size_t> accounted;
+    std::unordered_map<std::uint16_t, mux::MuxAckDelivery> delivered;
+    buffer.Ack(0, 4, {{1, 4}}, 50, 3, 0, unused, nullptr, &accounted, &delivered);
+    BOOST_TEST(accounted.at(1) == 630u);
+    BOOST_TEST(delivered.at(1).bytes == 300u);
+    BOOST_TEST(delivered.at(1).sent_tick == 20u);
+    BOOST_TEST(delivered.at(1).stamp.prior_delivered == 50u);
+    BOOST_TEST(delivered.at(1).stamp.is_app_limited);
+    BOOST_TEST(delivered.at(2).bytes == 50u);
+    buffer.Ack(0, 4, {{1, 4}}, 51, 3, 0, unused, nullptr, &accounted, &delivered);
+    BOOST_TEST(delivered.empty());
+}

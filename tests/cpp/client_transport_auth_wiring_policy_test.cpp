@@ -27,6 +27,15 @@ BOOST_AUTO_TEST_CASE(legacy_or_disabled_peers_do_not_start_transport_auth) {
         Kind::WebSocket, true, true, true));
 }
 
+BOOST_AUTO_TEST_CASE(multipath_inner_handshake_requires_its_own_live_binding) {
+    BOOST_TEST(client::IsClientMultipathCarrierAuthenticated(Method::MultipathNoiseV1, true, true));
+    BOOST_TEST(!client::IsClientMultipathCarrierAuthenticated(Method::MultipathNoiseV1, false, true));
+    BOOST_TEST(!client::IsClientMultipathCarrierAuthenticated(Method::MultipathNoiseV1, true, false));
+    BOOST_TEST(!client::IsClientMultipathCarrierAuthenticated(Method::None, true, true));
+    BOOST_TEST(!client::IsClientMultipathCarrierAuthenticated(Method::NoisePskV1, true, true));
+    BOOST_TEST(!client::IsClientMultipathCarrierAuthenticated(Method::TlsExporterV1, true, true));
+}
+
 BOOST_AUTO_TEST_CASE(recovery_requires_exact_active_method_carrier_pair) {
     BOOST_TEST(client::IsClientSessionRecoveryCarrierEligible(
         Kind::TlsWebSocket, Method::TlsExporterV1, true, true));

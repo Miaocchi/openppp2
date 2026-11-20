@@ -4,44 +4,81 @@
 
 using namespace ppp::app::multipath;
 
-BOOST_AUTO_TEST_CASE(estimates_bdp_queue_and_capacity) {
-    VmuxPathEstimator e;
-    VmuxPathSample s;
-    s.epoch = 1; s.timestamp_ms = 100;
-    s.delivery_rate_bytes_per_second = 100000;
-    s.srtt_ms = 50; s.min_rtt_ms = 20; s.wire_inflight_bytes = 5000;
-    auto t = e.Observe(s);
-    BOOST_TEST(t.has_sample); BOOST_TEST(t.bdp_bytes == 5000u);
-    BOOST_TEST(t.queue_delay_ms == 30u); BOOST_TEST(t.at_capacity);
+BOOST_AUTO_TEST_CASE(ewma_filters_low_application_limited_samples) {
+    auto estimator = MakePathEstimator(PathEstimatorMode::Ewma);
+    estimator->OnSample({1000, 10000, 0, 1000, false}, 10);
+    estimator->OnSample({100, 10000, 1000, 1100, true}, 20);
+    const auto limited = estimator->GetTelemetry(20);
+    BOOST_TEST(limited.current_rate_bytes_per_second == 10000u);
+    BOOST_TEST(limited.capacity_rate_bytes_per_second == 100000u);
+    estimator->OnSample({200, 10000, 1100, 1300, false}, 30);
+    BOOST_TEST(estimator->GetTelemetry(30).capacity_rate_bytes_per_second == 90000u);
 }
 
-BOOST_AUTO_TEST_CASE(epoch_resets_and_unknown_is_not_zero_sample) {
-    VmuxPathEstimator e;
-    VmuxPathSample s; s.epoch = 1; s.timestamp_ms = 1; s.delivery_rate_bytes_per_second = 42;
-    BOOST_TEST(e.Observe(s).has_sample);
-    s = {}; s.epoch = 2; s.timestamp_ms = 2;
-    auto t = e.Observe(s);
-    BOOST_TEST(!t.has_sample); BOOST_TEST(t.current_rate_bytes_per_second == 0u);
+BOOST_AUTO_TEST_CASE(bbr_max_expires_by_delivery_round_not_ack_count) {
+    auto estimator = MakePathEstimator(PathEstimatorMode::Bbr);
+    estimator->OnSample({1000, 10000, 0, 1000, false}, 10);
+    for (std::uint64_t i = 1; i <= 15; ++i) {
+        estimator->OnSample({100, 10000, 0, 1000 + i * 100, false}, 10 + i);
+    }
+    BOOST_TEST(estimator->GetTelemetry(25).capacity_rate_bytes_per_second == 100000u);
+    for (std::uint64_t i = 1; i <= 10; ++i) {
+        const auto total = 2500 + i * 100;
+        estimator->OnSample({100, 10000, total - 100, total, false}, 25 + i);
+        BOOST_TEST(estimator->GetTelemetry(25 + i).capacity_rate_bytes_per_second ==
+            (i < 10 ? 100000u : 10000u));
+    }
 }
 
-BOOST_AUTO_TEST_CASE(max_filter_and_expiry) {
-    VmuxPathEstimator e({2, 10});
-    VmuxPathSample s; s.epoch = 1; s.timestamp_ms = 1; s.delivery_rate_bytes_per_second = 100;
-    e.Observe(s); s.timestamp_ms = 2; s.delivery_rate_bytes_per_second = 50; BOOST_TEST(e.Observe(s).current_rate_bytes_per_second == 100u);
-    s.timestamp_ms = 20; s.delivery_rate_bytes_per_second.reset(); auto t = e.Observe(s); BOOST_TEST(!t.has_sample);
+BOOST_AUTO_TEST_CASE(kcc_detects_full_bandwidth_only_on_non_limited_rounds) {
+    auto estimator = MakePathEstimator(PathEstimatorMode::Kcc);
+    for (std::uint64_t i = 0; i < 4; ++i) {
+        estimator->OnSample({1000, 10000, i * 1000, (i + 1) * 1000, true}, 10 + i);
+    }
+    BOOST_TEST(!estimator->FullBandwidthReached());
+    for (std::uint64_t i = 4; i < 8; ++i) {
+        estimator->OnSample({1000, 10000, i * 1000, (i + 1) * 1000, false}, 10 + i);
+        BOOST_TEST(estimator->FullBandwidthReached() == (i == 7));
+    }
+    estimator->Reset(2);
+    BOOST_TEST(!estimator->FullBandwidthReached());
+    BOOST_TEST(!estimator->GetTelemetry(17).has_sample);
 }
 
-BOOST_AUTO_TEST_CASE(late_sample_does_not_erase_current_metrics) {
-    VmuxPathEstimator e;
-    VmuxPathSample current;
-    current.epoch = 1; current.timestamp_ms = 10;
-    current.delivery_rate_bytes_per_second = 1000;
-    BOOST_REQUIRE(e.Observe(current).has_sample);
+BOOST_AUTO_TEST_CASE(invalid_duplicate_and_stale_samples_do_not_refresh_metrics) {
+    auto estimator = MakePathEstimator(PathEstimatorMode::Bbr);
+    estimator->OnSample({1000, 10000, 0, 1000, false}, 100);
+    estimator->OnSample({1000, 0, 1000, 2000, false}, 101);
+    estimator->OnSample({1000, 10000, 0, 1000, false}, 102);
+    estimator->OnSample({1000, 10000, 1000, 2000, false}, 99);
+    BOOST_TEST(estimator->GetTelemetry(103).sample_count == 1u);
+    BOOST_TEST(!estimator->GetTelemetry(5101).has_sample);
+    estimator->OnSample({100, 10000, 1000, 1100, false}, 5101);
+    BOOST_TEST(estimator->GetTelemetry(5101).capacity_rate_bytes_per_second == 10000u);
+}
 
-    VmuxPathSample late;
-    late.epoch = 1; late.timestamp_ms = 9;
-    late.delivery_rate_bytes_per_second = 1;
-    const auto telemetry = e.Observe(late);
-    BOOST_TEST(telemetry.has_sample);
-    BOOST_TEST(telemetry.current_rate_bytes_per_second == 1000u);
+BOOST_AUTO_TEST_CASE(low_application_limited_samples_do_not_reseed_expired_capacity) {
+    for (const auto mode : {PathEstimatorMode::Ewma, PathEstimatorMode::Bbr, PathEstimatorMode::Kcc}) {
+        auto estimator = MakePathEstimator(mode);
+        estimator->OnSample({1000, 10000, 0, 1000, false}, 100);
+        estimator->OnSample({100, 10000, 1000, 1100, true}, 5101);
+        const auto limited = estimator->GetTelemetry(5101);
+        BOOST_TEST(limited.current_rate_bytes_per_second == 10000u);
+        BOOST_TEST(limited.capacity_rate_bytes_per_second == 0u);
+        estimator->OnSample({200, 10000, 1100, 1300, false}, 5102);
+        BOOST_TEST(estimator->GetTelemetry(5102).capacity_rate_bytes_per_second == 20000u);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(filtered_application_limited_samples_advance_delivery_rounds) {
+    for (const auto mode : {PathEstimatorMode::Bbr, PathEstimatorMode::Kcc}) {
+        auto estimator = MakePathEstimator(mode);
+        estimator->OnSample({1000, 10000, 0, 1000, false}, 10);
+        for (std::uint64_t i = 0; i < 9; ++i) {
+            estimator->OnSample({100, 10000, 1000 + i * 100, 1100 + i * 100, true}, 11 + i);
+        }
+        BOOST_TEST(estimator->GetTelemetry(19).capacity_rate_bytes_per_second == 100000u);
+        estimator->OnSample({200, 10000, 1900, 2100, false}, 20);
+        BOOST_TEST(estimator->GetTelemetry(20).capacity_rate_bytes_per_second == 20000u);
+    }
 }
