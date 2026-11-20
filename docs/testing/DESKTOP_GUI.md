@@ -30,7 +30,7 @@ $env:PLAYWRIGHT_MODULE='build/gui-tools/node_modules/playwright/index.mjs'
 node desktop/client/test/gui-smoke.mjs
 ```
 
-The script checks light/dark layouts at 1120, 720 and 375 pixels, loaded logo, navigation, manual-node and subscription creation, routing template and rule add, DNS save, settings tabs, language changes, keyboard modal dismissal, logs and page errors. Screenshots go to ignored `build/gui-checks`.
+The script checks light/dark layouts at three widths, navigation, nodes, subscriptions, routing, DNS, settings, language, keyboard modal dismissal and page errors. It also switches the demo from subnet-only to Internet-only: the Internet switch must remain usable with the subnet off, while port forwarding stays disabled. Screenshots go to ignored `build/gui-checks`. To use Playwright’s bundled headless Chromium instead of Edge on Linux, install it with `playwright install chromium --only-shell` and run the script with `GUI_BROWSER_CHANNEL=''`.
 
 ## Isolated native commands
 

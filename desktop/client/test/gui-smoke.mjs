@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 const modulePath=process.env.PLAYWRIGHT_MODULE
 const { chromium }=await import(modulePath ? pathToFileURL(resolve(modulePath)).href : 'playwright')
-const browser=await chromium.launch({channel:'msedge',headless:true})
+const browser=await chromium.launch({channel:process.env.GUI_BROWSER_CHANNEL ?? 'msedge',headless:true})
 const page=await browser.newPage()
 const errors=[]
 page.on('pageerror',(error) => errors.push(error.message))
@@ -23,6 +23,23 @@ try {
     }
   }
   await page.setViewportSize({width:1120,height:760})
+  await page.getByRole('button',{name:'断开',exact:true}).click()
+  await page.getByRole('radio',{name:/^代理模式/}).click()
+  await page.getByRole('button',{name:'设置',exact:true}).click()
+  const networkTab=page.getByRole('tab',{name:'网络',exact:true})
+  await networkTab.click()
+  const subnet=page.getByRole('switch',{name:/^代理模式下接入虚拟子网/})
+  const internet=page.getByRole('switch',{name:/^代理模式下代理上网/})
+  const forwards=page.getByPlaceholder('22, 8080:3000')
+  await internet.uncheck()
+  await subnet.uncheck()
+  assert(await forwards.isDisabled())
+  await internet.check()
+  await page.getByRole('tab',{name:'常规',exact:true}).click()
+  await networkTab.click()
+  assert(await internet.isChecked())
+  assert(!(await subnet.isChecked()))
+  assert(await forwards.isDisabled())
   await page.getByRole('button',{name:'节点',exact:true}).click()
   await page.getByRole('button',{name:'添加节点',exact:true}).click()
   await page.getByRole('dialog').waitFor()
@@ -44,7 +61,7 @@ try {
   await page.getByRole('button',{name:'添加规则',exact:true}).click()
   await page.getByPlaceholder('example.com — 该域名及其子域名').fill('qa.example.test')
   await page.locator('form.add-form').getByRole('radio',{name:'代理',exact:true}).click()
-  await page.getByRole('button',{name:'添加',exact:true}).click()
+  await page.locator('form.add-form').getByRole('button',{name:'添加',exact:true}).click()
   await page.getByText('qa.example.test',{exact:true}).waitFor()
   await page.screenshot({path:resolve(output,'routing-rules.png'),fullPage:true})
   await page.getByRole('button',{name:'保存',exact:true}).click()
