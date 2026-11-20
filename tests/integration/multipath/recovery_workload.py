@@ -63,7 +63,7 @@ def run_client(target_ip: str, target_port: int, duration: float, result_path: P
                 while len(echoed) < len(data):
                     block = stream.recv(min(65536, len(data) - len(echoed)))
                     if not block:
-                        raise RuntimeError(f"early EOF after {received_bytes} of {sent_bytes} bytes")
+                        raise EOFError(f"early EOF after {received_bytes} of {sent_bytes} bytes")
                     echoed.extend(block)
                 if bytes(echoed) != data:
                     raise RuntimeError(f"echo mismatch at chunk {index}")
@@ -99,7 +99,7 @@ def run_client(target_ip: str, target_port: int, duration: float, result_path: P
         result_path.write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (EOFError, OSError, RuntimeError, ValueError) as exc:
         ended_at = wall_ms()
         connection_errors.append(str(exc))
         failure = {
@@ -113,6 +113,8 @@ def run_client(target_ip: str, target_port: int, duration: float, result_path: P
             "sent_sha256": sent_hash.hexdigest(),
             "received_sha256": received_hash.hexdigest(),
             "eof": eof,
+            "transport_terminated": isinstance(
+                exc, (EOFError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)),
             "connection_errors": connection_errors,
         }
         try:

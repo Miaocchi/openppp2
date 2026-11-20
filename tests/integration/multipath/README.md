@@ -84,14 +84,19 @@ records counter snapshots and deltas for every configured path:
 `pre_fault_bytes`, `during_fault_bytes`, `post_fault_bytes`, and
 `total_bytes`. A path must meet `--minimum-path-bytes`; for single-path
 outages every surviving path must also carry the minimum post-fault delta.
-These are carrier-side TBF byte deltas proving path participation, not
-application goodput. Established sockets, candidate logs, or a successful
-new connection alone do not satisfy the gate.
+These TBF deltas include control traffic, retransmissions, and encapsulation.
+The client runtime statistics are saved as `*-client-stats.ndjson`. They record
+path state and carrier/frame counters. Release acceptance also needs
+path-attributed application payload during the outage, recovery commit or
+expiry tied to the original session generation, and evidence of old-generation
+isolation on the same server. A workload socket timeout fails the
+transport-termination check.
 
 `fault-plan` and `impair` remain low-level qdisc controls. Running either one
 without the persistent candidate session and its result JSON is not a fault
-recovery acceptance result. On failure, retain the per-case JSON, workload
-result, candidate logs, and topology until review.
+recovery acceptance result. On failure, retain the per-case JSON, any
+`*-observation.json` written before the checks, workload result, candidate
+logs, runtime statistics, and topology until review.
 
 ### Six concurrent streams per direction
 
@@ -127,6 +132,13 @@ another. `six-flow-integrity.json` is written only on success. On failure
 inspect the per-role `upload-*.ndjson` / `download-*.ndjson` records and
 candidate and endpoint logs. This gate measures integrity under concurrent
 load, not throughput scaling, path participation, or fault recovery.
+
+For a matched throughput comparison, run the same profile with
+`--single-path path1`, `--single-path path2`, and without `--single-path`.
+All three trials use the authenticated multipath carrier and the same traffic
+workload. Use `--pool-metrics` in all trials to capture pool decisions and
+retransmission counters in the PPP logs. Use a separate output directory for
+each trial.
 
 ### External production scenarios
 

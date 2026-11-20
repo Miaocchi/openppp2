@@ -586,6 +586,8 @@ def production_smoke(args: argparse.Namespace) -> int:
             template["telemetry"].update({"enabled": True, "level": 2, "console-log": True})
             if six_flow_mode:
                 template["mux"] = {"mode": "flow", "turbo": True}
+                if args.pool_metrics:
+                    template["telemetry"].update({"count": True, "console-metric": True})
         echo_port = 19002
         policy_rules = output / "multipath-policy.rules"
         policy_rules.write_text("default proxy\ndns direct direct\ndns proxy proxy\n")
@@ -684,13 +686,19 @@ def production_smoke(args: argparse.Namespace) -> int:
             return server_process, client_process
 
         if six_flow_mode:
-            server_process, client_process = start_trial("six-flow", 0, lab.paths, True)
+            selected_paths = lab.paths
+            if args.single_path:
+                selected_paths = [path for path in lab.paths if path["id"] == args.single_path]
+                if not selected_paths:
+                    raise HarnessError(f"{args.profile} has no path named {args.single_path}")
+            server_process, client_process = start_trial("six-flow", 0, selected_paths, True)
             directions = six_flow_acceptance(lab, children, output)
             if server_process.poll() is not None or client_process.poll() is not None:
                 raise HarnessError("candidate exited during six-flow acceptance")
             result = {"kind": "production-multipath-six-flow", "profile": args.profile,
                       "candidate": {"path": str(run_binary), "sha256": binary_sha256},
-                      "topology": str(topology_path), "directions": directions, "passed": True}
+                      "topology": str(topology_path), "paths": [path["id"] for path in selected_paths],
+                      "directions": directions, "passed": True}
             result_path = output / "six-flow-integrity.json"
             result_path.write_text(json.dumps(result, indent=2) + "\n")
             print(f"PASS: six verified uploads and six verified downloads; result={result_path}")
@@ -822,21 +830,21 @@ def _path_counter_evidence(start: dict[str, int], fault_start: dict[str, int],
     return evidence
 
 
-def _require_path_business_evidence(evidence: dict, fault_ids: set[str], minimum: int,
-                                    *, expect_recovery: bool) -> None:
+def _require_path_counter_evidence(evidence: dict, fault_ids: set[str], minimum: int,
+                                   *, expect_recovery: bool) -> None:
     if not evidence:
         raise HarnessError("fault matrix produced no per-path counter evidence")
     missing = [path_id for path_id, item in evidence.items()
                if item["pre_fault_bytes"] < minimum or item["total_bytes"] < minimum]
     if missing:
-        raise HarnessError(f"paths did not carry the minimum application workload: {missing}; evidence={evidence}")
+        raise HarnessError(f"paths did not reach the minimum carrier byte delta: {missing}; evidence={evidence}")
     if expect_recovery:
         survivors = [item for path_id, item in evidence.items() if path_id not in fault_ids]
         if survivors:
             if any(item["post_fault_bytes"] < minimum for item in survivors):
-                raise HarnessError(f"surviving paths carried no verified post-fault workload: {evidence}")
+                raise HarnessError(f"surviving paths did not reach the minimum post-fault carrier byte delta: {evidence}")
         elif max(item["post_fault_bytes"] for item in evidence.values()) < minimum:
-            raise HarnessError(f"no path carried verified post-fault workload after full recovery: {evidence}")
+            raise HarnessError(f"no path reached the minimum carrier byte delta after restoration: {evidence}")
 
 
 def _validate_recovery_result(path: Path, label: str) -> dict:
@@ -867,7 +875,6 @@ def _runtime_event_evidence(output: Path, label: str) -> dict[str, bool]:
     return {
         "carrier_exit_isolated": "carrier exit isolated" in combined,
         "resume_window": "last carrier exited; retaining session for bounded resume window" in combined,
-        "resume_window_expired_close": "last carrier exited; closing session" in combined,
     }
 
 
@@ -975,7 +982,8 @@ def production_fault_matrix(args: argparse.Namespace) -> int:
                 raise HarnessError(f"{label} server exited during startup")
             client_process = spawn_owned(children, ["ip", "netns", "exec", lab.names["client"], str(run_binary),
                 "--mode=proxy", f"--config={client_config}", "--tun-host=no", "--tun-vnet=no",
-                "--proxy-subnet=yes", "--proxy-internet=yes", "--tun-protect=no", "--tun-route=no"],
+                "--proxy-subnet=yes", "--proxy-internet=yes", "--tun-protect=no", "--tun-route=no",
+                f"--stats-json={output / (label + '-client-stats.ndjson')}"],
                 stdout=client_log, stderr=subprocess.STDOUT)
             deadline = time.monotonic() + args.startup_timeout
             primary = (lab.paths[0]["server_ip"], server_port)
@@ -1086,11 +1094,12 @@ def production_fault_matrix(args: argparse.Namespace) -> int:
                           "runtime_events": runtime_events, "path_bytes": evidence,
                           "reset_to_workload_exit_ms": elapsed_after_reset_ms,
                           "candidate": {"sha256": binary_sha256}}
+                (output / f"{name}-observation.json").write_text(json.dumps(record, indent=2) + "\n")
                 if name in ("single-path-outage", "primary-path-outage") and not runtime_events["carrier_exit_isolated"]:
                     raise HarnessError(f"{name} did not log an isolated carrier exit")
                 if name in ("all-short-outage", "all-grace-expired") and not runtime_events["resume_window"]:
                     raise HarnessError(f"{name} did not log the bounded resume window")
-                _require_path_business_evidence(evidence, set(fault_ids), args.minimum_path_bytes,
+                _require_path_counter_evidence(evidence, set(fault_ids), args.minimum_path_bytes,
                                                 expect_recovery=expect_recovery)
                 if expect_recovery:
                     if workload.returncode:
@@ -1110,8 +1119,10 @@ def production_fault_matrix(args: argparse.Namespace) -> int:
                         failure = json.loads(workload_result.read_text())
                     except (OSError, json.JSONDecodeError) as exc:
                         raise HarnessError(f"{name} did not produce an auditable failure result") from exc
-                    if failure.get("passed") is not False or not failure.get("connection_errors"):
-                        raise HarnessError(f"{name} failure was not a connection failure: {failure}")
+                    if failure.get("passed") is not False or failure.get("transport_terminated") is not True:
+                        raise HarnessError(f"{name} workload did not observe transport termination: {failure}")
+                    if any(process.poll() is not None for process in session):
+                        raise HarnessError(f"{name} candidate exited before transport termination could be verified")
                     failure_at = failure.get("ended_at_ms")
                     grace_deadline = fault_started_at_ms + args.grace_ms - 1000
                     if type(failure_at) is not int or failure_at < grace_deadline:
@@ -1378,6 +1389,10 @@ def main() -> int:
     six_parser.add_argument("--profile", choices=("independent-12ms-24mbit", "shared-12ms-24mbit"),
                             default="independent-12ms-24mbit")
     six_parser.add_argument("--output", required=True, help="new result directory (must not already exist)")
+    six_parser.add_argument("--single-path", choices=("path1", "path2"),
+                            help="cap the authenticated multipath session at one carrier on this path")
+    six_parser.add_argument("--pool-metrics", action="store_true",
+                            help="record VMUX counters, including pool decisions, in the candidate logs")
     six_parser.set_defaults(func=production_smoke, startup_timeout=15, startup_wait=1)
     matrix_parser = sub.add_parser("production-fault-matrix",
                                    help="run persistent application traffic through real path outages")
