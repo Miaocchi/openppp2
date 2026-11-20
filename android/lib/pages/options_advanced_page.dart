@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../models/app_scope.dart';
 import '../models/config_profile.dart';
 import '../runtime/runtime_store.dart';
 import '../services/profile_store.dart';
 import '../vpn_service.dart';
 import '../widgets/app_section_card.dart';
+import '../widgets/unsaved_changes_guard.dart';
 import '../widgets/vmux_mode_selector.dart';
 import 'per_app_proxy_page.dart';
 
@@ -69,7 +71,7 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
     }
     final m = await _store.getProfileOptions(active.id);
     final experimental = await _store.getDebugPanelEnabled();
-    if (!mounted) return;
+    if (!mounted || _dirty) return;
     _hydrate(m);
     setState(() {
       _profile = active;
@@ -174,15 +176,13 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
     if (!mounted) return;
     setState(() => _dirty = false);
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Takes effect on next connection')),
+      SnackBar(content: Text('已保存到「${p.name}」，下次连接时生效')),
     );
   }
 
   String _perAppProxySubtitle() {
-    if (!_perAppProxyEnabled) return '未启用 · 全部应用走 VPN';
-    final n = _perAppProxyApps.length;
-    final modeLabel = _perAppProxyMode == 'deny' ? '排除选中' : '仅代理选中';
-    return '$modeLabel · 已选 $n 个应用';
+    final scope = appScopeSummary(enabled: _perAppProxyEnabled, mode: _perAppProxyMode, count: _perAppProxyApps.length);
+    return _proxyOnly ? '仅代理模式不接管系统流量。已设范围：$scope' : scope;
   }
 
   Future<void> _openPerAppProxyPage() async {
@@ -201,7 +201,7 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('应用到所有配置文件'),
-        content: const Text('将当前高级参数应用到所有配置文件？'),
+        content: Text('将「${p.name}」的启动参数（含本页修改、路由和应用名单）写入所有配置。其他配置的对应参数将被覆盖，下次连接时生效。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -223,6 +223,7 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
       await _store.setProfileOptions(it.id, {...base, ...m});
     }
     if (!mounted) return;
+    setState(() => _dirty = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('已应用到 ${list.length} 个配置文件')),
     );
@@ -251,7 +252,7 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return UnsavedChangesGuard(dirty: _dirty, child: Scaffold(
       appBar: AppBar(
         title: const Text('高级参数'),
         centerTitle: true,
@@ -261,11 +262,8 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
             icon: const Icon(Icons.copy_all_rounded),
             onPressed: _profile == null ? null : _copyToAll,
           ),
-          IconButton(
-            icon: const Icon(Icons.save_rounded),
-            tooltip: '保存',
-            onPressed: _profile == null || !_dirty ? null : _save,
-          ),
+          TextButton(onPressed: _profile == null || !_dirty ? null : _save,
+            child: Text(_dirty ? '保存更改' : '已保存')),
         ],
       ),
       body: _loading
@@ -274,7 +272,11 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
               ? const Center(child: Text('请先选择一个配置'))
               : ListView(
                   padding: const EdgeInsets.all(16),
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   children: [
+                    ListTile(leading: const Icon(Icons.bookmark_outline),
+                      title: Text('当前编辑：${_profile!.name}'),
+                      subtitle: Text('${_dirty ? '有未保存的更改' : '已保存'} · 下次连接时生效')),
                     AppSectionCard(
                       title: 'Android 代理',
                       icon: Icons.android_rounded,
@@ -293,24 +295,21 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
                         ListTile(
                           contentPadding: EdgeInsets.zero,
                           leading: const Icon(Icons.apps_rounded),
-                          title: const Text('分应用代理'),
+                          title: Text(_dirty ? '保存并编辑分应用代理' : '分应用代理'),
                           subtitle: Text(_perAppProxySubtitle()),
                           trailing: const Icon(Icons.chevron_right_rounded),
                           onTap: _openPerAppProxyPage,
                         ),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          value: false,
-                          title: const Text('系统 HTTP 代理'),
-                          subtitle: const Text('为防止本地端口被抢占，Android 上不可用'),
-                          onChanged: null,
-                        ),
+                        const ListTile(contentPadding: EdgeInsets.zero, leading: Icon(Icons.info_outline),
+                          title: Text('系统 HTTP 代理不可用'),
+                          subtitle: Text('为防止本地端口被抢占，Android 不设置系统 HTTP 代理。')),
                       ],
                     ),
                     const SizedBox(height: 12),
                     AppSectionCard(
                       title: 'VNet / 网络',
                       icon: Icons.tune_rounded,
+                      summary: 'VMUX、Mark、静态模式与 QUIC',
                       tint: Colors.purple,
                       children: [
                         VmuxModeSelector(
@@ -371,6 +370,7 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
                     AppSectionCard(
                       title: 'Geo 规则生成器',
                       icon: Icons.travel_explore_rounded,
+                      summary: _geoEnabled ? '已启用 · 编辑来源与输出路径' : '未启用 · 展开设置',
                       tint: Colors.deepOrange,
                       children: [
                         SwitchListTile(
@@ -421,7 +421,7 @@ class _OptionsAdvancedPageState extends State<OptionsAdvancedPage> {
                     ),
                   ],
                 ),
-    );
+    ));
   }
 
   Widget _text(

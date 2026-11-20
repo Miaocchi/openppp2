@@ -12,21 +12,24 @@
   import Paths from './routes/Paths.svelte'
   import { language } from './lib/i18n.js'
   import { createRuntime } from './lib/runtime/index.js'
+  import { connectionControls, runConnectionAction } from './lib/connectionControls.js'
 
   const runtime = createRuntime()
   let state
   let unsubscribe
   let startupError = ''
+  let shortcutError = ''
   let initialized=runtime.kind === 'demo'
   let systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches
   $: if (state) language.set(state.settings.language)
   $: theme = state?.settings.appearance || 'system'
   $: multipathConfigEnabled = (() => { try { return JSON.parse(state?.config || '{}')?.client?.multipath?.enabled === true } catch { return false } })()
-  $: multipathVisible = multipathConfigEnabled || (['connected', 'reconnecting'].includes(state?.connection?.status) && state?.stats?.multipath?.enabled === true)
+  $: multipathVisible = multipathConfigEnabled || (['connected', 'reconnecting'].includes(state?.connection?.status) && state.connection.statsAvailable && state.stats?.multipath?.enabled === true)
+  $: if (state?.route === 'paths' && !multipathVisible) runtime.navigate('connection')
   $: if(state && initialized) { localStorage.setItem('openppp2-appearance',theme); document.documentElement.lang=state.settings.language === 'English' ? 'en' : 'zh-CN' }
   $: if(initialized) document.documentElement.dataset.theme = theme === 'light' || theme === '浅色' ? 'light' : theme === 'dark' || theme === '深色' ? 'dark' : systemDark ? 'dark' : 'light'
 
-  function handleKeydown(event) {
+  async function handleKeydown(event) {
     if (!(event.ctrlKey || event.metaKey)) return
     const key = event.key.toLowerCase()
     if (key === 'k') {
@@ -34,9 +37,16 @@
       runtime.navigate('nodes')
     }
     if (key === 'd') {
+      if(event.defaultPrevented || event.isComposing || event.shiftKey || event.altKey || !initialized || !state) return
+      if(event.target?.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"])') || document.querySelector('dialog[open],[aria-modal="true"],[role="dialog"]')) return
       event.preventDefault()
-      if (state.connection.status === 'connected') runtime.disconnect()
-      else runtime.connect()
+      if(event.repeat) return
+      if(state.route === 'connection') { document.getElementById('connection-power')?.click(); return }
+      // Away from Connection, keep this a connect/disconnect shortcut. Recovery
+      // and cancellation have dedicated, labelled actions on Connection.
+      if(!['connected','disconnected','error'].includes(state.connection.status)) return
+      shortcutError=''
+      try { await runConnectionAction(runtime,connectionControls(state,runtime.kind)) } catch(cause) { shortcutError=String(cause) }
     }
   }
 
@@ -63,6 +73,7 @@
       <Topbar {state} {runtime} />
       <div class="content">
         {#if startupError}<div role="alert" class="notice">{startupError}</div>{/if}
+        {#if shortcutError}<div role="alert" class="error-line">{shortcutError}</div>{/if}
         {#if state.route === 'connection'}
           <Connection {state} {runtime} />
         {:else if state.route === 'nodes'}

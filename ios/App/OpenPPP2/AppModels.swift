@@ -164,6 +164,8 @@ struct ConfigProfile: Codable, Equatable {
         parsedServerEndpoint?.host
     }
 
+    var hasConfiguredServer: Bool { serverHost?.isEmpty == false }
+
     var serverEndpoint: String? {
         guard let endpoint = parsedServerEndpoint else {
             return nil
@@ -175,18 +177,22 @@ struct ConfigProfile: Codable, Equatable {
         return endpoint.host
     }
 
+    var isProxyOnly: Bool { clientSettings?["proxy-only"] as? Bool ?? false }
+
     private var parsedServerEndpoint: PppServerEndpoint? {
+        guard let server = clientSettings?["server"] as? String else { return nil }
+        return PppServerEndpoint.parse(server)
+    }
+
+    private var clientSettings: [String: Any]? {
         guard
             let data = json.data(using: .utf8),
             let object = try? JSONSerialization.jsonObject(with: data),
-            let root = object as? [String: Any],
-            let client = root["client"] as? [String: Any],
-            let server = client["server"] as? String,
-            let endpoint = PppServerEndpoint.parse(server)
+            let root = object as? [String: Any]
         else {
             return nil
         }
-        return endpoint
+        return root["client"] as? [String: Any]
     }
 
     enum CodingKeys: String, CodingKey {

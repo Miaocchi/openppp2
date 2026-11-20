@@ -27,7 +27,7 @@
   let dialog
   onMount(() => {
     const previous=document.activeElement
-    dialog.querySelector('input,button')?.focus()
+    dialog.querySelector('input')?.focus()
     const keydown=(event) => {
       if(event.key === 'Escape') { event.preventDefault(); onClose() }
       if(event.key !== 'Tab') return
@@ -83,17 +83,17 @@
 
   function positivePort(value, label) {
     const number = Number(value)
-    if (!Number.isInteger(number) || number < 1 || number > 65535) throw new Error(`${label}必须在 1 到 65535 之间`)
+    if (!Number.isInteger(number) || number < 1 || number > 65535) throw new Error($t(`${label} must be between 1 and 65535`,`${label}必须在 1 到 65535 之间`))
     return number
   }
 
-  function buildConfig() {
-    if (!name.trim()) throw new Error('请输入节点名称')
-    if (!host.trim()) throw new Error('请输入服务器 Host')
-    if (!protocolKey.trim()) throw new Error('请输入 Protocol Key')
-    const serverPort = positivePort(port, '服务器端口')
-    const proxyHttpPort = positivePort(httpPort, 'HTTP 端口')
-    const proxySocksPort = positivePort(socksPort, 'SOCKS 端口')
+  function buildConfig(validate=true) {
+    if (validate && !name.trim()) throw new Error($t('Enter a node name','请输入节点名称'))
+    if (validate && !host.trim()) throw new Error($t('Enter a server host','请输入服务器 Host'))
+    if (validate && !protocolKey.trim()) throw new Error($t('Enter the protocol key','请输入 Protocol Key'))
+    const serverPort = positivePort(port, $t('Server port','服务器端口'))
+    const proxyHttpPort = positivePort(httpPort, $t('HTTP port','HTTP 端口'))
+    const proxySocksPort = positivePort(socksPort, $t('SOCKS port','SOCKS 端口'))
     const authority = host.includes(':') && !host.startsWith('[') ? `[${host.trim()}]` : host.trim()
     const suffix = transportType === 'tcp' ? '/' : `${path.startsWith('/') ? path : `/${path}`}`
     const server = `ppp://${transportType === 'tcp' ? '' : `${transportType}/`}${authority}:${serverPort}${suffix}`
@@ -116,12 +116,12 @@
 
   function toggleRaw() {
     if (!rawMode) {
-      try { raw = JSON.stringify(buildConfig(), null, 2); error = '' } catch (cause) { error = cause.message; return }
+      try { raw = JSON.stringify(buildConfig(false), null, 2); error = '' } catch (cause) { error = cause.message; return }
     }
     else {
       try {
         const value=JSON.parse(raw)
-        if(!value || Array.isArray(value) || typeof value !== 'object') throw new Error('Expected JSON object')
+        if(!value || Array.isArray(value) || typeof value !== 'object') throw new Error($t('Expected JSON object','必须是 JSON 对象'))
         initial=value
         const server=parseServer(value.client?.server || '')
         transportType=server.transport; host=server.host; port=server.port; path=server.path
@@ -144,8 +144,9 @@
     try {
       let config
       if (rawMode) {
+        if (!name.trim()) throw new Error($t('Enter a node name','请输入节点名称'))
         config = JSON.parse(raw)
-        if (!config || Array.isArray(config) || typeof config !== 'object') throw new Error('高级 JSON 根节点必须是 object')
+        if (!config || Array.isArray(config) || typeof config !== 'object') throw new Error($t('Expected JSON object','必须是 JSON 对象'))
       } else {
         config = buildConfig()
       }
@@ -162,16 +163,16 @@
 <div class="modal-backdrop" role="presentation" on:click|self={onClose}>
   <section class="node-dialog" role="dialog" aria-modal="true" aria-labelledby="node-dialog-title" bind:this={dialog} tabindex="-1">
     <header class="dialog-head">
-      <div><h2 id="node-dialog-title">{$t(node ? 'Edit node' : 'Add node',node ? '编辑节点' : '添加节点')}</h2></div>
+      <div><h2 id="node-dialog-title">{$t(node?.id ? 'Edit node' : 'Add node',node?.id ? '编辑节点' : '添加节点')}</h2><p class="page-lead">{$t('Local profile · Saving does not connect to the server.','本地配置 · 保存不会连接服务器。')}</p></div>
       <button class="icon-button" title={$t('Close','关闭')} aria-label={$t('Close','关闭')} on:click={onClose}><X size={16} /></button>
     </header>
 
     <div class="dialog-body">
-      {#if !rawMode}
         <div class="form-section">
           <h3>{$t('General','基本信息')}</h3>
           <div class="form-grid two"><label class="field"><span>{$t('Name','名称')}</span><input class="text-input" bind:value={name} /></label><label class="field"><span>{$t('Subtitle','副标题')}</span><input class="text-input" bind:value={subtitle} /></label></div>
         </div>
+      {#if !rawMode}
         <div class="form-section">
           <h3>{$t('Server','服务器')}</h3>
           <div class="form-grid server-grid">
@@ -186,22 +187,24 @@
           <div class="section-title"><h3>{$t('Encryption','加密')}</h3><button class="inline-link icon-text" on:click={() => (showSecrets = !showSecrets)}>{#if showSecrets}<EyeOff size={13} />{$t('Hide keys','隐藏密钥')}{:else}<Eye size={13} />{$t('Show keys','显示密钥')}{/if}</button></div>
           <div class="form-grid two"><label class="field"><span>Protocol</span><select class="select-input" bind:value={protocol}>{#each protocols as item}<option value={item}>{item}</option>{/each}</select></label><label class="field"><span>Transport</span><select class="select-input" bind:value={transport}>{#each protocols as item}<option value={item}>{item}</option>{/each}</select></label></div>
           <div class="form-grid two"><label class="field"><span>Protocol Key</span>{#if showSecrets}<input class="text-input mono" type="text" bind:value={protocolKey} />{:else}<input class="text-input mono" type="password" bind:value={protocolKey} />{/if}</label><label class="field"><span>Transport Key</span>{#if showSecrets}<input class="text-input mono" type="text" bind:value={transportKey} />{:else}<input class="text-input mono" type="password" bind:value={transportKey} />{/if}</label></div>
+          <details class="tuning"><summary>{$t('Advanced encryption parameters','高级加密参数')}</summary>
           <div class="form-grid four"><label class="field"><span>KF</span><input class="text-input number" type="number" bind:value={kf} /></label><label class="field"><span>KX</span><input class="text-input number" type="number" bind:value={kx} /></label><label class="field"><span>KL</span><input class="text-input number" type="number" bind:value={kl} /></label><label class="field"><span>KH</span><input class="text-input number" type="number" bind:value={kh} /></label></div>
           <div class="switch-grid"><label><input type="checkbox" bind:checked={masked} /><span>Masked</span></label><label><input type="checkbox" bind:checked={plaintext} /><span>Plaintext</span></label><label><input type="checkbox" bind:checked={deltaEncode} /><span>Delta Encode</span></label><label><input type="checkbox" bind:checked={shuffleData} /><span>Shuffle Data</span></label></div>
+          </details>
         </div>
-        <div class="form-section">
-          <h3>{$t('Local proxy','本地代理')}</h3>
+        <details class="form-section"><summary>{$t('Local proxy','本地代理')}</summary><p class="subtle">{$t('Keep the loopback bind address to limit access to this computer.','保留回环监听地址可将访问限制在本机。')}</p>
           <div class="proxy-row"><strong>HTTP</strong><input class="text-input mono" bind:value={httpBind} aria-label="HTTP Bind" /><input class="text-input number port" type="number" min="1" max="65535" bind:value={httpPort} aria-label="HTTP Port" /></div>
           <div class="proxy-row"><strong>SOCKS</strong><input class="text-input mono" bind:value={socksBind} aria-label="SOCKS Bind" /><input class="text-input number port" type="number" min="1" max="65535" bind:value={socksPort} aria-label="SOCKS Port" /></div>
-        </div>
+        </details>
       {:else}
+        <p class="raw-note">{$t('This editor shows the complete profile, including unmasked keys.','此编辑器显示完整配置，包括明文密钥。')}</p>
         <div class="raw-editor"><label class="field"><span>appsettings JSON</span><textarea class="text-area" bind:value={raw} spellcheck="false"></textarea></label></div>
       {/if}
     </div>
 
     <footer class="dialog-actions">
       <button class="secondary-button icon-text" on:click={toggleRaw}><Code2 size={14} />{$t(rawMode ? 'Form' : 'Advanced JSON',rawMode ? '返回表单' : '高级 JSON')}</button>
-      <span class="dialog-error">{error}</span>
+      <span class="dialog-error" role="alert">{error}</span>
       <button class="secondary-button" on:click={onClose}>{$t('Cancel','取消')}</button>
       <button class="primary-button icon-text" disabled={saving} on:click={save}><Save size={14} />{$t(saving ? 'Saving' : 'Save node',saving ? '保存中' : '保存节点')}</button>
     </footer>
@@ -229,6 +232,8 @@
   .dialog-error { min-width: 0; flex: 1; color: var(--red); font-size: 11px; overflow-wrap:anywhere; }
   .icon-text { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
   button:disabled { opacity: .55; cursor: default; }
+  .tuning,.raw-note { margin:14px 0 0; } summary { cursor:pointer; font-weight:600; }
+  .raw-note { padding:0 18px; color:var(--yellow); }
   @media (max-width: 640px) {
     .modal-backdrop { padding: 0; place-items: stretch; }
     .node-dialog { width: 100%; max-height: 100vh; border: 0; border-radius: 0; }

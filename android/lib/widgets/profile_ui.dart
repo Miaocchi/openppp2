@@ -6,12 +6,95 @@ import 'app_section_card.dart';
 
 typedef ProfileCallback = void Function(ConfigProfile profile);
 
+/// Search is local to the page; filtering never changes the selected profile.
+class SearchableProfileList extends StatefulWidget {
+  final List<ConfigProfile> profiles;
+  final String? activeId;
+  final ProfileCallback onTap;
+  final ProfileCallback onTogglePin;
+  final ProfileCallback? onApply;
+  final ProfileCallback? onDelete;
+  final VoidCallback onCreate;
+
+  const SearchableProfileList({
+    super.key, required this.profiles, required this.activeId,
+    required this.onTap, required this.onTogglePin, required this.onCreate,
+    this.onApply, this.onDelete,
+  });
+
+  @override
+  State<SearchableProfileList> createState() => _SearchableProfileListState();
+}
+
+class _SearchableProfileListState extends State<SearchableProfileList> {
+  final _search = TextEditingController();
+  // Endpoint lookup parses profile JSON. Build the index once per loaded list,
+  // not on every keystroke (especially important for remote subscriptions).
+  final _searchTerms = <String, String>{};
+
+  @override
+  void didUpdateWidget(covariant SearchableProfileList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.profiles, widget.profiles)) _searchTerms.clear();
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: _search,
+      builder: (context, value, _) {
+        final query = value.text.trim().toLowerCase();
+        final profiles = query.isEmpty ? widget.profiles : widget.profiles.where((p) {
+          final terms = _searchTerms.putIfAbsent(p.id, () =>
+            '${p.name}\n${p.subtitle}\n${p.serverEndpoint ?? ''}'.toLowerCase());
+          return terms.contains(query);
+        }).toList(growable: false);
+        return GroupedProfileList(
+          profiles: profiles,
+          activeId: widget.activeId,
+          onTap: widget.onTap,
+          onTogglePin: widget.onTogglePin,
+          onApply: widget.onApply,
+          onDelete: widget.onDelete,
+          header: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          TextField(
+            controller: _search,
+            textInputAction: TextInputAction.search,
+            decoration: InputDecoration(
+              labelText: '搜索名称、备注或地址', prefixIcon: const Icon(Icons.search),
+              suffixIcon: value.text.isEmpty ? null : IconButton(
+                tooltip: '清除搜索', onPressed: _search.clear, icon: const Icon(Icons.close)),
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text(
+            '${profiles.length} 个配置 · ${widget.onApply == null ? '轻触选择，下次连接时使用' : '轻触编辑，更多操作中可选用配置'}',
+            style: Theme.of(context).textTheme.bodySmall)),
+          if (profiles.isEmpty) Column(children: [
+            Text(query.isEmpty ? '暂无配置文件' : '没有匹配的配置'),
+            TextButton(onPressed: query.isEmpty ? widget.onCreate : _search.clear,
+              child: Text(query.isEmpty ? '新增配置' : '查看全部配置')),
+          ]),
+          ]),
+        );
+      },
+    );
+  }
+}
+
 /// Grouped profile list used on Home and Profiles pages (iOS layout).
 class GroupedProfileList extends StatelessWidget {
   final List<ConfigProfile> profiles;
   final String? activeId;
   final bool shrinkWrap;
   final double? maxHeight;
+  final Widget? header;
   final ProfileCallback? onTap;
   final ProfileCallback? onApply;
   final ProfileCallback? onEdit;
@@ -24,6 +107,7 @@ class GroupedProfileList extends StatelessWidget {
     required this.activeId,
     this.shrinkWrap = false,
     this.maxHeight,
+    this.header,
     this.onTap,
     this.onApply,
     this.onEdit,
@@ -34,7 +118,7 @@ class GroupedProfileList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final groups = ProfileGroups.fromProfiles(profiles);
-    if (groups.isEmpty) {
+    if (groups.isEmpty && header == null) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 24),
         child: Center(
@@ -55,6 +139,7 @@ class GroupedProfileList extends StatelessWidget {
           : (shrinkWrap ? const NeverScrollableScrollPhysics() : null),
       padding: const EdgeInsets.symmetric(horizontal: 0),
       children: [
+        if (header != null) header!,
         for (var gi = 0; gi < groups.length; gi++) ...[
           AppSectionHeader(groups[gi].title),
           for (var pi = 0; pi < groups[gi].profiles.length; pi++)
@@ -192,7 +277,9 @@ class ProfileListTile extends StatelessWidget {
                     ),
                     onPressed: () => onTogglePin!(profile),
                   ),
+                if ((!isActive && onApply != null) || onEdit != null || onDelete != null)
                 PopupMenuButton<String>(
+                  tooltip: '更多配置操作',
                   icon: const Icon(Icons.more_vert_rounded, size: 20),
                   onSelected: (value) {
                     switch (value) {
@@ -213,7 +300,7 @@ class ProfileListTile extends StatelessWidget {
                         value: 'apply',
                         child: ListTile(
                           leading: Icon(Icons.check_circle_outline),
-                          title: Text('应用'),
+                          title: Text('选为当前配置'),
                           contentPadding: EdgeInsets.zero,
                           dense: true,
                         ),
@@ -297,7 +384,7 @@ class _ActiveBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
-        '使用中',
+        '已选',
         style: theme.textTheme.labelSmall?.copyWith(
           color: theme.colorScheme.onPrimary,
           fontWeight: FontWeight.w700,
@@ -308,7 +395,7 @@ class _ActiveBadge extends StatelessWidget {
   }
 }
 
-/// Home status card: connection state, traffic, and quick toggles (iOS layout).
+/// Home status, traffic, connection action, and expandable connection options.
 class HomeStatusCard extends StatelessWidget {
   final String statusText;
   final String detailText;
@@ -365,32 +452,39 @@ class HomeStatusCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
+            OverflowBar(
+              alignment: MainAxisAlignment.spaceBetween,
+              spacing: 8,
+              overflowSpacing: 8,
               children: [
-                _StatusDot(color: accent, pulse: !isConnected && !isBusy),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        statusText,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _StatusDot(color: accent, pulse: !isConnected && !isBusy),
+                    const SizedBox(width: 12),
+                    Flexible(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            statusText,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            detailText,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        detailText,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                          fontFeatures: const [FontFeature.tabularFigures()],
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 8),
                 FilledButton(
                   onPressed: buttonEnabled ? onConnect : null,
                   style: FilledButton.styleFrom(
@@ -402,11 +496,12 @@ class HomeStatusCard extends StatelessWidget {
                     ),
                     shape: const StadiumBorder(),
                   ),
-                  child: isBusy
-                      ? const SizedBox(
+                  child: isBusy && !buttonEnabled
+                      ? SizedBox(
                           width: 18,
                           height: 18,
                           child: CircularProgressIndicator(
+                            semanticsLabel: buttonLabel,
                             strokeWidth: 2,
                             color: Colors.white,
                           ),
@@ -443,43 +538,54 @@ class HomeStatusCard extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             const Divider(height: 1),
-            const SizedBox(height: 10),
-            Text(
-              '快捷开关',
-              style: theme.textTheme.labelLarge?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 4),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: allowLan,
-              title: const Text('局域网代理'),
-              subtitle: const Text('HTTP / SOCKS 监听 0.0.0.0'),
-              onChanged: onAllowLanChanged,
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: blockQuic,
-              title: const Text('屏蔽 QUIC'),
-              subtitle: const Text('屏蔽 UDP/443 防止 QUIC 绕过'),
-              onChanged: onBlockQuicChanged,
-            ),
-            const SizedBox(height: 4),
-            Text('路由模式', style: theme.textTheme.bodyMedium),
-            const SizedBox(height: 6),
-            SegmentedButton<LaunchRouteMode>(
-              showSelectedIcon: false,
-              segments: [
-                for (final mode in LaunchRouteMode.values)
-                  ButtonSegment(value: mode, label: Text(mode.label)),
+            ExpansionTile(
+              key: const PageStorageKey<String>('home-connection-options'),
+              tilePadding: EdgeInsets.zero,
+              title: const Text('连接选项'),
+              expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: allowLan,
+                  title: const Text('局域网代理'),
+                  subtitle: const Text('HTTP / SOCKS 监听 0.0.0.0'),
+                  onChanged: onAllowLanChanged,
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: blockQuic,
+                  title: const Text('屏蔽 QUIC'),
+                  subtitle: const Text('屏蔽 UDP/443 防止 QUIC 绕过'),
+                  onChanged: onBlockQuicChanged,
+                ),
+                const SizedBox(height: 4),
+                Text('路由模式', style: theme.textTheme.bodyMedium),
+                const SizedBox(height: 6),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final labelSize = theme.textTheme.labelLarge?.fontSize ?? 14;
+                    final scaledSize = MediaQuery.textScalerOf(context).scale(labelSize);
+                    return SegmentedButton<LaunchRouteMode>(
+                      direction: constraints.maxWidth < 3 * (5 * scaledSize + 24)
+                          ? Axis.vertical
+                          : Axis.horizontal,
+                      showSelectedIcon: false,
+                      segments: [
+                        for (final mode in LaunchRouteMode.values)
+                          ButtonSegment(value: mode, label: Text(mode.label)),
+                      ],
+                      selected: {routeMode},
+                      onSelectionChanged: onRouteModeChanged == null
+                          ? null
+                          : (selection) {
+                              if (selection.isNotEmpty) {
+                                onRouteModeChanged!(selection.first);
+                              }
+                            },
+                    );
+                  },
+                ),
               ],
-              selected: {routeMode},
-              onSelectionChanged: (selection) {
-                if (selection.isEmpty || onRouteModeChanged == null) return;
-                onRouteModeChanged!(selection.first);
-              },
             ),
           ],
         ),

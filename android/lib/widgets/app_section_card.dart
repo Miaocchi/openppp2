@@ -5,6 +5,8 @@ class AppSectionCard extends StatelessWidget {
   final String title;
   final IconData icon;
   final Color? tint;
+  /// When provided, show the summary and expand to edit the section.
+  final String? summary;
   final List<Widget> children;
 
   const AppSectionCard({
@@ -12,6 +14,7 @@ class AppSectionCard extends StatelessWidget {
     required this.title,
     required this.icon,
     this.tint,
+    this.summary,
     required this.children,
   });
 
@@ -19,6 +22,20 @@ class AppSectionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final accent = tint ?? theme.colorScheme.primary;
+    if (summary != null) {
+      return Card(
+        margin: EdgeInsets.zero,
+        child: ExpansionTile(
+          key: PageStorageKey(title),
+          leading: Icon(icon, color: accent),
+          title: Text(title),
+          subtitle: Text(summary!),
+          expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+          childrenPadding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+          children: children,
+        ),
+      );
+    }
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(

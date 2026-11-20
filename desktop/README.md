@@ -18,16 +18,17 @@ Keep Vite running on `http://127.0.0.1:1420`, then run `npm run desktop` in anot
 
 ## Daily workflows
 
-- Connection: select a node and proxy or virtual-adapter mode; view backend connection phase, rates, traffic history and last error.
-- Nodes: create/edit/duplicate manual profiles, import/export, favorites, source filters and batch TCP latency probes.
-- Subscriptions: independently add, enable, refresh and delete sources. Node IDs and caches are isolated per source. Failed refreshes retain the same source's last valid cache.
+- Connection: on first use, open Subscriptions or Nodes directly from the connection page. When idle, select a compatible `ppp.exe` there or keep the default lookup beside the client. Proxy mode affects applications that use the proxy; virtual-adapter mode captures traffic matching its routes and needs administrator rights. Once connected, the page shows the backend phase, rates, traffic history and last error.
+- Nodes: combine name/address search, source and favorites. Reset filters when nothing matches, or add/import nodes when the library is empty. Advanced encryption, loopback listeners and raw JSON remain available in the manual editor.
+- Subscriptions: add, enable, refresh and delete sources independently. Rename a source without re-entering its URL; the stored address is not shown in the form. Failed refreshes retain that source's last valid cache.
 - Routing: a rule list over the local policy v2 (`routing.rules`). Start from a template (mainland direct, proxy all, direct all) or migrate the legacy lists, then add, disable, re-target or delete rules, switch to the raw text view, and test an address offline. Matching follows precision, not list order: explicit rules beat rule sets; exact > suffix > keyword > regex; longer suffixes and IPv4 prefixes win.
 - DNS: with a policy enabled, the resolution mode, Fake-IP pool and policy resolvers; otherwise the legacy domestic/foreign upstreams, cache, TLS verification, ECS and Fake-IP switches.
-- Saved routing and DNS changes apply on the next connection. Unknown node configuration fields are preserved.
-- Logs: severity/session filters, search, pause, copy and redacted export.
+- Saved routing and DNS changes apply on the next connection. During an active session, the connection page keeps the pending-change reminder even after leaving the editor; reconnect explicitly to apply it. Unknown node configuration fields are preserved.
+- Logs: pause to inspect a snapshot, filter by severity/session and search, then copy or export the filtered, redacted entries. Resume to see current events.
+- Paths (when available): saved paths and reported metrics are separate. A configured path does not establish that the kernel has observed or used it.
 - Settings: General (autostart, tray, proxy recovery, theme, language), Kernel (executable and version, elevation), Network (loopback HTTP/SOCKS listeners, P2P, adapter launch options) and Advanced (launch options, legacy routing lists used only without a policy, overrides JSON, preview and diagnostics).
 
-Choose `ppp.exe` in Settings. Without a configured path, the client looks beside its own executable, not on `PATH`. Current Windows builds permit proxy mode without elevation. Older binaries with a `requireAdministrator` manifest must be rebuilt. Settings offers an explicit administrator restart with the normal Windows UAC prompt; virtual-adapter mode requires it.
+The executable can also be selected in Settings. Without a configured path, the client looks beside its own executable, not on `PATH`. Current Windows builds permit proxy mode without elevation. Older binaries with a `requireAdministrator` manifest must be rebuilt. Choose administrator restart explicitly for virtual-adapter mode; Windows handles the UAC prompt.
 
 ## Process and host state
 

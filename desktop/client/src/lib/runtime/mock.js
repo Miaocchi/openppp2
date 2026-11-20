@@ -107,7 +107,8 @@ export function createMockRuntime() {
       )
       emit()
     },
-    async refreshSubscription() {
+    async refreshSubscription(url, sourceId) {
+      state.subscription.sources=state.subscription.sources.map((s) => s.id === sourceId ? {...s,lastSyncedAt:Date.now(),cached:false,error:''} : s)
       state.subscription.lastSyncedAt = new Date().toISOString()
       state.subscription.cached = false
       state.subscription.cacheAgeMinutes = 0

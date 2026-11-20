@@ -70,7 +70,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _refresh() async {
     final log = await _vpnService.readLog();
     final path = await _vpnService.getLogPath();
-    if (!mounted) return;
+    if (!mounted || !_debugPanelEnabled) return;
     setState(() {
       _debugLog = log;
       _logPath = path;
@@ -80,6 +80,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _setDebugPanel(bool v) async {
     setState(() => _debugPanelEnabled = v);
     await _store.setDebugPanelEnabled(v);
+    if (!mounted || _debugPanelEnabled != v) return;
     if (v) {
       _startPoll();
       unawaited(_refresh());
@@ -89,7 +90,24 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<bool> _confirmAction(String title, String detail, String action) async {
+    return await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: Text(title), content: Text(detail), actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(action)),
+      ],
+    )) == true;
+  }
+
+  Future<void> _refreshStatus() async {
+    final raw = await _vpnService.getRuntimeSnapshot();
+    if (!mounted) return;
+    _vpnService.applyRuntimeSnapshotPoll(raw, connecting: _vpnService.connecting);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('VPN 状态：${_stateText()}')));
+  }
+
   Future<void> _copyLog() async {
+    if (!await _confirmAction('复制原始日志？', '剪贴板将包含完整日志，而不仅是面板中的摘要。分享前请检查服务器地址、路径和其他设备信息。', '复制')) return;
     await Clipboard.setData(ClipboardData(
       text: _debugLog.isEmpty ? '(暂无日志)' : _debugLog,
     ));
@@ -100,11 +118,13 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _clearLog() async {
+    if (!await _confirmAction('清空运行日志？', '本机现有的诊断记录将被删除，无法撤销。不会删除配置。', '清空')) return;
     await _vpnService.clearLog();
     await _refresh();
   }
 
   Future<void> _stopVpn() async {
+    if (!await _confirmAction('停止 VPN？', '当前连接将断开，应用流量将不再通过此隧道。', '断开')) return;
     await _vpnService.disconnect();
     await _refresh();
   }
@@ -114,7 +134,7 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('清空配置文件'),
-        content: const Text('这会删除所有本地配置并恢复默认空白配置。'),
+        content: const Text('所有本地配置、已导入的订阅节点及其历史版本都将被删除，只留下一个默认配置。此操作无法撤销。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -179,7 +199,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const SizedBox(height: 12),
-          const AppSectionHeader('调试'),
+          const AppSectionHeader('隐私与诊断'),
           Card(
             child: Column(
               children: [
@@ -187,7 +207,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   secondary: const Icon(Icons.bug_report_outlined),
                   value: _debugPanelEnabled,
                   title: const Text('调试面板'),
-                  subtitle: const Text('在主页显示运行日志与诊断信息'),
+                  subtitle: const Text('在主页和设置页显示本机日志与诊断信息。此开关不会启用遥测上传。'),
                   onChanged: _setDebugPanel,
                 ),
                 const Divider(height: 0),
@@ -195,7 +215,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   leading: const Icon(Icons.analytics_outlined),
                   title: const Text('遥测'),
                   subtitle: Text(
-                    _telemetryUploadEnabled ? '已开启上传' : '未开启',
+                    _telemetryUploadEnabled ? '已允许上传 · 管理接收方和数据类型' : '上传已关闭 · 查看数据与设备标识',
                   ),
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: () async {
@@ -211,12 +231,19 @@ class _SettingsPageState extends State<SettingsPage> {
                     );
                   },
                 ),
-                const Divider(height: 0),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(child: ExpansionTile(
+            title: const Text('连接工具'),
+            subtitle: const Text('检查 VPN 状态或编辑当前配置的高级参数'),
+            children: [
                 ListTile(
                   leading: const Icon(Icons.refresh_rounded),
                   title: const Text('刷新 VPN 状态'),
                   subtitle: Text(_stateText()),
-                  onTap: _refresh,
+                  onTap: _refreshStatus,
                 ),
                 const Divider(height: 0),
                 ListTile(
@@ -232,9 +259,8 @@ class _SettingsPageState extends State<SettingsPage> {
                     );
                   },
                 ),
-              ],
-            ),
-          ),
+            ],
+          )),
           if (_debugPanelEnabled) ...[
             const SizedBox(height: 12),
             DebugPanel(
@@ -258,7 +284,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 '清空配置文件',
                 style: TextStyle(color: theme.colorScheme.error),
               ),
-              subtitle: const Text('恢复默认空白配置'),
+              subtitle: const Text('删除所有本地节点和历史版本；此操作不可撤销'),
               onTap: _confirmResetProfiles,
             ),
           ),

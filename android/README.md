@@ -17,7 +17,9 @@ This directory is the Android client that is shipped with this OpenPPP2 tree. It
 - A packaged native library at `android/app/src/main/jniLibs/arm64-v8a/libopenppp2.so`.
 - Native Android CMake sources and the ABI-oriented `build.sh` helper at this directory level.
 
-The UI currently has Home, launch-options, profiles, and settings areas. Treat the client as an experimental platform surface: validate a real connection and the device's VPN behavior before relying on it operationally.
+The UI currently has Home, launch-options, profiles, and settings areas. The profile manager and selector support search and recovery from empty results. The editor puts common fields first, then encryption, local proxy and explicit Raw JSON; leaving with unsaved changes is guarded. Launch options, per-app proxy, settings and telemetry distinguish saved values, next-connection applicability and privacy/diagnostic scope. Treat the client as an experimental platform surface: validate a real connection and the device's VPN behavior before relying on it operationally.
+
+Home separates connection status from the selected profile's saved settings. The per-app list controls which packages are eligible for VPN routing; it does not mean every request from those apps uses the remote server. With an empty package list, Android does not install an app filter. Expand the connection options for LAN listeners, QUIC blocking and the routing preset.
 
 ## Startup and runtime path
 

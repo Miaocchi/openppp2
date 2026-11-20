@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import { Save, RotateCcw, CheckCircle2, Plus, Trash2, Play, RefreshCw, Search, X } from 'lucide-svelte'
   import { t } from '../lib/i18n.js'
   import {
@@ -7,6 +7,7 @@
     setRuleEnabled, setRuleAction, setDefaultAction, validateRule, summarize,
   } from '../lib/policyRules.js'
   import { PRESETS, applyOptions, readOptions, optionErrors } from '../lib/routingPresets.js'
+  import { sessionKey, pendingReconnect, markPending } from '../lib/pendingReconnect.js'
   import QuickRouting from '../lib/components/QuickRouting.svelte'
   export let state
   export let runtime
@@ -17,7 +18,7 @@
   const errors={ empty:['Enter a value','请填写'], whitespace:['No spaces','不能包含空格'], 'domain-only':['Domain only — no scheme, port or path','只填域名，不要协议、端口或路径'], domain:['Not a valid domain','不是有效域名'], keyword:['Keyword cannot contain #','关键词不能包含 #'], regexp:['Invalid regular expression','正则表达式无效'], cidr:['Use a.b.c.d/n with n ≤ 32','格式应为 a.b.c.d/n，n 不超过 32'], set:['Use letters, digits, . _ -','只能用字母、数字和 . _ -'], 'set-unknown':['No rule set with this name','没有这个名称的规则集'] }
   const ruleSetFormats=['geoip-dat','geosite-dat','geoip-text','geosite-text']
 
-  let loading=true, busy='', error='', message=''
+  let loading=true, loadFailed=false, busy='', error='', message=''
   let info={ enabled:false, policyDir:'', kernelSupported:null, kernelError:'' }
   let saved={ policy:null, rules:'' }
   let policy=null, model=parseRules(''), view='list', textDraft='', rawPolicy=''
@@ -26,14 +27,17 @@
   let quickDraft=null, onboard={ ...PRESETS['proxy-all'], geositeSource:'', geoipSource:'' }
   let target='', network='tcp', port='', explanation=null
   let diagnostics=[], checkResult=null, migration=null, status=null, statusError=''
-  let needsReconnect=false
+  $: session=sessionKey(state.connection)
+  $: needsReconnect=session !== null && $pendingReconnect.routing === session
 
   onMount(load)
+  let activePage=true
+  onDestroy(() => { activePage=false })
 
   async function load() {
     loading=true; error=''
     try { info=await runtime.policyLoad(); saved={ policy:info.policy, rules:info.rules || '' }; setDraft(info.policy,info.rules || '') }
-    catch(cause) { error=String(cause) }
+    catch(cause) { loadFailed=true; error=String(cause) }
     finally { loading=false }
   }
   function setDraft(nextPolicy,nextRules) {
@@ -68,23 +72,29 @@
   function showReport(result) { checkResult=result; diagnostics=result?.report?.diagnostics || [] }
   async function check() { await run('check',async () => { const result=await runtime.policyCheck(policy,rulesText); showReport(result); if(result.exitCode === 0) message=$t('Check passed','检查通过') }) }
   async function save() {
-    await run('save',async () => {
+    const savedSession=session
+    return run('save',async () => {
       const result=await runtime.policySave(policy,rulesText)
       showReport(result.result)
-      if(result.result.exitCode !== 0) return
+      if(result.result.exitCode !== 0) { error=$t('The kernel rejected the policy. Changes were not saved.','内核拒绝了该策略，更改未保存。'); return null }
       const first=!saved.policy
       saved={ policy:structuredClone(policy), rules:rulesText }; model=parseRules(rulesText); textDraft=rulesText
       // The first saved policy is what the user just built; turn it on instead of
       // leaving connections silently on the legacy routing.
       if(first && !info.enabled) info={ ...info, enabled:await runtime.policySetEnabled(true) }
-      needsReconnect=connected && info.enabled
+      if(info.enabled) markPending('routing',savedSession)
       message=info.enabled ? $t('Saved; applies on next connection','已保存，下次连接生效') : $t('Saved, but the policy is off','已保存，但策略未启用')
+      return info.enabled ? savedSession : null
     })
   }
   async function reconnect() {
-    await run('reconnect',async () => { needsReconnect=false; await runtime.switchNode(state.connection.currentNodeId) })
+    if(!connected || !needsReconnect || !state.connection.currentNodeId) return
+    await run('reconnect',() => runtime.switchNode(state.connection.currentNodeId))
   }
-  async function saveAndReconnect() { await save(); if(needsReconnect && !error) await reconnect() }
+  async function saveAndReconnect() {
+    const savedSession=await save()
+    if(activePage && savedSession != null && savedSession === sessionKey(state.connection)) await reconnect()
+  }
   // Adds a rule for the tested target: a domain suffix (without a leading www.) or a /32.
   function ruleForTarget(action) {
     const value=target.trim().toLowerCase().replace(/\.$/,'')
@@ -95,10 +105,18 @@
     message=$t(`Rule set: ${rule.value} → ${actionNames[action][0]}. Save to apply.`,`已设置 ${rule.value} → ${actionNames[action][1]}，保存后生效`)
   }
   function discard() { setDraft(saved.policy,saved.rules) }
+  async function setEnabled(wanted) {
+    const changedSession=session
+    await run('enable',async () => {
+      const enabled=await runtime.policySetEnabled(wanted)
+      if(enabled !== info.enabled) markPending('routing',changedSession)
+      info={ ...info, enabled }
+    })
+  }
   async function toggleEnabled(event) {
     const checkbox=event.currentTarget
     const wanted=checkbox.checked
-    await run('enable',async () => { info={ ...info, enabled:await runtime.policySetEnabled(wanted) } })
+    await setEnabled(wanted)
     checkbox.checked=info.enabled
   }
   function changeQuick(next) {
@@ -165,19 +183,23 @@
 <div class="page">
   <div class="page-heading">
     <div><h1>{$t('Routing','分流')}</h1><p class="page-lead">{$t('Decides which traffic goes direct, through the tunnel, or is refused. Changes apply on the next connection.','决定哪些流量直连、经隧道或被拒绝。修改在下次连接时生效。')}</p></div>
-    {#if policy}<div class="toolbar">
-      <span class="subtle">{busy ? $t('Working…','处理中…') : dirty ? $t('Unsaved changes','未保存') : message}</span>
+  </div>
+  {#if policy}<div class="draft-bar" class:changed={dirty || needsReconnect}>
+    <div class="draft-context"><small>{info.enabled ? $t('Policy enabled for next connection','下次连接启用策略') : $t('Policy not enabled','策略未启用')}</small>
+      <strong role="status">{busy ? $t('Working…','处理中…') : dirty ? $t('Unsaved changes','未保存') : message || $t('No unsaved changes','没有未保存的修改')}</strong>
+    </div><div class="toolbar">
       <button class="icon-button" title={$t('Discard changes','放弃修改')} aria-label={$t('Discard changes','放弃修改')} disabled={!dirty || !!busy} on:click={discard}><RotateCcw size={16}/></button>
       <button class="secondary-button action" disabled={!!busy || unsupported} on:click={check}><CheckCircle2 size={16}/>{$t('Check','检查')}</button>
       <button class="primary-button action" disabled={!dirty || !!busy || unsupported} on:click={save}><Save size={16}/>{$t('Save','保存')}</button>
-    </div>{/if}
-  </div>
+    </div></div>{/if}
 
   {#if unsupported}<div class="notice" role="alert">{info.kernelError || $t('The selected kernel does not support routing policies (requires 2.1.7 or later).','所选内核不支持分流策略（需要 2.1.7 或更高版本）。')}</div>{/if}
   {#if error}<div class="error-line" role="alert">{error}</div>{/if}
 
   {#if loading}
     <div class="empty">{$t('Loading…','加载中…')}</div>
+  {:else if loadFailed}
+    <div class="blank-state card"><strong>{$t('Routing policy unavailable','分流策略不可用')}</strong><p>{$t('No draft was opened. Check the kernel in Settings, then reopen Routing.','未打开草稿。请在设置中检查内核，然后重新打开分流页。')}</p></div>
   {:else if !policy}
     <section class="card">
       <div class="card-head"><h2>{$t('Create a routing policy','创建分流策略')}</h2></div>
@@ -206,14 +228,15 @@
     </label>
 
     {#if saved.policy && !info.enabled}<div class="notice warn" role="alert">
-      <span>{$t('This policy is off. Connections still use the legacy routing and send everything except the bypass list through the tunnel.','此策略未启用：连接仍按传统分流，除直连列表外全部经隧道。')}</span>
-      <button class="primary-button" disabled={!!busy} on:click={() => run('enable',async () => { info={ ...info, enabled:await runtime.policySetEnabled(true) } })}>{$t('Turn on','启用')}</button>
-    </div>{:else if info.enabled && connected && dirty}<div class="notice warn" role="note">
+      <span>{$t('This policy is off. It will not be applied on the next connection.','此策略未启用，下次连接不会应用此策略。')}</span>
+      <button class="primary-button" disabled={!!busy} on:click={() => setEnabled(true)}>{$t('Turn on','启用')}</button>
+    </div>{/if}
+    {#if info.enabled && connected && dirty}<div class="notice warn" role="note">
       <span>{$t('Connected: changes apply after saving and reconnecting.','当前已连接：修改需保存并重连后生效。')}</span>
-      <button class="primary-button" disabled={!!busy || unsupported} on:click={saveAndReconnect}>{$t('Save and reconnect','保存并重连')}</button>
+      <button class="primary-button" disabled={!!busy || unsupported || !state.connection.currentNodeId} on:click={saveAndReconnect}>{$t('Save and reconnect','保存并重连')}</button>
     </div>{:else if needsReconnect && connected}<div class="notice warn" role="note">
       <span>{$t('Saved. The current connection still uses the previous rules.','已保存。当前连接仍在使用旧规则。')}</span>
-      <button class="primary-button" disabled={!!busy} on:click={reconnect}>{$t('Reconnect now','立即重连生效')}</button>
+      <button class="primary-button" disabled={!!busy || !state.connection.currentNodeId} on:click={reconnect}>{$t('Reconnect now','立即重连生效')}</button>
     </div>{/if}
 
     <section class="card" aria-label={$t('Quick settings','快速设置')}>
@@ -264,7 +287,7 @@
               <button class="icon-button" title={$t('Delete','删除')} aria-label={`${$t('Delete','删除')} ${rule.value}`} on:click={() => updateModel(removeRule(model,rule.id))}><Trash2 size={15}/></button>
             </div>
           {:else}
-            <div class="empty small">{rules.length ? $t('No rules match the filter','没有符合筛选条件的规则') : $t('No rules yet: all traffic follows the default below.','还没有规则：全部流量按下面的「其余流量」处理。')}</div>
+            <div class="blank-state"><strong>{rules.length ? $t('No rules match the filter','没有符合筛选条件的规则') : $t('No rules yet: all traffic follows the default below.','还没有规则：全部流量按下面的「其余流量」处理。')}</strong>{#if rules.length}<button class="secondary-button" on:click={() => { query=''; filter='all' }}>{$t('Reset filters','重置筛选')}</button>{/if}</div>
           {/each}
         </div>
 
@@ -379,7 +402,6 @@ set:geoip-cn              # rule set declared below
   .rule-row.off .value, .rule-row.off .badge { opacity:.5; }
   .rule-row .badge { justify-self:start; }
   .value { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .empty.small { min-height:72px; font-size:13px; }
   .default-row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px; background:var(--surface); border-radius:0 0 12px 12px; }
   .rules-text { min-height:320px; }
   .syntax { font-size:12px; color:var(--text-2); overflow:auto; }
@@ -396,4 +418,9 @@ set:geoip-cn              # rule set declared below
   .quick-rule .pill { cursor:pointer; }
   .status-grid { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:8px 18px; margin:0; } .status-grid dt { color:var(--text-3); } .status-grid dd { margin:0; overflow-wrap:anywhere; }
   @media(max-width:760px) { .test-row, .rule-set { grid-template-columns:1fr; } .search { flex-basis:100%; } }
+  @media(max-width:660px) {
+    .rule-row { min-width:0; grid-template-columns:minmax(0,1fr) auto 32px; gap:8px; padding:12px; }
+    .rule-row .value { grid-column:2/-1; max-width:100%; white-space:normal; overflow-wrap:anywhere; }
+    .rule-row .pill { justify-self:start; } .filters .segmented { max-width:100%; flex-wrap:wrap; }
+  }
 </style>

@@ -194,6 +194,8 @@ enum TunnelSharedState {
         guard shouldUseSharedHeartbeat,
               isExtensionAlive(),
               let url = runtimeSnapshotURL(),
+              let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+              (0...Double(heartbeatStaleMilliseconds)).contains(-modified.timeIntervalSinceNow * 1000),
               let text = try? String(contentsOf: url, encoding: .utf8)
         else { return nil }
         return text

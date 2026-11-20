@@ -3,13 +3,16 @@
   import { Save, RotateCcw, Plus, X, Trash2 } from 'lucide-svelte'
   import { t } from '../lib/i18n.js'
   import { effective, setPath as setIn, parseBase, DOMESTIC_DNS, FOREIGN_DNS, ENCRYPTED_DNS } from '../lib/overrides.js'
+  import { sessionKey, pendingReconnect, markPending } from '../lib/pendingReconnect.js'
   export let state
   export let runtime
 
   const providerNames={ 'doh.pub':'DNSPod', alidns:['AliDNS','阿里 DNS'], '114':'114DNS', tuna:['TUNA','清华 TUNA'], baidu:['Baidu','百度'], '360':'360', cloudflare:'Cloudflare', google:'Google', quad9:'Quad9', adguard:'AdGuard', nextdns:'NextDNS', mullvad:'Mullvad' }
   const modes=[['auto','Auto','自动','Fake-IP in adapter mode, real resolution in proxy mode','网卡模式用 Fake-IP，代理模式用真实解析'],['real','Real IP','真实 IP','Answers carry real addresses','返回真实地址'],['fake-ip','Fake-IP','Fake-IP','Answers carry pool addresses mapped back to names; adapter mode only','返回地址池中的虚拟地址并映射回域名；仅网卡模式']]
 
-  let loading=true, busy=false, error='', message='', needsReconnect=false
+  let loading=true, loadFailed=false, busy=false, error='', message=''
+  $: session=sessionKey(state.connection)
+  $: needsReconnect=session !== null && $pendingReconnect.dns === session
   let info={ enabled:false, policy:null, rules:'' }
   // Policy DNS draft (used when a routing policy is enabled).
   let policy=null, savedPolicy=null
@@ -20,7 +23,7 @@
 
   onMount(async () => {
     try { info=await runtime.policyLoad(); policy=info.policy ? structuredClone(info.policy) : null; savedPolicy=info.policy ? structuredClone(info.policy) : null }
-    catch(cause) { error=String(cause) }
+    catch(cause) { loadFailed=true; error=String(cause) }
     finally { loading=false }
   })
 
@@ -40,6 +43,7 @@
   function removeServer(name,index) { pset(`dns/resolvers/${name}/servers`,pget(`dns/resolvers/${name}/servers`,[]).filter((_,i) => i !== index)) }
 
   async function save() {
+    const savedSession=session
     busy=true; error=''; message=''
     try {
       if(policyMode) {
@@ -49,13 +53,14 @@
       } else {
         await runtime.updateNetwork(overrides)
       }
-      needsReconnect=connected
+      markPending('dns',savedSession)
       message=$t('Saved; applies on next connection','已保存，下次连接生效')
     } catch(cause) { error=String(cause) } finally { busy=false }
   }
   async function reconnect() {
+    if(!connected || !needsReconnect || !state.connection.currentNodeId) return
     busy=true; error=''
-    try { needsReconnect=false; await runtime.switchNode(state.connection.currentNodeId) } catch(cause) { error=String(cause) } finally { busy=false }
+    try { await runtime.switchNode(state.connection.currentNodeId) } catch(cause) { error=String(cause) } finally { busy=false }
   }
   function reset() { if(policyMode) policy=structuredClone(savedPolicy); else overrides=structuredClone(state.networkOverrides || {}); message=''; error='' }
   async function resetFakeIp() {
@@ -81,18 +86,24 @@
 
 <div class="page">
   <div class="page-heading">
-    <div><h1>DNS</h1><p class="page-lead">{policyMode ? $t('A routing policy is enabled, so DNS follows its resolvers. Name-based rules live on the Routing page.','已启用分流策略，DNS 按策略中的解析器工作；按域名的规则在「分流」页设置。') : $t('Mainland names use the domestic upstream; the rest use the foreign one. Name-based routing lives on the Routing page.','国内域名用国内上游解析，其余走国外上游；按域名的分流在「分流」页设置。')}</p></div>
-    <div class="toolbar"><span class="subtle">{busy ? $t('Working…','处理中…') : dirty ? $t('Unsaved changes','未保存') : message}</span>
+    <div><h1>DNS</h1>{#if !loading && !loadFailed}<p class="page-lead">{policyMode ? $t('A routing policy is enabled, so DNS follows its resolvers. Name-based rules live on the Routing page.','已启用分流策略，DNS 按策略中的解析器工作；按域名的规则在「分流」页设置。') : $t('Mainland names use the domestic upstream; the rest use the foreign one. Name-based routing lives on the Routing page.','国内域名用国内上游解析，其余走国外上游；按域名的分流在「分流」页设置。')}</p>{/if}</div>
+  </div>
+  {#if !loading && !loadFailed}<div class="draft-bar" class:changed={dirty || needsReconnect}>
+    <div class="draft-context"><small>{policyMode ? $t('Editing routing policy DNS','正在编辑分流策略 DNS') : $t('Editing network overrides','正在编辑网络覆盖')}</small>
+      <strong role="status">{busy ? $t('Working…','处理中…') : dirty ? $t('Unsaved changes','未保存') : message || $t('No unsaved changes','没有未保存的修改')}</strong>
+      {#if dirty}<small>{$t('Save for the next connection. The current session is unchanged.','保存后在下次连接时生效，不改变当前会话。')}</small>{/if}
+    </div><div class="toolbar">
       <button class="icon-button" title={$t('Discard changes','放弃修改')} aria-label={$t('Discard changes','放弃修改')} disabled={!dirty || busy} on:click={reset}><RotateCcw size={16}/></button>
       <button class="primary-button action" disabled={!dirty || busy || loading} on:click={save}><Save size={16}/>{$t('Save','保存')}</button></div>
-  </div>
+  </div>{/if}
   {#if error}<div class="error-line" role="alert">{error}</div>{/if}
   {#if needsReconnect && connected}<div class="notice warn" role="note">
     <span>{$t('Saved. The current connection still uses the previous DNS settings.','已保存。当前连接仍在使用旧的 DNS 设置。')}</span>
-    <button class="primary-button" disabled={busy} on:click={reconnect}>{$t('Reconnect now','立即重连生效')}</button>
+    <button class="primary-button" disabled={busy || !state.connection.currentNodeId} on:click={reconnect}>{$t('Reconnect now','立即重连生效')}</button>
   </div>{/if}
 
   {#if loading}<div class="empty">{$t('Loading…','加载中…')}</div>
+  {:else if loadFailed}<div class="blank-state card"><strong>{$t('DNS settings unavailable','DNS 设置不可用')}</strong><p>{$t('Could not determine which DNS configuration is in use. Nothing has been changed.','无法确定正在使用的 DNS 配置。未做任何更改。')}</p></div>
   {:else if policyMode}
     <section class="card">
       <div class="card-head"><h2>{$t('Resolution mode','解析模式')}</h2></div>
@@ -134,6 +145,7 @@
       {/each}
     </section>
     <section class="card" aria-label={$t('Resolution options','解析选项')}>
+      <div class="card-head"><h2>{$t('Resolution options','解析选项')}</h2></div>
       {#each legacyOptions as [path,en,zh,enHint,zhHint,fallback,extra]}
         {@const on=!!get(path,fallback)}
         <div class="option">
@@ -148,7 +160,7 @@
 <style>
   .page { gap:16px; }
   .stack { display:grid; gap:14px; } .tight { margin:0 0 2px; } .label { font-size:12px; color:var(--text-2); } .small { font-size:12px; margin:0; }
-  .upstreams { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; }
+  .upstreams { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:16px; }
   .chips, .servers { display:flex; flex-wrap:wrap; gap:8px; }
   .chip { min-height:36px; padding:0 14px; border-radius:8px; border:1px solid var(--border-strong); background:var(--surface); color:var(--text); cursor:pointer; }
   .chip.active { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
@@ -163,4 +175,5 @@
   .chip-x { display:inline-grid; place-items:center; width:24px; height:24px; border:0; border-radius:5px; background:transparent; color:var(--text-2); cursor:pointer; } .chip-x:hover { color:var(--text); background:var(--surface-raised); }
   .add-server { display:flex; gap:8px; } .add-server input { flex:1; min-width:0; }
   code { font-family:var(--mono); }
+  .server { max-width:100%; overflow-wrap:anywhere; } .chip-x { flex:none; }
 </style>

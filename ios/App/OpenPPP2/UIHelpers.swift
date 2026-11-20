@@ -113,6 +113,8 @@ enum L10n {
         "common.none": ("无", "None"),
         "common.connectVpn": ("连接 VPN", "Connect VPN"),
         "common.disconnectVpn": ("断开 VPN", "Disconnect VPN"),
+        "common.enable": ("启用", "Enable"),
+        "common.copy": ("复制", "Copy"),
 
         "vpn.connected": ("已连接", "Connected"),
         "vpn.connecting": ("连接中", "Connecting"),
@@ -138,6 +140,18 @@ enum L10n {
         "home.disconnecting": ("断开中...", "Disconnecting..."),
         "home.reconnecting": ("重连中...", "Reconnecting..."),
         "home.ready": ("准备连接", "Ready to connect"),
+        "home.checkingStatus": ("正在确认连接状态", "Checking connection status"),
+        "home.firstProfile": ("导入订阅开始使用，也可在配置文件中手动添加。", "Import a subscription to get started, or add a profile manually below."),
+        "home.firstPermission": ("首次连接时，iOS 会请求允许添加 VPN 配置。", "On first connection, iOS asks for permission to add a VPN configuration."),
+        "home.profileScope": ("已保存的配置：%@\n已保存的范围：%@", "Saved profile: %@\nSaved scope: %@"),
+        "home.tunnelScope": ("VPN 隧道 · %@ · %@", "VPN tunnel · %@ · %@"),
+        "home.proxyScope": ("仅代理", "Proxy only"),
+        "home.livePath": ("运行状态：%@路径：%@", "Live: %@Path: %@"),
+        "home.statusMismatch": ("iOS 与隧道报告的状态不一致。", "iOS and the tunnel report different states."),
+        "home.checkAgain": ("重新检查状态", "Check status again"),
+        "vpn.error.existingSession": ("请先停止现有 VPN 会话。", "Stop the existing VPN session first."),
+        "home.showDetails": ("显示连接详情", "Show connection details"),
+        "home.hideDetails": ("收起连接详情", "Hide connection details"),
         "home.vpnStarting": ("VPN 正在启动", "VPN is starting"),
         "home.stopping": ("正在停止 VPN", "Stopping VPN"),
         "home.stopTakingTooLong": ("停止耗时过长", "Stopping is taking longer than expected"),
@@ -182,12 +196,24 @@ enum L10n {
         "settings.section.system": ("系统", "System"),
         "settings.section.danger": ("危险操作", "Danger Zone"),
         "settings.debugEnabled": ("已开启部分调试项", "Some debug options enabled"),
+        "settings.section.connection": ("连接与排查", "Connection & troubleshooting"),
+        "settings.section.privacy": ("隐私与报告", "Privacy & reports"),
+        "settings.section.storage": ("本机数据", "On this device"),
         "settings.systemSettings.detail": ("iOS VPN / App 设置", "iOS VPN / App Settings"),
         "settings.resetProfiles.detail": ("恢复默认配置", "Restore default profiles"),
         "settings.reset.title": ("清空配置文件", "Reset Profiles"),
-        "settings.reset.message": ("这会删除所有本地配置并恢复默认空白配置。", "This deletes all local profiles and restores the default blank profile."),
+        "settings.reset.message": ("这会删除所有本地配置、重置启动参数，并恢复默认空白配置。", "This deletes all local profiles, resets launch options, and restores the default blank profile."),
         "settings.reset.action": ("清空", "Reset"),
         "crash.none": ("没有待上传报告", "No pending reports"),
+        "crash.none.detail": ("此处没有需要上传或清理的报告。", "There is nothing to send or clear for this process."),
+        "crash.partial": ("%@；VPN 扩展报告尚未读取", "%@; VPN extension reports not read"),
+        "crash.manage": ("处理报告", "Manage reports"),
+        "crash.checking": ("正在读取 VPN 扩展报告…", "Reading VPN extension reports…"),
+        "crash.extensionUnavailable": ("无法读取 VPN 扩展报告", "VPN extension reports unavailable"),
+        "crash.extensionRecovery": ("请在 VPN 连接后点刷新。", "Refresh while the VPN is connected to check again."),
+        "crash.reportID": ("报告 %@", "Report %@"),
+        "crash.confirmUpload": ("要将 App 和 VPN 扩展的待处理崩溃报告及遥测 ID 发送至 %@ 吗？成功上传的报告会从本机删除。", "Send pending app and VPN extension crash reports with the telemetry ID to %@? Successfully uploaded reports are deleted from this device."),
+        "crash.savesSettings": ("此操作也会保存本页的遥测设置。", "This also saves the telemetry settings on this page."),
         "crash.generating": ("上次启动崩溃，报告正在生成", "Last launch crashed; report is being generated"),
         "crash.pending": ("%d 个待上传报告", "%d pending reports"),
         "crash.pendingWithProcess": ("%d 个待上传报告（%@）", "%d pending reports (%@)"),
@@ -209,12 +235,13 @@ enum L10n {
         "crash.uploadDisabled.title": ("遥测上传未开启", "Telemetry Upload Disabled"),
         "crash.uploadDisabled.message": ("请先在设置里的「遥测上传」开启上传并配置 endpoint。", "Enable telemetry upload and configure an endpoint in Settings first."),
         "crash.uploadFinished": ("上传完成", "Upload Finished"),
-        "crash.vpnReportUnavailable": ("VPN 未连接，无法读取扩展沙盒中的报告", "VPN is disconnected; extension sandbox reports cannot be read"),
+        "crash.vpnReportUnavailable": ("无法读取扩展沙盒中的报告", "Extension sandbox reports could not be read"),
         "crash.process.app": ("App", "App"),
         "crash.process.packetTunnel": ("VPN 扩展", "VPN Extension"),
 
         "debug.title": ("调试", "Debug"),
         "debug.section.ui": ("界面", "Interface"),
+        "debug.section.local": ("本地数据包诊断", "Local packet diagnostics"),
         "debug.item.panel": ("调试面板", "Debug Panel"),
         "debug.item.packetDiagnostics": ("包级诊断", "Packet Diagnostics"),
         "debug.item.consoleLogging": ("包级 Console 日志", "Packet Console Logging"),
@@ -231,6 +258,24 @@ enum L10n {
         "telemetry.upload": ("上传", "Upload"),
         "telemetry.data": ("数据", "Data"),
         "telemetry.enableUpload": ("启用上传", "Enable Upload"),
+        "telemetry.enableUpload.detail": ("保存后，所选数据可发送到下方地址。", "Once saved, the selected data can be sent to the destination below."),
+        "telemetry.endpoint": ("OTLP HTTP 接收地址", "OTLP HTTP endpoint"),
+        "telemetry.destination": ("上传目标", "Upload destination"),
+        "telemetry.native": ("原生日志与跟踪", "Native logs and traces"),
+        "telemetry.metrics": ("指标", "Metrics"),
+        "telemetry.metrics.detail": ("计数器、仪表和直方图", "Counters, gauges and histograms"),
+        "telemetry.spans": ("跟踪区段", "Spans"),
+        "telemetry.spans.detail": ("包含跟踪区段事件", "Include trace span events"),
+        "telemetry.device": ("设备：%@ / %@ %@", "Device: %@ / %@ %@"),
+        "telemetry.logLevel": ("日志详细程度", "Log detail"),
+        "telemetry.info": ("信息", "Info"),
+        "telemetry.verbose": ("详细", "Verbose"),
+        "telemetry.debug": ("调试", "Debug"),
+        "telemetry.trace": ("跟踪", "Trace"),
+        "telemetry.copyPrivacy": ("此 ID 用于关联本设备的遥测数据。要将其复制到本机剪贴板吗？", "This ID links telemetry from this device. Copy it to the local clipboard?"),
+        "telemetry.saveConsent": ("保存上传设置？", "Save upload settings?"),
+        "telemetry.saveConsent.detail": ("所选诊断数据和遥测 ID 将允许发送至 %@。", "The selected diagnostic data and telemetry ID may be sent to %@."),
+        "telemetry.uploadSetup": ("如需发送报告，请启用上传、配置接收地址，并选中崩溃报告。", "To send reports, enable upload, configure a destination and select crash reports."),
         "telemetry.crash.detail": ("App 与 VPN 扩展崩溃报告", "App and VPN extension crash reports"),
         "telemetry.native.detail": ("OpenPPP2 日志、计数与 Span", "OpenPPP2 logs, counters, and spans"),
         "telemetry.extensionNote": ("Trace 日志和 Spans 仅在上传与 Native Telemetry 开启后生效；Metrics 在 VPN 扩展内保持关闭。", "Trace logs and spans take effect only when upload and Native Telemetry are enabled; metrics remain disabled in the VPN extension."),
@@ -248,8 +293,8 @@ enum L10n {
         "telemetry.restartMessage": ("遥测设置已保存。当前 VPN 正在运行，要让 Native Telemetry 生效需要重连。", "Telemetry settings saved. The running VPN must reconnect before Native Telemetry takes effect."),
         "telemetry.cannotUpload.title": ("不能上传", "Cannot Upload"),
         "telemetry.cannotUpload.message": ("请先开启上传并配置 endpoint。", "Enable upload and configure an endpoint first."),
-        "telemetry.vpnUploadUnavailable": ("VPN 未连接，无法上传 VPN 扩展报告", "VPN is disconnected; VPN extension reports cannot be uploaded"),
-        "telemetry.summarySkipped": ("已跳过：未开启上传或 endpoint 为空", "Skipped: upload is disabled or endpoint is empty"),
+        "telemetry.vpnUploadUnavailable": ("VPN 扩展未能上传其报告", "VPN extension report upload is unavailable"),
+        "telemetry.summarySkipped": ("已跳过上传", "Upload skipped"),
         "telemetry.summaryNoReports": ("没有待上传报告", "No pending reports"),
         "telemetry.summaryUploaded": ("已上传 %d 个报告", "Uploaded %d reports"),
         "telemetry.summaryUploadedFailed": ("已上传 %d 个，失败 %d 个", "Uploaded %d, failed %d"),
@@ -257,6 +302,10 @@ enum L10n {
         "profiles.title": ("配置文件", "Profiles"),
         "profiles.selectTitle": ("选择节点", "Select Profile"),
         "profiles.search": ("搜索配置名称或地址...", "Search profile name or address..."),
+        "profiles.actions": ("配置操作", "Profile actions"),
+        "profiles.noMatches": ("没有匹配的配置", "No matching profiles"),
+        "profiles.clearSearch": ("清除搜索，显示全部配置", "Clear search and show all profiles"),
+        "profiles.savedSelection": ("已选配置 · %@", "Selected profile · %@"),
         "profiles.favorites": ("收藏", "Favorites"),
         "profiles.favorite": ("收藏", "Favorite"),
         "profiles.unfavorite": ("取消收藏", "Unfavorite"),
@@ -276,9 +325,9 @@ enum L10n {
         "profiles.importedNodes": ("已导入/更新 %d 个节点", "Imported/updated %d nodes"),
         "profiles.apply": ("应用", "Use"),
         "profiles.share": ("分享", "Share"),
-        "profiles.pin": ("指定", "Pin"),
-        "profiles.unpin": ("取消指定", "Unpin"),
-        "profiles.group.pinned": ("指定", "Pinned"),
+        "profiles.pin": ("置顶", "Pin"),
+        "profiles.unpin": ("取消置顶", "Unpin"),
+        "profiles.group.pinned": ("已置顶", "Pinned"),
         "profiles.group.local": ("本地配置", "Local Profiles"),
         "profiles.group.subscription": ("订阅 · %@", "Subscription · %@"),
         "profiles.addMenu.new": ("新增配置", "New Profile"),
@@ -292,6 +341,29 @@ enum L10n {
 
         "options.title": ("启动参数", "Launch Options"),
         "options.save": ("保存", "Save"),
+        "options.scope": ("这些启动参数适用于所有配置。保存后将在下次连接时使用。", "These options apply to all profiles. Save to use them on the next connection."),
+        "options.connection": ("连接", "Connection"),
+        "options.tunAddress": ("TUN 地址", "TUN address"),
+        "options.tunMask": ("TUN 子网掩码", "TUN subnet mask"),
+        "options.tunPrefix": ("TUN 前缀长度", "TUN prefix length"),
+        "options.gateway": ("网关", "Gateway"),
+        "options.bypass": ("直连 IP / CIDR", "Bypass IP / CIDR"),
+        "options.dnsRules": ("DNS 规则", "DNS rules"),
+        "options.domestic": ("境内 DNS", "Domestic DNS"),
+        "options.foreign": ("境外 DNS", "Foreign DNS"),
+        "options.fakeRange": ("Fake-IP 地址范围", "Fake-IP range"),
+        "options.stun": ("STUN 候选地址", "STUN candidates"),
+        "options.country": ("Geo 国家代码", "Geo country code"),
+        "options.fakeIp.detail": ("即时生成虚拟 A 记录", "Generate synthetic A records immediately"),
+        "options.ecs.detail": ("EDNS 客户端子网", "EDNS client subnet"),
+        "options.staticMode": ("静态模式", "Static mode"),
+        "options.portError": ("HTTP 和 SOCKS 端口须为 1 到 65535 的整数。", "Enter an integer from 1 to 65535 for each proxy port."),
+        "options.advancedError": ("在高级参数中检查：TUN 前缀为 0–32，MTU 为 1–65535，VNet Mux 为非负整数。", "Check Advanced Options: TUN prefix must be 0–32, MTU 1–65535, and VNet Mux a nonnegative integer."),
+        "options.compat": ("兼容", "Compat"),
+        "options.muxMode": ("复用模式", "Mux mode"),
+        "options.effective": ("隧道上报的模式：%@", "Tunnel-reported mode: %@"),
+        "options.effectiveUnknown": ("暂无隧道上报的复用模式", "No tunnel-reported mux mode available"),
+        "options.advancedSave": ("返回「启动参数」并点保存。新设置将在下次连接时生效。", "Return to Launch Options and tap Save. New settings take effect on the next connection."),
         "options.resetDefaults": ("恢复默认", "Reset"),
         "options.reset.title": ("恢复默认启动参数", "Reset Launch Options"),
         "options.reset.message": ("这会把当前页面字段恢复为默认值；点击保存后才会写入。", "This restores the fields on this page to defaults. The values are written only after you tap Save."),
@@ -302,7 +374,7 @@ enum L10n {
         "options.allowLan": ("允许局域网代理", "Allow LAN Proxy"),
         "options.allowLan.detail": ("HTTP / SOCKS 监听 0.0.0.0", "HTTP / SOCKS listens on 0.0.0.0"),
         "options.dns": ("DNS", "DNS"),
-        "options.geoBypass": ("Geo / Bypass", "Geo / Bypass"),
+        "options.geoBypass": ("区域与直连规则", "Geo & bypass rules"),
         "options.tlsVerify": ("TLS 校验", "TLS Verification"),
         "options.tlsVerify.detail": ("验证 DoH / DoT 上游证书", "Verify DoH / DoT upstream certificates"),
         "options.geoEnabled": ("启用 Geo 规则", "Enable Geo Rules"),
@@ -311,7 +383,7 @@ enum L10n {
         "options.tun": ("TUN 接口", "TUN Interface"),
         "options.advanced": ("高级", "Advanced"),
         "options.advancedParams": ("高级参数", "Advanced Options"),
-        "options.advanced.detail": ("VNet Mux / VNet / Block QUIC / Static Mode", "VNet Mux / VNet / Block QUIC / Static Mode"),
+        "options.advanced.detail": ("区域分流、DNS 规则、TUN 接口与传输模式", "Geo routing, DNS rules, TUN interface and transport modes"),
         "options.vnet.detail": ("启用虚拟网卡路径", "Enable virtual network path"),
         "options.network": ("网络", "Network"),
         "options.blockQuic.detail": ("屏蔽 UDP/443 防止绕过", "Block UDP/443 to prevent bypass"),
@@ -331,6 +403,18 @@ enum L10n {
         "editor.basic": ("基本信息", "Basic Info"),
         "editor.server": ("服务器", "Server"),
         "editor.crypto": ("加密", "Crypto"),
+        "editor.host": ("主机地址", "Host"),
+        "editor.port": ("端口（可选）", "Port (optional)"),
+        "editor.bandwidth": ("带宽", "Bandwidth"),
+        "editor.protocol": ("协议加密算法", "Protocol cipher"),
+        "editor.protocolKey": ("协议密钥", "Protocol key"),
+        "editor.transport": ("传输加密算法", "Transport cipher"),
+        "editor.transportKey": ("传输密钥", "Transport key"),
+        "editor.showAdvanced": ("显示带宽与原始 JSON", "Show bandwidth and raw JSON"),
+        "editor.hideAdvanced": ("收起带宽与原始 JSON", "Hide bandwidth and raw JSON"),
+        "editor.portError": ("请输入 1 到 65535 的端口，或留空。", "Enter a port from 1 to 65535, or leave it blank."),
+        "editor.numberError": ("请输入非负整数，或留空。", "Enter a nonnegative integer, or leave this blank."),
+        "editor.nameError": ("请输入配置名称以便识别此配置。", "Enter a name so you can identify this profile."),
         "editor.localProxy": ("本地代理", "Local Proxy"),
         "editor.rawJson": ("高级 Raw JSON", "Advanced Raw JSON"),
         "editor.saveProfile": ("保存配置", "Save Profile"),
@@ -340,7 +424,7 @@ enum L10n {
         "editor.exported": ("配置已导出", "Profile exported"),
         "editor.exportFailed": ("导出失败", "Export Failed"),
         "editor.rawJsonError": ("Raw JSON 格式错误", "Raw JSON Error"),
-        "editor.rawJsonError.message": ("配置无法保存，请检查 JSON。", "The profile cannot be saved. Check the JSON."),
+        "editor.rawJsonError.message": ("请检查高级选项中的原始 JSON。顶层必须是 JSON 对象；当前修改尚未保存。", "Check the raw JSON under advanced options. It must be a JSON object. Your changes have not been saved."),
         "editor.restartAfterSave": ("当前 VPN 正在运行，保存后的配置需要重连才会生效。", "The running VPN must reconnect before the saved profile takes effect."),
         "importExport.secretsWarning": ("导出的文件包含协议密钥等敏感信息，请妥善保管，不要分享给不可信的人。", "Exported files contain protocol keys and other secrets. Keep them safe and do not share them with untrusted people."),
         "importExport.continue": ("继续", "Continue"),
@@ -583,6 +667,11 @@ final class FormTextField: UIView {
         super.init(frame: .zero)
         label.text = title
         label.font = .preferredFont(forTextStyle: .caption1)
+        label.numberOfLines = 0
+        label.adjustsFontForContentSizeCategory = true
+        label.isAccessibilityElement = false
+        field.accessibilityLabel = title
+        field.adjustsFontForContentSizeCategory = true
         label.textColor = .secondaryLabel
         field.borderStyle = .none
         field.keyboardType = keyboard
@@ -648,8 +737,13 @@ final class FormTextView: UIView {
         super.init(frame: .zero)
         label.text = title
         label.font = .preferredFont(forTextStyle: .caption1)
+        label.numberOfLines = 0
+        label.adjustsFontForContentSizeCategory = true
+        label.isAccessibilityElement = false
+        textView.accessibilityLabel = title
+        textView.adjustsFontForContentSizeCategory = true
         label.textColor = .secondaryLabel
-        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(for: .monospacedSystemFont(ofSize: 13, weight: .regular))
         textView.textColor = .label
         textView.layer.borderWidth = 1 / UIScreen.main.scale
         textView.layer.cornerRadius = 10
@@ -706,7 +800,10 @@ final class SectionView: UIView {
 
         let label = UILabel()
         label.text = title
-        label.font = .systemFont(ofSize: 14, weight: .semibold)
+        label.font = .preferredFont(forTextStyle: .headline)
+        label.adjustsFontForContentSizeCategory = true
+        label.numberOfLines = 0
+        label.accessibilityTraits.insert(.header)
         label.textColor = .secondaryLabel
         let header = UIStackView(arrangedSubviews: [icon, label])
         header.axis = .horizontal
@@ -773,14 +870,21 @@ func row(_ views: [UIView], weights: [CGFloat]) -> UIStackView {
 
 func switchRow(title: String, subtitle: String, control: UISwitch) -> UIView {
     control.onTintColor = AppTheme.primary
+    control.accessibilityLabel = title
+    control.accessibilityHint = subtitle
     let titleLabel = UILabel()
     titleLabel.text = title
     titleLabel.font = .preferredFont(forTextStyle: .body)
+    titleLabel.numberOfLines = 0
+    titleLabel.adjustsFontForContentSizeCategory = true
+    titleLabel.isAccessibilityElement = false
     let subtitleLabel = UILabel()
     subtitleLabel.text = subtitle
     subtitleLabel.font = .preferredFont(forTextStyle: .caption1)
     subtitleLabel.textColor = .secondaryLabel
-    subtitleLabel.numberOfLines = 2
+    subtitleLabel.numberOfLines = 0
+    subtitleLabel.adjustsFontForContentSizeCategory = true
+    subtitleLabel.isAccessibilityElement = false
     let labels = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
     labels.axis = .vertical
     labels.spacing = 2
@@ -796,13 +900,16 @@ func disclosureRow(title: String, subtitle: String) -> UIControl {
     let titleLabel = UILabel()
     titleLabel.text = title
     titleLabel.font = .preferredFont(forTextStyle: .body)
+    titleLabel.numberOfLines = 0
+    titleLabel.adjustsFontForContentSizeCategory = true
     titleLabel.isUserInteractionEnabled = false
 
     let subtitleLabel = UILabel()
     subtitleLabel.text = subtitle
     subtitleLabel.font = .preferredFont(forTextStyle: .caption1)
     subtitleLabel.textColor = .secondaryLabel
-    subtitleLabel.numberOfLines = 2
+    subtitleLabel.numberOfLines = 0
+    subtitleLabel.adjustsFontForContentSizeCategory = true
     subtitleLabel.isUserInteractionEnabled = false
 
     let labels = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
@@ -825,6 +932,7 @@ func disclosureRow(title: String, subtitle: String) -> UIControl {
     stack.isUserInteractionEnabled = false
 
     let control = UIControl()
+    control.isAccessibilityElement = true
     control.accessibilityLabel = title
     control.accessibilityHint = subtitle
     control.accessibilityTraits.insert(.button)
@@ -905,7 +1013,8 @@ extension CrashReporter.ProcessKind {
 func localizedCrashReportSummary(for snapshots: [CrashReporter.StoreSnapshot]) -> String {
     let count = snapshots.reduce(0) { $0 + $1.reportCount }
     if count == 0 {
-        return CrashReporter.crashedLastLaunch ? L10n.tr("crash.generating") : L10n.tr("crash.none")
+        let summary = CrashReporter.crashedLastLaunch ? L10n.tr("crash.generating") : L10n.tr("crash.none")
+        return snapshots.contains { $0.process == .packetTunnel } ? summary : L10n.format("crash.partial", summary)
     }
 
     let processSummary = snapshots
@@ -922,6 +1031,19 @@ func localizedCrashStorageDescription() -> String {
 }
 
 extension UIViewController {
+    func confirmSensitiveAction(title: String, message: String, action: String, perform: @escaping () -> Void) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: L10n.tr("common.cancel"), style: .cancel))
+        alert.addAction(UIAlertAction(title: action, style: .default) { _ in perform() })
+        present(alert, animated: true)
+    }
+
+    func confirmReportUpload(to endpoint: String, savesSettings: Bool, perform: @escaping () -> Void) {
+        var message = L10n.format("crash.confirmUpload", endpoint)
+        if savesSettings { message += "\n\n" + L10n.tr("crash.savesSettings") }
+        confirmSensitiveAction(title: L10n.tr("telemetry.uploadCrashReports"), message: message, action: L10n.tr("telemetry.upload"), perform: perform)
+    }
+
     func presentMessage(title: String, message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: L10n.tr("common.close"), style: .default))

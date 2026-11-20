@@ -16,19 +16,47 @@ final class HomeViewController: UIViewController {
     private let profileListView = HomeProfileListView()
     private let diagnosticLabel = PaddingLabel()
     private let errorLabel = PaddingLabel()
-    private var timer: Timer?
     private var pollTimer: Timer?
     private var linkState = 6
     private var traffic = RuntimeTrafficRate.empty
     private var previousTrafficSample: RuntimeSnapshot?
     private var connectStartedAt: Date?
     private var connectWatchdogTimer: Timer?
-    private var stopPresentationTimer: Timer?
     private var stopStartedAt: Date?
-    private var pendingStartGeneration: UInt64?
-    private var pendingStopGeneration: UInt64?
+    private var pendingStart: (generation: UInt64, monotonicMs: UInt64)?
+    private var pendingStop: (generation: UInt64, action: RuntimeConnectionAction)?
     private var runtimeDecodeError: String?
-    private var elapsedText = ""
+    private var submittingStart = false
+    private var checkingSystemStatus = false
+
+    private var observedPhase: RuntimePhase?
+    private var snapshotCurrent = false
+
+    private var systemSession: SystemSessionStatus {
+        if vpn.statusRefreshError != nil {
+            return vpn.status == .invalid || vpn.status == .disconnected ? .unavailable : .transitioning
+        }
+        switch vpn.status {
+        case .invalid, .disconnected: return .inactive
+        case .connected: return .connected
+        default: return .transitioning
+        }
+    }
+
+    private var presentationControls: RuntimeControlState {
+        let slowStop = stopStartedAt.map { Date().timeIntervalSince($0) >= 15 } ?? false
+        var controls = homeControls(runtime: observedPhase, system: systemSession, snapshotCurrent: snapshotCurrent, stopTakingTooLong: slowStop)
+        if checkingSystemStatus || submittingStart || pendingStart != nil || pendingStop != nil {
+            controls.buttonEnabled = false
+            controls.configEditable = false
+        }
+        return controls
+    }
+
+    private var configuredProfile: ConfigProfile? {
+        guard let profile = store.activeProfile(), profile.hasConfiguredServer else { return nil }
+        return profile
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -37,15 +65,23 @@ final class HomeViewController: UIViewController {
         setupLayout()
         NotificationCenter.default.addObserver(self, selector: #selector(refreshUI), name: ProfileStore.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshUI), name: VPNController.didChangeNotification, object: nil)
-        vpn.refresh()
+        NotificationCenter.default.addObserver(self, selector: #selector(checkSystemStatus), name: UIApplication.willEnterForegroundNotification, object: nil)
+        checkSystemStatus()
+    }
+
+    @objc private func checkSystemStatus() {
+        guard !checkingSystemStatus else { return }
+        checkingSystemStatus = true
         refreshUI()
+        vpn.refresh { [weak self] in
+            self?.checkingSystemStatus = false
+            self?.refreshUI()
+        }
     }
 
     deinit {
-        timer?.invalidate()
         pollTimer?.invalidate()
         connectWatchdogTimer?.invalidate()
-        stopPresentationTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -74,7 +110,6 @@ final class HomeViewController: UIViewController {
         statusCard.addBlockQuicTarget(self, action: #selector(blockQuicChanged(_:)))
         statusCard.addRouteModeTarget(self, action: #selector(routeModeChanged(_:)))
         content.addArrangedSubview(statusCard)
-        statusCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 286).isActive = true
 
         profileListView.onApplyProfile = { [weak self] profile in
             self?.selectProfile(profile)
@@ -118,6 +153,7 @@ final class HomeViewController: UIViewController {
     }
 
     @objc private func refreshUI() {
+        snapshotCurrent = false
         if let json = TunnelSharedState.readRuntimeSnapshotJsonIfAlive() {
             do {
                 let snapshot = try TunnelRuntimeBridge.decodeSnapshot(json)
@@ -131,6 +167,13 @@ final class HomeViewController: UIViewController {
                     }
                 }
                 runtimeDecodeError = nil
+                if runtimeStore.state.generation == snapshot.generation && runtimeStore.state.monotonicMs == snapshot.monotonicMs {
+                    snapshotCurrent = true
+                    observedPhase = runtimeStore.state.phase
+                } else if observedPhase == nil {
+                    // An older file reappeared after the last observation expired.
+                    observedPhase = .unknown
+                }
             } catch {
                 runtimeDecodeError = error.localizedDescription
                 if let ordering = try? TunnelRuntimeBridge.decodeOrdering(json) {
@@ -138,83 +181,80 @@ final class HomeViewController: UIViewController {
                         generation: ordering.generation,
                         monotonicMs: ordering.monotonicMs
                     )
+                    if runtimeStore.state.generation == ordering.generation && runtimeStore.state.monotonicMs == ordering.monotonicMs {
+                        observedPhase = runtimeStore.state.phase
+                    } else if observedPhase == nil {
+                        observedPhase = .unknown
+                    }
+                } else if observedPhase == nil {
+                    observedPhase = .unknown
                 }
             }
         } else {
+            observedPhase = TunnelSharedState.shouldUseSharedHeartbeat && TunnelSharedState.isExtensionAlive() ? .unknown : nil
+            runtimeDecodeError = nil
             traffic = .empty
             previousTrafficSample = nil
-            if runtimeStore.state.phase != .idle {
-                runtimeStore.markUnknown()
-            }
         }
-        if let generation = pendingStartGeneration,
-           runtimeStore.state.generation > generation ||
-           runtimeStore.state.phase == .unknown ||
-           runtimeStore.state.phase == .failed {
-            pendingStartGeneration = nil
+        let state = runtimeStore.state
+        if let baseline = pendingStart,
+           systemSession != .inactive || observedPhase == .unknown || (observedPhase != nil &&
+               (state.generation != baseline.generation || state.monotonicMs != baseline.monotonicMs)) {
+            pendingStart = nil
         }
-        if let generation = pendingStopGeneration,
-           runtimeStore.state.generation > generation ||
-           runtimeStore.state.phase == .idle ||
-           runtimeStore.state.phase == .failed ||
-           vpn.status == .disconnected ||
-           vpn.status == .invalid {
-            pendingStopGeneration = nil
+        if let stop = pendingStop,
+           state.generation != stop.generation || systemSession == .inactive || systemSession == .unavailable ||
+           (stop.action != .forceStop && homeControls(runtime: observedPhase, system: systemSession, snapshotCurrent: snapshotCurrent).action == .forceStop) {
+            pendingStop = nil
         }
         let debugPanelEnabled = store.debugPanelEnabled()
-        let profile = store.activeProfile()
+        let profile = configuredProfile
         let launchOptions = store.launchOptions()
-        updateStopPresentationTimer()
-        let stopTakingTooLong = stopStartedAt.map {
-            Date().timeIntervalSince($0) >= 15
-        } ?? false
-        var controls = controlsFor(
-            runtimeStore.state.phase,
-            stopTakingTooLong: stopTakingTooLong
-        )
-        if pendingStartGeneration != nil || pendingStopGeneration != nil {
-            controls.buttonEnabled = false
-            controls.configEditable = false
-        }
-        let statusText = L10n.tr(controls.statusTitleKey)
-        var statusDetail = controls.detailKey.isEmpty ? "" : L10n.tr(controls.detailKey)
-
-        if controls.isConnected {
-            updateElapsedText()
-            statusDetail = elapsedText
-            if !runtimeStore.state.effectiveMuxMode.isEmpty {
-                statusDetail += " · VMUX: \(runtimeStore.state.effectiveMuxDisplayName)"
-            }
-            statusDetail += " · Path: \(runtimeStore.state.effectivePathDisplayName)"
-            stopConnectWatchdog()
-            startTimer()
-        } else {
-            timer?.invalidate()
-            timer = nil
+        stopStartedAt = observedPhase == .stopping ? (stopStartedAt ?? Date()) : nil
+        let controls = presentationControls
+        let needsProfile = profile == nil && controls.configEditable
+        let statusText = L10n.tr(checkingSystemStatus ? "home.checkingStatus" : controls.statusTitleKey)
+        var statusDetail = controls.detailKey.isEmpty || checkingSystemStatus ? "" : L10n.tr(controls.detailKey)
+        if needsProfile {
+            statusDetail = L10n.tr("home.firstProfile")
+        } else if controls.action == .start && !vpn.hasSavedManager && !checkingSystemStatus {
+            statusDetail = L10n.tr("home.firstPermission")
         }
 
-        switch controls.action {
-        case .cancel, .stop:
+        var liveDetail = ""
+        let showLive = controls.isConnected && !checkingSystemStatus
+        if showLive {
+            statusDetail = elapsedTime()
+            let mux = state.effectiveMuxMode.isEmpty ? "" : "VMUX: \(state.effectiveMuxDisplayName) · "
+            liveDetail = L10n.format("home.livePath", mux, state.effectivePathDisplayName)
+        }
+
+        // Keep sampling mismatches: a snapshot can arrive (or expire) without an NE notification.
+        let needsPoll = systemSession == .connected || systemSession == .transitioning || observedPhase != nil || pendingStart != nil
+        if !checkingSystemStatus && needsPoll {
             startPolling()
-            if controls.action == .cancel && connectStartedAt == nil {
-                startConnectWatchdog()
-            }
-        default:
+        } else {
             pollTimer?.invalidate()
             pollTimer = nil
+        }
+        if !checkingSystemStatus && snapshotCurrent && observedPhase.map({ controlsFor($0).action }) == .cancel {
+            if connectStartedAt == nil { startConnectWatchdog() }
+        } else if pendingStart == nil {
             stopConnectWatchdog()
         }
 
         statusCard.apply(
             status: statusText,
             detail: statusDetail,
-            isConnected: controls.isConnected,
-            isBusy: controls.isBusy,
-            buttonTitle: L10n.tr(controls.buttonTitleKey),
+            profile: profile,
+            runtimeDetail: liveDetail,
+            isConnected: showLive,
+            isBusy: controls.isBusy || checkingSystemStatus,
+            buttonTitle: L10n.tr(needsProfile ? "profiles.importSubscription" : controls.buttonTitleKey),
             buttonEnabled: controls.buttonEnabled,
-            configEditable: controls.configEditable,
-            upload: "\(formatBytes(Int(traffic.txBytesPerSecond)))/s",
-            download: "\(formatBytes(Int(traffic.rxBytesPerSecond)))/s",
+            configEditable: controls.configEditable && profile != nil,
+            upload: showLive ? "\(formatBytes(Int(traffic.txBytesPerSecond)))/s" : "—",
+            download: showLive ? "\(formatBytes(Int(traffic.rxBytesPerSecond)))/s" : "—",
             options: launchOptions
         )
         profileListView.apply(
@@ -228,8 +268,8 @@ final class HomeViewController: UIViewController {
                 fallbackLinkState: linkState,
                 fallbackNetworkPath: vpn.networkPath
             )
-            let muxText = runtimeStore.state.muxDiagnosticLines.joined(separator: "\n")
-            let p2pText = runtimeStore.state.p2pDiagnosticLines.joined(separator: "\n")
+            let muxText = showLive ? runtimeStore.state.muxDiagnosticLines.joined(separator: "\n") : ""
+            let p2pText = showLive ? runtimeStore.state.p2pDiagnosticLines.joined(separator: "\n") : nil
             diagnosticLabel.text = [diagnosticText, muxText.isEmpty ? nil : muxText, p2pText]
                 .compactMap { $0 }
                 .joined(separator: "\n")
@@ -238,48 +278,20 @@ final class HomeViewController: UIViewController {
             diagnosticLabel.text = nil
             diagnosticLabel.isHidden = true
         }
-        errorLabel.text = runtimeDecodeError ?? vpn.lastError
+        errorLabel.text = runtimeDecodeError ?? vpn.statusRefreshError?.localizedDescription ?? vpn.lastError
         errorLabel.isHidden = errorLabel.text == nil
-    }
-
-    private func startTimer() {
-        updateElapsedText()
-        guard timer == nil else { return }
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.updateElapsedText()
-            self.refreshUI()
-        }
-    }
-
-    private func updateStopPresentationTimer() {
-        guard runtimeStore.state.phase == .stopping else {
-            stopStartedAt = nil
-            stopPresentationTimer?.invalidate()
-            stopPresentationTimer = nil
-            return
-        }
-        stopStartedAt = stopStartedAt ?? Date()
-        guard stopPresentationTimer == nil else { return }
-        stopPresentationTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
-            [weak self] _ in self?.refreshUI()
-        }
     }
 
     /// Elapsed connect time comes from the runtime snapshot's own clock, so it
     /// stays correct after the app process is recreated while the tunnel keeps
     /// running.
-    private func updateElapsedText() {
-        guard runtimeStore.state.connectedMonotonicMs != 0 else {
-            elapsedText = ""
-            return
-        }
+    private func elapsedTime() -> String {
+        guard runtimeStore.state.connectedMonotonicMs != 0 else { return "" }
         let duration = Int(connectedElapsedMs(runtimeStore.state) / 1000)
         let h = duration / 3600
         let m = (duration / 60) % 60
         let s = duration % 60
-        elapsedText = String(format: "%02d:%02d:%02d", h, m, s)
+        return String(format: "%02d:%02d:%02d", h, m, s)
     }
 
     private func startPolling() {
@@ -287,7 +299,6 @@ final class HomeViewController: UIViewController {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.pollTunnel()
         }
-        pollTunnel()
     }
 
     private func pollTunnel() {
@@ -296,8 +307,6 @@ final class HomeViewController: UIViewController {
             traffic = .empty
             previousTrafficSample = nil
             linkState = 6
-            pollTimer?.invalidate()
-            pollTimer = nil
             refreshUI()
             return
         }
@@ -334,8 +343,8 @@ final class HomeViewController: UIViewController {
     private func evaluateConnectWatchdog() {
         guard let startedAt = connectStartedAt else { return }
 
-        let stillConnecting = pendingStartGeneration != nil ||
-            controlsFor(runtimeStore.state.phase).action == .cancel
+        let stillConnecting = pendingStart != nil ||
+            (snapshotCurrent && observedPhase.map { controlsFor($0).action } == .cancel)
         guard stillConnecting else {
             stopConnectWatchdog()
             return
@@ -343,7 +352,7 @@ final class HomeViewController: UIViewController {
 
         let totalSeconds = Int(Date().timeIntervalSince(startedAt))
         if totalSeconds >= TunnelSharedState.connectWatchdogMaxSeconds {
-            pendingStartGeneration = nil
+            pendingStart = nil
             stopConnectWatchdog()
             vpn.disconnect()
             presentError(L10n.format("home.timeout", TunnelSharedState.connectWatchdogMaxSeconds))
@@ -354,7 +363,7 @@ final class HomeViewController: UIViewController {
         if TunnelSharedState.shouldUseSharedHeartbeat {
             let heartbeatAge = TunnelSharedState.heartbeatAgeMs()
             if heartbeatAge >= 0 && heartbeatAge > TunnelSharedState.heartbeatStaleMilliseconds {
-                pendingStartGeneration = nil
+                pendingStart = nil
                 stopConnectWatchdog()
                 vpn.disconnect()
                 presentError(L10n.format("home.heartbeatTimeout", Double(heartbeatAge) / 1000))
@@ -364,54 +373,44 @@ final class HomeViewController: UIViewController {
     }
 
     @objc private func toggleConnection() {
-        switch controlsFor(runtimeStore.state.phase).action {
+        let controls = presentationControls
+        guard controls.buttonEnabled else { return }
+        switch controls.action {
         case .cancel, .stop, .forceStop:
-            let generation = runtimeStore.state.generation
-            guard pendingStopGeneration != generation else { return }
-            pendingStartGeneration = nil
-            pendingStopGeneration = generation
+            pendingStart = nil
+            pendingStop = (runtimeStore.state.generation, controls.action)
             vpn.disconnect()
             refreshUI()
+            return
+        case .checkStatus:
+            checkSystemStatus()
             return
         case .none:
             return
         case .start, .retry:
-            guard pendingStartGeneration == nil else { return }
             break
         }
 
-        guard let profile = store.activeProfile(), !profile.json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            openProfiles()
+        guard let profile = configuredProfile else {
+            importSubscription(forSetup: true)
             return
         }
 
-        pendingStartGeneration = runtimeStore.state.generation
+        pendingStart = (runtimeStore.state.generation, runtimeStore.state.monotonicMs)
+        submittingStart = true
         refreshUI()
         vpn.connect(profile: profile) { [weak self] result in
             guard let self else { return }
+            self.submittingStart = false
             if case let .failure(error) = result {
-                self.pendingStartGeneration = nil
+                self.pendingStart = nil
                 self.stopConnectWatchdog()
                 self.presentError(error.localizedDescription)
-            } else {
-                self.startPolling()
+            } else if self.pendingStart != nil {
                 self.startConnectWatchdog()
             }
             self.refreshUI()
         }
-    }
-
-    @objc private func openProfiles() {
-        let selector = SelectProfileViewController()
-        let nav = UINavigationController(rootViewController: selector)
-        nav.modalPresentationStyle = .pageSheet
-        if let sheet = nav.sheetPresentationController {
-            sheet.detents = [.medium(), .large()]
-            sheet.prefersGrabberVisible = true
-            sheet.preferredCornerRadius = 22
-            sheet.selectedDetentIdentifier = .medium
-        }
-        present(nav, animated: true)
     }
 
     private func selectProfile(_ profile: ConfigProfile) {
@@ -504,7 +503,7 @@ final class HomeViewController: UIViewController {
         }
     }
 
-    private func importSubscription() {
+    private func importSubscription(forSetup: Bool = false) {
         let alert = UIAlertController(title: L10n.tr("profiles.importSubscription"), message: nil, preferredStyle: .alert)
         alert.addTextField { field in
             field.placeholder = "https://example.com/openppp2.json"
@@ -520,12 +519,12 @@ final class HomeViewController: UIViewController {
             else {
                 return
             }
-            self.fetchSubscription(urlText)
+            self.fetchSubscription(urlText, forSetup: forSetup)
         })
         present(alert, animated: true)
     }
 
-    private func fetchSubscription(_ urlText: String) {
+    private func fetchSubscription(_ urlText: String, forSetup: Bool) {
         guard let url = URL(string: urlText), isSecureSubscriptionURL(url) else {
             presentMessage(title: L10n.tr("profiles.invalidSubscription"), message: L10n.tr("profiles.invalidSubscription.message"))
             return
@@ -560,7 +559,10 @@ final class HomeViewController: UIViewController {
 
                     do {
                         let subscription = try RemoteSubscriptionParser.parse(text)
-                        let count = self.store.upsertSubscription(url: urlText, subscription: subscription)
+                        let count = self.store.upsertSubscription(
+                            url: urlText, subscription: subscription,
+                            selectFirstImported: forSetup && self.configuredProfile == nil
+                        )
                         self.refreshUI()
                         self.presentToast(L10n.format("profiles.importedNodes", count))
                     } catch {
@@ -653,6 +655,10 @@ private final class HomeStatusCard: UIView {
     private let statusLabel = UILabel()
     private let detailLabel = UILabel()
     private let actionButton = UIButton(type: .system)
+    private let scopeLabel = UILabel()
+    private let runtimeLabel = UILabel()
+    private let optionsStack = UIStackView()
+    private let detailsButton = UIButton(type: .system)
     private let uploadValue = UILabel()
     private let downloadValue = UILabel()
     private let allowLanSwitch = UISwitch()
@@ -677,15 +683,18 @@ private final class HomeStatusCard: UIView {
         dot.layer.cornerRadius = 6
         dot.setContentHuggingPriority(.required, for: .horizontal)
 
-        statusLabel.font = .systemFont(ofSize: 19, weight: .semibold)
+        statusLabel.font = .preferredFont(forTextStyle: .title2)
         statusLabel.textColor = .label
-        statusLabel.adjustsFontSizeToFitWidth = true
-        statusLabel.minimumScaleFactor = 0.82
-
-        detailLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        statusLabel.accessibilityTraits.insert(.header)
+        detailLabel.font = .preferredFont(forTextStyle: .subheadline)
         detailLabel.textColor = .secondaryLabel
-        detailLabel.adjustsFontSizeToFitWidth = true
-        detailLabel.minimumScaleFactor = 0.78
+        scopeLabel.font = .preferredFont(forTextStyle: .body)
+        runtimeLabel.font = .preferredFont(forTextStyle: .footnote)
+        runtimeLabel.textColor = .secondaryLabel
+        for label in [statusLabel, detailLabel, scopeLabel, runtimeLabel] {
+            label.adjustsFontForContentSizeCategory = true
+            label.numberOfLines = 0
+        }
 
         let labels = UIStackView(arrangedSubviews: [statusLabel, detailLabel])
         labels.axis = .vertical
@@ -698,13 +707,7 @@ private final class HomeStatusCard: UIView {
         left.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         actionButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
-        actionButton.heightAnchor.constraint(equalToConstant: 42).isActive = true
-        actionButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
-
-        let statusRow = UIStackView(arrangedSubviews: [left, actionButton])
-        statusRow.axis = .horizontal
-        statusRow.alignment = .center
-        statusRow.spacing = 14
+        actionButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
 
         let speedRow = UIStackView(arrangedSubviews: [
             makeSpeedColumn(title: L10n.tr("home.upload"), valueLabel: uploadValue, color: .systemOrange),
@@ -717,10 +720,9 @@ private final class HomeStatusCard: UIView {
         speedRow.spacing = 14
         speedRow.arrangedSubviews[0].widthAnchor.constraint(equalTo: speedRow.arrangedSubviews[2].widthAnchor).isActive = true
 
-        let quickTitle = UILabel()
-        quickTitle.text = L10n.tr("home.quickSwitches")
-        quickTitle.font = .systemFont(ofSize: 13, weight: .semibold)
-        quickTitle.textColor = .secondaryLabel
+        detailsButton.contentHorizontalAlignment = .leading
+        detailsButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        detailsButton.addTarget(self, action: #selector(toggleDetails), for: .touchUpInside)
 
         [allowLanSwitch, blockQuicSwitch].forEach { control in
             control.onTintColor = AppTheme.primary
@@ -730,16 +732,16 @@ private final class HomeStatusCard: UIView {
         routeModeControl.setTitleTextAttributes([.foregroundColor: UIColor.label, .font: UIFont.systemFont(ofSize: 12, weight: .regular)], for: .normal)
         routeModeControl.heightAnchor.constraint(equalToConstant: 34).isActive = true
 
-        let stack = UIStackView(arrangedSubviews: [
-            statusRow,
-            makeHorizontalDivider(),
-            speedRow,
-            makeHorizontalDivider(),
-            quickTitle,
-            makeSwitchRow(title: L10n.tr("home.lanProxy"), subtitle: L10n.tr("home.lanProxy.subtitle"), control: allowLanSwitch),
-            makeSwitchRow(title: L10n.tr("home.blockQuic"), subtitle: L10n.tr("options.blockQuic.detail"), control: blockQuicSwitch),
-            makeRouteRow()
-        ])
+        optionsStack.axis = .vertical
+        optionsStack.spacing = 12
+        optionsStack.addArrangedSubview(makeSwitchRow(title: L10n.tr("home.lanProxy"), subtitle: L10n.tr("home.lanProxy.subtitle"), control: allowLanSwitch))
+        optionsStack.addArrangedSubview(makeSwitchRow(title: L10n.tr("home.blockQuic"), subtitle: L10n.tr("options.blockQuic.detail"), control: blockQuicSwitch))
+        optionsStack.addArrangedSubview(makeRouteRow())
+        optionsStack.addArrangedSubview(runtimeLabel)
+        optionsStack.isHidden = true
+        updateDetailsTitle()
+
+        let stack = UIStackView(arrangedSubviews: [left, scopeLabel, actionButton, makeHorizontalDivider(), speedRow, detailsButton, optionsStack])
         stack.axis = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -754,6 +756,15 @@ private final class HomeStatusCard: UIView {
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -18)
         ])
         setTraffic(upload: "0 B/s", download: "0 B/s")
+    }
+
+    @objc private func toggleDetails() {
+        optionsStack.isHidden.toggle()
+        updateDetailsTitle()
+    }
+
+    private func updateDetailsTitle() {
+        detailsButton.setTitle(L10n.tr(optionsStack.isHidden ? "home.showDetails" : "home.hideDetails"), for: .normal)
     }
 
     func addConnectionTarget(_ target: Any?, action: Selector) {
@@ -775,6 +786,8 @@ private final class HomeStatusCard: UIView {
     func apply(
         status: String,
         detail: String,
+        profile: ConfigProfile?,
+        runtimeDetail: String,
         isConnected: Bool,
         isBusy: Bool,
         buttonTitle: String,
@@ -787,6 +800,18 @@ private final class HomeStatusCard: UIView {
         let color = color(isConnected: isConnected, isBusy: isBusy)
         statusLabel.text = status
         detailLabel.text = detail
+        detailLabel.isHidden = detail.isEmpty
+        scopeLabel.text = profile.map {
+            let scope = $0.isProxyOnly ? L10n.tr("home.proxyScope") : L10n.format(
+                "home.tunnelScope", options.routeMode.localizedDisplayName, "\(options.route)/\(options.routePrefix)"
+            )
+            return L10n.format("home.profileScope", $0.name, scope)
+        }
+        scopeLabel.isHidden = profile == nil
+        runtimeLabel.text = runtimeDetail
+        runtimeLabel.isHidden = runtimeDetail.isEmpty
+        detailsButton.isHidden = profile == nil && runtimeDetail.isEmpty
+        if detailsButton.isHidden { optionsStack.isHidden = true; updateDetailsTitle() }
         dot.backgroundColor = color
         dot.layer.shadowColor = color.cgColor
         dot.layer.shadowOpacity = isConnected || isBusy ? 0.42 : 0.18
@@ -941,6 +966,7 @@ private final class HomeProfileListView: UIView {
     }
 
     private let titleLabel = UILabel()
+    private let manualAddButton = UIButton(type: .system)
     private let addButton = UIButton(type: .system)
     private let tableView = UITableView(frame: .zero, style: .plain)
     private var tableHeightConstraint: NSLayoutConstraint?
@@ -968,14 +994,18 @@ private final class HomeProfileListView: UIView {
         titleLabel.textColor = .secondaryLabel
 
         var addConfiguration = UIButton.Configuration.plain()
-        addConfiguration.image = UIImage(systemName: "plus.circle")
+        addConfiguration.image = UIImage(systemName: "square.and.arrow.down")
         addConfiguration.baseForegroundColor = AppTheme.primary
         addConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 0)
         addButton.configuration = addConfiguration
+        addButton.accessibilityLabel = L10n.tr("profiles.import")
         addButton.showsMenuAsPrimaryAction = true
         addButton.menu = makeAddMenu()
+        manualAddButton.setTitle(L10n.tr("profiles.addMenu.new"), for: .normal)
+        manualAddButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        manualAddButton.addAction(UIAction { [weak self] _ in self?.onAddProfile?() }, for: .touchUpInside)
 
-        let header = UIStackView(arrangedSubviews: [titleLabel, addButton])
+        let header = UIStackView(arrangedSubviews: [titleLabel, manualAddButton, addButton])
         header.axis = .horizontal
         header.alignment = .center
         header.spacing = 10
@@ -1018,6 +1048,7 @@ private final class HomeProfileListView: UIView {
         self.activeId = activeId
         self.configEditable = configEditable
         addButton.isEnabled = configEditable
+        manualAddButton.isEnabled = configEditable
         groups = Self.groupProfiles(profiles)
         tableView.reloadData()
         tableView.layoutIfNeeded()
@@ -1030,9 +1061,6 @@ private final class HomeProfileListView: UIView {
 
     private func makeAddMenu() -> UIMenu {
         UIMenu(children: [
-            UIAction(title: L10n.tr("profiles.addMenu.new"), image: UIImage(systemName: "plus")) { [weak self] _ in
-                self?.onAddProfile?()
-            },
             UIAction(title: L10n.tr("profiles.importSubscription"), image: UIImage(systemName: "icloud.and.arrow.down")) { [weak self] _ in
                 self?.onImportSubscription?()
             },

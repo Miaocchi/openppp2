@@ -18,6 +18,13 @@ final class ProfileImportExportTests: XCTestCase {
         )
     }
 
+    func testSeedTemplateIsNotAConfiguredProfile() {
+        var profile = sampleProfile(id: "seed", name: "未配置")
+        XCTAssertTrue(profile.hasConfiguredServer)
+        profile.json = OpenPPP2DefaultConfig.templateJson
+        XCTAssertFalse(profile.hasConfiguredServer)
+    }
+
     func testRoundTripEncodeDecode() throws {
         let bundle = ProfileExportBundle(
             activeProfileId: "p1",

@@ -209,6 +209,8 @@ export function createTauriRuntime(bridge = window.__TAURI__) {
         void probeLatency()
       } catch (error) {
         appendEvent({ message: String(error), severity: 'error' })
+        emit()
+        throw error
       }
       emit()
     },

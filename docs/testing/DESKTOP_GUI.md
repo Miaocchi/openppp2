@@ -23,12 +23,14 @@ cargo build --offline --manifest-path desktop/client/src-tauri/Cargo.toml
 
 The Rust suite covers profile merging, missing-section handling, unknown-field preservation, network validation, credential redaction, multi-source cache isolation, preference migration, intentional disconnect, process stop/restart, telemetry precedence and reversible proxy recovery with external changes. The native proxy query test is read-only.
 
-Browser smoke checks require Playwright and Microsoft Edge, plus Vite at port 1420:
+Browser smoke checks require Playwright, a compatible browser and the frontend served at port 1420 (or `GUI_URL`). The default browser channel is Microsoft Edge:
 
 ```powershell
 $env:PLAYWRIGHT_MODULE='build/gui-tools/node_modules/playwright/index.mjs'
 node desktop/client/test/gui-smoke.mjs
 ```
+
+For an offline run against Playwright's installed Chromium headless shell, set `GUI_BROWSER_CHANNEL` to the empty string. This exercises the browser UI and simulated native replies, not Windows or the VPN kernel.
 
 The script checks light/dark layouts at 1120, 720 and 375 pixels, loaded logo, navigation, manual-node and subscription creation, routing template and rule add, DNS save, settings tabs, language changes, keyboard modal dismissal, logs and page errors. Screenshots go to ignored `build/gui-checks`.
 

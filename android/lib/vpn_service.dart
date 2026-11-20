@@ -150,21 +150,13 @@ class VpnService with WidgetsBindingObserver {
     String jsonConfig, {
     Map<String, dynamic>? vpnOptions,
   }) async {
-    try {
-      _resetTraffic();
-      final result = await _channel.invokeMethod<bool>('connect', {
-        'configJson': jsonConfig,
-        'vpnOptions': vpnOptions ?? <String, dynamic>{},
-      });
-      return result ?? false;
-    } on PlatformException catch (e) {
-      final details = e.details?.toString();
-      throw Exception(
-        details == null || details.isEmpty
-            ? 'VPN connect failed: ${e.message}'
-            : 'VPN connect failed: ${e.message}\n$details',
-      );
-    }
+    _resetTraffic();
+    // Let PlatformException pass through with its code and diagnostic details.
+    final result = await _channel.invokeMethod<bool>('connect', {
+      'configJson': jsonConfig,
+      'vpnOptions': vpnOptions ?? <String, dynamic>{},
+    });
+    return result ?? false;
   }
 
   Future<bool> disconnect() async {

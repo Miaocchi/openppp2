@@ -19,6 +19,8 @@ final class VPNController {
     private static let pathRecoveryUnexpectedDisconnectWindow: TimeInterval = 120
 
     private var manager: NETunnelProviderManager?
+    var hasSavedManager: Bool { manager != nil }
+    private(set) var statusRefreshError: Error?
     private(set) var status: NEVPNStatus = .invalid
     private(set) var lastError: String?
     private(set) var diagnostics = VpnDiagnostics.empty
@@ -71,17 +73,17 @@ final class VPNController {
         return
 #else
         refresh { [weak self] in
-            guard let self else { return }
+            guard let self, self.statusRefreshError == nil else { return }
             let active = self.status == .connecting || self.status == .connected || self.status == .reasserting
             if active, !TunnelSharedState.isExtensionAlive() {
                 NSLog("OpenPPP2 recovering stale VPN state (NE status=%d)", self.status.rawValue)
                 self.manager?.connection.stopVPNTunnel()
                 TunnelSharedState.clearSession()
                 self.lastError = L10n.tr("vpn.error.staleSessionRecovered")
-                self.status = .disconnected
+                self.status = self.manager?.connection.status ?? .invalid
                 self.diagnostics = .empty
                 self.emitChange()
-            } else if !active {
+            } else if !active, !TunnelSharedState.isExtensionAlive() {
                 TunnelSharedState.clearSession()
             }
         }
@@ -94,7 +96,13 @@ final class VPNController {
         emitChange()
         completion?()
 #else
-        loadManager { [weak self] manager, _ in
+        loadManager { [weak self] manager, error in
+            self?.statusRefreshError = error
+            if error != nil {
+                self?.emitChange()
+                completion?()
+                return
+            }
             self?.manager = manager
             self?.lastStatusBeforeChange = self?.status ?? .invalid
             self?.status = manager?.connection.status ?? .disconnected
@@ -125,11 +133,6 @@ final class VPNController {
         let telemetry = TelemetrySettingsStore.shared.settings()
         let providerConfiguration = Self.providerConfiguration(for: profile, telemetry: telemetry)
         let serverAddress = Self.systemServerAddress(for: profile)
-        userRequestedDisconnect = false
-        reconnectWhenPathRecovers = false
-        lastUnexpectedDisconnectAt = nil
-        TunnelSharedState.clearLastTunnelStopReason()
-        Self.persistLastTunnelConfiguration(for: profile, telemetry: telemetry)
         loadManager { [weak self] manager, error in
             if let error {
                 self?.record(error)
@@ -138,6 +141,17 @@ final class VPNController {
             }
 
             let manager = manager ?? NETunnelProviderManager()
+            guard Self.canStart(manager.connection) else {
+                self?.manager = manager
+                self?.status = manager.connection.status
+                completion(.failure(NSError.openPPP2(L10n.tr("vpn.error.existingSession"))))
+                return
+            }
+            self?.userRequestedDisconnect = false
+            self?.reconnectWhenPathRecovers = false
+            self?.lastUnexpectedDisconnectAt = nil
+            TunnelSharedState.clearLastTunnelStopReason()
+            Self.persistLastTunnelConfiguration(for: profile, telemetry: telemetry)
             let proto = (manager.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
             proto.providerBundleIdentifier = Self.providerBundleIdentifier
             proto.serverAddress = serverAddress
@@ -161,6 +175,11 @@ final class VPNController {
                     }
 
                     do {
+                        guard Self.canStart(manager.connection) else {
+                            self?.manager = manager
+                            self?.status = manager.connection.status
+                            throw NSError.openPPP2(L10n.tr("vpn.error.existingSession"))
+                        }
                         try manager.connection.startVPNTunnel()
                         self?.manager = manager
                         self?.lastError = nil
@@ -188,7 +207,8 @@ final class VPNController {
             return
         }
         if let error = Self.configurationError(for: profile) {
-            record(error)
+            // A seeded, unconfigured profile is normal during setup; no system
+            // preference should be installed for it. Explicit connects still validate.
             completion?(.failure(error))
             return
         }
@@ -645,8 +665,12 @@ final class VPNController {
         status == .connected || status == .connecting || status == .reasserting
     }
 
+    private static func canStart(_ connection: NEVPNConnection) -> Bool {
+        connection.status == .disconnected || connection.status == .invalid
+    }
+
     private static func configurationError(for profile: ConfigProfile) -> Error? {
-        guard profile.serverHost?.isEmpty == false else {
+        guard profile.hasConfiguredServer else {
             return NSError.openPPP2(L10n.tr("vpn.error.missingServer"))
         }
         return nil

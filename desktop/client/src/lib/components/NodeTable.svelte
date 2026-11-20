@@ -13,13 +13,13 @@
   async function run(action) { try { await action(); error='' } catch(cause) { error=String(cause) } }
 </script>
 
-<div class="table-scroll">
+<div class="table-scroll" class:library={showFavorite}>
   <table>
     <thead><tr>{#if showFavorite}<th class="fav"></th>{/if}<th>{$t('Name','名称')}</th><th>{$t('Source','来源')}</th><th class="address">{$t('Address','地址')}</th><th class="latency">{$t('TCP latency','TCP 延迟')}</th><th class="action"></th></tr></thead>
     <tbody>
       {#each nodes as node (node.id)}
         <tr class:current={node.id === currentNodeId}>
-          {#if showFavorite}<td class="fav"><button class:active={node.favorite} class="favorite" on:click={() => run(() => runtime.toggleFavorite(node.id))} title={$t('Favorite','收藏')} aria-label={$t('Favorite','收藏')}><Star size={14} fill={node.favorite ? 'currentColor' : 'none'} /></button></td>{/if}
+          {#if showFavorite}<td class="fav"><button class:active={node.favorite} class="favorite" aria-pressed={!!node.favorite} on:click={() => run(() => runtime.toggleFavorite(node.id))} title={$t('Favorite','收藏')} aria-label={$t('Favorite','收藏')}><Star size={14} fill={node.favorite ? 'currentColor' : 'none'} /></button></td>{/if}
           <td class="name-cell"><div class="node-name"><strong title={node.name}>{node.name}</strong></div></td><td class="muted">{node.source === 'manual' ? $t('Local','本地') : node.sourceName || node.subtitle}</td><td class="address mono">{node.address}</td><td class="latency number {latencyTone(node.latencyMs)}">{Number.isFinite(node.latencyMs) ? `${node.latencyMs} ms` : '—'}</td>
           <td class="action"><div class="row-actions">{#if showFavorite}<button class="mini-icon" title={$t('Duplicate','复制节点')} aria-label={$t('Duplicate','复制节点')} on:click={() => onCopy(node)}><Copy size={13}/></button>{/if}{#if node.source === 'manual'}<button class="mini-icon" title={$t('Edit','编辑')} aria-label={$t('Edit','编辑')} on:click={() => onEdit(node)}><Pencil size={13} /></button><button class="mini-icon danger-action" title={$t('Delete','删除')} aria-label={$t('Delete','删除')} on:click={() => onDelete(node)}><Trash2 size={13} /></button>{/if}{#if node.id === currentNodeId && currentNodeId}<span class="current-label">{$t('Selected','已选择')}</span>{:else}<button class="row-button" disabled={false} on:click={() => run(() => runtime.switchNode(node.id))}>{$t('Connect','连接')}</button>{/if}</div></td>
         </tr>
@@ -48,4 +48,14 @@
   .mini-icon { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-3); cursor: pointer; }
   .mini-icon:hover { color: var(--text); border-color: var(--border-strong); background: var(--surface-hover); }
   .mini-icon.danger-action:hover { color: #ff7770; }
+  .library .action { width:210px; } .library .action .mini-icon { min-width:26px; }
+  @media(max-width:860px) {
+    .library table,.library tbody { display:block; min-width:0; }
+    .library thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+    .library tr { display:grid; grid-template-columns:32px minmax(0,1fr) auto; align-items:center; gap:4px 8px; padding:12px; border-bottom:1px solid var(--border); }
+    .library td { border:0; width:auto; height:auto; padding:0; }
+    .library .name-cell { grid-column:2; } .library td.muted { grid-column:2; grid-row:2; }
+    .library .address { grid-column:2/-1; grid-row:3; } .library .latency { grid-column:3; grid-row:1; }
+    .library .action { grid-column:1/-1; width:auto; } .library .mini-icon,.library .favorite { width:32px; height:32px; }
+  }
 </style>
