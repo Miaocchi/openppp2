@@ -4,6 +4,9 @@
 
 #if defined(_WIN32)
 #include <iphlpapi.h>
+#elif defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE)
+#include <net/if.h>
+#include <unistd.h>
 #else
 #include <unistd.h>
 #endif
@@ -15,7 +18,7 @@ int main() {
     assert(!IsClientUnderlyingSocketHandleValid(INVALID_SOCKET));
     assert(IsClientUnderlyingSocketProtectionSnapshotValid(true, "", 1, false));
     assert(!IsClientUnderlyingSocketProtectionSnapshotValid(true, "", 0, false));
-    assert(!IsClientUnderlyingSocketProtectionSnapshotValid(false, "", 1, false));
+    assert(IsClientUnderlyingSocketProtectionSnapshotValid(false, "", 1, false));
 
     // Exercise the real socket option without connecting or changing any
     // adapter, route, DNS, or system proxy state.
@@ -39,7 +42,7 @@ int main() {
 #elif defined(_LINUX)
     assert(!IsClientUnderlyingSocketHandleValid(-1));
     assert(IsClientUnderlyingSocketProtectionSnapshotValid(true, "eth0", -1, false));
-    assert(!IsClientUnderlyingSocketProtectionSnapshotValid(false, "eth0", -1, false));
+    assert(IsClientUnderlyingSocketProtectionSnapshotValid(false, "eth0", -1, false));
     assert(!IsClientUnderlyingSocketProtectionSnapshotValid(true, "", -1, false));
 
     auto network_interface = std::make_shared<ClientNetworkInterface>();
@@ -48,7 +51,7 @@ int main() {
         true,
         network_interface,
         std::shared_ptr<ppp::net::ProtectorNetwork>()));
-    assert(!BuildClientUnderlyingSocketProtector(
+    assert(BuildClientUnderlyingSocketProtector(
         false,
         network_interface,
         std::shared_ptr<ppp::net::ProtectorNetwork>()));
@@ -61,8 +64,22 @@ int main() {
 #elif defined(_MACOS) && !defined(_IPHONE) && !defined(IPHONE)
     assert(!IsClientUnderlyingSocketHandleValid(-1));
     assert(IsClientUnderlyingSocketProtectionSnapshotValid(true, "", 1, false));
+    assert(IsClientUnderlyingSocketProtectionSnapshotValid(false, "", 1, false));
     assert(!IsClientUnderlyingSocketProtectionSnapshotValid(true, "", 0, false));
-    assert(!IsClientUnderlyingSocketProtectionSnapshotValid(false, "", 1, false));
+
+    const unsigned int loopback_index = if_nametoindex("lo0");
+    assert(loopback_index > 0);
+    const int ipv6_socket = ::socket(AF_INET6, SOCK_STREAM, 0);
+    assert(ipv6_socket >= 0);
+    assert(ProtectClientUnderlyingSocket(ipv6_socket, "", static_cast<int>(loopback_index)));
+#if defined(IPV6_BOUND_IF)
+    unsigned int bound_index = 0;
+    socklen_t option_size = sizeof(bound_index);
+    assert(::getsockopt(ipv6_socket, IPPROTO_IPV6, IPV6_BOUND_IF,
+        &bound_index, &option_size) == 0);
+    assert(bound_index == loopback_index);
+#endif
+    ::close(ipv6_socket);
 #endif
 
     return 0;

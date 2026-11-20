@@ -1,17 +1,11 @@
 import UIKit
 
 final class CrashReportsViewController: UITableViewController {
-    private var rows: [String] {
-        [
-            L10n.tr("crash.status"),
-            L10n.tr("crash.storage"),
-            L10n.tr("crash.uploadToOtel"),
-            L10n.tr("crash.clearLocal")
-        ]
-    }
     private let vpn = VPNController.shared
     private var snapshots: [CrashReporter.StoreSnapshot] = []
-    private var packetTunnelSnapshotAvailable = false
+    private var loadingExtension = false
+    private var actionSection: Int { 1 + CrashReporter.ProcessKind.allCases.count }
+    private var hasReports: Bool { snapshots.contains { !$0.reportIDs.isEmpty } }
     private var uploading = false
 
     override func viewDidLoad() {
@@ -19,7 +13,7 @@ final class CrashReportsViewController: UITableViewController {
         title = L10n.tr("settings.crashReports")
         tableView.backgroundColor = .systemGroupedBackground
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "Cell")
-        reloadReports()
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .refresh, target: self, action: #selector(reloadReports))
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -27,20 +21,20 @@ final class CrashReportsViewController: UITableViewController {
         reloadReports()
     }
 
-    private func reloadReports() {
+    @objc private func reloadReports() {
+        guard !loadingExtension else { return }
         snapshots = CrashReporter.storeSnapshots
-        packetTunnelSnapshotAvailable = CrashReporter.isSharedContainerAvailable
+        loadingExtension = !CrashReporter.isSharedContainerAvailable
         tableView.reloadData()
         guard !CrashReporter.isSharedContainerAvailable else { return }
 
         vpn.fetchPacketTunnelCrashReports { [weak self] snapshot in
             guard let self else { return }
+            self.loadingExtension = false
             if let snapshot {
-                self.packetTunnelSnapshotAvailable = true
                 self.upsert(snapshot)
                 self.tableView.reloadData()
             } else {
-                self.packetTunnelSnapshotAvailable = false
                 self.removeSnapshot(for: .packetTunnel)
                 self.tableView.reloadData()
             }
@@ -48,14 +42,11 @@ final class CrashReportsViewController: UITableViewController {
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int {
-        let packetTunnelNeedsPlaceholder = !snapshots.contains { $0.process == .packetTunnel }
-        return 1 + snapshots.count + (packetTunnelNeedsPlaceholder ? 1 : 0)
+        actionSection + 1
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if section == 0 {
-            return rows.count
-        }
+        if section == 0 || section == actionSection { return 2 }
         guard let snapshot = snapshot(forSection: section) else {
             return 1
         }
@@ -63,9 +54,8 @@ final class CrashReportsViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        if section == 0 {
-            return "KSCrash"
-        }
+        if section == 0 { return L10n.tr("settings.section.storage") }
+        if section == actionSection { return L10n.tr("crash.manage") }
         guard let snapshot = snapshot(forSection: section) else {
             return L10n.format("crash.pendingHeader", CrashReporter.ProcessKind.packetTunnel.localizedDisplayName)
         }
@@ -74,28 +64,26 @@ final class CrashReportsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "Cell", for: indexPath)
-        var config = UIListContentConfiguration.valueCell()
+        var config = UIListContentConfiguration.subtitleCell()
+        config.secondaryTextProperties.numberOfLines = 0
+        cell.accessoryType = .none
+        let actionable = indexPath.section == actionSection && hasReports && !uploading
+        cell.selectionStyle = actionable ? .default : .none
+        cell.accessibilityTraits = .staticText
 
         if indexPath.section == 0 {
-            config.text = rows[indexPath.row]
-            switch indexPath.row {
-            case 0:
-                config.secondaryText = localizedCrashReportSummary(for: snapshots)
-                cell.accessoryType = .none
-            case 1:
-                config.secondaryText = localizedCrashStorageDescription()
-                cell.accessoryType = .none
-            case 2:
-                config.secondaryText = uploading ? L10n.tr("crash.uploading") : L10n.tr("crash.uploadDeletesLocal")
-                cell.accessoryType = uploading ? .none : .disclosureIndicator
-            default:
-                config.secondaryText = L10n.tr("crash.clearLocal.detail")
-                cell.accessoryType = .disclosureIndicator
-            }
+            config.text = L10n.tr(indexPath.row == 0 ? "crash.status" : "crash.storage")
+            config.secondaryText = indexPath.row == 0 ? localizedCrashReportSummary(for: snapshots) : localizedCrashStorageDescription()
+        } else if indexPath.section == actionSection {
+            let send = indexPath.row == 0
+            config.text = L10n.tr(send ? "crash.uploadToOtel" : "crash.clearLocal")
+            config.textProperties.color = actionable ? (send ? AppTheme.primary : .systemRed) : .secondaryLabel
+            config.secondaryText = L10n.tr(uploading ? "crash.uploading" : (send ? "crash.uploadDeletesLocal" : "crash.clearLocal.detail"))
+            cell.accessibilityTraits = actionable ? [.button] : [.button, .notEnabled]
         } else {
             guard let snapshot = snapshot(forSection: indexPath.section) else {
-                config.text = L10n.tr("crash.vpnDisconnected")
-                config.secondaryText = L10n.tr("crash.vpnDisconnected.detail")
+                config.text = L10n.tr(loadingExtension ? "crash.checking" : "crash.extensionUnavailable")
+                config.secondaryText = L10n.tr("crash.extensionRecovery")
                 cell.accessoryType = .none
                 cell.contentConfiguration = config
                 return cell
@@ -103,11 +91,11 @@ final class CrashReportsViewController: UITableViewController {
 
             if snapshot.reportIDs.isEmpty {
                 config.text = L10n.tr("crash.none")
-                config.secondaryText = nil
+                config.secondaryText = L10n.tr("crash.none.detail")
                 cell.accessoryType = .none
             } else {
                 let reportID = snapshot.reportIDs[indexPath.row]
-                config.text = "Report \(reportID)"
+                config.text = L10n.format("crash.reportID", String(reportID))
                 config.secondaryText = L10n.tr("crash.waitingUpload")
                 cell.accessoryType = .none
             }
@@ -119,14 +107,12 @@ final class CrashReportsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard indexPath.section == 0 else { return }
+        guard indexPath.section == actionSection, hasReports, !uploading else { return }
 
-        if indexPath.row == 2 {
+        if indexPath.row == 0 {
             uploadCrashReports()
             return
         }
-
-        guard indexPath.row == 3 else { return }
 
         let alert = UIAlertController(title: L10n.tr("crash.clear.title"), message: L10n.tr("crash.clear.message"), preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: L10n.tr("common.cancel"), style: .cancel))
@@ -152,6 +138,12 @@ final class CrashReportsViewController: UITableViewController {
             return
         }
 
+        confirmReportUpload(to: settings.effectiveEndpoint, savesSettings: false) { [weak self] in
+            self?.sendReports(settings)
+        }
+    }
+
+    private func sendReports(_ settings: TelemetrySettings) {
         uploading = true
         tableView.reloadData()
         var summary = TelemetryUploadSummary()
@@ -192,11 +184,9 @@ final class CrashReportsViewController: UITableViewController {
     }
 
     private func snapshot(forSection section: Int) -> CrashReporter.StoreSnapshot? {
-        let index = section - 1
-        if snapshots.indices.contains(index) {
-            return snapshots[index]
-        }
-        return nil
+        let processes = CrashReporter.ProcessKind.allCases
+        guard processes.indices.contains(section - 1) else { return nil }
+        return snapshots.first { $0.process == processes[section - 1] }
     }
 
     private func upsert(_ snapshot: CrashReporter.StoreSnapshot) {

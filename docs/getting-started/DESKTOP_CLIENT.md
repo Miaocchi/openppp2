@@ -1,11 +1,14 @@
 # Desktop Client
-> Status: Experimental
+> **Supported status:** Experimental; source-run evaluation only, with current validation targeting Windows. No supported installer or release package.
 > Type: Guide
 > Last verified: 2026-10-04
 >
 > **Purpose:** Run and evaluate the repository's Tauri/Svelte client manager against a local `ppp` executable.
-> **Audience:** Desktop developers and evaluators.
+> **Audience:** Desktop developers and evaluators who have a compatible local `ppp` executable.
 > **Parent index:** [Getting Started](README.md) · **Chinese:** [桌面客户端](DESKTOP_CLIENT_CN.md)
+>
+> **Build/runtime boundary:** The guide runs the Tauri/Svelte shell from source and launches an external local `ppp`; it does not build, bundle, or support the native runtime or promise network behavior.
+> **Canonical next page:** [Desktop overview](../../desktop/README.md) for workflows; use [GUI verification](../testing/DESKTOP_GUI.md) for tested behavior and remaining live acceptance.
 
 ## Status and boundary
 

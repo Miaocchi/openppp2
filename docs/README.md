@@ -7,49 +7,52 @@
 
 [中文版](README_CN.md)
 
-Use this page to choose the current documentation for the native `ppp` tree. Follow the linked category pages instead of treating this index as a configuration or operations reference.
+This is the current task-first index for the native `ppp` tree. The root
+[repository README](../README.md) explains the core/companion boundary and
+records the native startup chain; this page routes you to the details without
+duplicating that sequence.
 
-## First-use path
+## One first-use path
+
+For a first native run, follow these pages in order:
 
 1. [Build and first run](getting-started/USER_MANUAL.md)
-2. [Write the configuration file](getting-started/CONFIGURE.md) — minimal server/client pair, fields that must match, what to add next
+2. [Write the configuration file](getting-started/CONFIGURE.md)
 3. [Configuration reference](reference/CONFIGURATION.md) and [CLI reference](reference/CLI_REFERENCE.md)
 4. [Operational checklist and troubleshooting](operations/OPERATIONS.md)
 
-## Browse by task
+## Choose a route
 
-| Task | Canonical current page |
+| Role or need | Canonical current page |
 |---|---|
-| Installation, local build, and first verification | [Getting started](getting-started/README.md) |
-| Configuration fields, CLI behavior, errors, and protocol formats | [Reference](reference/README.md) |
-| Routing, DNS, proxy mode, management, IPv6, and platforms | [Guides](guides/README.md) |
-| Configure and use the client policy CLI | [Policy CLI guide](guides/POLICY_CLI.md) · [Chinese](guides/POLICY_CLI_CN.md) |
-| Deployment, security, monitoring, and incident response | [Operations](operations/README.md) |
-| Runtime, transport, protocol, concurrency, and source-level architecture | [Architecture](architecture/README.md) |
-| Source reading, builds, tests, and compatibility | [Development](development/README.md) |
-| Local policy implementation evidence and Linux live results | [Development notes](development/README.md) · [Linux live report](testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) |
-| Interface status, implementation boundaries, and known gaps | [Project interface map](reference/PROJECT_INTERFACE_MAP.md) |
+| User: installation, first run, and configuration | [Getting started](getting-started/README.md) |
+| User: routing, DNS, proxy, management, or platform behavior | [Guides](guides/README.md) |
+| Operator: deployment, security, monitoring, and incidents | [Operations](operations/README.md) |
+| Developer: runtime, transport, protocol, concurrency, and source | [Architecture](architecture/README.md) · [Development](development/README.md) |
+| Reference: configuration, CLI, errors, protocols, and formats | [Reference](reference/README.md) |
+| Interface boundaries and known gaps | [Project interface map](reference/PROJECT_INTERFACE_MAP.md) |
+| Historical rationale, decisions, plans, or evidence | [Archive](archive/README.md) · [ADRs](adr/README.md) · [Design](design/README.md) |
 
-Runtime consumers should also follow the [UI runtime contract](reference/UI_RUNTIME_CONTRACT.md) and its [Chinese peer](reference/UI_RUNTIME_CONTRACT_CN.md).
+## Focused pages
 
-## Runtime orientation
+- [Policy CLI guide](guides/POLICY_CLI.md) · [Chinese](guides/POLICY_CLI_CN.md)
+- [UI runtime contract](reference/UI_RUNTIME_CONTRACT.md) · [Chinese](reference/UI_RUNTIME_CONTRACT_CN.md)
+- [Local policy implementation evidence and Linux live results](development/README.md) · [Linux live report](testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)
+- [Native startup and shutdown sequence](architecture/STARTUP_AND_LIFECYCLE.md) — the startup chain itself is kept in the [root README](../README.md#ppp-startup-chain).
+- [Source reading, builds, tests, and compatibility](development/README.md)
 
-The normal native startup path is:
+## Scope and status rules
 
-```text
-main.cpp
-  -> ppp::facade::RunApplication()
-  -> PppApplication::GetInstance().Run()
-  -> PreparedArgumentEnvironment()
-  -> Executors::Run()
-  -> RunPreparedApplication()
-  -> PppApplication::Main()
-```
+The pages above are the canonical current route for native `ppp` guidance. The
+`go/`, `go/guardian/`, `android/`, `ios/`, and `desktop/client/` trees are
+separately manifest-managed companion or platform surfaces; their local
+documentation defines their own build and readiness boundaries. Do not infer
+that a core `ppp` build produces or validates those surfaces; see the [root
+boundary description](../README.md#core-and-companion-surfaces).
 
-The root CMake project creates `ppp` and `openppp2_lib`; it adds `tests/` only when `-DENABLE_TESTS=ON`. The application preparation step loads configuration and resolves client, server, or proxy mode before the runtime enters `Main()`. See [Startup and lifecycle](architecture/STARTUP_AND_LIFECYCLE.md) before changing bootstrap or shutdown behavior.
-
-`go/`, `go/guardian/`, `android/`, `ios/`, and `desktop/client/` are separately manifest-managed companion or platform surfaces rather than root CMake targets. Their local documentation defines their own build and readiness boundaries.
-
-## Documentation status boundary
-
-Use the current pages above for supported operating guidance. The `archive/`, `adr/`, and `design/` directories retain historical rationale, decisions, plans, and evidence; do not treat them as current configuration or deployment instructions unless a current page explicitly says so. These navigation pages are an English/Chinese pair; check each current page’s status, language-peer, and parent-index metadata before relying on it.
+The `archive/`, `adr/`, and `design/` directories retain historical rationale,
+decisions, plans, and evidence. They are not current configuration or
+deployment instructions unless a current page explicitly says so. Check each
+page's Status, Type, Last verified, language-peer, and parent-index metadata
+before relying on it. This index and [its Chinese peer](README_CN.md) are a
+maintained bilingual navigation pair.

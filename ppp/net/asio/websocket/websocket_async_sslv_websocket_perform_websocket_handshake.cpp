@@ -30,7 +30,7 @@ namespace ppp {
                 /**
                  * @brief Creates the handshake executor bound to current connection state.
                  */
-                std::shared_ptr<AcceptSslvWebSocket> accept = make_shared_object<AcceptSslvWebSocket>(reference_, *ssl_websocket, binary_, host_, path_);
+                std::shared_ptr<AcceptSslvWebSocket> accept = make_shared_object<AcceptSslvWebSocket>(reference_, *ssl_websocket, binary_, http_host_, path_);
                 if (NULLPTR == accept) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::WebSocketHandshakeFailed);
                     return false;

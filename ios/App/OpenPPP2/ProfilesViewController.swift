@@ -2,75 +2,140 @@ import UIKit
 
 // MARK: - Profiles
 
-final class ProfilesViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
-    private let store = ProfileStore.shared
-    private let tableView = UITableView(frame: .zero, style: .plain)
-    private var profiles: [ConfigProfile] = []
-    private var groups: [ProfileGroup] = []
-    private var activeId: String?
+class ProfileBrowserViewController: UITableViewController, UISearchBarDelegate {
+    let store = ProfileStore.shared
+    private let search = UISearchBar()
+    private struct Entry {
+        let profile: ConfigProfile
+        let endpoint: String?
+        let group: String
+        let searchText: String
+
+        init(_ profile: ConfigProfile) {
+            self.profile = profile
+            endpoint = profile.serverEndpoint
+            let source = profile.subscriptionUrl.flatMap { URL(string: $0)?.host }
+            group = profile.favorite ? L10n.tr("profiles.group.pinned") : source.map { L10n.format("profiles.group.subscription", $0) } ?? L10n.tr("profiles.group.local")
+            searchText = [profile.name, profile.subtitle, endpoint, source].compactMap { $0 }.joined(separator: "\n")
+        }
+    }
+
+    private var profiles: [Entry] = []
+    private var groups: [(title: String, profiles: [Entry])] = []
+    private(set) var activeId: String?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tableView.backgroundColor = .systemGroupedBackground
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "profile")
+        tableView.keyboardDismissMode = .onDrag
+        search.delegate = self
+        search.searchBarStyle = .minimal
+        search.placeholder = L10n.tr("profiles.search")
+        search.sizeToFit()
+        tableView.tableHeaderView = search
+        NotificationCenter.default.addObserver(self, selector: #selector(reload), name: ProfileStore.didChangeNotification, object: nil)
+        reload()
+    }
+
+    @objc func reload() {
+        profiles = store.profiles().map(Entry.init)
+        activeId = store.activeProfile()?.id
+        filter()
+    }
+
+    private func filter() {
+        let term = (search.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        groups.removeAll(keepingCapacity: true)
+        var indices: [String: Int] = [:]
+        for profile in profiles where term.isEmpty || profile.searchText.localizedStandardContains(term) {
+            let title = profile.group
+            if let index = indices[title] {
+                groups[index].profiles.append(profile)
+            } else {
+                indices[title] = groups.count
+                groups.append((title, [profile]))
+            }
+        }
+        if let pinned = indices[L10n.tr("profiles.group.pinned")], pinned != 0 {
+            let group = groups.remove(at: pinned)
+            groups.insert(group, at: 0)
+        }
+        tableView.reloadData()
+    }
+
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) { filter() }
+    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) { searchBar.resignFirstResponder() }
+
+    override func numberOfSections(in tableView: UITableView) -> Int { max(1, groups.count) }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        groups.isEmpty ? 1 : groups[section].profiles.count
+    }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        groups.isEmpty ? L10n.tr(profiles.isEmpty ? "home.noProfile" : "profiles.noMatches") : groups[section].title
+    }
+
+    func profile(at indexPath: IndexPath) -> ConfigProfile? {
+        groups.isEmpty ? nil : groups[indexPath.section].profiles[indexPath.row].profile
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "profile", for: indexPath)
+        var config = UIListContentConfiguration.subtitleCell()
+        config.textProperties.numberOfLines = 0
+        config.secondaryTextProperties.numberOfLines = 0
+        if !groups.isEmpty {
+            let entry = groups[indexPath.section].profiles[indexPath.row]
+            let profile = entry.profile
+            let selected = profile.id == activeId
+            config.text = profile.flag.isEmpty ? profile.name : "\(profile.flag) \(profile.name)"
+            let detail = profile.subtitle.isEmpty ? entry.endpoint ?? L10n.tr("profiles.noServer") : profile.subtitle
+            config.secondaryText = selected ? L10n.format("profiles.savedSelection", detail) : detail
+            config.image = UIImage(systemName: selected ? "checkmark.circle.fill" : "circle")
+            config.imageProperties.tintColor = selected ? AppTheme.primary : .tertiaryLabel
+            cell.accessoryType = self is ProfilesViewController ? .disclosureIndicator : .none
+            cell.accessibilityTraits = selected ? [.button, .selected] : [.button]
+        } else {
+            config.text = L10n.tr(profiles.isEmpty ? "profiles.addMenu.new" : "profiles.clearSearch")
+            config.textProperties.color = AppTheme.primary
+            cell.accessoryType = .none
+            cell.accessibilityTraits = .button
+        }
+        cell.contentConfiguration = config
+        return cell
+    }
+
+    @objc func addProfile() {
+        navigationController?.pushViewController(ProfileEditViewController(profile: nil), animated: true)
+    }
+
+    func recoverEmptyList() {
+        search.resignFirstResponder()
+        if profiles.isEmpty { addProfile() } else { search.text = ""; filter() }
+    }
+}
+
+final class ProfilesViewController: ProfileBrowserViewController {
     private let documentPicker = ProfileDocumentPicker()
     private var temporaryShareURL: URL?
-
-    private struct ProfileGroup {
-        var title: String
-        var profiles: [ConfigProfile]
-    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         title = L10n.tr("profiles.title")
-        view.backgroundColor = .systemGroupedBackground
-        tableView.backgroundColor = .systemGroupedBackground
-        tableView.tintColor = AppTheme.primary
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.separatorStyle = .none
-        tableView.rowHeight = UITableView.automaticDimension
-        tableView.estimatedRowHeight = 70
-        tableView.estimatedSectionHeaderHeight = 34
-        tableView.estimatedSectionFooterHeight = 14
-        tableView.register(ProfileCell.self, forCellReuseIdentifier: ProfileCell.reuseIdentifier)
-        tableView.register(ProfileSectionHeaderView.self, forHeaderFooterViewReuseIdentifier: ProfileSectionHeaderView.reuseIdentifier)
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(tableView)
-        NSLayoutConstraint.activate([
-            tableView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
-            tableView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
-            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
-        ])
-        tableView.contentInset = UIEdgeInsets(top: 14, left: 0, bottom: 24, right: 0)
-        tableView.scrollIndicatorInsets = tableView.contentInset
         let menuButton = UIBarButtonItem(
             image: UIImage(systemName: "ellipsis.circle"),
             style: .plain,
             target: nil,
             action: nil
         )
+        menuButton.accessibilityLabel = L10n.tr("profiles.actions")
         menuButton.menu = makeProfileMenu()
         navigationItem.rightBarButtonItems = [
             menuButton,
             makeAddButtonItem()
         ]
-        NotificationCenter.default.addObserver(self, selector: #selector(reload), name: ProfileStore.didChangeNotification, object: nil)
-        reload()
     }
 
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
-
-    @objc private func reload() {
-        profiles = store.profiles()
-        groups = Self.groupProfiles(profiles)
-        activeId = store.activeProfile()?.id
-        tableView.reloadData()
-    }
-
-    @objc private func addProfile() {
-        let editor = ProfileEditViewController(profile: nil)
-        navigationController?.pushViewController(editor, animated: true)
-    }
 
     private func makeAddButtonItem() -> UIBarButtonItem {
         UIBarButtonItem(
@@ -82,6 +147,9 @@ final class ProfilesViewController: UIViewController, UITableViewDataSource, UIT
 
     private func makeProfileMenu() -> UIMenu {
         UIMenu(children: [
+            UIAction(title: L10n.tr("profiles.selectTitle"), image: UIImage(systemName: "checkmark.circle")) { [weak self] _ in
+                self?.present(UINavigationController(rootViewController: SelectProfileViewController(style: .insetGrouped)), animated: true)
+            },
             UIAction(
                 title: L10n.tr("profiles.importSubscription"),
                 image: UIImage(systemName: "icloud.and.arrow.down")
@@ -227,47 +295,15 @@ final class ProfilesViewController: UIViewController, UITableViewDataSource, UIT
         }.resume()
     }
 
-    func numberOfSections(in tableView: UITableView) -> Int {
-        groups.count
-    }
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        groups[section].profiles.count
-    }
-
-    func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        34
-    }
-
-    func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        let header = tableView.dequeueReusableHeaderFooterView(withIdentifier: ProfileSectionHeaderView.reuseIdentifier) as? ProfileSectionHeaderView
-        header?.configure(title: groups[section].title)
-        return header
-    }
-
-    func tableView(_ tableView: UITableView, heightForFooterInSection section: Int) -> CGFloat {
-        section == groups.count - 1 ? 18 : 14
-    }
-
-    func tableView(_ tableView: UITableView, viewForFooterInSection section: Int) -> UIView? {
-        UIView()
-    }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: ProfileCell.reuseIdentifier, for: indexPath) as! ProfileCell
-        let profile = profile(at: indexPath)
-        cell.configure(profile: profile, isActive: profile.id == activeId)
-        cell.applyGroupPosition(Self.groupPosition(row: indexPath.row, count: groups[indexPath.section].profiles.count))
-        return cell
-    }
-
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        navigationController?.pushViewController(ProfileEditViewController(profile: profile(at: indexPath)), animated: true)
+        guard let profile = profile(at: indexPath) else { recoverEmptyList(); return }
+        navigationController?.pushViewController(ProfileEditViewController(profile: profile), animated: true)
     }
 
-    func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        let profile = profile(at: indexPath)
+    override func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard let profile = profile(at: indexPath) else { return nil }
         let pinTitle = profile.favorite ? L10n.tr("profiles.unpin") : L10n.tr("profiles.pin")
         let pin = UIContextualAction(style: .normal, title: pinTitle) { [weak self] _, _, done in
             self?.togglePinnedProfile(profile)
@@ -290,8 +326,8 @@ final class ProfilesViewController: UIViewController, UITableViewDataSource, UIT
         return configuration
     }
 
-    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        let profile = profile(at: indexPath)
+    override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard let profile = profile(at: indexPath) else { return nil }
         let edit = UIContextualAction(style: .normal, title: L10n.tr("common.edit")) { [weak self] _, _, done in
             self?.navigationController?.pushViewController(ProfileEditViewController(profile: profile), animated: true)
             done(true)
@@ -299,7 +335,7 @@ final class ProfilesViewController: UIViewController, UITableViewDataSource, UIT
         edit.backgroundColor = AppTheme.primary
 
         let share = UIContextualAction(style: .normal, title: L10n.tr("profiles.share")) { [weak self] _, _, done in
-            self?.shareProfile(profile)
+            self?.confirmProfileSecretsWarning(title: L10n.tr("profiles.share")) { [weak self] in self?.shareProfile(profile) }
             done(true)
         }
         share.backgroundColor = .systemPurple
@@ -361,37 +397,6 @@ final class ProfilesViewController: UIViewController, UITableViewDataSource, UIT
         }
     }
 
-    private func profile(at indexPath: IndexPath) -> ConfigProfile {
-        groups[indexPath.section].profiles[indexPath.row]
-    }
-
-    private static func groupProfiles(_ profiles: [ConfigProfile]) -> [ProfileGroup] {
-        var result: [ProfileGroup] = []
-        let pinned = profiles.filter(\.favorite)
-        if !pinned.isEmpty {
-            result.append(ProfileGroup(title: L10n.tr("profiles.group.pinned"), profiles: pinned))
-        }
-
-        for profile in profiles where !profile.favorite {
-            let title = groupTitle(for: profile)
-            if let index = result.firstIndex(where: { $0.title == title }) {
-                result[index].profiles.append(profile)
-            } else {
-                result.append(ProfileGroup(title: title, profiles: [profile]))
-            }
-        }
-        return result
-    }
-
-    private static func groupTitle(for profile: ConfigProfile) -> String {
-        guard let urlText = profile.subscriptionUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !urlText.isEmpty
-        else {
-            return L10n.tr("profiles.group.local")
-        }
-        let host = URL(string: urlText)?.host ?? urlText
-        return L10n.format("profiles.group.subscription", host)
-    }
 
     static func groupPosition(row: Int, count: Int) -> ProfileCell.GroupPosition {
         if count <= 1 { return .single }

@@ -6,6 +6,7 @@
 > Parent index: [Reference index](README.md)
 > Chinese: [中文版本](DIAGNOSTICS_ERROR_SYSTEM_CN.md)
 > Related: [Error handling API](ERROR_HANDLING_API.md) · [Error codes](ERROR_CODES.md)
+> **Lookup boundary:** Use this page to look up the diagnostics state model and its limits; it is not a step-by-step user guide. For configuration choices, see the [Configuration reference](CONFIGURATION.md); for deployment, operation, and troubleshooting, see [Operations](../operations/OPERATIONS.md) and [Deployment](../operations/DEPLOYMENT.md).
 
 ## Architecture
 

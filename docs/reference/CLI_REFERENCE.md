@@ -9,6 +9,7 @@
 > **Parent index:** [Reference](README.md) · **Chinese:** [命令行参考](CLI_REFERENCE_CN.md)
 
 JSON fields are in the [Configuration reference](CONFIGURATION.md). `ppp --help` prints the flags supported by the current build (platform-specific flags appear only on their platform).
+> **Lookup boundary:** Use this page to look up source-backed flags and commands; it is not a step-by-step user guide. For configuration choices, see the [Configuration reference](CONFIGURATION.md); for deployment, operation, and troubleshooting, see [Operations](../operations/OPERATIONS.md) and [Deployment](../operations/DEPLOYMENT.md).
 
 ## 1. Syntax
 

@@ -6,6 +6,7 @@
 > Parent index: [Reference index](README.md)
 > Peer link: [中文](UI_RUNTIME_CONTRACT_CN.md)
 > Related: [Diagnostics error system](DIAGNOSTICS_ERROR_SYSTEM.md) · [VMUX validation](VMUX_VALIDATION.md)
+> **Lookup boundary:** Use this page to look up the versioned runtime snapshot contract; it is not a step-by-step user guide. For configuration choices, see the [Configuration reference](CONFIGURATION.md); for deployment, operation, and troubleshooting, see [Operations](../operations/OPERATIONS.md) and [Deployment](../operations/DEPLOYMENT.md).
 
 This is the version 1 boundary for `RuntimeSnapshot` consumers. The native
 surface includes `GetRuntimeSnapshot`, `GetRuntimeSnapshotJson`,

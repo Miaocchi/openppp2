@@ -44,7 +44,8 @@ namespace ppp {
                     std::shared_ptr<sslwebsocket::SslvWebSocket>&               ssl_websocket,
                     bool                                                        verify_peer,
                     bool                                                        binary,
-                    const ppp::string&                                          host,
+                    const ppp::string&                                          tls_server_name,
+                    const ppp::string&                                          http_host,
                     const ppp::string&                                          path,
                     const std::string&                                          certificate_file,
                     const std::string&                                          certificate_key_file,
@@ -80,6 +81,7 @@ namespace ppp {
             private:
                 /** @brief WebSocket request path used during handshake. */
                 ppp::string                                                     path_;
+            ppp::string                                                     http_host_;
                 /** @brief Strong owner reference for coordinated disposal. */
                 std::shared_ptr<sslwebsocket>                                   reference_;
                 /** @brief Indicates whether message frames are treated as binary. */

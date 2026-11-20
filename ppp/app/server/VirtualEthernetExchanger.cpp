@@ -431,6 +431,39 @@ namespace ppp {
                 return recovery_state_.GetGeneration();
             }
 
+            void VirtualEthernetExchanger::OnMultipathCarrierStopped(
+                const ITransmissionPtr& transmission) noexcept {
+                bool detached = false;
+                {
+                    std::lock_guard<std::mutex> lock(carrier_mutex_);
+                    if (transmission_ == transmission) {
+                        transmission_.reset();
+                        recovery_armed_ = false;
+                        retained_root_.Clear();
+                        pending_fresh_root_.Clear();
+                        OPENSSL_cleanse(pending_fresh_server_nonce_.data(),
+                            pending_fresh_server_nonce_.size());
+                        pending_fresh_transmission_.reset();
+                        pending_fresh_deadline_ = 0;
+                        resume_attempt_.Clear();
+                        resume_candidate_.reset();
+                        detached = true;
+                    }
+                }
+                if (detached) datagram_manager_->RebindTransmission(NULLPTR);
+            }
+
+            bool VirtualEthernetExchanger::OnMultipathCarrierStarted(
+                const ITransmissionPtr& transmission) noexcept {
+                if (disposed_ || NULLPTR == transmission) return false;
+                std::lock_guard<std::mutex> lock(carrier_mutex_);
+                if (transmission_ != nullptr && transmission_ != transmission) return false;
+                transmission_ = transmission;
+                if (NULLPTR != statistics_) transmission->Statistics = statistics_;
+                datagram_manager_->RebindTransmission(transmission);
+                return true;
+            }
+
             bool VirtualEthernetExchanger::PrepareFreshResumeOffer(
                 const ITransmissionPtr& transmission, SessionResumeControl& offer) noexcept {
                 AppConfigurationPtr configuration = GetConfiguration();
@@ -1353,7 +1386,11 @@ namespace ppp {
                 // and only takes effect when the peer advertises the bits too.
                 bool peer_supports_reliability = (ordering_caps & vmux::vmux_net::ordering_caps_reliability) != 0;
                 bool peer_supports_fec = (ordering_caps & vmux::vmux_net::ordering_caps_fec) != 0;
-                bool local_reliability = NULLPTR != configuration && configuration->mux.reliability.enabled;
+                const bool multipath_carrier = NULLPTR != transmission &&
+                    transmission->GetAuthenticatedCarrierMethod() ==
+                        ppp::transmissions::AuthenticatedCarrierMethod::MultipathNoiseV1;
+                bool local_reliability = multipath_carrier ||
+                    (NULLPTR != configuration && configuration->mux.reliability.enabled);
                 bool local_fec = NULLPTR != configuration && configuration->mux.fec.enabled;
                 // Provisional agreed ordering; apply_negotiation is authoritative once mux exists.
                 bool turbo = NULLPTR != configuration && configuration->mux.turbo &&
@@ -1363,6 +1400,7 @@ namespace ppp {
                     (need_flow_v2 && local_supports_flow_v2 && peer_supports_flow_v2)
                         ? vmux::vmux_net::ordering_flow_v2
                         : vmux::vmux_net::ordering_compat;
+                Byte agreed_caps = 0;
 
                 for (;;) {
                     if (disposed_) {
@@ -1426,7 +1464,22 @@ namespace ppp {
                         mux->apply_negotiation(local_supports_flow_v2, peer_supports_flow_v2,
                             local_reliability, peer_supports_reliability, local_fec, peer_supports_fec,
                             peer_requests_flow_v2);
+                        agreed_caps |= mux->apply_write_fin_cap(ordering_caps);
                         agreed = mux->get_ordering_mode();
+                        if (agreed == vmux::vmux_net::ordering_flow_v2) {
+                            agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_flow_v2;
+                        }
+                        if (mux->reliability_agreed()) {
+                            agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_reliability;
+                            if (multipath_carrier && agreed == vmux::vmux_net::ordering_flow_v2 &&
+                                (ordering_caps & vmux::vmux_net::ordering_caps_lazy_pool) != 0) {
+                                mux->enable_lazy_pool();
+                                agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_lazy_pool;
+                            }
+                        }
+                        if (mux->fec_agreed()) {
+                            agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_fec;
+                        }
 
                         if (mux->update()) {
                             err = false;
@@ -1450,13 +1503,6 @@ namespace ppp {
                 }
                 else {
                     // Echo the agreed capabilities back so the client learns the result.
-                    Byte agreed_caps = (agreed == vmux::vmux_net::ordering_flow_v2) ? (Byte)vmux::vmux_net::ordering_caps_flow_v2 : (Byte)0;
-                    if (mux_coordinator_->Session() != NULLPTR && mux_coordinator_->Session()->reliability_agreed()) {
-                        agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_reliability;
-                    }
-                    if (mux_coordinator_->Session() != NULLPTR && mux_coordinator_->Session()->fec_agreed()) {
-                        agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_fec;
-                    }
                     DoMux(transmission, vlan, max_connections, acceleration, agreed_caps, y);
                 }
 

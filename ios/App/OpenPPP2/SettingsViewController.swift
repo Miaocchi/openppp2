@@ -34,11 +34,10 @@ final class SettingsViewController: UITableViewController {
 
     private var sections: [SettingsSection] {
         [
-            SettingsSection(title: L10n.tr("settings.section.app"), items: [.language]),
-            SettingsSection(title: L10n.tr("settings.section.debug"), items: [.debugSettings, .refreshVPN]),
-            SettingsSection(title: L10n.tr("settings.section.diagnostics"), items: [.crashReports, .telemetry]),
-            SettingsSection(title: L10n.tr("settings.section.system"), items: [.systemSettings]),
-            SettingsSection(title: L10n.tr("settings.section.danger"), items: [.resetProfiles])
+            SettingsSection(title: L10n.tr("settings.section.app"), items: [.language, .systemSettings]),
+            SettingsSection(title: L10n.tr("settings.section.connection"), items: [.refreshVPN, .debugSettings]),
+            SettingsSection(title: L10n.tr("settings.section.privacy"), items: [.crashReports, .telemetry]),
+            SettingsSection(title: L10n.tr("settings.section.storage"), items: [.resetProfiles])
         ]
     }
     private var crashReportSummary: String?
@@ -71,7 +70,8 @@ final class SettingsViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "Cell", for: indexPath)
         let item = sections[indexPath.section].items[indexPath.row]
-        var config = UIListContentConfiguration.valueCell()
+        var config = UIListContentConfiguration.subtitleCell()
+        config.secondaryTextProperties.numberOfLines = 0
         config.text = item.title
         switch item {
         case .language:
@@ -82,21 +82,28 @@ final class SettingsViewController: UITableViewController {
                 || debug.packetFlowDiagnosticsEnabled
                 || debug.packetFlowConsoleLoggingEnabled
                 || debug.packetFlowTelemetryEnabled
-            config.secondaryText = enabled ? L10n.tr("settings.debugEnabled") : L10n.tr("common.defaultOff")
+            config.secondaryText = enabled ? L10n.tr("settings.debugEnabled") : L10n.tr("common.off")
         case .refreshVPN:
-            config.secondaryText = statusText(vpn.status)
+            config.secondaryText = vpn.statusRefreshError == nil ? statusText(vpn.status) : L10n.tr("vpn.unknown")
         case .crashReports:
             config.secondaryText = crashReportSummary ?? localizedCrashReportSummary(for: CrashReporter.storeSnapshots)
         case .telemetry:
             let telemetry = TelemetrySettingsStore.shared.settings()
-            config.secondaryText = telemetry.uploadEnabled ? telemetry.destination.localizedDisplayName : L10n.tr("common.off")
+            if !telemetry.uploadEnabled {
+                config.secondaryText = L10n.tr("common.off")
+            } else if telemetry.effectiveEndpoint.isEmpty {
+                config.secondaryText = L10n.tr(telemetry.destination == .developer ? "telemetry.developerEndpointMissing" : "telemetry.endpointEmpty.title")
+            } else {
+                config.secondaryText = telemetry.destination.localizedDisplayName
+            }
         case .systemSettings:
             config.secondaryText = L10n.tr("settings.systemSettings.detail")
         case .resetProfiles:
             config.secondaryText = L10n.tr("settings.resetProfiles.detail")
+            config.textProperties.color = .systemRed
         }
         cell.contentConfiguration = config
-        cell.accessoryType = .disclosureIndicator
+        cell.accessoryType = item == .refreshVPN || item == .resetProfiles ? .none : .disclosureIndicator
         cell.accessoryView = nil
         return cell
     }
@@ -106,13 +113,17 @@ final class SettingsViewController: UITableViewController {
         let item = sections[indexPath.section].items[indexPath.row]
         switch item {
         case .language:
-            navigationController?.pushViewController(LanguageSettingsViewController(), animated: true)
+            navigationController?.pushViewController(LanguageSettingsViewController(style: .insetGrouped), animated: true)
         case .debugSettings:
-            navigationController?.pushViewController(DebugSettingsViewController(), animated: true)
+            navigationController?.pushViewController(DebugSettingsViewController(style: .insetGrouped), animated: true)
         case .refreshVPN:
-            vpn.refresh { [weak self] in self?.tableView.reloadData() }
+            vpn.refresh { [weak self] in
+                guard let self else { return }
+                self.tableView.reloadData()
+                UIAccessibility.post(notification: .announcement, argument: self.vpn.statusRefreshError == nil ? statusText(self.vpn.status) : L10n.tr("vpn.unknown"))
+            }
         case .crashReports:
-            navigationController?.pushViewController(CrashReportsViewController(), animated: true)
+            navigationController?.pushViewController(CrashReportsViewController(style: .insetGrouped), animated: true)
         case .telemetry:
             navigationController?.pushViewController(TelemetrySettingsViewController(), animated: true)
         case .systemSettings:

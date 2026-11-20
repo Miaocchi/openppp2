@@ -43,7 +43,7 @@ BOOST_AUTO_TEST_CASE(adapter_forwards_transport_state_and_disposes_owner_once) {
     std::weak_ptr<int> owner_lifetime_view = owner_lifetime;
     int owner_disposals = 0;
     auto transport = mux::MakeMuxTransport(
-        connection, [owner_lifetime, &owner_disposals]() noexcept { ++owner_disposals; });
+        connection, [owner_lifetime, &owner_disposals]() noexcept { ++owner_disposals; }, "edge-a");
     owner_lifetime.reset();
 
     BOOST_REQUIRE(transport);
@@ -52,6 +52,7 @@ BOOST_AUTO_TEST_CASE(adapter_forwards_transport_state_and_disposes_owner_once) {
     BOOST_TEST(transport->GetStrand() == connection->strand);
     BOOST_TEST(transport->GetTransmission() == connection->transmission);
     BOOST_TEST(static_cast<bool>(transport->GetId() == connection->id));
+    BOOST_TEST(transport->GetPathId() == "edge-a");
 
     transport->Update();
     BOOST_TEST(connection->updates == 1);

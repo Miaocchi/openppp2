@@ -68,7 +68,7 @@ class _OptionsPageState extends State<OptionsPage> {
       return;
     }
     final m = await _store.getProfileOptions(active.id);
-    if (!mounted) return;
+    if (!mounted || _dirty) return;
     _hydrate(m);
     setState(() => _profile = active);
   }
@@ -196,7 +196,7 @@ class _OptionsPageState extends State<OptionsPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('恢复默认'),
-        content: Text('将「${_profile?.name ?? '当前配置'}」的启动参数恢复为默认值？'),
+        content: Text('将「${_profile?.name ?? '当前配置'}」的本页参数填为默认值。保存后才会用于下次连接。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -258,11 +258,8 @@ class _OptionsPageState extends State<OptionsPage> {
             tooltip: '恢复默认',
             onPressed: _profile == null ? null : _reset,
           ),
-          IconButton(
-            icon: const Icon(Icons.save_rounded),
-            tooltip: '保存',
-            onPressed: _profile == null || !_dirty ? null : _save,
-          ),
+          TextButton(onPressed: _profile == null || !_dirty ? null : _save,
+            child: Text(_dirty ? '保存更改' : '已保存')),
         ],
       ),
       body: _loading
@@ -280,6 +277,7 @@ class _OptionsPageState extends State<OptionsPage> {
                 )
               : ListView(
                   padding: const EdgeInsets.all(16),
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   children: [
                     _activeBanner(theme),
                     AppSectionCard(
@@ -306,7 +304,7 @@ class _OptionsPageState extends State<OptionsPage> {
                           contentPadding: EdgeInsets.zero,
                           value: _allowLan,
                           title: const Text('允许局域网代理'),
-                          subtitle: const Text('HTTP / SOCKS 监听 0.0.0.0'),
+                          subtitle: const Text('监听 0.0.0.0，同一局域网的其他设备也可使用代理端口'),
                           onChanged: (v) => setState(() {
                             _allowLan = v;
                             _markDirty();
@@ -328,6 +326,7 @@ class _OptionsPageState extends State<OptionsPage> {
                     AppSectionCard(
                       title: 'DNS',
                       icon: Icons.dns_rounded,
+                      summary: '解析服务器、域名规则与 Fake-IP',
                       children: [
                         Row(
                           children: [
@@ -352,6 +351,12 @@ class _OptionsPageState extends State<OptionsPage> {
                                   onChanged: _markDirty),
                             ),
                           ],
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('拦截未匹配规则的 DNS 查询'),
+                          value: _dnsInterceptUnmatched,
+                          onChanged: (v) => setState(() { _dnsInterceptUnmatched = v; _markDirty(); }),
                         ),
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
@@ -393,31 +398,19 @@ class _OptionsPageState extends State<OptionsPage> {
                     ),
                     const SizedBox(height: 12),
                     AppSectionCard(
-                      title: 'Geo / Bypass',
+                      title: '路由与分流',
                       icon: Icons.public_rounded,
                       tint: Colors.orange,
                       children: [
                         Text('路由模式', style: theme.textTheme.bodyMedium),
                         const SizedBox(height: 6),
-                        SegmentedButton<LaunchRouteMode>(
-                          showSelectedIcon: false,
-                          segments: [
-                            for (final mode in LaunchRouteMode.values)
-                              ButtonSegment(
-                                value: mode,
-                                label: Text(mode.label),
-                              ),
-                          ],
-                          selected: {_routeMode},
-                          onSelectionChanged: (s) {
-                            if (s.isEmpty) return;
-                            setState(() {
-                              _routeMode = s.first;
-                              _markDirty();
-                            });
-                          },
-                        ),
+                        Wrap(spacing: 8, children: [
+                          for (final mode in LaunchRouteMode.values)
+                            ChoiceChip(label: Text(mode.label), selected: mode == _routeMode,
+                              onSelected: (_) => setState(() { _routeMode = mode; _markDirty(); })),
+                        ]),
                         const SizedBox(height: 8),
+                        if (_routeMode == LaunchRouteMode.geo) ...[
                         _text(_geoCountry, 'Geo Country (如 cn)',
                             onChanged: _markDirty),
                         Row(
@@ -433,6 +426,10 @@ class _OptionsPageState extends State<OptionsPage> {
                             ),
                           ],
                         ),
+                        ],
+                        if (_routeMode == LaunchRouteMode.global)
+                          const Text('保存全局模式时会清空绕过 IP 列表，不使用 Geo 分流。')
+                        else
                         _multiline(_bypassIpList,
                             label: 'Bypass IP / CIDR', onChanged: _markDirty),
                       ],
@@ -441,6 +438,7 @@ class _OptionsPageState extends State<OptionsPage> {
                     AppSectionCard(
                       title: 'TUN 接口',
                       icon: Icons.lan_outlined,
+                      summary: '虚拟接口地址、MTU 与路由前缀',
                       tint: Colors.teal,
                       children: [
                         Row(
@@ -486,12 +484,12 @@ class _OptionsPageState extends State<OptionsPage> {
                     Card(
                       child: ListTile(
                         leading: const Icon(Icons.tune_rounded),
-                        title: const Text('高级参数'),
-                        subtitle: const Text('VNet、Block QUIC、分应用代理、Geo 规则生成器等'),
+                        title: Text(_dirty ? '保存并打开高级参数' : '高级参数'),
+                        subtitle: const Text('Android 代理范围、VMUX 与 Geo 规则生成器'),
                         trailing: const Icon(Icons.chevron_right_rounded),
                         onTap: () async {
                           if (_dirty) await _save(showSnack: false);
-                          if (!mounted) return;
+                          if (!context.mounted) return;
                           await Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (_) => const OptionsAdvancedPage(),
@@ -544,6 +542,7 @@ class _OptionsPageState extends State<OptionsPage> {
                   style: theme.textTheme.titleSmall
                       ?.copyWith(fontWeight: FontWeight.w800),
                 ),
+                const Text('保存到此配置，下次连接时生效。'),
                 if (ep.isNotEmpty)
                   Text(
                     ep,
@@ -555,7 +554,7 @@ class _OptionsPageState extends State<OptionsPage> {
             ),
           ),
           Text(
-            _dirty ? '未保存' : '已同步',
+            _dirty ? '未保存' : '已保存',
             style: theme.textTheme.bodySmall?.copyWith(
               color: _dirty
                   ? theme.colorScheme.error

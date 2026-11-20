@@ -159,6 +159,7 @@ openppp2_add_cpp_test(websocket_buffered_upgrade_test SOURCES websocket_buffered
 target_link_libraries(websocket_buffered_upgrade_test PRIVATE boost_system Threads::Threads)
 
 openppp2_add_cpp_test(xtcp_direct_bridge_policy_test SOURCES xtcp_direct_bridge_policy_test.cpp)
+openppp2_add_cpp_test(vmux_path_estimator_test SOURCES vmux_path_estimator_test.cpp)
 
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
@@ -354,6 +355,40 @@ openppp2_add_cpp_test(noise_psk_exporter_test SOURCES
     noise_psk_exporter_test.cpp
     "${OPENPPP2_ROOT}/ppp/cryptography/noise/NoisePsk.cpp")
 target_link_libraries(noise_psk_exporter_test PRIVATE OpenSSL::Crypto)
+openppp2_add_cpp_test(multipath_secure_channel_test SOURCES
+    multipath_secure_channel_test.cpp
+    "${OPENPPP2_ROOT}/ppp/cryptography/noise/NoisePsk.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/noise/MultipathSecureChannel.cpp")
+target_link_libraries(multipath_secure_channel_test PRIVATE OpenSSL::Crypto)
+set_tests_properties(multipath_secure_channel_test PROPERTIES LABELS "multipath;offline;security")
+
+openppp2_add_cpp_test(multipath_session_test SOURCES
+    multipath_session_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Session.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Join.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Control.cpp")
+target_link_libraries(multipath_session_test PRIVATE OpenSSL::Crypto)
+set_tests_properties(multipath_session_test PROPERTIES LABELS "multipath;offline")
+
+openppp2_add_cpp_test(multipath_scheduler_test SOURCES
+    multipath_scheduler_test.cpp)
+set_tests_properties(multipath_scheduler_test PROPERTIES LABELS "multipath;offline")
+
+openppp2_add_cpp_test(multipath_path_control_test SOURCES
+    multipath_path_control_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/multipath/PathControl.cpp")
+set_tests_properties(multipath_path_control_test PROPERTIES LABELS "multipath;offline")
+openppp2_add_cpp_test(pool_controller_test SOURCES pool_controller_test.cpp)
+set_tests_properties(pool_controller_test PROPERTIES LABELS "multipath;offline")
+
+openppp2_add_cpp_test(multipath_wire_protocol_test SOURCES
+    multipath_wire_protocol_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/multipath/WireProtocol.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Session.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Join.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/Control.cpp")
+target_link_libraries(multipath_wire_protocol_test PRIVATE OpenSSL::Crypto)
+set_tests_properties(multipath_wire_protocol_test PROPERTIES LABELS "multipath;offline;security")
 openppp2_add_cpp_test(transport_auth_keyring_test SOURCES
     transport_auth_keyring_test.cpp
     "${OPENPPP2_ROOT}/ppp/configurations/TransportAuthConfiguration.cpp")
@@ -439,6 +474,52 @@ endif()
 # reusing the transport-auth link fixture.
 get_target_property(OPENPPP2_VMUX_CONFIG_SOURCES transport_auth_configuration_test SOURCES)
 list(REMOVE_ITEM OPENPPP2_VMUX_CONFIG_SOURCES transport_auth_configuration_test.cpp)
+openppp2_add_cpp_test(multipath_configuration_test SOURCES
+    multipath_configuration_test.cpp
+    ${OPENPPP2_VMUX_CONFIG_SOURCES})
+target_link_libraries(multipath_configuration_test PRIVATE
+    boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+target_compile_definitions(multipath_configuration_test PRIVATE
+    BUDDY_ALLOC_IMPLEMENTATION PPP_STUB_NO_GETTICKCOUNT PPP_STUB_NO_GETCURRENT)
+if(MSVC)
+    target_compile_options(multipath_configuration_test PRIVATE /Gy /Gw)
+    target_link_options(multipath_configuration_test PRIVATE /OPT:REF)
+else()
+    target_compile_options(multipath_configuration_test PRIVATE -ffunction-sections -fdata-sections)
+    if(APPLE)
+        target_link_options(multipath_configuration_test PRIVATE -Wl,-dead_strip)
+    else()
+        target_link_options(multipath_configuration_test PRIVATE -Wl,--gc-sections)
+    endif()
+endif()
+if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(multipath_configuration_test PRIVATE -fno-sanitize=vptr)
+endif()
+set_tests_properties(multipath_configuration_test PROPERTIES LABELS "multipath;offline")
+
+openppp2_add_cpp_test(multipath_path_manager_test SOURCES
+    multipath_path_manager_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/multipath/PathControl.cpp"
+    "${OPENPPP2_ROOT}/ppp/app/multipath/PathManager.cpp"
+    ${OPENPPP2_VMUX_CONFIG_SOURCES})
+target_link_libraries(multipath_path_manager_test PRIVATE
+    boost_filesystem Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+foreach(property COMPILE_OPTIONS COMPILE_DEFINITIONS LINK_OPTIONS)
+    get_target_property(multipath_fixture_property multipath_configuration_test ${property})
+    if(multipath_fixture_property)
+        set_property(TARGET multipath_path_manager_test APPEND PROPERTY
+            ${property} ${multipath_fixture_property})
+    endif()
+endforeach()
+set_tests_properties(multipath_path_manager_test PROPERTIES LABELS "multipath;offline")
+
+openppp2_add_cpp_test(multipath_bypass_lease_test SOURCES
+    multipath_bypass_lease_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/multipath/BypassLease.cpp")
+target_link_libraries(multipath_bypass_lease_test PRIVATE
+    Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+set_tests_properties(multipath_bypass_lease_test PROPERTIES LABELS "multipath;offline")
+
 openppp2_add_cpp_test(vmux_reliability_config_test SOURCES
     vmux_reliability_config_test.cpp
     ${OPENPPP2_VMUX_CONFIG_SOURCES})
@@ -549,6 +630,16 @@ get_target_property(OPENPPP2_PRODUCTION_WSS_TEST_SOURCES
     session_resume_production_wss_lifecycle_test SOURCES)
 list(REMOVE_ITEM OPENPPP2_PRODUCTION_WSS_TEST_SOURCES
     session_resume_production_wss_lifecycle_test.cpp)
+openppp2_add_cpp_test(multipath_transmission_test SOURCES
+    multipath_transmission_test.cpp
+    ${OPENPPP2_PRODUCTION_WSS_TEST_SOURCES}
+    "${OPENPPP2_ROOT}/ppp/transmissions/ITcpipTransmission.cpp"
+    "${OPENPPP2_ROOT}/ppp/transmissions/MultipathTransmission.cpp"
+    "${OPENPPP2_ROOT}/ppp/cryptography/noise/MultipathSecureChannel.cpp")
+target_link_libraries(multipath_transmission_test PRIVATE
+    boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+set_tests_properties(multipath_transmission_test PROPERTIES
+    LABELS "multipath;isolated;security")
 openppp2_add_cpp_test(transport_auth_lifecycle_test SOURCES
     transport_auth_lifecycle_test.cpp
     ${OPENPPP2_PRODUCTION_WSS_TEST_SOURCES}
@@ -560,6 +651,7 @@ if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     # linking the allocator implementation that owns its RTTI key function.
     foreach(_target transport_auth_configuration_test
                     session_resume_production_wss_lifecycle_test
+                    multipath_transmission_test
                     transport_auth_lifecycle_test)
         target_compile_options(${_target} PRIVATE -fno-sanitize=vptr)
     endforeach()

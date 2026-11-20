@@ -126,7 +126,7 @@ class ServerEndpoint {
 
   /// Emits a dial URL for the endpoint's scheme (ppp/ws/wss).
   String toUrl({String? forceScheme}) {
-    final effectiveScheme = (forceScheme ?? this.scheme).toLowerCase();
+    final effectiveScheme = (forceScheme ?? scheme).toLowerCase();
     final normalizedHost = host.trim();
     final urlHost = _needsIpv6Brackets(normalizedHost)
         ? '[$normalizedHost]'

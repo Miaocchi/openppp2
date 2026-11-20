@@ -2,13 +2,17 @@
 
 > [iOS app and Packet Tunnel guide](App/README.md)
 
-**Status:** Experimental
+> **Supported status:** Experimental internal platform integration; no general-purpose Swift package or released iOS distribution is provided.
 
 **Type:** iOS native runtime build, XCFramework, and Packet Tunnel integration
 
 **Last verified:** 2026-07-22
 
 This directory contains the iOS-specific native runtime and the support needed by the app/Network Extension in `App/`. It is an internal platform integration surface, not a general-purpose Swift package or a released iOS distribution channel.
+>
+> **Audience:** iOS C++/Swift, Network Extension, and packaging maintainers evaluating this repository's app integration.
+> **Build/runtime boundary:** This directory builds the native static library/XCFramework; the host app, Packet Tunnel extension, signing, entitlements, and device runtime live under [`App/`](App/README.md). A successful archive build does not prove an entitled VPN connection.
+> **Canonical next page:** [iOS app and Packet Tunnel guide](App/README.md) for app targets, signing, packaging, and device validation.
 
 ## What the iOS build produces
 

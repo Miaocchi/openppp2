@@ -1,20 +1,23 @@
 # Archived Status Records
 > Status: Archived
-> Type: Archive
-> Last verified: 63fc030
+> Type: Archive index
+> Last verified: 2026-11-20
+> Parent index: [Archive](../README.md)
+> Language peer: [中文](README_CN.md)
 
-> **Purpose:** Preserve design rationale, decisions, or historical verification evidence.
-> **Audience:** Maintainers investigating historical context.
-> **Status:** Archived; not a source of current configuration truth.
-> **Last verified against:** Document lifecycle and Git history, 2026-07-18.
-> **Parent index:** [Back to index](../README.md) · **Chinese:** [归档状态记录](README_CN.md)
+These records capture historical execution state, validation scenarios, and defect follow-up. They are time-bound evidence, not a live health dashboard. For current runtime facts use [Architecture](../../architecture/README.md) and [Reference](../../reference/README.md); for current checks use [Testing evidence](../../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md); for action and incident guidance use [Operations](../../operations/README.md).
 
-> **Archive notice:** This page is historical context only and must not be used as current installation, configuration, or runtime guidance.
+## Runtime, UI, and platform execution
 
+- [Runtime/UI execution status](2026-07-12-runtime-ui-execution-status.md)
+- [Android network follow-up guard](ANDROID_NETWORK_FOLLOWUP_GUARD_CN.md)
+- [Server automatic IPv4 assignment](SERVER_IPV4_ASSIGNMENT_CN.md)
 
-This section preserves historical material. Every entry is archived and is not current configuration guidance.
+## Network and protocol validation
 
-- [Runtime/UI Execution Status](2026-07-12-runtime-ui-execution-status.md)
-- [IPv6 Implementation Analysis and Fixes](IPV6_FIXES.md)
-- [VMUX Defect Ledger and Fix / Optimization Plan](MUX_DEFECTS_AND_FIXES.md)
-- [P2P Networking — Manual Validation Scenarios](P2P_MANUAL_VALIDATION.md)
+- [IPv6 implementation analysis and fixes](IPV6_FIXES.md) · [中文](IPV6_FIXES_CN.md)
+- [VMUX defect ledger and fix plan](MUX_DEFECTS_AND_FIXES.md) · [中文](MUX_DEFECTS_AND_FIXES_CN.md)
+- [P2P networking manual validation scenarios](P2P_MANUAL_VALIDATION.md)
+
+Do not infer current support, defect state, or release readiness from an archived status record; follow its current replacement where one is provided.
+***

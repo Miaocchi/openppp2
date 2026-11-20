@@ -58,13 +58,15 @@ final class ProfileStore {
     }
 
     @discardableResult
-    func upsertSubscription(url: String, subscription: RemoteSubscriptionResult) -> Int {
+    func upsertSubscription(url: String, subscription: RemoteSubscriptionResult, selectFirstImported: Bool = false) -> Int {
         var list = profiles()
         let now = Int(Date().timeIntervalSince1970 * 1000)
+        var firstImportedId: String?
         var changed = 0
 
         for node in subscription.nodes {
-            if let index = list.firstIndex(where: { $0.subscriptionUrl == url && $0.subscriptionNodeId == node.id }) {
+            let index = list.firstIndex(where: { $0.subscriptionUrl == url && $0.subscriptionNodeId == node.id }) ?? list.endIndex
+            if index < list.endIndex {
                 var updated = list[index]
                 if updated.json != node.json {
                     updated.history.insert(ConfigSnapshot(timestampMs: now, json: updated.json), at: 0)
@@ -98,10 +100,16 @@ final class ProfileStore {
                     history: []
                 ))
             }
+            if selectFirstImported, firstImportedId == nil, list[index].hasConfiguredServer {
+                firstImportedId = list[index].id
+            }
             changed += 1
         }
 
         if changed > 0 {
+            if let firstImportedId {
+                defaults.set(firstImportedId, forKey: activeIdKey)
+            }
             save(list)
         }
         return changed

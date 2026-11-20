@@ -37,63 +37,7 @@ type healthCheckReq struct {
 	HTTPEndpoint string `json:"httpEndpoint"`
 }
 
-func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
-	var req instanceCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		Error(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	cfg := instance.Config{
-		Name:       req.Name,
-		Binary:     req.Binary,
-		WorkDir:    req.WorkDir,
-		ConfigPath: req.ConfigPath,
-		Args:       req.Args,
-		Env:        req.Env,
-		StopSignal: req.StopSignal,
-		StopWaitMs: req.StopWaitMs,
-		LogLines:   req.LogLines,
-		TUIEnabled: req.TUIEnabled,
-	}
-	if req.AutoRestart != nil {
-		cfg.AutoRestart = instance.AutoRestartConfig{
-			Enabled:      req.AutoRestart.Enabled,
-			MaxRetries:   req.AutoRestart.MaxRetries,
-			RetryDelayMs: req.AutoRestart.RetryDelayMs,
-			ResetAfterMs: req.AutoRestart.ResetAfterMs,
-		}
-	}
-	if req.HealthCheck != nil {
-		cfg.HealthCheck = instance.HealthCheckConfig{
-			Enabled:      req.HealthCheck.Enabled,
-			IntervalMs:   req.HealthCheck.IntervalMs,
-			TCPPort:      req.HealthCheck.TCPPort,
-			HTTPEndpoint: req.HealthCheck.HTTPEndpoint,
-		}
-	}
-	if err := s.instanceMgr.Add(req.Name, cfg); err != nil {
-		Error(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if s.authCfg.OnConfigChanged != nil {
-		if err := s.authCfg.OnConfigChanged(); err != nil {
-			_ = s.instanceMgr.Remove(req.Name)
-			Error(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-	status, _ := s.instanceMgr.Status(req.Name)
-	JSON(w, http.StatusCreated, status)
-}
-
-func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	var req instanceCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		Error(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	req.Name = name
+func (req *instanceCreateRequest) toConfig(name string) instance.Config {
 	cfg := instance.Config{
 		Name:       name,
 		Binary:     req.Binary,
@@ -122,7 +66,38 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 			HTTPEndpoint: req.HealthCheck.HTTPEndpoint,
 		}
 	}
-	if err := s.instanceMgr.Update(name, cfg); err != nil {
+	return cfg
+}
+
+func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
+	var req instanceCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.instanceMgr.Add(req.Name, req.toConfig(req.Name)); err != nil {
+		Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.authCfg.OnConfigChanged != nil {
+		if err := s.authCfg.OnConfigChanged(); err != nil {
+			_ = s.instanceMgr.Remove(req.Name)
+			Error(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	status, _ := s.instanceMgr.Status(req.Name)
+	JSON(w, http.StatusCreated, status)
+}
+
+func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req instanceCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.instanceMgr.Update(name, req.toConfig(name)); err != nil {
 		Error(w, http.StatusBadRequest, err.Error())
 		return
 	}

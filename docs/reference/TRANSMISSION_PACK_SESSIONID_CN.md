@@ -8,6 +8,7 @@
 
 > **边界：**本文描述当前 `ITransmission` C++ 握手及相关隧道 payload 行为。
 > 它不是公共 SDK、协议 API 或正式兼容性规范。
+> **查阅边界：** 本页用于查找基于源码的握手和会话细节，不是分步用户指南。配置选择见[配置文件参考](CONFIGURATION_CN.md)；部署、运维和排障见[运维与排障](../operations/OPERATIONS_CN.md)和[部署](../operations/DEPLOYMENT_CN.md)。
 
 ## 职责归属
 

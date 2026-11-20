@@ -6,6 +6,7 @@
 > Parent index: [Reference index](README.md)
 > Chinese: [中文版本](ERROR_CODES_CN.md)
 > Related: [Error handling API](ERROR_HANDLING_API.md) · [Diagnostics error system](DIAGNOSTICS_ERROR_SYSTEM.md)
+> **Lookup boundary:** Use this page to look up the source-defined error catalog and numeric semantics; it is not a step-by-step user guide. For configuration choices, see the [Configuration reference](CONFIGURATION.md); for deployment, operation, and troubleshooting, see [Operations](../operations/OPERATIONS.md) and [Deployment](../operations/DEPLOYMENT.md).
 
 ## Source of truth
 

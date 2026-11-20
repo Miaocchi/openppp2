@@ -53,7 +53,7 @@ ORDER = {name: rank for rank, name in enumerate((
 # Match inline code before links, so examples remain byte-for-byte intact.
 PROSE = re.compile(
     r"(?P<code>`+[^`\n]*`+)"
-    r"|(?P<link>!?\[[^\]\n]*\]\()(?P<url><[^>\n]+>|[^\s)]+(?:\([^\n)]*\)[^\s)]*)?)(?P<tail>[^\n)]*\))"
+    r"|(?P<link>!?\[(?P<label>[^\]\n]*)\]\()(?P<url><[^>\n]+>|[^\s)]+(?:\([^\n)]*\)[^\s)]*)?)(?P<tail>[^\n)]*\))"
     r"|(?P<ref>^\s*\[[^\]\n]+\]:\s*)(?P<refurl><[^>\n]+>|\S+)"
     r"|(?P<attr>\b(?:href|src)=)(?P<quote>[\"'])(?P<htmlurl>.*?)(?P=quote)",
     re.MULTILINE,
@@ -167,7 +167,7 @@ class DocsSite:
     def historical(self, path: Path) -> bool:
         return path.parts[0] == "archive" or "AUDIT" in path.name.upper() or path.name == "BOOST_187_COMPATIBILITY.md"
 
-    def destination(self, raw: str, source: Path, language: str) -> str:
+    def destination(self, raw: str, source: Path, language: str, label: str = "") -> str:
         wrapped = raw.startswith("<") and raw.endswith(">")
         raw = raw[1:-1] if wrapped else raw
         url = urlsplit(raw)
@@ -184,10 +184,11 @@ class DocsSite:
             page = canonical(relative)
             if page in self.sources and included(relative):
                 # Explicit peers cross languages; ordinary links stay in this site.
-                target_language = "zh" if relative.stem.endswith("_CN") else language
+                target_language = "zh" if relative.stem.endswith(("_CN", "-cn")) else language
                 if language == "zh" and "en" in self.sources[page] and relative == self.sources[page]["en"]:
-                    # A Chinese page's metadata often explicitly links its English peer.
-                    if canonical(source) == page:
+                    # A Chinese page may explicitly link to an English peer from another index.
+                    explicit_english = bool(re.search(r"(?:english|英文)", label, re.IGNORECASE))
+                    if canonical(source) == page or explicit_english:
                         target_language = "en"
                 prefix = "zh/" if target_language == "zh" else ""
                 path = self.base + prefix + page_url(page)
@@ -195,6 +196,7 @@ class DocsSite:
             if relative in self.assets:
                 prefix = "zh/" if language == "zh" else ""
                 return urlunsplit(("", "", self.base + prefix + quote(relative.as_posix()), url.query, url.fragment))
+            raise ValueError(f"Missing documentation link: {source}: {raw}")
         try:
             repo_path = target.relative_to(self.root).as_posix()
         except ValueError:
@@ -207,7 +209,7 @@ class DocsSite:
             if match.group("code"):
                 return match.group()
             if match.group("link"):
-                return match.group("link") + self.destination(match.group("url"), source, language) + match.group("tail")
+                return match.group("link") + self.destination(match.group("url"), source, language, match.group("label")) + match.group("tail")
             if match.group("ref"):
                 return match.group("ref") + self.destination(match.group("refurl"), source, language)
             return match.group("attr") + match.group("quote") + self.destination(match.group("htmlurl"), source, language) + match.group("quote")
@@ -238,21 +240,83 @@ class DocsSite:
         return front + "".join(notices) + heading_ids(self.rewrite(text, source, language))
 
     def navigation(self, language: str) -> list:
-        def pages_under(prefix: str) -> list:
-            pages = sorted(p for p in self.sources if p.as_posix().startswith(prefix + "/"))
-            pages.sort(key=lambda p: (p.name != "index.md", ORDER.get(p.as_posix(), len(ORDER)), p.as_posix()))
-            return [{title(self.texts[self.selected(p, language)]) or p.stem: p.as_posix()} for p in pages]
+        def page_item(page: Path) -> dict[str, str]:
+            return {title(self.texts[self.selected(page, language)]) or page.stem: page.as_posix()}
+
+        def sort_pages(pages: list[Path]) -> list[Path]:
+            return sorted(
+                pages,
+                key=lambda page: (
+                    page.name != "index.md",
+                    ORDER.get(page.as_posix(), len(ORDER)),
+                    page.as_posix(),
+                ),
+            )
+
+        def fallback_title(directory: Path) -> str:
+            return directory.name.replace("-", " ").replace("_", " ").title()
+
+        def directory_title(directory: Path) -> str:
+            index = directory / "index.md"
+            if index in self.sources:
+                return title(self.texts[self.selected(index, language)]) or fallback_title(directory)
+            return fallback_title(directory)
+
+        def pages_under(directory: Path) -> tuple[list, set[Path]]:
+            descendants = [
+                page
+                for page in self.sources
+                if len(page.parts) > len(directory.parts)
+                and page.parts[: len(directory.parts)] == directory.parts
+            ]
+            direct = [page for page in descendants if page.parent == directory]
+            children = sorted(
+                {
+                    directory / page.parts[len(directory.parts)]
+                    for page in descendants
+                    if len(page.parts) > len(directory.parts) + 1
+                }
+            )
+            items = [page_item(page) for page in sort_pages(direct)]
+            included_pages = set(direct)
+            for child in children:
+                child_items, child_pages = pages_under(child)
+                if child_items:
+                    items.append({directory_title(child): child_items})
+                    included_pages.update(child_pages)
+            return items, included_pages
+
         nav = [{"Home" if language == "en" else "首页": "index.md"}]
+        published = {Path("index.md")}
+        aliases = {
+            "guides": ("guide",),
+            "development": ("testing", "governance"),
+            "design": ("adr",),
+            "archive": ("vmux",),
+        }
+        known_roots = {directory for directory, _, _ in SECTIONS}
+        known_roots.update(extra for extras in aliases.values() for extra in extras)
         for directory, english, zh in SECTIONS:
-            items = pages_under(directory)
-            if directory == "development":
-                items += pages_under("testing") + pages_under("governance")
-            elif directory == "design":
-                items += pages_under("adr")
-            elif directory == "archive":
-                items += pages_under("vmux")
+            items, pages = pages_under(Path(directory))
+            published.update(pages)
+            for extra in aliases.get(directory, ()):
+                extra_items, extra_pages = pages_under(Path(extra))
+                if extra_items:
+                    items.append({directory_title(Path(extra)): extra_items})
+                    published.update(extra_pages)
             if items:
                 nav.append({english if language == "en" else zh: items})
+
+        # Keep an unexpected top-level category visible rather than silently
+        # dropping its pages when a new document tree is added.
+        remaining_roots = sorted({page.parts[0] for page in self.sources if page not in published})
+        for root in remaining_roots:
+            if root in known_roots or root == ".":
+                continue
+            items, pages = pages_under(Path(root))
+            if items:
+                nav.append({directory_title(Path(root)): items})
+                published.update(pages)
         return nav
 
     def prepare(self) -> None:

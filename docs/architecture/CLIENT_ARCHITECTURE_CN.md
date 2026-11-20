@@ -6,6 +6,10 @@
 > **用途：**说明原生 client 运行时及其角色边界。
 > **适用对象：**贡献者与运维。
 > **上一层索引：**[架构](README_CN.md) · **English:** [Client Architecture](CLIENT_ARCHITECTURE.md)
+> **阅读导向：**供贡献者和运维追踪原生 client 的所有权与数据包路径。
+> **回答的问题：**客户端设备、会话和隧道动作分别由哪个组件持有？
+> **实现细节与用户契约：**下文的 owner 和数据包路径属于实现细节；文中列出的 CLI/配置行为是当前运行时契约，公开字段以[参考](../reference/README_CN.md)为准。
+> **下一权威页面：**[启动与生命周期](STARTUP_AND_LIFECYCLE_CN.md)
 
 ## 范围
 
@@ -61,10 +65,3 @@ CLI 决定角色：
 ## MUX 与 P2P 限制
 
 MUX 不会只因握手位而启用。client 运行时的 MUX 工作需要后续链路层 `MUX`/`MUXON` 交换，并可能打开子承载 transmission。直连 P2P 代码虽存在，但生产 capability gate 为 false，正常生产执行仍是 relay-only。
-
-## 相关页面
-
-- [启动与生命周期](STARTUP_AND_LIFECYCLE_CN.md)
-- [隧道设计](TUNNEL_DESIGN_CN.md)
-- [EDSM 状态机](EDSM_STATE_MACHINES_CN.md)
-- [传输与受保护会话层](TRANSMISSION_CN.md)

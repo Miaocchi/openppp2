@@ -98,6 +98,63 @@ BOOST_AUTO_TEST_CASE(snapshot_json_preserves_generation_phase_and_error) {
     BOOST_TEST(decoded.last_error.retryable);
 }
 
+BOOST_AUTO_TEST_CASE(multipath_snapshot_round_trips_bounded_path_health_and_unknown_metrics) {
+    runtime::RuntimeSnapshot source;
+    auto& multipath = source.multipath;
+    multipath.enabled = true;
+    multipath.policy = "adaptive";
+    multipath.state = "active";
+    multipath.active_paths = 1;
+    multipath.capabilities = {"vmux-reorder-v1"};
+    ppp::app::multipath::RuntimePathState path;
+    path.id = "edge-a";
+    path.state = "joined";
+    path.control_state = "active";
+    path.capacity_rate_bytes_per_second = 9000;
+    path.queue_delay_ms = 12;
+    path.bdp_bytes = 4500;
+    path.confidence = 80;
+    path.at_capacity = true;
+    path.carriers = 1;
+    path.reconnect_attempts = 2;
+    multipath.paths.emplace_back(path);
+
+    const std::string encoded = runtime::SerializeRuntimeSnapshot(source);
+    runtime::RuntimeSnapshot decoded;
+    BOOST_REQUIRE(runtime::ParseRuntimeSnapshot(encoded, decoded));
+    BOOST_TEST(decoded.multipath.enabled);
+    BOOST_TEST(decoded.multipath.policy == "adaptive");
+    BOOST_TEST(decoded.multipath.active_paths == 1u);
+    BOOST_REQUIRE(decoded.multipath.paths.size() == 1u);
+    BOOST_TEST(decoded.multipath.paths[0].id == "edge-a");
+    BOOST_TEST(decoded.multipath.paths[0].state == "joined");
+    BOOST_TEST(decoded.multipath.paths[0].control_state == "active");
+    BOOST_TEST(*decoded.multipath.paths[0].capacity_rate_bytes_per_second == 9000u);
+    BOOST_TEST(*decoded.multipath.paths[0].queue_delay_ms == 12u);
+    BOOST_TEST(*decoded.multipath.paths[0].bdp_bytes == 4500u);
+    BOOST_TEST(*decoded.multipath.paths[0].confidence == 80u);
+    BOOST_TEST(decoded.multipath.paths[0].at_capacity);
+    BOOST_TEST(decoded.multipath.paths[0].reconnect_attempts == 2u);
+    BOOST_TEST(!decoded.multipath.paths[0].rtt_ms.has_value());
+    BOOST_TEST(!decoded.multipath.paths[0].rx_bytes.has_value());
+
+    BOOST_TEST(runtime::ParseRuntimeSnapshot(ReadFixture("idle.json"), decoded));
+    BOOST_TEST(!decoded.multipath.enabled);
+    BOOST_TEST(decoded.multipath.paths.empty());
+}
+
+BOOST_AUTO_TEST_CASE(multipath_snapshot_json_rejects_unbounded_or_endpoint_path_ids) {
+    const std::string prefix =
+        "{\"schema_version\":1,\"generation\":1,\"monotonic_ms\":1,\"phase\":\"idle\","
+        "\"multipath\":{\"enabled\":true,\"policy\":\"adaptive\",\"state\":\"active\","
+        "\"active_paths\":0,\"paths\":[{\"id\":\"";
+    const std::string suffix =
+        "\",\"state\":\"joined\",\"carriers\":1,\"reconnect_attempts\":0,\"error_code\":\"\"}]}}";
+    runtime::RuntimeSnapshot decoded;
+    BOOST_TEST(!runtime::ParseRuntimeSnapshot(prefix + "edge.example.com:443" + suffix, decoded));
+    BOOST_TEST(!runtime::ParseRuntimeSnapshot(prefix + std::string(65, 'a') + suffix, decoded));
+}
+
 BOOST_AUTO_TEST_CASE(snapshot_json_derives_effective_path_from_typed_p2p_state) {
     runtime::RuntimeSnapshot snapshot;
     snapshot.generation = 8;

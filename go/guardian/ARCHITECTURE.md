@@ -1,81 +1,91 @@
-# OpenPPP2 Guardian architecture
+# Guardian: the local `ppp` supervisor
 
-> [Go overview](../debug.md) · [中文](ARCHITECTURE_CN.md)
+> [Go product map](../debug.md) · [中文](ARCHITECTURE_CN.md) · [Project interface map](../../docs/reference/PROJECT_INTERFACE_MAP.md)
 
 **Status:** Experimental operator surface
 
-**Type:** Local/remote process, profile, and binary manager
+**Type:** Local process, profile, and binary supervisor
 
-**Last verified:** 2026-07-22
+**Last verified:** 2026-11-20 (Guardian source)
 
-Guardian is a separate Go 1.22 module under `go/guardian`. It supervises configured `ppp` child processes and provides REST, Server-Sent Events (SSE), an embedded Web UI, and a separate terminal UI client. It does not change the C++ runtime and is not a stable public management API.
+## What Guardian is—and is not
 
-## Startup and persisted state
+Guardian is a separate Go 1.22 module under `go/guardian`. It is the host-local operator product around the native C++ `ppp` executable: it launches configured child processes, captures their logs, manages profiles and backups, performs optional health checks and automatic restarts, and exposes REST, SSE, an embedded Web UI, and a separate TUI client.
 
-`main.go` accepts `-config` (default `guardian.json`), resolves it to an absolute path, loads configuration, creates the managers/API server, starts enabled instances, and shuts down on interrupt/SIGTERM.
+Guardian does **not** implement the VPN/tunnel data path, replace the native runtime's configuration, manage users/subscriptions through the root `go/` backend, or provide the root backend's C++ `server.backend` link. Its API is experimental and administrator-equivalent; it is not a stable public SDK or a production security boundary by itself.
 
-On first run, a missing config uses `DefaultConfig()`:
+The three products remain separate:
 
-- listens on `127.0.0.1:18080`;
-- enables authentication by default;
-- uses a 24-hour token expiry and a generated JWT secret when one is absent;
-- defaults profiles, binary records, and backups to directories relative to the config location;
-- keeps 2,000 log lines by default.
+| Product | Owns | Does not own |
+|---|---|---|
+| Native `ppp` | Tunnel data path, client/server/proxy runtime, host networking, and runtime lifecycle | Guardian UI/API or the Go manager's user/subscription state |
+| Root Go manager (`go/`) | Users, servers, subscriptions, admin HTTP routes, and optional C++ node control links | Local child-process supervision and Guardian profiles |
+| Guardian (`go/guardian/`) | Local `ppp` process lifecycle, profiles, binaries, logs, and operator clients | Packets, tunnel policy, manager database/Redis, or a `server.backend` endpoint |
 
-The generated secret is persisted to `guardian.json`; `SaveConfigFile` writes the config with `0600` mode. Treat that file, profile files, and instance environment maps as sensitive operational data. Existing relative paths are resolved relative to the config file directory.
+## Quick path
 
-## Component map
+### 1. Create or choose a Guardian configuration
 
-| Component | Responsibility |
-|---|---|
-| `guardian.go`, `config.go` | Orchestrate configuration and the instance/profile/binary managers. |
-| `instance/` | Child lifecycle, output/log buffering, optional auto-restart and health checks, event/log subscriptions, and platform process behavior. |
-| `profile/` | Profile validation, persistence, backups, restore, and retention. |
-| `binary/` | Registered binary records and best-effort binary discovery. |
-| `api/` | HTTP routing, auth, REST handlers, SSE streams, static-Web-UI serving, and Linux systemd integration entry points. |
-| `webui/` | Svelte/Vite Web UI source. `webui.go` embeds built `webui/dist/*` assets. |
-| `cmd/tui/` | Separate Go module that calls the Guardian API and consumes its SSE streams. |
+Start the Guardian executable with `-config /path/to/guardian.json`; the default path is `guardian.json`. When the file is missing, the source defaults to:
 
-`NewGuardian` also attempts best-effort automatic discovery in several working-directory/system locations. Treat discovery results as host-dependent; explicitly register and validate the binary needed by an instance.
+- `listen: 127.0.0.1:18080`;
+- authentication enabled, with a generated JWT secret and 24-hour token expiry;
+- `profiles`, `binaries`, and `backups` paths relative to the config file;
+- a 2,000-line log buffer and enabled backups (up to 10 by default).
 
-## API and stream boundary
+Configure each instance with an explicit native binary, working directory, native config path/arguments, and environment as needed. Enable an instance only after validating its profile and binary. Automatic discovery is best effort and host-dependent; discovery is not proof that the selected binary is the one you intend to run.
 
-The router exposes groups for:
+Relative paths in an existing config resolve from the config file directory. The generated secret is persisted by startup to the config file, which is written with mode `0600`; keep the config, profiles, backups, and instance environment values private.
 
-- login, token refresh, and password changes;
-- instances and instance logs;
-- profiles, validation, backups, and restore;
-- registered/discovered binaries;
-- Guardian configuration and status;
-- Linux systemd service status/install/uninstall;
-- instance-log and global-event SSE streams.
+### 2. Open the Web UI
 
-Auth is enabled by default. Ordinary protected `/api/` endpoints require a valid in-memory issued Bearer token. `/api/v1/status` is intentionally public. SSE routes perform their own token/JWT check when authentication is enabled, accepting a query `token` or Bearer header; the generic middleware exemption for SSE is therefore not an unauthenticated-stream guarantee.
+With the default listener, open `http://127.0.0.1:18080/`. The embedded UI uses Guardian's API: authenticate with the configured/generated auth secret, then use the instance, profile, binary, log, and settings views. The UI is same-origin with the API; Guardian does not emit CORS headers.
 
-No CORS headers are emitted: only same-origin browser requests work (the Origin host must equal the request Host), state-changing requests with a foreign Origin get 403, and on a loopback listener the Host header must be loopback or the configured listen host (DNS-rebinding defence); behind a reverse proxy, preserve the Host header. Request bodies are capped at 1 MiB (4 MiB for profiles), login/password endpoints apply per-IP failure backoff (HTTP 429), and Guardian refuses to start on a non-loopback `listen` with `auth.enabled=false`. Instance `binary` is not restricted to registered IDs and health-check `httpEndpoint` may target any host (SSRF risk; redirects are not followed), so treat the API as administrator-equivalent. Guardian does not configure TLS. Keep the default loopback bind unless a reviewed network boundary provides TLS, authentication, authorization, and exposure controls.
+The UI can start, stop, and restart instances, but those actions operate on native child processes. They do not configure the root Go manager or change the native binary's tunnel semantics beyond the files/arguments you explicitly assign to that instance.
 
-## Web UI and TUI build boundary
+### 3. Use the separate TUI (optional)
 
-`webui.go` requires built `webui/dist/*` files at Go compile time. This checkout contains the Svelte/Vite source and package lock, not a committed `dist` directory. Build it before building/testing Guardian packages that compile the embed declaration:
+The TUI under `cmd/tui/` is a separate Go module and API client. Run it with the Guardian URL and a token, for example:
 
 ```sh
-cd go/guardian/webui
-npm ci
-npm run build
-
-cd ..
-go test ./...
-go run . -config ./guardian.json
+guardian-tui -api http://127.0.0.1:18080 -token <token-from-login>
 ```
 
-The terminal UI under `cmd/tui/` is a separate Go module. Build/test it from its own directory and pass a Guardian API URL/token as appropriate; do not assume it runs an embedded Guardian instance.
+It consumes Guardian REST/SSE; it does not embed or start a Guardian daemon. Its default API URL is the loopback listener above.
 
-## Platform and operational limits
+### 4. Keep the supervisor local unless the boundary is deliberate
 
-- Enabled instances are started at Guardian startup. Create/test profiles and binaries before enabling automatic startup.
-- Instance stop/restart/profile writes can affect live child processes and configuration; use backups and a maintenance window.
-- Systemd service installation is implemented only on Linux and requires root. Non-Linux service handlers report unsupported behavior.
-- Guardian's log/status data is an operator aid, not a replacement for protocol-level observability or a stable SDK telemetry contract.
-- No feature in this document guarantees multi-host security, a production service manager, or safe remote exposure.
+- Keep the default loopback listener and authentication enabled for local operation.
+- Guardian refuses startup when a non-loopback `listen` is combined with `auth.enabled=false`.
+- Guardian does not configure TLS. For deliberate remote use, put a reviewed TLS/authentication/exposure boundary in front of it and preserve the `Host` header through a reverse proxy.
+- `/api/v1/status` is public. Other protected API routes require an issued Bearer token when auth is enabled. SSE performs its own token/JWT check; a middleware exemption does not make an authenticated stream public.
+- Same-origin browser requests are expected; foreign-origin state-changing requests are rejected, and loopback listeners validate the `Host` header against loopback/configured listen host.
+- Treat the API as administrator-equivalent. Instance binary paths execute host processes, and an HTTP health endpoint may contact any host (redirects are not followed); do not expose this control surface to untrusted users or networks.
+- Config, profiles, backups, and instance environment maps may contain credentials or native tunnel settings. Profile and backup files use mode `0600` in directories created with mode `0700`.
 
-For the root Go control plane, which is a different service and configuration model, see [the Go overview](../debug.md).
+## Lifecycle and persistence boundaries
+
+`main.go` resolves the config path, loads it, creates the managers and API server, starts enabled instances, and handles interrupt/SIGTERM shutdown. Guardian does not take ownership of native tunnel state; it observes and controls child processes.
+
+- Starting an instance launches its configured binary with its working directory, arguments, and environment, then captures output in a bounded in-memory ring buffer and emits events/log SSE.
+- Stopping sends the configured signal to the process group, waits `stopWaitMs`, and force-kills the group if it does not exit. Use a maintenance window for changes that affect a live child.
+- Automatic restart applies only when enabled and the exit was not caused by a manual stop, update, removal, or shutdown; retry counts and delay come from the instance configuration. Stopping/removing an instance or shutting down Guardian cancels pending restart work.
+- Enabled instances start during Guardian startup. A stopped or disabled definition remains configuration state until explicitly removed; saving settings does not turn Guardian into a system-wide service manager.
+- Registered binaries are held in memory and discovery is repeated as appropriate after restart. Explicitly validate the path and identity of the binary used by each instance.
+- Linux systemd install/uninstall handlers exist in the API and require root; other platforms report unsupported behavior. This is an integration entry point, not a guarantee of production service-management semantics.
+
+## Surface map and detailed references
+
+| Area | Responsibility | Source/detail |
+|---|---|---|
+| Configuration/startup | Load defaults, resolve paths, persist the generated secret, create managers, and handle shutdown | `config.go`, `main.go`, `guardian.go` |
+| Instance manager | Child lifecycle, process-group stop, logs, events, health checks, and restart policy | `instance/` |
+| Profiles | Validation, persistence, backups, restore, and retention | `profile/` |
+| Binaries | Registration and host-dependent discovery/version detection | `binary/` |
+| API | Auth, REST handlers, SSE, static UI, and systemd entry points | `api/` |
+| Web UI | Embedded Svelte/Vite operator client | `webui/` and `webui.go` |
+| TUI | Separate REST/SSE client | `cmd/tui/` |
+
+For exact route groups and current stability labels, use the [Guardian section of the project interface map](../../docs/reference/PROJECT_INTERFACE_MAP.md). For the native process that Guardian launches, use [native startup and lifecycle](../../docs/architecture/STARTUP_AND_LIFECYCLE.md) and the [native configuration reference](../../docs/reference/CONFIGURATION.md). For the separate root Go management backend, use the [management backend guide](../../docs/guides/MANAGEMENT_BACKEND.md) and [Go core map](../ppp/debug.md).
+
+These implementation paths describe this checkout. They are not compatibility promises, a native SDK, or authorization to expose host-level process controls remotely.

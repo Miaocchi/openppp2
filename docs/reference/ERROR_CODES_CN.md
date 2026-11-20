@@ -6,6 +6,7 @@
 > Parent index: [参考索引](README_CN.md)
 > English: [English version](ERROR_CODES.md)
 > Related: [错误处理 API](ERROR_HANDLING_API_CN.md) · [诊断错误系统](DIAGNOSTICS_ERROR_SYSTEM_CN.md)
+> **查阅边界：** 本页用于查找源码定义的错误码目录和数值语义，不是分步用户指南。配置选择见[配置文件参考](CONFIGURATION_CN.md)；部署、运维和排障见[运维与排障](../operations/OPERATIONS_CN.md)和[部署](../operations/DEPLOYMENT_CN.md)。
 
 ## 唯一事实来源
 

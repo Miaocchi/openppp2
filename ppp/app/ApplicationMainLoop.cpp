@@ -707,6 +707,10 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
                 runtime.generation,
                 exchanger->GetMuxRuntimeState(),
                 now);
+            runtime_lifecycle_.UpdateMultipathState(
+                runtime.generation,
+                exchanger->GetMultipathRuntimeState(),
+                now);
             runtime_lifecycle_.UpdateP2PState(
                 runtime.generation,
                 exchanger_runtime.p2p_state,

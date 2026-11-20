@@ -196,6 +196,9 @@ namespace ppp {
                 ITransmissionPtr                                                            GetTransmission() noexcept;
                 /** @brief Returns the generation that fences the current carrier. */
                 std::uint64_t                                                               GetCarrierGeneration() noexcept;
+                /** @brief Detaches a multipath control carrier without closing VMUX/session state. */
+                void                                                                        OnMultipathCarrierStopped(const ITransmissionPtr& transmission) noexcept;
+                bool                                                                        OnMultipathCarrierStarted(const ITransmissionPtr& transmission) noexcept;
                 /** @brief Prepares an authenticated recovery offer for a fresh secure carrier. */
                 bool                                                                        PrepareFreshResumeOffer(const ITransmissionPtr& transmission, ppp::app::protocol::SessionResumeControl& offer) noexcept;
                 /** @brief Authenticates and reserves a suspended session for one candidate carrier. */

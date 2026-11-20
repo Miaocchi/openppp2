@@ -46,6 +46,17 @@ namespace ppp {
                 Finalize();
             }
 
+            void VirtualEthernetNetworkTcpipConnection::SetMultipathCarrier(
+                std::uint64_t session_generation, std::uint64_t connection_generation,
+                const ppp::string& carrier_id, bool failover, bool notify_carrier_leave) noexcept {
+                multipath_session_generation_ = session_generation;
+                multipath_connection_generation_ = connection_generation;
+                multipath_carrier_id_ = carrier_id;
+                multipath_failover_ = failover;
+                multipath_transport_ = true;
+                notify_multipath_carrier_leave_ = notify_carrier_leave;
+            }
+
             /**
              * @brief Schedules cleanup on the connection strand/context.
              */
@@ -81,6 +92,12 @@ namespace ppp {
 
                 if (NULLPTR != transmission) {
                     transmission->Dispose();
+                }
+
+                if (notify_multipath_carrier_leave_ && !multipath_carrier_id_.empty() && multipath_connection_generation_ != 0) {
+                    switcher_->OnMultipathCarrierLeft(id_, multipath_carrier_id_,
+                        multipath_session_generation_, multipath_connection_generation_);
+                    multipath_carrier_id_.clear();
                 }
 
                 disposed_ = true;
@@ -233,6 +250,14 @@ namespace ppp {
                 elif(!mux->ftt(seq, ack)) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
                     return false;
+                }
+
+                if (multipath_transport_) {
+                    if (!mux->reliability_agreed()) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
+                        return false;
+                    }
+                    mux->set_multipath_scheduler_policy(true, multipath_failover_);
                 }
 
                 std::shared_ptr<VirtualEthernetNetworkTcpipConnection> self = shared_from_this();

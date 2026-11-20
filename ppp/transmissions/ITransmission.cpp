@@ -1,4 +1,5 @@
 #include <ppp/transmissions/ITransmission.h>
+#include <ppp/transmissions/TransmissionFrameLimits.h>
 #include <ppp/transmissions/NoisePskAuthenticatedCarrierBinding.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/diagnostics/Error.h>
@@ -47,18 +48,6 @@ namespace ppp {
         static constexpr int EVP_HEADER_TSS = 2;                  // Encrypted length field size (2 bytes)
         static constexpr int EVP_HEADER_MSS = EVP_HEADER_TSS + 1; // 3 bytes: total header after first key byte
         static constexpr int EVP_HEADER_XSS = EVP_HEADER_MSS + 1; // 4 bytes: simple header (random key + filler + swapped length)
-
-        // Maximum base94-encoded frame payload size.
-        //
-        // ssea::base94_encode() encodes input byte-by-byte: a byte whose (value - kf)
-        // is >= 93 expands to 2 output characters, otherwise 1.  In the worst case every
-        // byte expands, so the encoded size is up to 2x the binary input.  A binary
-        // payload bounded by PPP_BUFFER_SIZE can therefore produce up to 2*PPP_BUFFER_SIZE
-        // encoded bytes.  The receive-side frame-length check must allow this full
-        // expansion; the decoded output is still bounded by PPP_BUFFER_SIZE in the
-        // binary decrypt path.  (NOTE: this is NOT 11/9 — that ratio belongs to the
-        // unrelated block-based BASE94_INPUT/OUTPUT_BLOCK_SIZE codec, not this byte codec.)
-        static constexpr int EVP_BASE94_MAX_FRAME = (PPP_BUFFER_SIZE * 2) + 64;
 
         // Forward declaration of the full packet read helper (used by ReadBinary).
         static std::shared_ptr<Byte> Transmission_Packet_Read(
@@ -190,6 +179,15 @@ namespace ppp {
                 const bool handshaked = transmission->handshaked_.load(std::memory_order_acquire);
                 if (transmission->disposed_.load(std::memory_order_acquire)) {
                     return NULLPTR;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(transmission->prefetched_read_mutex_);
+                    if (transmission->prefetched_read_packet_) {
+                        std::shared_ptr<Byte> packet = std::move(transmission->prefetched_read_packet_);
+                        outlen = std::exchange(transmission->prefetched_read_length_, 0);
+                        return packet;
+                    }
                 }
 
                 std::shared_ptr<Byte> packet;
@@ -476,18 +474,18 @@ namespace ppp {
                  *
                  * @details The send side caps plaintext/base94 TCP chunks (see
                  *          VirtualEthernetTcpipConnection / vmux_skt) so a conforming peer never
-                 *          emits a frame this large.  We accept up to EVP_BASE94_MAX_FRAME
+                 *          emits a frame this large. We accept up to MaxEncodedTransmissionFrame
                  *          (2 * PPP_BUFFER_SIZE, the worst-case byte-codec expansion) rather than
                  *          the raw PPP_BUFFER_SIZE, so a peer running an older, un-capped build
                  *          that emits a full-expansion frame still interoperates.  The decoded
                  *          output is re-bounded by PPP_BUFFER_SIZE in the binary decrypt path.
                  */
-                if (payload_length > EVP_BASE94_MAX_FRAME) {
+                if (payload_length > MaxEncodedTransmissionFrame) {
                     ppp::telemetry::Log(Level::kInfo,
                         "transmission",
                         "base94 frame too large payload_length=%d max=%d in_memory=yes",
                         payload_length,
-                        EVP_BASE94_MAX_FRAME);
+                        MaxEncodedTransmissionFrame);
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolFrameInvalid, NULLPTR);
                 }
 
@@ -592,12 +590,12 @@ namespace ppp {
                 }
 
                 /** @brief Frame length upper-bound check (P0-4A): reject base94 frames that exceed the encoded ceiling. */
-                if (payload_length > EVP_BASE94_MAX_FRAME) {
+                if (payload_length > MaxEncodedTransmissionFrame) {
                     ppp::telemetry::Log(Level::kInfo,
                         "transmission",
                         "base94 frame too large payload_length=%d max=%d in_memory=no",
                         payload_length,
-                        EVP_BASE94_MAX_FRAME);
+                        MaxEncodedTransmissionFrame);
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolFrameInvalid, NULLPTR);
                 }
 
@@ -981,14 +979,22 @@ namespace ppp {
                     return NULLPTR;
                 }
 
-                auto payload = Transmission_Payload_Encrypt(APP, allocator, header_kf,
-                    data, datalen, payload_len, safest);
-                if (NULLPTR == payload) {
-                    return NULLPTR;
+                // Write() borrows the caller's buffer. In particular, reliable
+                // VMUX can retain it for retransmission after this write.
+                auto packet = BufferswapAllocator::MakeByteArray(allocator, header_len + datalen);
+                if (!packet) return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, NULLPTR);
+                memcpy(packet.get(), header.get(), header_len);
+                Byte* payload = packet.get() + header_len;
+                memcpy(payload, data, datalen);
+                Transmission_Payload_Encrypt_Partial(APP, header_kf, payload, datalen, safest);
+                if (safest || APP->key.delta_encode) {
+                    std::shared_ptr<Byte> encoded;
+                    if (ssea::delta_encode(allocator, payload, datalen, APP->key.kf, encoded) != datalen)
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed, NULLPTR);
+                    memcpy(payload, encoded.get(), datalen);
                 }
-
-                return Transmission_Packet_Pack(allocator, header, header_len,
-                    payload, payload_len, outlen);
+                outlen = header_len + datalen;
+                return packet;
             }
         }
 
@@ -1449,7 +1455,7 @@ namespace ppp {
 
         bool ITransmission::InstallNoiseAuthenticatedCarrierBinding(
             ppp::cryptography::noise::NoisePskHandshakeResult&& result) noexcept {
-            const AuthenticatedCarrierKind carrier = GetAuthenticatedCarrierKind();
+            const AuthenticatedCarrierKind carrier = GetTransportCarrierKind();
             if ((carrier != AuthenticatedCarrierKind::Tcp &&
                     carrier != AuthenticatedCarrierKind::WebSocket) ||
                 IsServerLoopbackIngress() ||
@@ -1999,6 +2005,19 @@ namespace ppp {
             }
 
             return ok;
+        }
+
+        bool ITransmission::SetPrefetchedReadPacket(const std::shared_ptr<Byte>& packet, int length) noexcept {
+            if (!packet || length < 1 || length > PPP_BUFFER_SIZE) {
+                return false;
+            }
+            std::lock_guard<std::mutex> lock(prefetched_read_mutex_);
+            if (prefetched_read_packet_) {
+                return false;
+            }
+            prefetched_read_packet_ = packet;
+            prefetched_read_length_ = length;
+            return true;
         }
 
         // -----------------------------------------------------------------------------

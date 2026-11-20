@@ -7,6 +7,9 @@
 > **用途：** 让服务端给客户端分配 IPv6 并经服务端访问 IPv6 网络。
 > **读者：** 部署服务端的运维人员。
 > **上级索引：** [指南](README_CN.md) · **English:** [IPv6](IPV6.md)
+> **前提：** Linux 服务端以 root 或 `CAP_NET_ADMIN` 运行，具备 `/dev/net/tun`；`nat66` 还需要 `ip6tables`，`gua` 需要可路由的全球单播前缀。
+> **不包括：** Windows、macOS、Android 上的服务端 IPv6，以及移动端 VPN 框架内部实现。
+> **下一参考：** 平台限制参阅[平台说明](PLATFORMS_CN.md)，主机部署参阅[部署](../operations/DEPLOYMENT_CN.md)。
 
 ## 1. 支持范围
 

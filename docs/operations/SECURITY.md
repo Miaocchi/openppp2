@@ -10,6 +10,8 @@
 
 This page is operational hardening guidance, not a formal security assessment; it does not claim forward secrecy, a leak-proof kill switch, or automatic firewall management.
 
+> **Read this / boundaries:** Use this page for the current hardening checklist around the root `ppp` tunnel process. Guardian is a separate local supervisor and configuration manager; the root Go management backend is a separate authentication/accounting service. This page does not turn either management component into part of the tunnel data path.
+
 ## 1. Assets to protect
 
 | Asset | Location | If leaked |

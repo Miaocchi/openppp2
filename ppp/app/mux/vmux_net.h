@@ -18,6 +18,10 @@
 #include <ppp/app/mux/MuxRxBackpressure.h>
 #include <ppp/app/mux/MuxRxQueueLimit.h>
 #include <ppp/app/mux/MuxTxBackpressure.h>
+#include <ppp/app/multipath/Scheduler.h>
+#include <ppp/app/multipath/VmuxPathEstimator.h>
+#include <ppp/app/multipath/PoolController.h>
+#include <string>
 
 namespace vmux {
     class vmux_skt;
@@ -29,6 +33,24 @@ namespace vmux {
      */
     class vmux_net final : public std::enable_shared_from_this<vmux_net> {
     public:
+        struct MultipathPathRuntimeStats final {
+            std::string path_id;
+            uint64_t tx_bytes = 0; ///< VMUX frame bytes submitted to carrier writes, including retries.
+            uint64_t rx_bytes = 0; ///< VMUX frame bytes received from carriers.
+            uint64_t inflight_bytes = 0; ///< Queued plus unacknowledged VMUX frame bytes.
+            uint64_t retransmit_bytes = 0; ///< VMUX frame bytes explicitly resent.
+            uint64_t rtt_ms = 0; ///< Lowest sampled SRTT across active carriers; zero means unknown.
+            bool has_rtt = false;
+            uint64_t delivery_rate_bytes_per_second = 0;
+            uint64_t capacity_rate_bytes_per_second = 0;
+            uint64_t min_rtt_ms = 0;
+            uint64_t queue_delay_ms = 0;
+            uint64_t bdp_bytes = 0;
+            uint8_t confidence = 0;
+            bool has_telemetry = false;
+            bool at_capacity = false;
+        };
+
         /** @brief Callback used when an async connect attempt finishes. */
         typedef ppp::function<void(vmux_skt*, bool)>                                ConnectAsynchronousCallback;
         /** @brief Host-neutral carrier transport interface. */
@@ -36,6 +58,7 @@ namespace vmux {
         typedef ppp::app::mux::IMuxTransportPtr                                     IMuxTransportPtr;
         /** @brief Shared pointer to transmission metadata object. */
         typedef std::shared_ptr<ppp::transmissions::ITransmission>                  ITransmissionPtr;
+        using LinkExitCallback = ppp::function<void(const ITransmissionPtr&, bool planned_retirement)>;
 
         std::shared_ptr<ppp::threading::BufferswapAllocator>                        BufferAllocator;    ///< Shared byte-buffer pool used for packet allocation.
         std::shared_ptr<ppp::configurations::AppConfiguration>                      AppConfiguration;   ///< Application-wide runtime configuration snapshot.
@@ -48,12 +71,21 @@ namespace vmux {
          * @brief Pair of vmux protocol connection and server-side transport wrapper.
          */
         typedef struct vmux_linklayer {
+            struct PathRuntimeCounters final {
+                std::atomic<uint64_t> tx_bytes{0};
+                std::atomic<uint64_t> rx_bytes{0};
+                std::atomic<uint64_t> retransmit_bytes{0};
+            };
             IMuxTransportPtr                                                        connection;
+            std::string                                                             path_id_;
+            std::shared_ptr<PathRuntimeCounters>                                    path_runtime_counters_;
             uint16_t                                                                id_ = 0; ///< Server-assigned carrier-link id used by MUXON handshake; 0 means unassigned. Protected by syncobj_ (written by the carrier handshake under it).
             std::atomic<uint64_t>                                                   last_active_{0}; ///< Tick of the most recent inbound frame on this link; turbo's approximate "best link" signal (recency, NOT RTT). Atomic: written by both the vmux strand and the carrier forwarding coroutine.
             size_t                                                                  queued_bytes_ = 0; ///< Outstanding local write bytes (not peer ACK). Strand-affine.
             uint64_t                                                                total_sent_bytes_ = 0; ///< Lifetime bytes accepted by local write path. Strand-affine.
             ppp::app::mux::MuxLinkDrainState                                        drain_;            ///< Strand-affine in-flight write and retirement state.
+            uint64_t                                                                retire_ack_deadline_ = 0; ///< Planned retirement: bound the wait for peer delivery on the mux strand.
+            size_t                                                                  retire_unacked_bytes_ = 0; ///< Last outstanding-byte count observed while draining. No new writes after BeginRetire.
             std::atomic<bool>                                                       handshake_complete_{false}; ///< True only after the carrier handshake succeeds. Atomic: written by the carrier handshake (under syncobj_), read lock-free on the vmux strand.
             bool                                                                    in_tx_links_ = false; ///< Currently listed in tx_links_ (may take another frame). Strand-affine (attach writes it under syncobj_ before the strand sees the link).
             bool                                                                    exited_ = false; ///< on_link_exit already ran for this carrier (it is also retiring). Strand-affine.
@@ -67,6 +99,11 @@ namespace vmux {
             uint64_t                                                                rttvar_ms_ = 0;     ///< RTT variance (EWMA 3/4).
             uint64_t                                                                min_rtt_ms_ = 0;    ///< Minimum observed RTT (floor).
             bool                                                                    has_rtt_sample_ = false; ///< True after first RTT sample.
+            uint64_t delivered_payload_bytes_ = 0;
+            uint64_t delivered_tick_ = 0;
+            uint64_t first_delivery_send_tick_ = 0;
+            std::unique_ptr<ppp::app::multipath::IPathEstimator> path_estimator_;
+            bool pool_primary_ = false; ///< Preserve the main mux subchannel when shrinking.
 
             /** Unified "can this link accept new work?" predicate. All schedulability
              *  checks (count_live_carriers, turbo, shrink, scheduler) MUST use this
@@ -166,6 +203,11 @@ namespace vmux {
             cmd_fec,                      ///< FEC — XOR parity over a group of reliable data frames; negotiated, unordered, never retransmitted.
             cmd_max,                      ///< Sentinel — one past the last valid command.
 
+            // A one-byte 'W' FIN ends only the sender's writes. Older receivers
+            // ignore the payload and perform their original full close. Empty
+            // (or unrecognized) FIN remains terminal in both ordering modes.
+            fin_write_only = 'W',
+
             max_buffers_size = UINT16_MAX - sizeof(vmux_hdr), ///< Maximum payload bytes per vmux frame.
             zero_copy_min_payload = 4096,                     ///< Pushes at least this large are sent from the read buffer itself (no copy).
         };
@@ -247,7 +289,6 @@ namespace vmux {
             ppp::app::mux::MuxFlowReorderBuffer<rx_packet>                         flow_reorder_;                ///< Strictly bounded reorder buffer for this flow only.
             uint64_t                                                                oldest_buffered_tick_ = 0;     ///< Tick the current head-of-line gap began, restarted on in-order progress; 0 = no active gap timer.
             bool                                                                    primed_               = false; ///< True once the initial expected DSN (1) has been established.
-            bool                                                                    fin_seen_             = false; ///< True once a cmd_fin has been delivered for this connection.
         };
 
         /**
@@ -299,6 +340,8 @@ namespace vmux {
             ordering_caps_reliability = 0x02, ///< RELIABILITY — ACK feedback + retransmission sub-protocol.
             ordering_caps_fec = 0x04,         ///< FEC — XOR parity groups (implies RELIABILITY when agreed).
             ordering_caps_flow_v2_request = 0x08, ///< FLOW_V2 REQUEST — client→server only: the client's own preset needs per-flow ordering; older servers ignore it.
+            ordering_caps_lazy_pool = 0x10, ///< Adaptive multipath: establish on one carrier; max_connections remains the ceiling.
+            ordering_caps_write_fin = 0x20, ///< Directional TCP EOF; requires both endpoints.
         };
 
     public:
@@ -322,18 +365,32 @@ namespace vmux {
         mux_mode                                                                    get_mode()            noexcept { return mode_; }
         /** @brief Current absolute carrier-link ceiling (turbo dynamic pool). */
         uint16_t                                                                    get_pool_hard_max()   noexcept { return status_.pool_hard_max; }
+        bool                                                                        is_pool_lazy()        noexcept { return pool_lazy_.load(std::memory_order_acquire); }
+        uint16_t                                                                    get_pool_floor()      noexcept { return is_pool_lazy() ? 1 : status_.max_connections; }
+        /** @brief Apply the agreed lazy pool before attaching the first carrier. */
+        void                                                                        enable_lazy_pool() noexcept {
+            status_.pool_hard_max = status_.max_connections;
+            pool_lazy_.store(true, std::memory_order_release);
+        }
+        /** @brief Latch before establishment; return only the supported bit for the MUX reply. */
+        Byte                                                                        apply_write_fin_cap(Byte peer_caps) noexcept {
+            write_fin_on_ = (peer_caps & ordering_caps_write_fin) != 0;
+            return peer_caps & ordering_caps_write_fin;
+        }
         /** @brief Raise the carrier-link ceiling for turbo before establishment.
          *  @param hard_max New ceiling; clamped to be >= max_connections. No-op after
          *         establishment (the base/ceiling are fixed once links are built). */
         void                                                                        set_pool_hard_max(uint16_t hard_max) noexcept;
-        /**
-         * @brief Consume the turbo controller's pending "add N carrier links" request.
-         * @return Number of links the exchanger should connect+ConnectMux+add now
-         *         through add_linklayer's established-session path. Resets the
-         *         pending counter to 0.
-         * @note Strand-affine; called by the client exchanger's periodic mux pump.
-         */
-        int                                                                         take_turbo_pending_grow() noexcept;
+        using PoolGrowCallback = ppp::function<bool(uint64_t)>;
+        void set_pool_grow_callback(PoolGrowCallback cb) noexcept { pool_grow_ = std::move(cb); }
+        uint16_t get_pool_target() noexcept {
+            const auto target = pool_target_.load(std::memory_order_acquire);
+            return target ? target : get_pool_floor();
+        }
+        // Completion endpoints run on the mux strand; expired requests may not attach.
+        bool add_pool_trial_linklayer(const IMuxTransportPtr& transport, vmux_linklayer_ptr& link,
+            const vmux_native_add_linklayer_after_success_before_callback& cb, uint64_t token) noexcept;
+        void pool_dial_failed(uint64_t token) noexcept;
         static mux_mode                                                             parse_mode(const ppp::string& mode) noexcept;
         /** @brief Map a wire mode byte to a valid scheduler mode (unknown -> compat). */
         static mux_mode                                                             parse_mode_byte(Byte mode_value) noexcept;
@@ -408,6 +465,23 @@ namespace vmux {
         const uint32_t&                                                             get_rx_ack()          noexcept { return status_.rx_ack_; }
         bool                                                                        is_disposed()         noexcept { return base_.disposed_.load(std::memory_order_acquire); }
         bool                                                                        is_established()      noexcept { return !base_.disposed_.load(std::memory_order_acquire) && base_.established_; }
+        std::vector<MultipathPathRuntimeStats>                                      get_multipath_path_runtime_stats() const noexcept;
+        /** Keep an established logical mux alive during a bounded carrier outage. */
+        void                                                                        set_carrier_resume_policy(bool enabled, uint32_t grace_ms) noexcept;
+        void                                                                        set_link_exit_callback(const LinkExitCallback& callback) noexcept {
+            link_exit_callback_ = callback;
+        }
+        void                                                                        set_multipath_scheduler_policy(bool enabled, bool failover) noexcept {
+            multipath_scheduler_policy_.store(enabled ? (failover ? 1 : 0) : -1,
+                std::memory_order_release);
+        }
+        uint32_t                                                                    get_carrier_resume_remaining_ms() noexcept {
+            const std::uint64_t deadline = carrier_resume_deadline_ms_.load(std::memory_order_acquire);
+            const std::uint64_t now = now_tick();
+            if (deadline <= now) return 0;
+            const std::uint64_t remaining = deadline - now;
+            return static_cast<uint32_t>(remaining > 30000 ? 30000 : remaining);
+        }
 
         /** @brief Handle fast transport training/control frame. */
         bool                                                                        ftt(uint32_t seq, uint32_t ack) noexcept;
@@ -437,23 +511,15 @@ namespace vmux {
          *          retiring_ and removes it from tx_links_ so it takes no new frames.
          *          The link object stays in rx_links_ until its in-flight writes
          *          drain to 0, at which point reap_retired_linklayers() disposes it.
-         *          Never retires below max_connections (the base must always stand).
+         *          Never retire below the negotiated floor; rollback selects an attach instance.
          */
-        bool                                                                        retire_linklayer_runtime() noexcept;
+        bool retire_linklayer_runtime(const vmux_linklayer_ptr& trial = {}) noexcept;
         /** @brief Dispose links that finished retiring (inflight_ == 0). Strand-affine; called from update(). */
         void                                                                        reap_retired_linklayers() noexcept;
         /** @brief Container-only reap; caller holds syncobj_. Reaped links are collected for disposal after the lock is released. */
         void                                                                        reap_retired_linklayers_locked(vmux_linklayer_vector& reaped) noexcept;
-        /**
-         * @brief Turbo pool controller step (C-B5). Strand-affine; called from update().
-         * @param now Current tick.
-         * @details Derives a target pool size from link quality (a recency/backlog
-         *          proxy — worse quality => larger pool, per the design) within
-         *          [max_connections, pool_hard_max], then moves the live pool one
-         *          step toward it (grow via turbo_pending_grow_ for the exchanger to
-         *          act on; shrink via retire_linklayer_runtime), rate-limited by a
-         *          cooldown for hysteresis. No-op unless turbo is on.
-         */
+        void finish_reaped_links(vmux_linklayer_vector& reaped) noexcept;
+        /** Evaluate one window and dispatch at most one action, on the client mux strand. */
         void                                                                        turbo_controller_tick(uint64_t now) noexcept;
 
         /**
@@ -554,7 +620,7 @@ namespace vmux {
         /** @brief Find logical socket by connection id. */
         vmux_skt_ptr                                                                get_connection(uint32_t connection_id) noexcept;
         /** @brief Remove and return connection when pointer identity matches. */
-        vmux_skt_ptr                                                                release_connection(uint32_t connection_id, vmux_skt* refer_pointer) noexcept;
+        vmux_skt_ptr                                                                release_connection(uint32_t connection_id, vmux_skt* refer_pointer, bool drain_terminal_tx) noexcept;
 
         /** @brief Insert or process out-of-order inbound packet (zero-copy variant when owner is provided). */
         bool                                                                        packet_input_unorder(const vmux_linklayer_ptr& linklayer, vmux_hdr* h, int length, uint64_t now, const std::shared_ptr<Byte>& owner = NULLPTR) noexcept;
@@ -569,8 +635,6 @@ namespace vmux {
 
         /** @brief Per-flow (flow v2) receive path: independent per-connection DSN delivery (zero-copy variant when owner is provided). */
         bool                                                                        packet_input_flow(const vmux_linklayer_ptr& linklayer, vmux_hdr* h, int length, uint64_t now, const std::shared_ptr<Byte>& owner = NULLPTR) noexcept;
-        /** @brief Deliver one framed packet (push/fin) to its logical connection (zero-copy variant when owner is provided). */
-        bool                                                                        deliver_one(Byte cmd, vmux_hdr* h, int length, uint64_t now, const std::shared_ptr<Byte>& owner = NULLPTR) noexcept;
         /** @brief Periodically fail per-flow contexts whose gap timed out. */
         void                                                                        flow_evict_expired(uint64_t now) noexcept;
         /** @brief Fail the session when a compat global reorder gap timed out. */
@@ -580,8 +644,6 @@ namespace vmux {
         flow_rx_context*                                                            try_get_or_create_flow(uint32_t connection_id) noexcept;
         void                                                                        note_flow_buffered(size_t bytes) noexcept;
         void                                                                        note_flow_unbuffered(size_t bytes) noexcept;
-        /** @brief Release a flow context once its FIN was delivered and buffer drained. */
-        void                                                                        maybe_release_flow(uint32_t connection_id, flow_rx_context& fx) noexcept;
         /** @brief Stop reading one carrier while the reorder budget is over its soft cap (strand-affine). */
         void                                                                        rx_pause_link(const vmux_linklayer_ptr& linklayer) noexcept;
         /** @brief Drop an exiting carrier from the paused set and re-check liveness (strand-affine). */
@@ -611,7 +673,7 @@ namespace vmux {
         /** @brief Process an inbound cmd_fec payload: cache the group, attempt single-loss recovery. */
         void                                                                        packet_input_fec(const vmux_linklayer_ptr& linklayer, Byte* buffer, int buffer_size, uint64_t now) noexcept;
         /** @brief Retain a just-sent reliable frame in the retransmit buffer (strand-affine). @return true when this was the first send of the frame. */
-        bool                                                                        track_sent_frame(const std::shared_ptr<Byte>& packet, int packet_length, uint64_t now, uint16_t link_id = 0) noexcept;
+        bool                                                                        track_sent_frame(const std::shared_ptr<Byte>& packet, int packet_length, uint64_t now, uint16_t link_id = 0, vmux_linklayer* link = nullptr) noexcept;
         /** @brief Record ACK/FEC state for one inbound frame before dispatch (strand-affine). */
         void                                                                        note_inbound_reliability_frame(const vmux_linklayer_ptr& linklayer, const std::shared_ptr<Byte>& frame, vmux_hdr* h, int length, uint64_t now) noexcept;
         /** @brief Latch the negotiated reliability/FEC flags and their config bounds (pre-establishment). */
@@ -771,6 +833,8 @@ namespace vmux {
         void                                                                        clear_flow_tx() noexcept;
         /** @brief Publish a lock-free runtime snapshot (call on strand or under mutex). */
         void                                                                        publish_runtime_snapshot_locked() noexcept;
+        void                                                                        publish_multipath_path_runtime_stats() noexcept;
+        ppp::app::multipath::PathTelemetry                                           get_link_telemetry(const vmux_linklayer& link, uint64_t now) const noexcept;
 
         /** @brief Validate and post outgoing connect request command. */
         bool                                                                        connect_require(
@@ -824,11 +888,12 @@ namespace vmux {
             std::atomic<bool>                                                       disposed_;             ///< Set when session is finalized.
         }                                                                           base_;
 
+        std::atomic<bool>                                                           pool_lazy_{false};
+
         /** @brief Runtime counters, sequence values, and heartbeat timestamps. */
         struct {
-            uint16_t                                                                max_connections    = 0; ///< Initial/established carrier-link target (= --tun-mux base). Established fires at this count; unchanged on the wire.
+            uint16_t                                                                max_connections    = 0; ///< Negotiated wire count: initial floor for legacy pools, hard ceiling for lazy pools.
             uint16_t                                                                pool_hard_max      = 0; ///< Absolute upper bound on carrier links (turbo dynamic pool). Equals max_connections when turbo is off; base*factor when on. add_linklayer quota uses this.
-            uint16_t                                                                pool_current       = 0; ///< Current runtime target pool size (turbo controller), in [max_connections, pool_hard_max]. Equals max_connections when turbo off.
             uint16_t                                                                opened_connections = 0; ///< Successful base-pool handshakes used to mark initial establishment; runtime carrier ids are allocated from free slots, not by incrementing this counter.
 
             uint32_t                                                                rx_ack_            = 0; ///< Last acknowledged inbound sequence number.
@@ -893,13 +958,22 @@ namespace vmux {
         size_t                                                                      tx_queue_high_water_    = (size_t)PPP_MUX_TX_QUEUE_HIGH_WATER; ///< Aggregate data-frame high-water (tx_data_frames_) for D11 backpressure.
         uint64_t                                                                    tx_backlog_stall_ms_    = (uint64_t)PPP_MUX_TX_BACKLOG_STALL_TIMEOUT; ///< Backlog stall timeout in ms (from config; D11 watchdog).
         bool                                                                        turbo_                  = false; ///< flow-mode turbo enabled (from config; best-link-first first packet).
-        uint64_t                                                                    turbo_last_adjust_      = 0;     ///< Tick of the last turbo pool grow/shrink step (cooldown base).
-        uint64_t                                                                    turbo_grow_hold_since_  = 0;     ///< When backlog first crossed grow threshold (0 = not armed).
-        uint64_t                                                                    turbo_shrink_hold_since_ = 0;    ///< When backlog first crossed shrink threshold (0 = not armed).
-        int                                                                         turbo_pending_grow_     = 0;     ///< Carrier links the turbo controller wants the exchanger to add (consumed by client DoMuxEvents). Strand-affine.
+        ppp::app::multipath::PoolController pool_controller_;
+        PoolGrowCallback pool_grow_;
+        vmux_linklayer_ptr pool_trial_link_;
+        uint64_t pool_next_token_ = 0, pool_token_ = 0, pool_topology_ = 0;
+        uint64_t pool_dial_in_flight_ = 0; // May outlive the evaluation deadline; never overlap dials.
+        uint64_t pool_offered_bytes_ = 0, pool_retransmitted_bytes_ = 0;
+        std::atomic<uint16_t> pool_target_{0}; // A trial is not a committed replenishment target.
 
         vmux_linklayer_vector                                                       rx_links_;          ///< All link-layer endpoints available for inbound.
         vmux_linklayer_list                                                         tx_links_;          ///< Link-layer endpoints ordered by transmit usage.
+        vmux::unordered_map<std::string, std::shared_ptr<vmux_linklayer::PathRuntimeCounters>> path_runtime_counters_;
+        mutable std::shared_ptr<const std::vector<MultipathPathRuntimeStats>>       multipath_path_runtime_snapshot_;
+        std::atomic<bool>                                                           carrier_resume_enabled_{false};
+        std::atomic<std::uint32_t>                                                  carrier_resume_grace_ms_{0};
+        std::atomic<std::uint64_t>                                                  carrier_resume_deadline_ms_{0};
+        LinkExitCallback                                                            link_exit_callback_;
 
         /** @brief One pending receive-side FEC group (parity + slots for covered frames). */
         struct fec_rx_group {
@@ -914,6 +988,7 @@ namespace vmux {
             int                                                                   length = 0;
         };
 
+        bool                                                                        write_fin_on_ = false;
         bool                                                                        reliability_on_ = false;   ///< Negotiated reliability sub-protocol active.
         bool                                                                        fec_on_ = false;           ///< Negotiated FEC active (implies reliability_on_).
         bool                                                                        rtx_pto_on_ = false;       ///< Local: probe-timeout retransmission enabled (config; default off on reliable carriers).
@@ -928,6 +1003,9 @@ namespace vmux {
         bool                                                                        fec_flush_due_ = false;   ///< Full FEC group awaiting deferred emission on the maintenance tick.
 
         ppp::app::mux::MuxRetransmitBuffer                                          rtx_;               ///< Sender-side retransmit buffer (strand-affine).
+        uint64_t                                                                    pool_acked_payload_bytes_ = 0; ///< Payload bytes ACKed across all carriers.
+        std::atomic<int>                                                            multipath_scheduler_policy_{-1};
+        ppp::app::multipath::PathScheduler                                          multipath_scheduler_;
         vmux::unordered_map<uint32_t, ppp::app::mux::MuxAckTracker>                 ack_trackers_;      ///< Received-sequence trackers; cid 0 = compat global space (strand-affine).
         uint32_t                                                                    ack_pending_count_ = 0;      ///< Reliable frames received since the last emitted ACK.
         uint64_t                                                                    ack_first_pending_tick_ = 0; ///< Tick the oldest un-ACKed frame arrived (delayed-ACK base).

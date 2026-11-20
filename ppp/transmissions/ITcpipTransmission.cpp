@@ -14,6 +14,9 @@
 #include <ppp/threading/Executors.h>
 #include <ppp/coroutines/asio/asio.h>
 #include <ppp/coroutines/YieldContext.h>
+#if defined(__linux__)
+#include <netinet/tcp.h>
+#endif
 
 using ppp::net::Socket;
 using ppp::net::IPEndPoint;
@@ -84,6 +87,18 @@ namespace ppp {
 #if defined(_WIN32)
             if (ppp::net::Socket::IsDefaultFlashTypeOfService()) {
                 qoss_ = ppp::net::QoSS::New(socket->native_handle());
+            }
+#endif
+        }
+
+        void ITcpipTransmission::LimitMultipathUnsentBytes() noexcept {
+#if defined(TCP_NOTSENT_LOWAT) && defined(__linux__)
+            // A local write is not delivery. On fast ingress a single carrier
+            // can otherwise hide many megabytes behind a pending retirement or ACK.
+            if (socket_ && socket_->is_open()) {
+                const std::uint32_t bytes = PPP_MUX_LINK_BYTE_HIGH_WATER;
+                (void)::setsockopt(socket_->native_handle(), IPPROTO_TCP, TCP_NOTSENT_LOWAT,
+                    &bytes, sizeof(bytes));
             }
 #endif
         }

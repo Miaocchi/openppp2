@@ -8,7 +8,9 @@
 > **Audience:** Client users who need split tunneling.
 > **Parent index:** [Guides](README.md) · **Chinese:** [路由与 DNS（分流）](ROUTING_AND_DNS_CN.md)
 
-This page covers the legacy (and default) split mechanism, `client.routing`. If you need direct / proxy / reject actions, keyword and regex matching, or auto-updating rule sets, use [policy v2](POLICY_CLI.md) instead. The two cannot be in the same configuration.
+> **Prerequisite:** A client configuration with `key`, `client.guid`, and `client.server`, using the legacy `client.routing` split mechanism.
+> **Not covered:** Policy v2 actions, keyword / regex matching, rule sets, and automatic rule updates; use the policy guide for those. `client.routing` and `client.policy` cannot be used in the same configuration.
+> **Next reference:** [Policy v2 and `ppp policy`](POLICY_CLI.md) for richer matching and migration.
 
 ## 1. How traffic is classified
 

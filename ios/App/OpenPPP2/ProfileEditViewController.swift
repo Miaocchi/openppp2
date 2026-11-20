@@ -12,17 +12,18 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
     private let nameField = FormTextField(label: L10n.tr("editor.name"))
     private let subtitleField = FormTextField(label: L10n.tr("editor.subtitle"))
     private let flagField = FormTextField(label: L10n.tr("editor.flag"))
-    private let hostField = FormTextField(label: "Host")
-    private let portField = FormTextField(label: "Port", keyboard: .numberPad)
-    private let bandwidthField = FormTextField(label: "Bandwidth", keyboard: .numberPad)
+    private let hostField = FormTextField(label: L10n.tr("editor.host"))
+    private let portField = FormTextField(label: L10n.tr("editor.port"), keyboard: .numberPad)
+    private let bandwidthField = FormTextField(label: L10n.tr("editor.bandwidth"), keyboard: .numberPad)
     private let guidField = FormTextField(label: "GUID")
-    private let protocolField = FormTextField(label: "Protocol")
-    private let protocolKeyField = FormTextField(label: "Protocol Key")
-    private let transportField = FormTextField(label: "Transport")
-    private let transportKeyField = FormTextField(label: "Transport Key")
+    private let protocolField = FormTextField(label: L10n.tr("editor.protocol"))
+    private let protocolKeyField = FormTextField(label: L10n.tr("editor.protocolKey"))
+    private let transportField = FormTextField(label: L10n.tr("editor.transport"))
+    private let transportKeyField = FormTextField(label: L10n.tr("editor.transportKey"))
     private let rawTextView = UITextView()
 
     private var jsonMap: [String: Any] = [:]
+    private var formChanged = false
 
     init(profile: ConfigProfile?) {
         self.original = profile
@@ -38,7 +39,7 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
         title = original == nil ? L10n.tr("editor.addTitle") : L10n.tr("editor.editTitle")
         view.backgroundColor = .systemGroupedBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .save,
+            title: L10n.tr("common.save"), style: .done,
             target: self,
             action: #selector(save)
         )
@@ -49,6 +50,8 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
                 target: self,
                 action: #selector(exportProfile)
             )
+            navigationItem.leftItemsSupplementBackButton = true
+            navigationItem.leftBarButtonItem?.accessibilityLabel = L10n.tr("editor.export")
         }
         setupLayout()
         hydrate()
@@ -56,6 +59,7 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
 
     private func setupLayout() {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.keyboardDismissMode = .interactive
         content.axis = .vertical
         content.spacing = 12
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -66,7 +70,7 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
             content.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 16),
             content.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -16),
             content.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 16),
@@ -76,39 +80,71 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
 
         content.addArrangedSubview(SectionView(title: L10n.tr("editor.basic"), symbol: "bookmark", views: [nameField, subtitleField, flagField]))
 
-        let serverRow = row([hostField, portField], weights: [3, 1])
-        content.addArrangedSubview(SectionView(title: L10n.tr("editor.server"), symbol: "cloud", views: [serverRow, bandwidthField, guidField]))
+        content.addArrangedSubview(SectionView(title: L10n.tr("editor.server"), symbol: "cloud", views: [hostField, portField, guidField]))
+        content.addArrangedSubview(SectionView(title: L10n.tr("editor.crypto"), symbol: "shield", views: [protocolField, protocolKeyField, transportField, transportKeyField]))
+        for input in [hostField, portField, guidField, bandwidthField, protocolField, protocolKeyField, transportField, transportKeyField] {
+            input.field.addTarget(self, action: #selector(markFormChanged), for: .editingChanged)
+        }
 
-        let cipherRow = row([protocolField, transportField], weights: [1, 1])
-        content.addArrangedSubview(SectionView(title: L10n.tr("editor.crypto"), symbol: "shield", views: [cipherRow, protocolKeyField, transportKeyField]))
-
-        rawTextView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        rawTextView.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(for: .monospacedSystemFont(ofSize: 13, weight: .regular))
+        rawTextView.adjustsFontForContentSizeCategory = true
+        rawTextView.accessibilityLabel = L10n.tr("editor.rawJson")
+        rawTextView.autocorrectionType = .no
+        rawTextView.smartQuotesType = .no
+        rawTextView.smartDashesType = .no
         rawTextView.layer.borderColor = UIColor.separator.cgColor
         rawTextView.layer.borderWidth = 1
         rawTextView.layer.cornerRadius = 10
         rawTextView.delegate = self
         rawTextView.isScrollEnabled = true
         rawTextView.heightAnchor.constraint(equalToConstant: 280).isActive = true
-        content.addArrangedSubview(SectionView(title: L10n.tr("editor.rawJson"), symbol: "chevron.left.forwardslash.chevron.right", views: [rawTextView]))
+        let rawLabel = UILabel()
+        rawLabel.text = rawTextView.accessibilityLabel
+        rawLabel.font = .preferredFont(forTextStyle: .caption1)
+        rawLabel.adjustsFontForContentSizeCategory = true
+        rawLabel.isAccessibilityElement = false
+        rawLabel.numberOfLines = 0
+        let advanced = SectionView(title: L10n.tr("options.advanced"), symbol: "slider.horizontal.3", views: [bandwidthField, rawLabel, rawTextView])
+        advanced.isHidden = true
+        let disclosure = UIButton(configuration: .tinted())
+        disclosure.setTitle(L10n.tr("editor.showAdvanced"), for: .normal)
+        disclosure.addAction(UIAction { [weak self, weak disclosure] _ in
+            guard let self else { return }
+            self.view.endEditing(true)
+            if !advanced.isHidden && self.parseJson(self.rawTextView.text) == nil {
+                self.presentMessage(title: L10n.tr("editor.rawJsonError"), message: L10n.tr("editor.rawJsonError.message"))
+                return
+            }
+            if advanced.isHidden && self.formChanged && self.parseJson(self.rawTextView.text) != nil && self.validateFields() {
+                self.applyFormToJson()
+                self.formChanged = false
+            }
+            advanced.isHidden.toggle()
+            disclosure?.setTitle(L10n.tr(advanced.isHidden ? "editor.showAdvanced" : "editor.hideAdvanced"), for: .normal)
+        }, for: .touchUpInside)
+        content.addArrangedSubview(disclosure)
+        content.addArrangedSubview(advanced)
 
         let saveButton = UIButton(type: .system)
         saveButton.setTitle(L10n.tr("editor.saveProfile"), for: .normal)
-        saveButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+        saveButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        saveButton.titleLabel?.adjustsFontForContentSizeCategory = true
         saveButton.backgroundColor = AppTheme.primary
         saveButton.tintColor = .white
         saveButton.layer.cornerRadius = 12
         saveButton.addTarget(self, action: #selector(save), for: .touchUpInside)
-        saveButton.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        saveButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
         content.addArrangedSubview(saveButton)
     }
 
     private func hydrate() {
         let profile = original ?? ProfileStore.defaultProfile()
-        nameField.text = original?.name ?? "New Profile"
+        nameField.text = original?.name ?? L10n.tr("profiles.addMenu.new")
         subtitleField.text = original?.subtitle ?? ""
         flagField.text = original?.flag ?? ""
-        rawTextView.text = prettify(profile.json)
-        jsonMap = parseJson(rawTextView.text)
+        let parsed = parseJson(profile.json)
+        jsonMap = parsed ?? [:]
+        rawTextView.text = parsed.flatMap(prettyJson) ?? profile.json
         hydrateFormFromJson()
     }
 
@@ -121,6 +157,9 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
             if subtitleField.text?.isEmpty != false {
                 subtitleField.text = endpoint.port == nil ? endpoint.host : "\(endpoint.host):\(endpoint.port!)"
             }
+        } else {
+            hostField.text = ""
+            portField.text = ""
         }
         bandwidthField.text = "\(client["bandwidth"] as? Int ?? 0)"
         guidField.text = client["guid"] as? String ?? ""
@@ -159,14 +198,25 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
     }
 
     @objc private func save() {
-        applyFormToJson()
+        view.endEditing(true)
+        guard !nameField.textValue.isEmpty else {
+            presentMessage(title: L10n.tr("editor.name"), message: L10n.tr("editor.nameError"))
+            return
+        }
+        guard let raw = parseJson(rawTextView.text) else {
+            presentMessage(title: L10n.tr("editor.rawJsonError"), message: L10n.tr("editor.rawJsonError.message"))
+            return
+        }
+        jsonMap = raw
+        guard validateFields() else { return }
+        if formChanged { applyFormToJson() }
         guard let json = prettyJson(jsonMap) else {
             presentMessage(title: L10n.tr("editor.rawJsonError"), message: L10n.tr("editor.rawJsonError.message"))
             return
         }
 
         var profile = original ?? ProfileStore.defaultProfile()
-        profile.name = nameField.textValue.isEmpty ? profile.name : nameField.textValue
+        profile.name = nameField.textValue
         profile.subtitle = subtitleField.textValue
         profile.flag = flagField.textValue
         profile.json = json
@@ -191,18 +241,38 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
         }
     }
 
+    @objc private func markFormChanged() { formChanged = true }
+
+    private func validateFields() -> Bool {
+        let port = portField.textValue
+        if !port.isEmpty && !(Int(port).map { (1...65535).contains($0) } ?? false) {
+            presentMessage(title: L10n.tr("editor.port"), message: L10n.tr("editor.portError"))
+            return false
+        }
+        if !bandwidthField.textValue.isEmpty && (Int(bandwidthField.textValue) ?? -1) < 0 {
+            presentMessage(title: L10n.tr("editor.bandwidth"), message: L10n.tr("editor.numberError"))
+            return false
+        }
+        return true
+    }
+
+    func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
+        if formChanged, parseJson(textView.text) != nil {
+            guard validateFields() else { return false }
+            applyFormToJson()
+            formChanged = false
+        }
+        return true
+    }
+
     func textViewDidEndEditing(_ textView: UITextView) {
-        jsonMap = parseJson(textView.text)
+        guard let raw = parseJson(textView.text) else { return }
+        jsonMap = raw
         hydrateFormFromJson()
+        formChanged = false
     }
 
     private func applyFormToJson() {
-        if let rawData = rawTextView.text.data(using: .utf8),
-           let object = try? JSONSerialization.jsonObject(with: rawData),
-           let raw = object as? [String: Any] {
-            jsonMap = raw
-        }
-
         var client = jsonMap["client"] as? [String: Any] ?? [:]
         var key = jsonMap["key"] as? [String: Any] ?? [:]
         let currentServer = client["server"] as? String ?? ""
@@ -223,7 +293,6 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
         key["protocol-key"] = protocolKeyField.textValue
         key["transport"] = transportField.textValue.isEmpty ? "aes-256-cfb" : transportField.textValue
         key["transport-key"] = transportKeyField.textValue
-        client["mappings"] = []
         jsonMap["client"] = client
         jsonMap["key"] = key
         rawTextView.text = prettyJson(jsonMap) ?? rawTextView.text
@@ -235,19 +304,16 @@ final class ProfileEditViewController: UIViewController, UITextViewDelegate {
            (endpoint.port ?? 0) == port {
             return currentServer
         }
-        return "ppp://\(host)\(port > 0 ? ":\(port)" : "")/"
+        let authority = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        return "ppp://\(authority)\(port > 0 ? ":\(port)" : "")/"
     }
 
-    private func parseJson(_ text: String) -> [String: Any] {
+    private func parseJson(_ text: String) -> [String: Any]? {
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
               let map = object as? [String: Any]
-        else { return [:] }
+        else { return nil }
         return map
-    }
-
-    private func prettify(_ text: String) -> String {
-        prettyJson(parseJson(text)) ?? text
     }
 
     private func prettyJson(_ map: [String: Any]) -> String? {

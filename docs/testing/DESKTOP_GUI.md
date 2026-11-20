@@ -1,4 +1,10 @@
 # Desktop GUI verification
+> **Scope:** This page combines recorded desktop evidence with the checks still required before Windows GUI and kernel behavior can be accepted.
+> **Evidence:** The dated results and automated commands below are evidence only; they do not imply that the live acceptance list has passed.
+> **Acceptance criteria:** Use **Automated checks**, **Isolated native commands**, and **Required live acceptance** as separate gates; the last section requires a trusted server and, where noted, UAC and policy-v2 scenarios.
+> **Unverified gaps:** The offline record did not launch the desktop application or kernel, and the live traffic, administrator-restart, TUN, crash-recovery, and autostart checks remain explicitly outstanding below.
+> **Paths:** For test selection and native test boundaries, see [development testing](../development/TESTING.md); for deployment, runtime troubleshooting, and Windows operational handling, see [operations](../operations/README.md), [deployment](../operations/DEPLOYMENT.md), and [operations and troubleshooting](../operations/OPERATIONS.md).
+
 
 Offline checks last run: 2026-10-18. All 40 frontend tests, the production frontend build and 59 Windows Rust tests passed after updating the redesign onto main. No desktop application or kernel was launched; `OPENPPP2_POLICY_CLI` was unset, so the optional real-kernel policy test returned early.
 
@@ -23,14 +29,16 @@ cargo build --offline --manifest-path desktop/client/src-tauri/Cargo.toml
 
 The Rust suite covers profile merging, missing-section handling, unknown-field preservation, network validation, credential redaction, multi-source cache isolation, preference migration, intentional disconnect, process stop/restart, telemetry precedence and reversible proxy recovery with external changes. The native proxy query test is read-only.
 
-Browser smoke checks require Playwright and Microsoft Edge, plus Vite at port 1420:
+Browser smoke checks require Playwright, a compatible browser and the frontend served at port 1420 (or `GUI_URL`). The default browser channel is Microsoft Edge:
 
 ```powershell
 $env:PLAYWRIGHT_MODULE='build/gui-tools/node_modules/playwright/index.mjs'
 node desktop/client/test/gui-smoke.mjs
 ```
 
-The script checks light/dark layouts at three widths, navigation, nodes, subscriptions, routing, DNS, settings, language, keyboard modal dismissal and page errors. It also switches the demo from subnet-only to Internet-only: the Internet switch must remain usable with the subnet off, while port forwarding stays disabled. Screenshots go to ignored `build/gui-checks`. To use Playwright’s bundled headless Chromium instead of Edge on Linux, install it with `playwright install chromium --only-shell` and run the script with `GUI_BROWSER_CHANNEL=''`.
+For an offline run against Playwright's Chromium headless shell instead of Edge, install it with `playwright install chromium --only-shell` and set `GUI_BROWSER_CHANNEL` to the empty string. This exercises the browser UI and simulated native replies, not Windows or the VPN kernel.
+
+The script checks light/dark layouts at 1120, 720 and 375 pixels, loaded logo, navigation, manual-node and subscription creation, routing template and rule add, DNS save, settings tabs, language changes, keyboard modal dismissal, logs and page errors. It also switches the demo from subnet-only to Internet-only: the Internet switch must remain usable with the subnet off, while port forwarding stays disabled. Screenshots go to ignored `build/gui-checks`.
 
 ## Isolated native commands
 

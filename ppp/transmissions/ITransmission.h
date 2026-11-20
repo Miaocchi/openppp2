@@ -36,6 +36,7 @@ namespace ppp {
             None,
             NoisePskV1,
             TlsExporterV1,
+            MultipathNoiseV1,
         };
 
         /** Encodes transport-auth-v1 capability without adding a handshake frame. */
@@ -177,6 +178,8 @@ namespace ppp {
             virtual boost::asio::ip::tcp::endpoint                                                  GetRemoteEndPoint() noexcept = 0;
             /** @brief Identifies the carrier represented by this transmission. */
             virtual AuthenticatedCarrierKind                                                        GetAuthenticatedCarrierKind() const noexcept { return AuthenticatedCarrierKind::None; }
+            /** Returns the wire carrier kind without implying session-recovery eligibility. */
+            virtual AuthenticatedCarrierKind                                                        GetTransportCarrierKind() const noexcept { return GetAuthenticatedCarrierKind(); }
             /** @brief Reports whether this carrier can safely half-close its send direction. */
             virtual bool                                                                            SupportsSendHalfClose() const noexcept { return false; }
             /** @brief Half-closes the carrier send direction without closing receive. */
@@ -225,6 +228,9 @@ namespace ppp {
              * @return true if handshake succeeds; otherwise false.
              */
             virtual bool                                                                            HandshakeServer(YieldContext& y, const Int128& session_id, bool mux) noexcept;
+
+            /** Replays one already-decoded outer packet before the next bridge read. */
+            bool                                                                                    SetPrefetchedReadPacket(const std::shared_ptr<Byte>& packet, int length) noexcept;
 
         public:
             /**
@@ -328,6 +334,9 @@ namespace ppp {
             mutable std::mutex                                                                      authenticated_carrier_mutex_;
             /** @brief Carrier-local Noise authenticated exporter, when installed. */
             std::shared_ptr<NoisePskAuthenticatedCarrierBinding>                                    noise_authenticated_carrier_binding_;
+            mutable std::mutex                                                                      prefetched_read_mutex_;
+            std::shared_ptr<Byte>                                                                   prefetched_read_packet_;
+            int                                                                                     prefetched_read_length_ = 0;
             /** @brief Active handshake timeout timer, if armed. */
             DeadlineTimerPtr                                                                        timeout_;           // Handshake timeout timer (reset after success).
             /** @brief Optional protocol-layer cipher instance. */

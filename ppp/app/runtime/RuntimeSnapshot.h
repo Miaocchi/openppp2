@@ -3,6 +3,7 @@
 #include <ppp/app/runtime/RuntimeError.h>
 #include <ppp/app/runtime/RuntimePhase.h>
 #include <ppp/app/runtime/RuntimeTraffic.h>
+#include <ppp/app/multipath/RuntimeState.h>
 #include <ppp/p2p/P2PState.h>
 
 #include <cstdint>
@@ -70,6 +71,7 @@ namespace ppp {
                 RuntimeTraffic traffic;
                 std::uint64_t connected_monotonic_ms = 0;
                 RuntimeError last_error;
+                ppp::app::multipath::RuntimeState multipath;
             };
 
         }

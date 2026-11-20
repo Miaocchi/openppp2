@@ -2,6 +2,10 @@
 
 [Chinese](COROCC_VALIDATION_CN.md) | [Build guide](COROCC_BACKEND.md) |
 [Design](../adr/0003-corocc-coroutine-backend.md)
+> **Audience:** Reviewers and maintainers deciding what the corocc evidence does and does not support.
+> **Prerequisites:** Read [corocc build and validation](COROCC_BACKEND.md) and the linked ADR; interpret the results against the stated date, base revision, environment, and default-OFF policy.
+> **Verification limit:** This is a dated evidence record, not a production-acceptance certificate. Passing checks and lab A/B measurements cover only the recorded configurations; untested platforms, devices, live networks, and later revisions remain outside its claim.
+> **Next:** Use [Testing](TESTING.md) to select a current run, and return to the [corocc build guide](COROCC_BACKEND.md) for reproducible setup.
 
 Validation date: 2026-10-29. Base: `bfd5b88101943ba370bb9f04858af54787a5a461`,
 with the uncommitted corocc implementation. Default remains OFF.

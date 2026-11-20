@@ -1,20 +1,26 @@
-# Archive
+# Historical Archive
 > Status: Archived
-> Type: Archive
-> Last verified: 63fc030
+> Type: Archive index
+> Last verified: 2026-11-20
+> Parent index: [Documentation](../README.md)
+> Language peer: [中文](README_CN.md)
 
-> **Purpose:** Preserve design rationale, decisions, or historical verification evidence.
-> **Audience:** Maintainers investigating historical context.
-> **Status:** Archived; not a source of current configuration truth.
-> **Last verified against:** Document lifecycle and Git history, 2026-07-18.
-> **Parent index:** [Back to index](../README.md) · **Chinese:** [历史归档](README_CN.md)
+This directory preserves historical rationale, implementation plans, audits, and status records. Its contents are evidence for maintainers, not current installation, configuration, deployment, or runtime guidance.
 
-> **Archive notice:** This page is historical context only and must not be used as current installation, configuration, or runtime guidance.
+## Go here instead
 
+- Current runtime and component behavior: [Architecture](../architecture/README.md)
+- Supported configuration, CLI, protocols, and interfaces: [Reference](../reference/README.md)
+- User and operator procedures: [Guides](../guides/README.md) and [Operations](../operations/README.md)
+- Active proposals and acceptance-bound designs: [Design](../design/README.md)
+- Durable architecture decisions: [ADRs](../adr/README.md)
 
-This section preserves historical material. Every entry is archived and is not current configuration guidance.
+## Browse historical material
 
-- [Designs](designs/README.md): deferred, phase-specific, or implementation-absorbed designs.
-- [Plans](plans/README.md): implementation plans and roadmaps.
-- [Audits](audits/README.md): audit reports and governance decisions.
-- [Status records](status/README.md): historical validation, defect, and execution records.
+- [Archived designs](designs/README.md): design rationale and implementation notes that have been superseded, absorbed, or closed.
+- [Archived plans](plans/README.md): dated implementation plans and roadmaps.
+- [Archived audits](audits/README.md): audit reports and governance decisions.
+- [Archived status records](status/README.md): historical validation, defect, and execution records.
+
+Read each page's status and date before using it as historical evidence. If a current page and an archived page disagree, the current page and its cited source paths win.
+***

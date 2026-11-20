@@ -8,6 +8,12 @@
 > **Audience:** Users deploying and running OPENPPP2.
 > **Parent index:** [Getting started](README.md) · **Chinese:** [用户手册](USER_MANUAL_CN.md)
 
+> **Read this / not this**
+> - **Read this** for downloading, configuring, and running the base `ppp` executable as a server, TUN client, or proxy, plus common tunnel scenarios.
+> - **Not this** for keeping `ppp` running as a service or managing it through Guardian; use [Deployment](../operations/DEPLOYMENT.md). For a central authentication and accounting service, use [Management backend](../guides/MANAGEMENT_BACKEND.md).
+> - **Boundary:** the base `ppp` executable carries the tunnel; Guardian is a separate local supervisor and configuration manager; the management backend is a separate service for authentication and accounting.
+
+
 ## 1. What OPENPPP2 is
 
 OPENPPP2 is a single-file, cross-platform virtual network program, `ppp`. The same executable takes one of three roles depending on its flags:
@@ -228,8 +234,8 @@ TLS connections such as DoH / DoT and WSS load `cacert.pem` from the program dir
 
 See [Operations and troubleshooting](../operations/OPERATIONS.md) for the full workflow.
 
-## Related documents
+## Continue with
 
 - [Writing the configuration file](CONFIGURE.md) · [Configuration reference](../reference/CONFIGURATION.md) · [CLI reference](../reference/CLI_REFERENCE.md)
 - [Routing and DNS](../guides/ROUTING_AND_DNS.md) · [Proxy mode](../guides/PROXY_MODE.md) · [Platforms](../guides/PLATFORMS.md)
-- [Deployment](../operations/DEPLOYMENT.md) · [Security](../operations/SECURITY.md)
+- [Operations and troubleshooting](../operations/OPERATIONS.md) · [Security](../operations/SECURITY.md)

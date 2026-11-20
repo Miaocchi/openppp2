@@ -6,6 +6,10 @@
 > **Purpose:** Show the major packet-path branches without inventing a universal wire or host path.
 > **Audience:** Contributors debugging forwarding behavior.
 > **Parent index:** [Architecture](README.md) · **Chinese:** [数据包生命周期](PACKET_LIFECYCLE_CN.md)
+> **Read this for:** Contributors debugging native forwarding and packet-path branches.
+> **Question answered:** Which ingress, tunnel, relay, and return-path branches can a packet take?
+> **Implementation detail vs user contract:** The branches and callback order below are implementation details, not a universal wire/host contract. Treat stated configuration behavior as the current runtime contract; use [Reference](../reference/README.md) for public fields.
+> **Next canonical page:** [Transport and Protected Transmission](TRANSMISSION.md)
 
 ## The important correction
 

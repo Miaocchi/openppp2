@@ -1,7 +1,7 @@
 import Foundation
 
 public enum RuntimeConnectionAction: Equatable, Sendable {
-    case start, cancel, stop, retry, forceStop, none
+    case start, cancel, stop, retry, forceStop, checkStatus, none
 }
 
 public struct RuntimeControlState: Equatable, Sendable {
@@ -55,4 +55,38 @@ public func controlsFor(
     case .unknown:
         return RuntimeControlState(action: .forceStop, buttonEnabled: true, buttonTitleKey: "home.forceStop", statusTitleKey: "vpn.unknown", detailKey: "settings.section.diagnostics", configEditable: false)
     }
+}
+
+enum SystemSessionStatus {
+    case inactive, connected, transitioning, unavailable
+}
+
+/// A system session can veto Start, but cannot establish runtime readiness.
+/// A missing snapshot is different from a runtime reporting Unknown.
+func homeControls(runtime: RuntimePhase?, system: SystemSessionStatus, snapshotCurrent: Bool = true, stopTakingTooLong: Bool = false) -> RuntimeControlState {
+    if let runtime, !snapshotCurrent {
+        // An unreadable/out-of-order observation cannot confirm readiness. Keep
+        // a previously known stop/cancel command, but never start from it.
+        let previous = controlsFor(runtime)
+        var unknown = controlsFor(.unknown)
+        if previous.action == .stop || previous.action == .cancel {
+            unknown.action = previous.action
+            unknown.buttonTitleKey = previous.buttonTitleKey
+        }
+        return unknown
+    }
+    if system == .unavailable && (runtime == nil || runtime == .idle || runtime == .failed) {
+        return RuntimeControlState(action: .checkStatus, buttonEnabled: true, buttonTitleKey: "home.checkAgain", statusTitleKey: "vpn.unknown", detailKey: "", configEditable: false)
+    }
+    let phase = runtime ?? (system == .inactive ? .idle : .unknown)
+    var controls = controlsFor(phase, stopTakingTooLong: stopTakingTooLong)
+    if system != .inactive && controls.configEditable {
+        return controlsFor(.unknown)
+    }
+    if controls.isConnected && system != .connected {
+        controls.isConnected = false
+        controls.statusTitleKey = "vpn.unknown"
+        controls.detailKey = "home.statusMismatch"
+    }
+    return controls
 }

@@ -9,6 +9,7 @@
 > **Boundary:** This describes the current tunnel C++ implementation and its
 > wire behavior. It is not a public SDK, protocol API, or formal compatibility
 > specification.
+> **Lookup boundary:** Use this page to look up source-derived link-layer opcodes and payload behavior; it is not a step-by-step user guide. For configuration choices, see the [Configuration reference](CONFIGURATION.md); for deployment, operation, and troubleshooting, see [Operations](../operations/OPERATIONS.md) and [Deployment](../operations/DEPLOYMENT.md).
 
 ## Framing boundary
 

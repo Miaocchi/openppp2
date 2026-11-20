@@ -8,7 +8,9 @@
 > **读者：** 需要分流的客户端用户。
 > **上级索引：** [指南](README_CN.md) · **English:** [Routing and DNS](ROUTING_AND_DNS.md)
 
-本页讲旧版（也是默认）的分流方式 `client.routing`。需要直连 / 代理 / 拒绝三种动作、关键字和正则匹配、规则集自动更新时，请改用 [策略 v2](POLICY_CLI_CN.md)。两者不能写在同一份配置里。
+> **前提：** 客户端配置包含 `key`、`client.guid`、`client.server`，并采用旧版 `client.routing` 分流方式。
+> **不包括：** 策略 v2 的动作、关键字 / 正则匹配、规则集和自动更新；这些内容请看策略指南。`client.routing` 与 `client.policy` 不能写在同一份配置里。
+> **下一参考：** 需要更丰富的匹配或迁移时，参阅[策略 v2 与 `ppp policy`](POLICY_CLI_CN.md)。
 
 ## 1. 流量如何判定
 

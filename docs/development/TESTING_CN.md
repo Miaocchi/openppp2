@@ -11,7 +11,9 @@
 >
 > **用途：**选择并运行真正覆盖所改界面的测试入口。
 > **适用对象：**贡献者和 CI 维护者。
-> **上一层索引：**[开发文档](README_CN.md) · **English：**[Testing](TESTING.md)
+> **前置条件：**先阅读[源码阅读指南](SOURCE_READING_GUIDE_CN.md)确定改动边界，并准备所选命令需要的工具链和依赖。不要假定一条测试路径覆盖另一条路径。
+> **验证边界：**测试、sanitizer、覆盖率或构建通过，只能说明实际执行的配置和路径有相应证据；不等于生产验收、真实网络验收或设备/平台验收。
+> **下一步：**可选协程改动请遵循[corocc 构建与验证](COROCC_BACKEND_CN.md)及[验证记录](COROCC_VALIDATION_CN.md)；生命周期边界见[VPN 网络生命周期合同](../architecture/NETWORK_LIFECYCLE_CONTRACT_CN.md)。
 
 ## 选择正确的 C++ 测试边界
 

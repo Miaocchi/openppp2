@@ -6,6 +6,10 @@
 > **Purpose:** Describe server bootstrap, listener roles, session ownership, and the managed-backend boundary.
 > **Audience:** Contributors and operators.
 > **Parent index:** [Architecture](README.md) · **Chinese:** [服务端架构](SERVER_ARCHITECTURE_CN.md)
+> **Read this for:** Contributors and operators tracing server bootstrap, listeners, and session ownership.
+> **Question answered:** Which component owns server listeners, client sessions, and managed-backend work?
+> **Implementation detail vs user contract:** The owner and listener/backend boundaries below are implementation details. Treat stated configuration behavior as the current runtime contract; use [Reference](../reference/README.md) for public fields.
+> **Next canonical page:** [Startup and Lifecycle](STARTUP_AND_LIFECYCLE.md)
 
 ## Owner model
 
@@ -51,10 +55,3 @@ This bridge is not a general remote administration protocol for the C++ process.
 ## Platform and P2P limits
 
 Server mode normally has no client-style host tunnel runtime, but Linux can create an IPv6 transit TAP path when configured. Direct P2P remains fail-closed by the shared production capability gate. Neither feature should be described as a universal server data-plane behavior.
-
-## Related pages
-
-- [Startup and Lifecycle](STARTUP_AND_LIFECYCLE.md)
-- [Transport and Protected Transmission](TRANSMISSION.md)
-- [Tunnel Design](TUNNEL_DESIGN.md)
-- [Project interface map](../reference/PROJECT_INTERFACE_MAP.md)

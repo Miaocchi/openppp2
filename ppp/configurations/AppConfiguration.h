@@ -5,6 +5,7 @@
 #include <ppp/configurations/DnsServerEntry.h>
 #include <ppp/configurations/MappingConfiguration.h>
 #include <ppp/configurations/TransportAuthConfiguration.h>
+#include <ppp/configurations/MultipathConfiguration.h>
 
 namespace Json {
     class Value;
@@ -294,6 +295,7 @@ namespace ppp {
                 struct {
                     bool                                                    enabled;    ///< Require transport-auth PSK during server handshakes.
                 }                                                           transport_auth;
+                ServerMultipathConfiguration                                multipath;  ///< Opt-in server multi-carrier limits and recovery policy.
             }                                                               server;         ///< Server-mode specific parameters.
             struct {
                 ppp::string                                                 guid;           ///< Client GUID string used for authentication and session tracking.
@@ -311,6 +313,7 @@ namespace ppp {
                 struct {
                     bool                                                    enabled;        ///< Require transport-auth PSK during client handshakes.
                 }                                                           transport_auth;
+                MultipathConfiguration                                      multipath;      ///< Opt-in multiple-entry client connection configuration.
                 ClientRoutingConfiguration                                   routing;        ///< Canonical routing policy; legacy route/proxy fields remain mirrored during migration.
                 std::shared_ptr<const Json::Value>                          policy;         ///< Explicit v2 source definition; prepared before opening client services.
                 ppp::string                                                 policy_config_path; ///< Configuration filename anchoring relative policy resources.

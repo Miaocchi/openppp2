@@ -6,6 +6,10 @@
 > **用途：**映射 `ITransmission` 之上当前隧道运行时的所有权。
 > **适用对象：**贡献者。
 > **上一层索引：**[架构](README_CN.md) · **English:** [Tunnel Design](TUNNEL_DESIGN.md)
+> **阅读导向：**供贡献者梳理 `ITransmission` 之上的隧道所有权。
+> **回答的问题：**client/server owner 如何把成帧动作转化为会话与中继工作？
+> **实现细节与用户契约：**下文的 owner 地图和动作流属于实现细节；文中记载的协议/配置行为是当前运行时契约，公开字段以[参考](../reference/README_CN.md)为准。
+> **下一权威页面：**[数据包生命周期](PACKET_LIFECYCLE_CN.md)
 
 ## 分层与 owner 地图
 
@@ -52,10 +56,3 @@ client 宿主或虚拟协议栈事件
 握手 `nmux` 位是 carrier/session-path 信号，不是完整 VMUX 生命周期。当前 VMUX setup 从链路层 `MUX` 交换开始，打开最多为配置数量的子 carrier transmission，并在这些子链路上使用 `MUXON`。初始 server 侧 `MUX` 处理回复的是 `MUX`；`MUXON` 是子链路附着交换。
 
 直连 P2P 实现代码虽然存在，但 production authenticated-control capability gate 为 false。正常执行应记录为 relay-only，而不是活跃直连投递。
-
-## 相关页面
-
-- [传输与受保护会话层](TRANSMISSION_CN.md)
-- [数据包生命周期](PACKET_LIFECYCLE_CN.md)
-- [客户端架构](CLIENT_ARCHITECTURE_CN.md)
-- [服务端架构](SERVER_ARCHITECTURE_CN.md)

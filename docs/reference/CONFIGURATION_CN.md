@@ -113,7 +113,7 @@ JSON 必须是标准 JSON（不能有注释、不能有尾逗号）。
 | `inactive.timeout` | int（秒） | `300` | TCP 中继空闲超时，`< 1` 时取 300。 |
 | `turbo` | bool | `false` | 设置 `TCP_NODELAY`。 |
 | `fast-open` | bool | `false` | 启用 TCP Fast Open（平台支持时）。 |
-| `cwnd` / `rwnd` | int | `0` | 套接字发送 / 接收缓冲区大小，`0` = 系统默认。 |
+| `cwnd` / `rwnd` | int | `0` | TCP 发送 / 接收缓冲区大小，`0` 通常使用系统默认值。VMUX 面向业务的 TCP 入口在 `rwnd=0` 时请求 256 KiB 接收缓冲，让背压及时传给发送方；显式设置的 `rwnd` 优先。Linux 原生 TCP 多路径承载还会单独限制尚未发出的字节，不限制已经在途的字节，也不覆盖 `cwnd`。 |
 
 ## 7. `udp`
 

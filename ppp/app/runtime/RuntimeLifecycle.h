@@ -119,6 +119,26 @@ public:
         return publisher_.Publish(std::move(snapshot));
     }
 
+    bool UpdateMultipathState(
+        std::uint64_t generation,
+        const ppp::app::multipath::RuntimeState& state,
+        std::uint64_t now) noexcept {
+        RuntimeSnapshot snapshot;
+        {
+            std::lock_guard<std::mutex> scope(mutex_);
+            if (generation == 0 || generation != generation_ ||
+                stop_coordinator_.IsStopping(generation) ||
+                stop_coordinator_.IsCompleted(generation)) {
+                return false;
+            }
+            if (current_.multipath == state) return true;
+            current_.multipath = state;
+            current_.monotonic_ms = NextTimestamp(now);
+            snapshot = current_;
+        }
+        return publisher_.Publish(std::move(snapshot));
+    }
+
     bool UpdateP2PState(
         std::uint64_t generation,
         ppp::p2p::P2PState state,

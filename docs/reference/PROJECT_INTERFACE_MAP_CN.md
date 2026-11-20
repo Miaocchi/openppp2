@@ -328,7 +328,7 @@ TUI 依赖 TTY，并受 `PPP_NO_TUI` 控制。命令在 ConsoleUI 生命周期�
 
 | 入口 | 输出 / 用途 | 稳定性 | 覆盖缺口 |
 |---|---|---|---|
-| 根 CMake 和 `build-openppp2-by-builds.sh` | native `ppp` 和 Linux variants | **稳定开发接口** | 根构建与 unit-test CMake 分离 |
+| 根 CMake 和 `bash build-openppp2-by-builds.sh [第三方依赖目录]` | 用根 CMake 构建七个非基线 Linux amd64 变体，输出 `bin/openppp2-linux-amd64-*.zip`。先运行 `bash tools/prepare_xtcp.sh`；本地 `-simd` 包保留 AVX2 指令集。 | **稳定开发接口** | 根构建与 unit-test CMake 分离 |
 | `build_windows.bat` | Windows x86/x64 Ninja 构建 | **稳定开发接口** | 环境/toolchain 发现依赖机器 |
 | `android/CMakeLists.txt`、构建脚本 | 四个 Android `libopenppp2.so` ABI | **内部构建接口** | 硬编码第三方默认路径；无 JNI export 检查 |
 | `ios/CMakeLists.txt` | `libopenppp2_ios.a` | **实验构建接口** | 当前 Actions 不构建 |

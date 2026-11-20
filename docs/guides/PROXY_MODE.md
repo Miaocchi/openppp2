@@ -7,6 +7,9 @@
 > **Purpose:** Provide local HTTP / SOCKS5 proxies only, without changing system routes or DNS.
 > **Audience:** Users who want some applications, not the whole machine, to use the tunnel.
 > **Parent index:** [Guides](README.md) · **Chinese:** [代理模式](PROXY_MODE_CN.md)
+> **Prerequisite:** A client configuration with `key`, `client.guid`, and `client.server`, plus an application that can use a local HTTP or SOCKS5 proxy.
+> **Not covered:** System-wide route or DNS changes, LAN-wide proxy exposure, or peer-prefix routing from proxy mode.
+> **Next reference:** [Platforms](PLATFORMS.md) for OS-specific behavior and [Routing and DNS](ROUTING_AND_DNS.md) for split rules.
 
 ## 1. When to use it
 

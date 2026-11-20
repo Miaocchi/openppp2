@@ -8,6 +8,12 @@
 > **读者：** 部署服务端或常驻客户端的运维人员。
 > **上级索引：** [运维](README_CN.md) · **English:** [Deployment](DEPLOYMENT.md)
 
+> **阅读本页 / 不阅读本页**
+> - **阅读本页：** 让基础 `ppp` 隧道进程长期运行，包括系统服务、Guardian 托管、升级、回滚和多实例。
+> - **不要用本页：** 编写初始 `ppp` 配置请先看[编写配置文件](../getting-started/CONFIGURE_CN.md)；实现或运行中心认证和计费服务请看[管理后端](../guides/MANAGEMENT_BACKEND_CN.md)。
+> - **边界：** 基础 `ppp` 可执行文件负责隧道；Guardian 是独立的本机守护和配置管理器；管理后端是独立的认证和计费服务。
+
+
 先用前台方式跑通（见 [用户手册](../getting-started/USER_MANUAL_CN.md)），再按本页改成服务。
 
 ## 1. 部署前检查
@@ -167,6 +173,6 @@ sudo launchctl load -w /Library/LaunchDaemons/org.openppp2.client.plist
 | 多节点 + 集中认证计费 | [管理后端](../guides/MANAGEMENT_BACKEND_CN.md) |
 | 站点互联 | [对端前缀路由](../guides/PEER_PREFIX_ROUTING_CN.md) |
 
-## 相关文档
+## 继续阅读
 
 - [运维与排障](OPERATIONS_CN.md) · [安全](SECURITY_CN.md) · [平台说明](../guides/PLATFORMS_CN.md)

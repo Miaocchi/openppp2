@@ -49,6 +49,7 @@ export function createClientState() {
       gateway: '10.8.0.1',
       httpProxy: '127.0.0.1:1080',
       socksProxy: '127.0.0.1:1081',
+      multipath: null,
     },
     events: [
       { id: 1, time: '19:03:07', message: 'tcp connected 47.102.41.18:32000', severity: 'info' },
@@ -98,6 +99,7 @@ export function createEmptyClientState() {
       rxRateMbps: 0, txRateMbps: 0, rxBytes: 0, txBytes: 0,
       qualityPercent: 0, qualityGrade: '', activeLinks: 0,
       effectivePath: '', p2pState: '', peers: [], tcpStack: '', tunIp: '', gateway: '', httpProxy: '', socksProxy: '',
+      multipath: null,
     },
     events: [],
     subscription: {

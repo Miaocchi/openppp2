@@ -7,6 +7,9 @@
 > **用途：** 各平台运行 OPENPPP2 时的权限、驱动、专用参数和功能差异。
 > **读者：** 在具体平台上部署客户端或服务端的用户。
 > **上级索引：** [指南](README_CN.md) · **English:** [Platforms](PLATFORMS.md)
+> **前提：** 先确定目标系统和 TUN / 代理模式，准备对应发行包及系统所需权限。
+> **不包括：** 应用 UI 的使用、协议内部实现，或某种具体拓扑的完整部署流程。
+> **下一参考：** 端到端配置参阅[用户手册](../getting-started/USER_MANUAL_CN.md)，实现细节参阅[平台集成（架构）](../architecture/PLATFORM_INTEGRATION_CN.md)。
 
 实现层面的平台抽象见 [平台集成（架构）](../architecture/PLATFORM_INTEGRATION_CN.md)。
 

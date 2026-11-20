@@ -6,6 +6,10 @@
 > **Purpose:** Define the boundary between carrier adapters, `ITransmission`, and tunnel actions.
 > **Audience:** Contributors and operators.
 > **Parent index:** [Architecture](README.md) · **Chinese:** [传输与受保护会话层](TRANSMISSION_CN.md)
+> **Read this for:** Contributors and operators tracing carriers, framing, transforms, and tunnel-action dispatch.
+> **Question answered:** Where does carrier adaptation end and protected session/action handling begin?
+> **Implementation detail vs user contract:** The handshake, framing, and transform descriptions below are implementation details. Treat named carrier/configuration behavior as the current runtime contract; use [Reference](../reference/README.md) for public fields.
+> **Next canonical page:** [Handshake Sequence](HANDSHAKE_SEQUENCE.md)
 
 ## Layer boundary
 

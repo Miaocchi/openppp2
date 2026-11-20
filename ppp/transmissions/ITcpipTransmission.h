@@ -56,6 +56,9 @@ namespace ppp {
                     ? AuthenticatedCarrierKind::None
                     : AuthenticatedCarrierKind::Tcp;
             }
+            AuthenticatedCarrierKind                                                            GetTransportCarrierKind() const noexcept override {
+                return AuthenticatedCarrierKind::Tcp;
+            }
             /** @brief Only raw per-flow TCP carriers can preserve receive after send shutdown. */
             bool                                                                                SupportsSendHalfClose() const noexcept override;
             /** @brief Sends TCP FIN after pending writes have drained on this transmission's strand. */
@@ -64,6 +67,8 @@ namespace ppp {
             bool                                                                                IsReceiveClosed() const noexcept override;
             /** @brief Keeps the carrier alive on a clean peer FIN (any role); see ITransmission. */
             bool                                                                                EnableReceiveHalfClose() noexcept override;
+            // Keep scheduler backpressure visible without capping TCP's in-flight window.
+            void                                                                                LimitMultipathUnsentBytes() noexcept;
             /**
              * @brief Reads an exact number of bytes from the socket.
              * @param y Coroutine yield context.

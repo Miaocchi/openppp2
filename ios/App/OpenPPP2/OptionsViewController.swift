@@ -7,23 +7,23 @@ final class OptionsViewController: UIViewController {
     private let scrollView = UIScrollView()
     private let content = UIStackView()
     private var options = LaunchOptions()
+    private var lastLoadedOptions: LaunchOptions?
+    private let scopeLabel = UILabel()
 
-    private let tunIp = FormTextField(label: "TUN IP")
-    private let tunMask = FormTextField(label: "TUN Mask")
-    private let tunPrefix = FormTextField(label: "TUN Prefix", keyboard: .numberPad)
-    private let gateway = FormTextField(label: "Gateway")
+    private let tunIp = FormTextField(label: L10n.tr("options.tunAddress"))
+    private let tunMask = FormTextField(label: L10n.tr("options.tunMask"))
+    private let tunPrefix = FormTextField(label: L10n.tr("options.tunPrefix"), keyboard: .numberPad)
+    private let gateway = FormTextField(label: L10n.tr("options.gateway"))
     private let mtu = FormTextField(label: "MTU", keyboard: .numberPad)
-    private let route = FormTextField(label: "Route")
-    private let routePrefix = FormTextField(label: "Route Prefix", keyboard: .numberPad)
     private let dns1 = FormTextField(label: "DNS 1")
     private let dns2 = FormTextField(label: "DNS 2")
-    private let bypassList = FormTextView(label: "Bypass IP / CIDR")
-    private let dnsRules = FormTextView(label: "DNS Rules")
-    private let dnsDomestic = FormTextField(label: "Domestic DNS")
-    private let dnsForeign = FormTextField(label: "Foreign DNS")
-    private let dnsFakeIpRange = FormTextField(label: "Fake-IP Range")
-    private let stunCandidates = FormTextView(label: "STUN Candidates")
-    private let geoCountry = FormTextField(label: "Geo Country")
+    private let bypassList = FormTextView(label: L10n.tr("options.bypass"))
+    private let dnsRules = FormTextView(label: L10n.tr("options.dnsRules"))
+    private let dnsDomestic = FormTextField(label: L10n.tr("options.domestic"))
+    private let dnsForeign = FormTextField(label: L10n.tr("options.foreign"))
+    private let dnsFakeIpRange = FormTextField(label: L10n.tr("options.fakeRange"))
+    private let stunCandidates = FormTextView(label: L10n.tr("options.stun"))
+    private let geoCountry = FormTextField(label: L10n.tr("options.country"))
     private let geoIpDat = FormTextField(label: "GeoIP.dat")
     private let geoSiteDat = FormTextField(label: "GeoSite.dat")
     private let mux = FormTextField(label: "VNet Mux", keyboard: .numberPad)
@@ -33,7 +33,6 @@ final class OptionsViewController: UIViewController {
     private let allowLan = UISwitch()
     private let blockQuic = UISwitch()
     private let vnet = UISwitch()
-    private let lwip = UISwitch()
     private let staticMode = UISwitch()
     private let autoReconnectOnPathRecovery = UISwitch()
     private let routeModeControl = UISegmentedControl(items: LaunchRouteMode.allCases.map(\.localizedDisplayName))
@@ -63,6 +62,7 @@ final class OptionsViewController: UIViewController {
 
     private func setupLayout() {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.keyboardDismissMode = .interactive
         content.axis = .vertical
         content.spacing = 12
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -73,7 +73,7 @@ final class OptionsViewController: UIViewController {
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
             content.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 16),
             content.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -16),
             content.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 16),
@@ -81,30 +81,22 @@ final class OptionsViewController: UIViewController {
             content.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor, constant: -32)
         ])
 
+        scopeLabel.font = .preferredFont(forTextStyle: .footnote)
+        scopeLabel.text = L10n.tr("options.scope")
+        scopeLabel.adjustsFontForContentSizeCategory = true
+        scopeLabel.textColor = .secondaryLabel
+        scopeLabel.numberOfLines = 0
+        content.addArrangedSubview(scopeLabel)
+        content.addArrangedSubview(SectionView(title: L10n.tr("options.connection"), symbol: "network", views: [
+            routeModeRow(),
+            switchRow(title: L10n.tr("options.autoReconnect"), subtitle: L10n.tr("options.autoReconnect.detail"), control: autoReconnectOnPathRecovery)
+        ]))
         content.addArrangedSubview(SectionView(title: L10n.tr("options.proxy"), symbol: "point.3.connected.trianglepath.dotted", views: [
-            row([httpProxyPort, socksProxyPort], weights: [1, 1]),
+            httpProxyPort, socksProxyPort,
             switchRow(title: L10n.tr("options.allowLan"), subtitle: L10n.tr("options.allowLan.detail"), control: allowLan)
         ]))
         content.addArrangedSubview(SectionView(title: L10n.tr("options.dns"), symbol: "network", views: [
-            row([dns1, dns2], weights: [1, 1]),
-            dnsRules,
-            row([dnsDomestic, dnsForeign], weights: [1, 1]),
-            switchRow(title: "Fake-IP", subtitle: "Clash-style instant fake A records", control: fakeIpEnabled),
-            dnsFakeIpRange,
-            switchRow(title: "ECS", subtitle: "EDNS Client Subnet", control: ecsEnabled),
-            switchRow(title: L10n.tr("options.tlsVerify"), subtitle: L10n.tr("options.tlsVerify.detail"), control: tlsVerifyPeer),
-            stunCandidates
-        ]))
-        content.addArrangedSubview(SectionView(title: L10n.tr("options.geoBypass"), symbol: "globe.asia.australia", views: [
-            routeModeRow(),
-            geoCountry,
-            row([geoIpDat, geoSiteDat], weights: [1, 1]),
-            bypassList
-        ]))
-        content.addArrangedSubview(SectionView(title: L10n.tr("options.tun"), symbol: "cable.connector", views: [
-            row([tunIp, tunMask], weights: [1, 1]),
-            row([tunPrefix, gateway], weights: [1, 1]),
-            mtu
+            dns1, dns2
         ]))
         let advancedRow = disclosureRow(
             title: L10n.tr("options.advancedParams"),
@@ -118,7 +110,10 @@ final class OptionsViewController: UIViewController {
     }
 
     @objc private func load() {
-        options = store.launchOptions()
+        let saved = store.launchOptions()
+        guard saved != lastLoadedOptions else { return }
+        lastLoadedOptions = saved
+        options = saved
         hydrate()
     }
 
@@ -128,8 +123,6 @@ final class OptionsViewController: UIViewController {
         tunPrefix.text = String(options.tunPrefix)
         gateway.text = options.gateway
         mtu.text = String(options.mtu)
-        route.text = options.route
-        routePrefix.text = String(options.routePrefix)
         dns1.text = options.dns1
         dns2.text = options.dns2
         bypassList.text = options.bypassIpList
@@ -148,7 +141,6 @@ final class OptionsViewController: UIViewController {
         allowLan.isOn = options.allowLan
         blockQuic.isOn = options.blockQuic
         vnet.isOn = options.vnet
-        lwip.isOn = options.lwip
         staticMode.isOn = options.staticMode
         autoReconnectOnPathRecovery.isOn = options.autoReconnectOnPathRecovery
         routeModeControl.selectedSegmentIndex = LaunchRouteMode.allCases.firstIndex(of: options.routeMode) ?? 0
@@ -158,13 +150,23 @@ final class OptionsViewController: UIViewController {
     }
 
     @objc private func save() {
+        view.endEditing(true)
+        guard let httpPort = Int(httpProxyPort.textValue), (1...65535).contains(httpPort),
+              let socksPort = Int(socksProxyPort.textValue), (1...65535).contains(socksPort) else {
+            presentMessage(title: L10n.tr("options.proxy"), message: L10n.tr("options.portError"))
+            return
+        }
+        guard let prefix = Int(tunPrefix.textValue), (0...32).contains(prefix),
+              let packetSize = Int(mtu.textValue), (1...65535).contains(packetSize),
+              let muxValue = Int(mux.textValue), muxValue >= 0 else {
+            presentMessage(title: L10n.tr("options.advancedParams"), message: L10n.tr("options.advancedError"))
+            return
+        }
         options.tunIp = tunIp.textValue
         options.tunMask = tunMask.textValue
-        options.tunPrefix = Int(tunPrefix.textValue) ?? 24
+        options.tunPrefix = prefix
         options.gateway = gateway.textValue
-        options.mtu = Int(mtu.textValue) ?? 1400
-        options.route = route.textValue
-        options.routePrefix = Int(routePrefix.textValue) ?? 0
+        options.mtu = packetSize
         options.dns1 = dns1.textValue
         options.dns2 = dns2.textValue
         options.bypassIpList = bypassList.textValue
@@ -176,14 +178,13 @@ final class OptionsViewController: UIViewController {
         options.geoCountry = geoCountry.textValue
         options.geoIpDat = geoIpDat.textValue
         options.geoSiteDat = geoSiteDat.textValue
-        options.mux = Int(mux.textValue) ?? 0
+        options.mux = muxValue
         options.muxMode = selectedMuxMode
-        options.httpProxyPort = proxyPortValue(httpProxyPort.textValue, fallback: 8080)
-        options.socksProxyPort = proxyPortValue(socksProxyPort.textValue, fallback: 1080)
+        options.httpProxyPort = httpPort
+        options.socksProxyPort = socksPort
         options.allowLan = allowLan.isOn
         options.blockQuic = blockQuic.isOn
         options.vnet = vnet.isOn
-        options.lwip = lwip.isOn
         options.staticMode = staticMode.isOn
         options.autoReconnectOnPathRecovery = autoReconnectOnPathRecovery.isOn
         let routeModes = LaunchRouteMode.allCases
@@ -231,7 +232,6 @@ final class OptionsViewController: UIViewController {
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 13, leading: 16, bottom: 13, trailing: 16)
 
         let button = UIButton(configuration: configuration, primaryAction: nil)
-        button.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
         button.addTarget(self, action: #selector(confirmResetDefaults), for: .touchUpInside)
         button.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
         return button
@@ -247,13 +247,15 @@ final class OptionsViewController: UIViewController {
         titleLabel.text = L10n.tr("home.routeMode")
         titleLabel.font = .preferredFont(forTextStyle: .body)
         titleLabel.textColor = .label
-        titleLabel.setContentHuggingPriority(.required, for: .horizontal)
+        titleLabel.adjustsFontForContentSizeCategory = true
+        titleLabel.numberOfLines = 0
 
         let detailLabel = UILabel()
         detailLabel.text = L10n.tr("options.routeMode.detail")
         detailLabel.font = .preferredFont(forTextStyle: .caption1)
         detailLabel.textColor = .secondaryLabel
-        detailLabel.numberOfLines = 2
+        detailLabel.adjustsFontForContentSizeCategory = true
+        detailLabel.numberOfLines = 0
 
         let labels = UIStackView(arrangedSubviews: [titleLabel, detailLabel])
         labels.axis = .vertical
@@ -261,17 +263,10 @@ final class OptionsViewController: UIViewController {
         labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let stack = UIStackView(arrangedSubviews: [labels, routeModeControl])
-        stack.axis = .horizontal
-        stack.alignment = .center
+        routeModeControl.accessibilityLabel = titleLabel.text
+        stack.axis = .vertical
         stack.spacing = 12
         return stack
-    }
-
-    private func proxyPortValue(_ value: String, fallback: Int) -> Int {
-        guard let port = Int(value), (1...65535).contains(port) else {
-            return fallback
-        }
-        return port
     }
 
     @objc private func openAdvancedOptions() {
@@ -288,10 +283,17 @@ final class OptionsViewController: UIViewController {
             vnet: vnet,
             blockQuic: blockQuic,
             staticMode: staticMode,
-            autoReconnectOnPathRecovery: autoReconnectOnPathRecovery,
+            networkSections: [
+                SectionView(title: L10n.tr("options.geoBypass"), symbol: "globe", views: [geoCountry, geoIpDat, geoSiteDat, bypassList]),
+                SectionView(title: L10n.tr("options.dnsRules"), symbol: "network", views: [dnsRules, dnsDomestic, dnsForeign,
+                    switchRow(title: "Fake-IP", subtitle: L10n.tr("options.fakeIp.detail"), control: fakeIpEnabled), dnsFakeIpRange,
+                    switchRow(title: "ECS", subtitle: L10n.tr("options.ecs.detail"), control: ecsEnabled),
+                    switchRow(title: L10n.tr("options.tlsVerify"), subtitle: L10n.tr("options.tlsVerify.detail"), control: tlsVerifyPeer), stunCandidates]),
+                SectionView(title: L10n.tr("options.tun"), symbol: "cable.connector", views: [tunIp, tunMask, tunPrefix, gateway, mtu])
+            ],
             muxModes: snapshot.availableMuxModes(experimental: store.debugPanelEnabled()),
             selectedMuxMode: selectedMuxMode,
-            effectiveMuxMode: snapshot.effectiveMuxDisplayName,
+            effectiveMuxMode: snapshot.effectiveMuxMode,
             onMuxModeChanged: { [weak self] in self?.selectedMuxMode = $0 }
         )
         navigationController?.pushViewController(controller, animated: true)
@@ -305,7 +307,7 @@ final class OptionsAdvancedViewController: UIViewController {
     private let vnet: UISwitch
     private let blockQuic: UISwitch
     private let staticMode: UISwitch
-    private let autoReconnectOnPathRecovery: UISwitch
+    private let networkSections: [UIView]
     private let muxModes: [String]
     private let selectedMuxMode: String
     private let effectiveMuxMode: String
@@ -316,7 +318,7 @@ final class OptionsAdvancedViewController: UIViewController {
         vnet: UISwitch,
         blockQuic: UISwitch,
         staticMode: UISwitch,
-        autoReconnectOnPathRecovery: UISwitch,
+        networkSections: [UIView],
         muxModes: [String],
         selectedMuxMode: String,
         effectiveMuxMode: String,
@@ -326,7 +328,7 @@ final class OptionsAdvancedViewController: UIViewController {
         self.vnet = vnet
         self.blockQuic = blockQuic
         self.staticMode = staticMode
-        self.autoReconnectOnPathRecovery = autoReconnectOnPathRecovery
+        self.networkSections = networkSections
         self.muxModes = muxModes
         self.selectedMuxMode = selectedMuxMode
         self.effectiveMuxMode = effectiveMuxMode
@@ -347,6 +349,7 @@ final class OptionsAdvancedViewController: UIViewController {
 
     private func setupLayout() {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.keyboardDismissMode = .interactive
         content.axis = .vertical
         content.spacing = 12
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -357,7 +360,7 @@ final class OptionsAdvancedViewController: UIViewController {
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
             content.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 16),
             content.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -16),
             content.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 16),
@@ -366,8 +369,9 @@ final class OptionsAdvancedViewController: UIViewController {
         ])
 
         let modeControl = UISegmentedControl(items: muxModes.map {
-            $0 == "compat" ? "Compatibility" : $0
+            $0 == "compat" ? L10n.tr("options.compat") : $0
         })
+        modeControl.accessibilityLabel = L10n.tr("options.muxMode")
         modeControl.selectedSegmentIndex = muxModes.firstIndex(of: selectedMuxMode) ?? UISegmentedControl.noSegment
         modeControl.addAction(UIAction { [weak self, weak modeControl] _ in
             guard let self, let modeControl,
@@ -375,24 +379,29 @@ final class OptionsAdvancedViewController: UIViewController {
             self.onMuxModeChanged(self.muxModes[modeControl.selectedSegmentIndex])
         }, for: .valueChanged)
         let restartLabel = UILabel()
-        restartLabel.text = "Takes effect on next connection"
+        restartLabel.text = L10n.tr("options.advancedSave")
+        restartLabel.numberOfLines = 0
+        restartLabel.adjustsFontForContentSizeCategory = true
         restartLabel.font = .preferredFont(forTextStyle: .footnote)
         restartLabel.textColor = .secondaryLabel
         let effectiveLabel = UILabel()
-        effectiveLabel.text = effectiveMuxMode.isEmpty ? nil : "Effective now: \(effectiveMuxMode)"
-        effectiveLabel.isHidden = effectiveMuxMode.isEmpty
+        effectiveLabel.font = .preferredFont(forTextStyle: .subheadline)
+        effectiveLabel.numberOfLines = 0
+        effectiveLabel.adjustsFontForContentSizeCategory = true
+        let mode = effectiveMuxMode == "compat" ? L10n.tr("options.compat") : effectiveMuxMode
+        effectiveLabel.text = mode.isEmpty ? L10n.tr("options.effectiveUnknown") : L10n.format("options.effective", mode)
+        content.addArrangedSubview(restartLabel)
+        networkSections.forEach(content.addArrangedSubview)
 
         content.addArrangedSubview(SectionView(title: "VNet", symbol: "network", views: [
             modeControl,
-            restartLabel,
             effectiveLabel,
             mux,
             switchRow(title: "VNet", subtitle: L10n.tr("options.vnet.detail"), control: vnet)
         ]))
         content.addArrangedSubview(SectionView(title: L10n.tr("options.network"), symbol: "shield.lefthalf.filled", views: [
-            switchRow(title: "Block QUIC", subtitle: L10n.tr("options.blockQuic.detail"), control: blockQuic),
-            switchRow(title: "Static Mode", subtitle: L10n.tr("options.staticMode.detail"), control: staticMode),
-            switchRow(title: L10n.tr("options.autoReconnect"), subtitle: L10n.tr("options.autoReconnect.detail"), control: autoReconnectOnPathRecovery)
+            switchRow(title: L10n.tr("home.blockQuic"), subtitle: L10n.tr("options.blockQuic.detail"), control: blockQuic),
+            switchRow(title: L10n.tr("options.staticMode"), subtitle: L10n.tr("options.staticMode.detail"), control: staticMode)
         ]))
     }
 }

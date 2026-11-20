@@ -1,6 +1,9 @@
 # corocc Backend: Build And Validation
 
-[Chinese](COROCC_BACKEND_CN.md) | [Design ADR](../adr/0003-corocc-coroutine-backend.md)
+> **Audience:** Contributors and reviewers evaluating the optional coroutine backend.
+> **Prerequisites:** Read the [corocc design ADR](../adr/0003-corocc-coroutine-backend.md), provision the native dependencies required by the platform, and keep the default Boost path as the comparison baseline.
+> **Verification limit:** The commands and offline/performance procedures below cover only their exercised builds and lab paths; they do not establish production, live-network, or every-platform acceptance. Use the [validation record](COROCC_VALIDATION.md) for recorded evidence and limits.
+> **Next:** Start with [Testing](TESTING.md), then read the [validation record](COROCC_VALIDATION.md) after completing a run.
 
 corocc is an optional, experimental L0 backend. Default builds continue to use
 Boost fcontext and do not fetch or configure corocc. All existing YieldContext

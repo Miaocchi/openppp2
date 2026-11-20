@@ -244,6 +244,226 @@ namespace ppp {
         static constexpr int                            VEP_HEADER_MSS_MAX_MOD = 1 << 8;
         static constexpr int                            VEP_HEADER_MSS_MIN_MOD = 1 << 7;
 
+        namespace {
+            static bool IsAsciiToken(const ppp::string& value, bool allow_colon = false) noexcept {
+                if (value.empty()) return false;
+                for (unsigned char c : value) {
+                    bool valid = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '.' || c == '-';
+                    if (allow_colon) valid = valid || c == ':' || c == '[' || c == ']';
+                    if (!valid) return false;
+                }
+                return true;
+            }
+
+            static bool IsSafeWsPath(const ppp::string& value) noexcept {
+                if (value.empty() || value[0] != '/' || value.size() > 2048) return false;
+                for (size_t i = 0; i < value.size(); i++) {
+                    unsigned char c = static_cast<unsigned char>(value[i]);
+                    if (c < 0x21 || c > 0x7e || c == '\\' || c == '?' || c == '#') return false;
+                    if (c == '%' && i + 2 < value.size()) {
+                        char a = static_cast<char>(std::tolower(static_cast<unsigned char>(value[i + 1])));
+                        char b = static_cast<char>(std::tolower(static_cast<unsigned char>(value[i + 2])));
+                        if ((a == '0' && (b == 'a' || b == 'd')) || (a == '2' && b == '3')) return false;
+                    }
+                }
+                return true;
+            }
+
+            static bool IsJsonInteger(const Json::Value& value, int& output) noexcept {
+                if ((value.type() != Json::intValue && value.type() != Json::uintValue) || !value.isInt64()) return false;
+                Json::Int64 number = value.asInt64();
+                if (number < INT_MIN || number > INT_MAX) return false;
+                output = static_cast<int>(number);
+                return true;
+            }
+        }
+
+        bool ServerMultipathConfiguration::Validate(ppp::string& error) const noexcept {
+            error.clear();
+            if (resume_grace_ms < 1000 || resume_grace_ms > DefaultResumeGraceMs) {
+                error = "server.multipath.resume_grace_ms must be between 1000 and 30000";
+                return false;
+            }
+            if (max_connections < 1 || max_connections > MaxConnections) {
+                error = "server.multipath.max_connections must be between 1 and 32";
+                return false;
+            }
+            if (max_sessions < 1 || max_sessions > MaxSessions) {
+                error = "server.multipath.max_sessions must be between 1 and 65535";
+                return false;
+            }
+            return true;
+        }
+
+        bool ServerMultipathConfiguration::Load(const Json::Value& json, ppp::string& error) noexcept {
+            error.clear();
+            if (!json.isObject()) {
+                error = "server.multipath must be an object";
+                return false;
+            }
+            static const ppp::unordered_set<ppp::string> allowed = {
+                "enabled", "resume_grace_ms", "max_connections", "max_sessions"
+            };
+            for (const ppp::string& key : json.getMemberNames()) {
+                if (!allowed.count(key)) {
+                    error = "unknown server.multipath key";
+                    return false;
+                }
+            }
+            if (json.isMember("enabled")) {
+                if (json["enabled"].type() != Json::booleanValue) {
+                    error = "server.multipath.enabled must be a boolean";
+                    return false;
+                }
+                enabled = json["enabled"].asBool();
+            }
+            if (json.isMember("resume_grace_ms") && !IsJsonInteger(json["resume_grace_ms"], resume_grace_ms)) {
+                error = "server.multipath.resume_grace_ms must be an integer";
+                return false;
+            }
+            if (json.isMember("max_connections") && !IsJsonInteger(json["max_connections"], max_connections)) {
+                error = "server.multipath.max_connections must be an integer";
+                return false;
+            }
+            if (json.isMember("max_sessions") && !IsJsonInteger(json["max_sessions"], max_sessions)) {
+                error = "server.multipath.max_sessions must be an integer";
+                return false;
+            }
+            return Validate(error);
+        }
+
+        Json::Value ServerMultipathConfiguration::ToJson() const noexcept {
+            Json::Value json(Json::objectValue);
+            json["enabled"] = enabled;
+            json["resume_grace_ms"] = resume_grace_ms;
+            json["max_connections"] = max_connections;
+            json["max_sessions"] = max_sessions;
+            return json;
+        }
+
+        bool MultipathConfiguration::Validate(ppp::string& error) const noexcept {
+            error.clear();
+            auto fail = [&error](const char* message) noexcept { error = message; return false; };
+            if (policy != "adaptive" && policy != "failover") return fail("client.multipath.policy must be 'adaptive' or 'failover'");
+            if (max_connections < 1 || max_connections > MaxConnections) return fail("client.multipath.max_connections must be between 1 and 32");
+            if (max_concurrent_connects < 1 || max_concurrent_connects > MaxPaths) return fail("client.multipath.max_concurrent_connects must be between 1 and 8");
+            if (resume_grace_ms < 1000 || resume_grace_ms > 30000) return fail("client.multipath.resume_grace_ms must be between 1000 and 30000");
+            if (paths.size() > MaxPaths) return fail("client.multipath.paths exceeds the 8 path limit");
+            if (enabled && paths.empty()) return fail("client.multipath.paths must contain at least one path when enabled");
+
+            ppp::unordered_set<ppp::string> ids;
+            int total_connections = 0;
+            for (size_t i = 0; i < paths.size(); i++) {
+                const Path& path = paths[i];
+                ppp::string prefix = "client.multipath.paths[" + stl::to_string<ppp::string>(i) + "]";
+                if (!IsAsciiToken(path.id)) return fail((prefix + ".id must be a non-empty ASCII identifier").c_str());
+                if (!ids.emplace(path.id).second) return fail((prefix + ".id must be unique").c_str());
+                if (path.transport != "tcp" && path.transport != "ws" && path.transport != "wss") return fail((prefix + ".transport must be tcp, ws, or wss").c_str());
+                if (!IsAsciiToken(path.connect_host, true) || path.connect_host.size() > 255) return fail((prefix + ".connect_host is invalid").c_str());
+                if (path.port < 1 || path.port > 65535) return fail((prefix + ".port must be between 1 and 65535").c_str());
+                if (path.connections < 1 || path.connections > MaxConnections) return fail((prefix + ".connections must be between 1 and 32").c_str());
+                total_connections += path.connections;
+                if (!path.tls_server_name.empty() && (!IsAsciiToken(path.tls_server_name, true) || path.tls_server_name.size() > 255)) return fail((prefix + ".tls_server_name is invalid").c_str());
+                if (!path.http_host.empty() && (!IsAsciiToken(path.http_host, true) || path.http_host.size() > 255)) return fail((prefix + ".http_host is invalid").c_str());
+                if (!path.ws_path.empty() && !IsSafeWsPath(path.ws_path)) return fail((prefix + ".ws_path is invalid").c_str());
+                if (path.transport == "tcp" && (!path.tls_server_name.empty() || !path.http_host.empty() || !path.ws_path.empty())) return fail((prefix + " has WebSocket/TLS fields for tcp transport").c_str());
+                if (path.transport == "ws" && !path.tls_server_name.empty()) return fail((prefix + ".tls_server_name is only valid for wss").c_str());
+                if (path.transport == "wss" && path.tls_server_name.empty()) return fail((prefix + ".tls_server_name is required for wss").c_str());
+            }
+            if (total_connections > max_connections) return fail("sum of path connections exceeds client.multipath.max_connections");
+            return true;
+        }
+
+        bool MultipathConfiguration::Load(const Json::Value& json, ppp::string& error) noexcept {
+            error.clear();
+            auto fail = [&error](const ppp::string& message) noexcept { error = message; return false; };
+            if (!json.isObject()) return fail("client.multipath must be an object");
+            static const ppp::unordered_set<ppp::string> allowed = {
+                "enabled", "policy", "max_connections", "max_concurrent_connects", "resume_grace_ms", "paths"
+            };
+            for (const ppp::string& key : json.getMemberNames()) {
+                if (!allowed.count(key)) return fail("unknown client.multipath key");
+            }
+            auto read_bool = [&](const char* key, bool& target) noexcept {
+                if (!json.isMember(key)) return true;
+                const Json::Value& value = json[key];
+                if (value.type() != Json::booleanValue) return false;
+                target = value.asBool();
+                return true;
+            };
+            auto read_int = [&](const char* key, int& target) noexcept {
+                if (!json.isMember(key)) return true;
+                const Json::Value& value = json[key];
+                return IsJsonInteger(value, target);
+            };
+            if (!read_bool("enabled", enabled)) return fail("client.multipath.enabled must be a boolean");
+            if (json.isMember("policy")) {
+                if (!json["policy"].isString()) return fail("client.multipath.policy must be a string");
+                policy = json["policy"].asString();
+            }
+            if (!read_int("max_connections", max_connections)) return fail("client.multipath.max_connections must be an integer");
+            if (!read_int("max_concurrent_connects", max_concurrent_connects)) return fail("client.multipath.max_concurrent_connects must be an integer");
+            if (!read_int("resume_grace_ms", resume_grace_ms)) return fail("client.multipath.resume_grace_ms must be an integer");
+            if (json.isMember("paths")) {
+                if (!json["paths"].isArray()) return fail("client.multipath.paths must be an array");
+                paths.clear();
+                for (Json::ArrayIndex i = 0; i < json["paths"].size(); i++) {
+                    const Json::Value& item = json["paths"][i];
+                    ppp::string prefix = "client.multipath.paths[" + stl::to_string<ppp::string>(i) + "]";
+                    if (!item.isObject()) return fail(prefix + " must be an object");
+                    static const ppp::unordered_set<ppp::string> path_keys = {
+                        "id", "transport", "connect_host", "port", "connections", "tls_server_name", "http_host", "ws_path"
+                    };
+                    for (const ppp::string& key : item.getMemberNames()) {
+                        if (!path_keys.count(key)) return fail("unknown " + prefix + " key");
+                    }
+                    Path path;
+                    auto read_string = [&](const char* key, ppp::string& target, bool required) noexcept {
+                        if (!item.isMember(key)) return !required;
+                        const Json::Value& value = item[key];
+                        if (!value.isString()) return false;
+                        target = value.asString();
+                        return true;
+                    };
+                    if (!read_string("id", path.id, true)) return fail(prefix + ".id must be a string");
+                    if (!read_string("transport", path.transport, true)) return fail(prefix + ".transport must be a string");
+                    if (!read_string("connect_host", path.connect_host, true)) return fail(prefix + ".connect_host must be a string");
+                    if (item.isMember("port") && !IsJsonInteger(item["port"], path.port)) return fail(prefix + ".port must be an integer");
+                    if (item.isMember("connections") && !IsJsonInteger(item["connections"], path.connections)) return fail(prefix + ".connections must be an integer");
+                    if (!read_string("tls_server_name", path.tls_server_name, false)) return fail(prefix + ".tls_server_name must be a string");
+                    if (!read_string("http_host", path.http_host, false)) return fail(prefix + ".http_host must be a string");
+                    if (!read_string("ws_path", path.ws_path, false)) return fail(prefix + ".ws_path must be a string");
+                    paths.emplace_back(std::move(path));
+                }
+            }
+            return Validate(error);
+        }
+
+        Json::Value MultipathConfiguration::ToJson() const noexcept {
+            Json::Value json(Json::objectValue);
+            json["enabled"] = enabled;
+            json["policy"] = policy;
+            json["max_connections"] = max_connections;
+            json["max_concurrent_connects"] = max_concurrent_connects;
+            json["resume_grace_ms"] = resume_grace_ms;
+            Json::Value list(Json::arrayValue);
+            for (const Path& path : paths) {
+                Json::Value item(Json::objectValue);
+                item["id"] = path.id;
+                item["transport"] = path.transport;
+                item["connect_host"] = path.connect_host;
+                item["port"] = path.port;
+                item["connections"] = path.connections;
+                if (!path.tls_server_name.empty()) item["tls_server_name"] = path.tls_server_name;
+                if (!path.http_host.empty()) item["http_host"] = path.http_host;
+                if (!path.ws_path.empty()) item["ws_path"] = path.ws_path;
+                list.append(std::move(item));
+            }
+            json["paths"] = std::move(list);
+            return json;
+        }
+
         /**
          * @brief Constructs configuration with default values.
          */
@@ -373,11 +593,13 @@ namespace ppp {
             config.server.session_resume.enabled = false;
             config.server.session_resume.grace_ms = 60000;
             config.server.transport_auth.enabled = false;
+            config.server.multipath = ServerMultipathConfiguration();
 
             config.client.mappings.clear();
             config.client.guid = StringAuxiliary::Int128ToGuidString(MAKE_OWORD(UINT64_MAX, UINT64_MAX));
             config.client.server = "";
             config.client.server_proxy = "";
+            config.client.multipath = MultipathConfiguration();
             config.client.bandwidth = 0;
             config.client.reconnections.timeout = PPP_TCP_CONNECT_TIMEOUT;
             config.client.reconnections.max_delay = 15;
@@ -894,7 +1116,8 @@ namespace ppp {
                 std::max(0, std::min(100, config.client.reconnections.jitter_percent));
 
             const bool transport_auth_enabled =
-                config.client.transport_auth.enabled || config.server.transport_auth.enabled;
+                config.client.transport_auth.enabled || config.server.transport_auth.enabled ||
+                config.client.multipath.enabled || config.server.multipath.enabled;
             if (!config.transport_auth.Normalize(transport_auth_enabled)) {
                 return false;
             }
@@ -903,6 +1126,10 @@ namespace ppp {
                 if (!transport_auth_candidate) {
                     return false;
                 }
+            }
+            if ((config.client.multipath.enabled || config.server.multipath.enabled) &&
+                (!transport_auth_candidate || transport_auth_candidate->active() == nullptr)) {
+                return false;
             }
 
             int* pts[] = {
@@ -2028,6 +2255,12 @@ namespace ppp {
                 json["server"]["session_resume"]["grace_ms"]);
             AssignBoolIfPresent(config.server.transport_auth.enabled,
                 json["server"]["transport-auth"]["enabled"]);
+            if (json["server"].isObject() && json["server"].isMember("multipath")) {
+                ppp::string multipath_error;
+                if (!config.server.multipath.Load(json["server"]["multipath"], multipath_error)) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigFieldInvalid);
+                }
+            }
 
             LoadAllMappings(config, json["client"]["mappings"]);
             LoadAllRoutes(config.client.routes, json["client"]["routes"]);
@@ -2047,6 +2280,12 @@ namespace ppp {
             config.client.guid = JsonAuxiliary::AsValue<ppp::string>(json["client"]["guid"]);
             config.client.server = JsonAuxiliary::AsValue<ppp::string>(json["client"]["server"]);
             config.client.server_proxy = JsonAuxiliary::AsValue<ppp::string>(json["client"]["server-proxy"]);
+            if (json["client"].isObject() && json["client"].isMember("multipath")) {
+                ppp::string multipath_error;
+                if (!config.client.multipath.Load(json["client"]["multipath"], multipath_error)) {
+                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ConfigFieldInvalid);
+                }
+            }
             config.client.bandwidth = JsonAuxiliary::AsValue<int64_t>(json["client"]["bandwidth"]);
             config.client.http_proxy.port = JsonAuxiliary::AsValue<int>(json["client"]["http-proxy"]["port"]);
             config.client.http_proxy.bind = JsonAuxiliary::AsValue<ppp::string>(json["client"]["http-proxy"]["bind"]);
@@ -2480,6 +2719,12 @@ namespace ppp {
             if (config.server.transport_auth.enabled) {
                 server["transport-auth"]["enabled"] = true;
             }
+            if (config.server.multipath.enabled ||
+                config.server.multipath.resume_grace_ms != ServerMultipathConfiguration::DefaultResumeGraceMs ||
+                config.server.multipath.max_connections != ServerMultipathConfiguration::MaxConnections ||
+                config.server.multipath.max_sessions != ServerMultipathConfiguration::DefaultMaxSessions) {
+                server["multipath"] = config.server.multipath.ToJson();
+            }
             root["server"] = server;
 
             // Set client structure
@@ -2616,6 +2861,13 @@ namespace ppp {
             client["server"] = config.client.server;
             client["server-proxy"] = config.client.server_proxy;
             client["bandwidth"] = config.client.bandwidth;
+            if (config.client.multipath.enabled || !config.client.multipath.paths.empty() ||
+                config.client.multipath.policy != "adaptive" ||
+                config.client.multipath.max_connections != MultipathConfiguration::DefaultMaxConnections ||
+                config.client.multipath.max_concurrent_connects != MultipathConfiguration::DefaultMaxConcurrentConnects ||
+                config.client.multipath.resume_grace_ms != MultipathConfiguration::DefaultResumeGraceMs) {
+                client["multipath"] = config.client.multipath.ToJson();
+            }
 #if defined(_WIN32)
             client["paper-airplane"]["tcp"] = config.client.paper_airplane.tcp;
 #endif

@@ -8,6 +8,12 @@
 > **读者：** 第一次部署 OPENPPP2 的用户。
 > **上级索引：** [快速开始](README_CN.md) · **English:** [Writing the configuration file](CONFIGURE.md)
 
+> **阅读本页 / 不阅读本页**
+> - **阅读本页：** 为基础 `ppp` 可执行文件（服务端、TUN 客户端或代理）编写配置，并核对两端字段。
+> - **不要用本页：** 部署长期运行的系统服务或管理本机 Guardian 时，请看[部署](../operations/DEPLOYMENT_CN.md)；需要中心认证和计费服务时，请看[管理后端](../guides/MANAGEMENT_BACKEND_CN.md)。
+> - **边界：** 基础 `ppp` 可执行文件是隧道进程；Guardian 是独立的本机守护和配置管理器；管理后端是独立的认证和计费服务。
+
+
 本页只讲“怎么写”。每个字段的完整行为见 [配置文件参考](../reference/CONFIGURATION_CN.md)，命令行参数见 [命令行参考](../reference/CLI_REFERENCE_CN.md)。
 
 ## 1. 先弄清四件事
@@ -175,3 +181,8 @@ sudo ./ppp --mode=client --config=./client.json
 | JSON 解析失败 | 去掉注释和末尾多余逗号；文件保存为 UTF-8 |
 
 更多排障见 [运维与排障](../operations/OPERATIONS_CN.md) 和 [错误码](../reference/ERROR_CODES_CN.md)。
+
+## 继续阅读
+
+- [运维与排障](../operations/OPERATIONS_CN.md) · [错误码](../reference/ERROR_CODES_CN.md)
+- [部署](../operations/DEPLOYMENT_CN.md) · [用户手册](USER_MANUAL_CN.md)

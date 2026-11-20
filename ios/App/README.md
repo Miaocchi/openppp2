@@ -19,6 +19,14 @@
 
 The project targets iOS 15.0 and references `../../bin/OpenPPP2.xcframework`. Both targets use Network Extension/App Group entitlement files. The extension bundle identifier is derived from the host identifier as `${OPENPPP2_BUNDLE_ID}.PacketTunnel` during the signed build.
 
+## Connecting from Home
+
+On first launch (or after removing the last profile), the store has a template with an empty `client.server`. Home offers **Import Remote Subscription**, not Connect. This setup action selects the first usable node from that import, so Connect targets the new node. Ordinary subscription imports and refreshes leave the selection alone. **New Profile** opens the manual editor directly; the import menu also accepts profile files. With a configured profile, tap **Connect**; iOS may ask for permission to install the VPN configuration.
+
+The profile name and scope (proxy only, or VPN routing mode and IPv4 route) on Home are **saved settings**, not proof of the active node or applied routes. **Show connection details** reveals LAN proxy, QUIC blocking and routing controls. Elapsed time, traffic rates and effective VMUX/path describe the live runtime, not the saved settings; they are not shown as live while connection status is unconfirmed.
+
+Home checks iOS VPN status on launch and foreground entry. A system session alone is not proof the runtime is starting or connected. While waiting for a fresh, ordered runtime snapshot, Home does not offer a second Start on an existing session. A runtime start can be cancelled, Connected/Reconnecting can be stopped, Unknown offers Force Stop, and Stopping waits for teardown. If iOS cannot read preferences and there is no runtime command, **Check status again** retries the check without starting a tunnel.
+
 ## Build prerequisites
 
 Use macOS with Xcode command-line tools, a compatible CMake toolchain, and iOS-targeted OpenSSL artifacts. Do not substitute host/macOS OpenSSL libraries for iOS device or simulator libraries.

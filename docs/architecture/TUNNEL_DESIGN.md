@@ -6,6 +6,10 @@
 > **Purpose:** Map current tunnel ownership above `ITransmission`.
 > **Audience:** Contributors.
 > **Parent index:** [Architecture](README.md) · **Chinese:** [隧道设计](TUNNEL_DESIGN_CN.md)
+> **Read this for:** Contributors mapping tunnel ownership above `ITransmission`.
+> **Question answered:** How do client/server owners turn framed actions into session and relay work?
+> **Implementation detail vs user contract:** The owner map and action flow below are implementation details. Treat stated protocol/configuration behavior as the current runtime contract; use [Reference](../reference/README.md) for public fields.
+> **Next canonical page:** [Packet Lifecycle](PACKET_LIFECYCLE.md)
 
 ## Layer and owner map
 
@@ -52,10 +56,3 @@ Responses use the reverse owner chain. The exact host packet paths vary by proto
 The handshake `nmux` bit is a carrier/session-path signal, not a complete VMUX lifecycle. Current VMUX setup starts with a link-layer `MUX` exchange, opens up to the configured number of child carrier transmissions, and uses `MUXON` on those child links. The initial server-side `MUX` handling replies with `MUX`; `MUXON` is the child-link attachment exchange.
 
 Direct P2P implementation code exists, but the production authenticated-control capability gate is false. Normal execution should be documented as relay-only rather than as active direct delivery.
-
-## Related pages
-
-- [Transport and Protected Transmission](TRANSMISSION.md)
-- [Packet Lifecycle](PACKET_LIFECYCLE.md)
-- [Client Architecture](CLIENT_ARCHITECTURE.md)
-- [Server Architecture](SERVER_ARCHITECTURE.md)

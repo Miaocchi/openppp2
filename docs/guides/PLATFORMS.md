@@ -7,6 +7,9 @@
 > **Purpose:** Privileges, drivers, platform-specific flags, and feature differences when running OPENPPP2 on each platform.
 > **Audience:** Users deploying a client or server on a specific platform.
 > **Parent index:** [Guides](README.md) · **Chinese:** [平台说明](PLATFORMS_CN.md)
+> **Prerequisite:** Choose the target OS and whether you will run TUN or proxy mode; have the matching release package and required OS permissions.
+> **Not covered:** Application UI setup, protocol internals, or a complete deployment procedure for a particular topology.
+> **Next reference:** [User manual](../getting-started/USER_MANUAL.md) for end-to-end setup and [Platform integration](../architecture/PLATFORM_INTEGRATION.md) for implementation details.
 
 The implementation-level platform abstraction is described in [Platform integration (architecture)](../architecture/PLATFORM_INTEGRATION.md).
 

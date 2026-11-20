@@ -8,6 +8,7 @@
 
 > **边界：**本文描述当前隧道 C++ 实现及其线上行为。它不是公共 SDK、协议 API
 > 或正式兼容性规范。
+> **查阅边界：** 本页用于查找基于源码的链路层 opcode 和 payload 行为，不是分步用户指南。配置选择见[配置文件参考](CONFIGURATION_CN.md)；部署、运维和排障见[运维与排障](../operations/OPERATIONS_CN.md)和[部署](../operations/DEPLOYMENT_CN.md)。
 
 ## 分帧边界
 

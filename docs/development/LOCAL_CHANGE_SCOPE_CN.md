@@ -4,6 +4,10 @@
 > Type: Reference
 > Last verified: 2026-10-07
 > Parent index: [开发文档](README_CN.md)
+> **适用对象：**维护发布边界、文档范围和证据声明的贡献者与审阅者。
+> **前置条件：**先阅读[开发文档索引](README_CN.md)，并将本文的日期、基线提交和清点快照与对应的源码差异核对。
+> **验证边界：**本文记录的是特定快照的范围与证据，不是当前工作区的完整清单或生产验收证明；测试、CI 和发行成功仍不等于所有平台的完整 VPN runtime 验收。
+> **下一步：**测试入口见[测试](TESTING_CN.md)；网络生命周期边界见[VPN 网络生命周期合同](../architecture/NETWORK_LIFECYCLE_CONTRACT_CN.md)，实机依据见文末的[Linux 实机验证](../testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)。
 
 发行记录：[v2.1.7](https://github.com/Miaocchi/openppp2/releases/tag/v2.1.7) 已公开，
 标签源码为 `85220d2`，含 DNS 策略、P2P v2、平台兼容及 FakeClock 修复。

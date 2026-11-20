@@ -1,11 +1,14 @@
 # 桌面客户端
-> Status: Experimental
+> **支持状态：**实验性；仅用于从源码运行评估，当前验证目标为 Windows。不提供受支持的安装程序或发布包。
 > Type: Guide
 > Last verified: 2026-10-04
 >
 > **用途：**用本仓库的 Tauri/Svelte client 管理器评估本地 `ppp` 可执行程序。
-> **适用对象：**桌面开发者和评估人员。
+> **适用对象：**拥有兼容本地 `ppp` 可执行程序的桌面开发者和评估人员。
 > **上一层索引：**[快速开始](README_CN.md) · **English：**[Desktop Client](DESKTOP_CLIENT.md)
+>
+> **构建/运行边界：**本文从源码运行 Tauri/Svelte 壳并启动外部本地 `ppp`，不会构建或打包原生运行时，也不承诺真实网络行为。
+> **后续规范页面：**需要了解工作流时阅读[桌面说明](../../desktop/README.md)；需要查看已验证行为和仍待真实验收的内容时阅读[GUI 验证记录](../testing/DESKTOP_GUI.md)。
 
 ## 状态和边界
 

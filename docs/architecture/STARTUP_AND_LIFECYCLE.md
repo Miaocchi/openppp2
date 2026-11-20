@@ -6,6 +6,10 @@
 > **Purpose:** Explain how the native `ppp` process is prepared, bootstrapped, observed, and torn down.
 > **Audience:** Contributors and operators debugging lifecycle behavior.
 > **Parent index:** [Architecture](README.md) · **Chinese:** [启动与生命周期](STARTUP_AND_LIFECYCLE_CN.md)
+> **Read this for:** Contributors and operators diagnosing native process startup, runtime phases, shutdown, and restart.
+> **Question answered:** How does the process enter a role, publish readiness, and tear down safely?
+> **Implementation detail vs user contract:** The call sequence and lifecycle projections below are implementation details. Treat documented phases and CLI behavior as the current runtime contract; use [Reference](../reference/README.md) for public fields.
+> **Next canonical page:** [System Architecture](ARCHITECTURE.md)
 
 ## Entry and process owner
 

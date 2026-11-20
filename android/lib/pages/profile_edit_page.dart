@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/config_profile.dart';
 import '../services/profile_store.dart';
 import '../utils/server_endpoint.dart';
+import '../widgets/unsaved_changes_guard.dart';
 
 /// Edit (or create) a single ConfigProfile.
 ///
@@ -54,6 +56,9 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
   // Raw JSON (advanced)
   final _jsonController = TextEditingController();
   bool _showRaw = false;
+  bool _validate = false;
+  bool _revealKeys = false;
+  bool _dirty = false;
 
   Map<String, dynamic> _jsonMap = {};
   bool _saving = false;
@@ -217,21 +222,90 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     return const JsonEncoder.withIndent('  ').convert(map);
   }
 
+  String? _rawError() {
+    try {
+      if (jsonDecode(_jsonController.text) is! Map) return '配置必须是 JSON 对象（{ ... }）';
+    } on FormatException catch (e) {
+      return 'JSON 格式错误（字符位置 ${(e.offset ?? 0) + 1}）：${e.message}';
+    }
+    return null;
+  }
+
+  String? _fieldError(TextEditingController c) {
+    final text = c.text.trim();
+    if (c == _nameController && text.isEmpty) return '请填写配置名称';
+    if (c == _serverHostController) {
+      if (text.isEmpty) return '请填写服务器地址';
+      final host = text.startsWith('[') && text.endsWith(']') ? text.substring(1, text.length - 1) : text;
+      if (RegExp(r'[\s/?#@]').hasMatch(host) || (host.contains(':') && InternetAddress.tryParse(host) == null)) {
+        return '仅填写域名或 IP，协议和端口请分开填写';
+      }
+    }
+    if (c == _serverPortController || c == _httpProxyPortController || c == _socksProxyPortController) {
+      if (text.isEmpty) return null;
+      final min = c == _serverPortController ? 1 : 0;
+      final n = int.tryParse(text);
+      if (n == null || n < min || n > 65535) return '端口范围：$min–65535';
+    }
+    if (c == _bandwidthController && text.isNotEmpty && (int.tryParse(text) ?? -1) < 0) {
+      return '带宽须为非负整数，0 表示不限';
+    }
+    if ((c == _kfController || c == _kxController || c == _klController || c == _khController) &&
+        text.isNotEmpty && int.tryParse(text) == null) {
+      return 'KF/KX/KL/KH 须为整数';
+    }
+    return null;
+  }
+
+  void _reportError(String error) {
+    setState(() => _validate = true);
+    ScaffoldMessenger.of(context)..hideCurrentSnackBar()..showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  void _toggleRaw(bool value) {
+    if (!value) {
+      final error = _rawError();
+      if (error != null) { _reportError(error); return; }
+      _hydrateFormFromJson(_jsonController.text);
+    } else {
+      _jsonController.text = _applyFormToJson();
+    }
+    setState(() { _showRaw = value; _validate = false; });
+  }
+
+  void _editValue(VoidCallback change) => setState(() { change(); _dirty = true; });
+
+  void _textChanged(String _) {
+    if (!_dirty || _validate) setState(() => _dirty = true);
+  }
+
+  Future<void> _resetRaw() async {
+    final reset = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('替换整个 JSON？'),
+      content: const Text('用默认模板替换编辑中的服务器、密钥及自定义字段。保存前不会修改已存配置。'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('使用模板')),
+      ],
+    ));
+    if (mounted && reset == true) _editValue(() => _jsonController.text = _prettify(ProfileStore.defaultJson));
+  }
+
   Future<void> _save() async {
     if (_saving) return;
+    for (final c in [_nameController, if (!_showRaw) ...[
+      _serverHostController, _serverPortController, _bandwidthController,
+      _httpProxyPortController, _socksProxyPortController, _kfController, _kxController, _klController, _khController,
+    ]]) {
+      final error = _fieldError(c);
+      if (error != null) { _reportError(error); return; }
+    }
     setState(() => _saving = true);
     try {
       String finalJson;
       if (_showRaw) {
-        try {
-          jsonDecode(_jsonController.text);
-        } catch (e) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Raw JSON 格式错误: $e')),
-          );
-          return;
-        }
+        final error = _rawError();
+        if (error != null) { _reportError(error); return; }
         finalJson = _jsonController.text;
       } else {
         finalJson = _applyFormToJson();
@@ -241,18 +315,14 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
       final existing = widget.profile;
       if (existing == null) {
         await _store.add(
-          name: _nameController.text.trim().isEmpty
-              ? 'New Profile'
-              : _nameController.text.trim(),
+          name: _nameController.text.trim(),
           subtitle: _subtitleController.text.trim(),
           flag: _flagController.text.trim(),
           json: finalJson,
         );
       } else {
         final updated = existing.copyWith(
-          name: _nameController.text.trim().isEmpty
-              ? existing.name
-              : _nameController.text.trim(),
+          name: _nameController.text.trim(),
           subtitle: _subtitleController.text.trim(),
           flag: _flagController.text.trim(),
           json: finalJson,
@@ -303,7 +373,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     if (!mounted) return;
     _jsonController.text = _prettify(restored);
     _hydrateFormFromJson(restored);
-    setState(() {});
+    setState(() { _dirty = true; });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('已恢复上一版本')),
     );
@@ -341,7 +411,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
   Widget build(BuildContext context) {
     final isNew = widget.profile == null;
     final hasHistory = (widget.profile?.history.isNotEmpty ?? false);
-    return Scaffold(
+    return UnsavedChangesGuard(dirty: _dirty, child: Scaffold(
       appBar: AppBar(
         title: Text(isNew ? '新增配置' : '编辑配置'),
         centerTitle: true,
@@ -370,11 +440,13 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
               ),
               onPressed: hasHistory ? _restorePrevious : null,
             ),
-          IconButton(
-            icon: const Icon(Icons.save_rounded),
-            tooltip: '保存',
-            onPressed: _saving ? null : _save,
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Text(_dirty ? '未保存' : '已同步',
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: _dirty ? Theme.of(context).colorScheme.error : Theme.of(context).colorScheme.primary)),
           ),
+          TextButton(onPressed: _saving ? null : _save, child: Text(_saving ? '保存中…' : '保存')),
         ],
       ),
       body: ListView(
@@ -385,16 +457,19 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
             icon: Icons.bookmark_outline_rounded,
             children: [
               _text(_nameController, '名称'),
-              _text(_subtitleController, '副标题 / 城市 (可选)'),
-              _text(_flagController, '图标 / Emoji (可选)'),
+              ExpansionTile(tilePadding: EdgeInsets.zero, title: const Text('显示信息（可选）'), children: [
+                _text(_subtitleController, '副标题 / 城市'),
+                _text(_flagController, '图标 / Emoji'),
+              ]),
             ],
           ),
+          if (!_showRaw) ...[
           _Section(
             title: '服务器',
             icon: Icons.cloud_outlined,
             children: [
               DropdownButtonFormField<String>(
-                value: _serverScheme,
+                initialValue: _serverScheme,
                 decoration: const InputDecoration(
                   labelText: '协议 (ppp=TCP, ws/wss=WebSocket)',
                   border: OutlineInputBorder(),
@@ -407,44 +482,29 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                 ],
                 onChanged: (v) {
                   if (v == null) return;
-                  setState(() => _serverScheme = v);
+                  _editValue(() => _serverScheme = v);
                 },
               ),
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    flex: 3,
-                    child: _text(_serverHostController, 'Host'),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    flex: 1,
-                    child: _text(_serverPortController, 'Port',
-                        keyboardType: TextInputType.number),
-                  ),
-                ],
-              ),
+              _text(_serverHostController, '服务器地址（域名或 IP）'),
+              _text(_serverPortController, '服务器端口', keyboardType: TextInputType.number),
               if (_serverScheme == 'ws' || _serverScheme == 'wss')
                 _text(_serverPathController, 'WebSocket Path (e.g. /tun)'),
-              _text(_bandwidthController, 'Bandwidth (kbps, 0=不限)',
-                  keyboardType: TextInputType.number),
+              _text(_bandwidthController, '带宽（kbps，0 = 不限）', keyboardType: TextInputType.number),
               _text(_guidController, 'GUID (可选)'),
             ],
           ),
           _Section(
             title: '加密',
+            collapsed: true,
             icon: Icons.shield_outlined,
             children: [
-              Row(
-                children: [
-                  Expanded(child: _dropdown(_protocolController, 'Protocol')),
-                  const SizedBox(width: 8),
-                  Expanded(child: _dropdown(_transportController, 'Transport')),
-                ],
-              ),
-              _text(_protocolKeyController, 'Protocol Key'),
-              _text(_transportKeyController, 'Transport Key'),
+              _dropdown(_protocolController, '协议加密算法'),
+              _dropdown(_transportController, '传输加密算法'),
+              _text(_protocolKeyController, 'Protocol Key', secret: true),
+              _text(_transportKeyController, 'Transport Key', secret: true),
+              SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('显示密钥'),
+                value: _revealKeys, onChanged: (v) => setState(() => _revealKeys = v)),
               ExpansionTile(
                 tilePadding: EdgeInsets.zero,
                 childrenPadding: const EdgeInsets.only(top: 4),
@@ -479,25 +539,25 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                     contentPadding: EdgeInsets.zero,
                     value: _masked,
                     title: const Text('Masked'),
-                    onChanged: (v) => setState(() => _masked = v),
+                    onChanged: (v) => _editValue(() => _masked = v),
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     value: _plaintext,
                     title: const Text('Plaintext'),
-                    onChanged: (v) => setState(() => _plaintext = v),
+                    onChanged: (v) => _editValue(() => _plaintext = v),
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     value: _deltaEncode,
                     title: const Text('Delta Encode'),
-                    onChanged: (v) => setState(() => _deltaEncode = v),
+                    onChanged: (v) => _editValue(() => _deltaEncode = v),
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     value: _shuffleData,
                     title: const Text('Shuffle Data'),
-                    onChanged: (v) => setState(() => _shuffleData = v),
+                    onChanged: (v) => _editValue(() => _shuffleData = v),
                   ),
                 ],
               ),
@@ -505,6 +565,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
           ),
           _Section(
             title: '本地代理 (可选)',
+            collapsed: true,
             icon: Icons.lan_outlined,
             children: [
               Row(
@@ -531,6 +592,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
               ),
             ],
           ),
+          ],
           _Section(
             title: '高级 (Raw JSON)',
             icon: Icons.code_rounded,
@@ -539,34 +601,23 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                 contentPadding: EdgeInsets.zero,
                 value: _showRaw,
                 title: const Text('使用 Raw JSON 模式'),
-                subtitle: const Text('开启后保存以 Raw 文本为准；关闭则以表单为准'),
-                onChanged: (v) {
-                  setState(() {
-                    _showRaw = v;
-                    if (v) {
-                      _jsonController.text = _applyFormToJson();
-                    } else {
-                      _hydrateFormFromJson(_jsonController.text);
-                    }
-                  });
-                },
+                subtitle: const Text('直接编辑完整配置，可能显示密钥。开启后以 JSON 为准，名称和显示信息仍可单独编辑。'),
+                onChanged: _toggleRaw,
               ),
               if (_showRaw) ...[
-                Row(
+                Wrap(spacing: 8,
                   children: [
                     OutlinedButton.icon(
                       onPressed: () {
-                        _jsonController.text = _prettify(_jsonController.text);
+                        final error = _rawError();
+                        if (error != null) { _reportError(error); return; }
+                        _editValue(() => _jsonController.text = _prettify(_jsonController.text));
                       },
                       icon: const Icon(Icons.auto_fix_high_rounded),
                       label: const Text('格式化'),
                     ),
-                    const SizedBox(width: 8),
                     OutlinedButton.icon(
-                      onPressed: () {
-                        _jsonController.text =
-                            _prettify(ProfileStore.defaultJson);
-                      },
+                      onPressed: _resetRaw,
                       icon: const Icon(Icons.restart_alt_rounded),
                       label: const Text('恢复默认'),
                     ),
@@ -577,12 +628,16 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                   height: 320,
                   child: TextField(
                     controller: _jsonController,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    onChanged: _textChanged,
                     maxLines: null,
                     expands: true,
                     textAlignVertical: TextAlignVertical.top,
                     style: const TextStyle(
                         fontFamily: 'monospace', fontSize: 12),
                     decoration: InputDecoration(
+                      errorText: _validate ? _rawError() : null,
                       border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(10)),
                       contentPadding: const EdgeInsets.all(12),
@@ -600,7 +655,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
           ),
         ],
       ),
-    );
+    ));
   }
 
   Widget _dropdown(TextEditingController c, String label) {
@@ -611,11 +666,12 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
       padding: const EdgeInsets.only(bottom: 12),
       child: DropdownButtonFormField<String>(
         initialValue: items.contains(c.text) ? c.text : items.first,
+        isExpanded: true,
         items: items
             .map((s) => DropdownMenuItem(value: s, child: Text(s)))
             .toList(),
         onChanged: (v) {
-          if (v != null) c.text = v;
+          if (v != null) _editValue(() => c.text = v);
         },
         decoration: InputDecoration(
           labelText: label,
@@ -627,14 +683,20 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
   }
 
   Widget _text(TextEditingController c, String label,
-      {TextInputType? keyboardType}) {
+      {TextInputType? keyboardType, bool secret = false}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: TextField(
         controller: c,
         keyboardType: keyboardType,
+        obscureText: secret && !_revealKeys,
+        autocorrect: !secret,
+        enableSuggestions: !secret,
+        onChanged: _textChanged,
         decoration: InputDecoration(
           labelText: label,
+          errorText: _validate ? _fieldError(c) : null,
+          errorMaxLines: 3,
           border: const OutlineInputBorder(),
           isDense: true,
         ),
@@ -647,15 +709,23 @@ class _Section extends StatelessWidget {
   final String title;
   final IconData icon;
   final List<Widget> children;
+  final bool collapsed;
   const _Section({
     required this.title,
     required this.icon,
     required this.children,
+    this.collapsed = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    if (collapsed) {
+      return Card(margin: const EdgeInsets.only(bottom: 12), child: ExpansionTile(
+        key: PageStorageKey(title), leading: Icon(icon), title: Text(title),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 4, 16, 12), children: children,
+      ));
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Material(

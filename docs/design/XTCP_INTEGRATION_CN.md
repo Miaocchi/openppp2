@@ -3,6 +3,8 @@
 > Status: Active
 > Type: Design
 > Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+> **状态边界：**本页记录设计、实现说明与有界证据，不是当前用户合同；“已实现”不自动等于跨平台或发布级保证。当前受支持行为、配置与操作请以[架构](../architecture/README_CN.md)、[参考](../reference/README_CN.md)、[指南](../guides/README_CN.md)、[运维](../operations/README_CN.md)及对应发行/测试页面为准；持久决策见[ADR](../adr/README_CN.md)。验证仅限本页列明的源码、提交或实验记录，未覆盖的生产、跨平台或部署条件不能由本页推出。
+
 
 ## RACK 时间基准与 SACK 记分板（0060）
 

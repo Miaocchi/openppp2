@@ -8,6 +8,12 @@
 > **读者：** 部署和使用 OPENPPP2 的用户。
 > **上级索引：** [快速开始](README_CN.md) · **English:** [User manual](USER_MANUAL.md)
 
+> **阅读本页 / 不阅读本页**
+> - **阅读本页：** 下载、配置和运行基础 `ppp` 可执行文件（服务端、TUN 客户端或代理），以及常见隧道场景。
+> - **不要用本页：** 让 `ppp` 作为系统服务运行或通过 Guardian 管理时，请看[部署](../operations/DEPLOYMENT_CN.md)；需要中心认证和计费服务时，请看[管理后端](../guides/MANAGEMENT_BACKEND_CN.md)。
+> - **边界：** 基础 `ppp` 可执行文件负责隧道；Guardian 是独立的本机守护和配置管理器；管理后端是独立的认证和计费服务。
+
+
 ## 1. OPENPPP2 是什么
 
 OPENPPP2 是一个单文件、跨平台的虚拟网络程序 `ppp`。同一个可执行文件按启动参数扮演三种角色：
@@ -228,8 +234,8 @@ DoH / DoT 和 WSS 等 TLS 连接优先加载程序目录下的 `cacert.pem`（�
 
 更完整的排障流程见 [运维与排障](../operations/OPERATIONS_CN.md)。
 
-## 相关文档
+## 继续阅读
 
 - [编写配置文件](CONFIGURE_CN.md) · [配置文件参考](../reference/CONFIGURATION_CN.md) · [命令行参考](../reference/CLI_REFERENCE_CN.md)
 - [路由与 DNS](../guides/ROUTING_AND_DNS_CN.md) · [代理模式](../guides/PROXY_MODE_CN.md) · [平台说明](../guides/PLATFORMS_CN.md)
-- [部署](../operations/DEPLOYMENT_CN.md) · [安全](../operations/SECURITY_CN.md)
+- [运维与排障](../operations/OPERATIONS_CN.md) · [安全](../operations/SECURITY_CN.md)

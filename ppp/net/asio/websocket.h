@@ -258,6 +258,18 @@ namespace ppp {
                     std::string                                                 certificate_key_password,
                     std::string                                                 ciphersuites,
                     YieldContext&                                               y) noexcept;
+                virtual bool                                                    Run(
+                    HandshakeType                                               type,
+                    const ppp::string&                                          tls_server_name,
+                    const ppp::string&                                          http_host,
+                    const ppp::string&                                          path,
+                    bool                                                        verify_peer,
+                    std::string                                                 certificate_file,
+                    std::string                                                 certificate_key_file,
+                    std::string                                                 certificate_chain_file,
+                    std::string                                                 certificate_key_password,
+                    std::string                                                 ciphersuites,
+                    YieldContext&                                               y) noexcept;
                 /**
                  * @brief Writes websocket payload asynchronously.
                  * @param buffer Source buffer.

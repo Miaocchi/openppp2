@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../models/app_scope.dart';
 import '../models/config_profile.dart';
 import '../models/launch_route_mode.dart';
 import '../runtime/runtime_controls.dart';
@@ -13,6 +14,7 @@ import '../vpn_service.dart';
 import '../widgets/debug_panel.dart';
 import '../widgets/profile_ui.dart';
 import 'profile_edit_page.dart';
+import 'profiles_page.dart' show importProfileSubscription;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -28,10 +30,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   List<ConfigProfile> _profiles = const [];
   ConfigProfile? _active;
+  bool _profilesLoaded = false;
+  String _savedScope = '';
   Map<String, dynamic> _launchOptions = Map<String, dynamic>.from(
     ProfileStore.defaultOptions,
   );
   String? _lastError;
+  bool _permissionDenied = false;
   bool _debugPanelEnabled = false;
   String _debugLog = '';
   String _logPath = '';
@@ -116,9 +121,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
     if (!mounted) return;
     setState(() {
+      _profilesLoaded = true;
       _profiles = profiles;
       _active = active;
       _launchOptions = options;
+      final apps = options['perAppProxyApps'];
+      _savedScope = appScopeSummary(
+        enabled: options['perAppProxyEnabled'] == true,
+        mode: options['perAppProxyMode']?.toString() ?? 'allow',
+        count: apps is List
+            ? apps.whereType<String>().where((p) => p.trim().isNotEmpty).toSet().length
+            : 0,
+      );
     });
   }
 
@@ -199,6 +213,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       return;
     }
     setState(() {
+      _permissionDenied = false;
+      _lastError = null;
       _pendingStartGeneration = _runtimeStore.state.generation;
     });
     _vpnService.connecting = true;
@@ -227,12 +243,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (e) {
       if (!mounted) return;
       _vpnService.connecting = false;
-      final error = e.toString();
+      final denied = e is PlatformException && e.code == 'PERMISSION_DENIED';
+      final error = denied ? '未获得系统 VPN 授权，无法连接。' : e.toString();
       setState(() {
         _pendingStartGeneration = null;
         _lastError = error;
+        _permissionDenied = denied;
       });
-      await _showErrorDialog(error);
+      if (denied) {
+        await _showPermissionDenied();
+      } else {
+        await _showErrorDialog(error);
+      }
     }
   }
 
@@ -286,6 +308,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       await _vpnService.disconnect();
       await _showErrorDialog(error);
     });
+  }
+
+  Future<void> _showPermissionDenied() async {
+    final retry = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('未获得 VPN 授权'),
+        content: const Text('连接需要 Android 建立 VPN 的权限。点击重试，在系统连接请求中选择允许。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('重试授权')),
+        ],
+      ),
+    );
+    if (retry != true || !mounted) return;
+    final action = controlsFor(_runtimeStore.state.phase).action;
+    if (action == RuntimeConnectionAction.start || action == RuntimeConnectionAction.retry) {
+      await _toggleConnection();
+    }
   }
 
   Future<void> _showErrorDialog(String error) async {
@@ -486,6 +527,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         controls.isConnected ? _duration : controls.detailLabel;
 
     final routeMode = LaunchRouteMode.fromOptions(_launchOptions);
+    final active = _active;
+    final canStart = controls.action == RuntimeConnectionAction.start ||
+        controls.action == RuntimeConnectionAction.retry;
+    final seedOnly = _profiles.length == 1 && active?.name == 'Default' &&
+        active?.json == ProfileStore.defaultJson && active?.subscriptionUrl == null;
+    final needsSetup = active == null || active.json.trim().isEmpty;
+    final showSetup = _profilesLoaded && canStart &&
+        (needsSetup || (seedOnly && _lastError == null));
+    final retryPermission = _permissionDenied && canStart && !showSetup;
+    final savedRoute = _launchOptions['proxyOnly'] == true
+        ? '仅代理模式 · 本机 HTTP/SOCKS，不接管常规 VPN 路由'
+        : '${routeMode.label} · IPv4 路由 ${_launchOptions['route']}/${_launchOptions['routePrefix']}';
 
     return Scaffold(
       appBar: AppBar(
@@ -498,17 +551,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           children: [
             HomeStatusCard(
               statusText: statusTitle,
-              detailText: statusDetail,
+              detailText: showSetup
+                  ? (needsSetup ? '导入订阅或手动添加配置后即可连接' : '可导入自己的节点，也可使用默认配置')
+                  : retryPermission ? '需要系统 VPN 授权' : statusDetail,
               isConnected: controls.isConnected,
               isBusy: controls.isBusy,
-              buttonLabel: controls.buttonLabel,
-              buttonEnabled: controls.buttonEnabled && !commandPending,
+              buttonLabel: showSetup ? '导入远程订阅' : retryPermission ? '重试授权' : controls.buttonLabel,
+              buttonEnabled: controls.buttonEnabled && !commandPending && (!canStart || _profilesLoaded),
               uploadText: _formatSpeed(_vpnService.traffic.txBytesPerSecond),
               downloadText: _formatSpeed(_vpnService.traffic.rxBytesPerSecond),
               allowLan: _launchOptions['allowLan'] == true,
               blockQuic: _launchOptions['blockQuic'] == true,
               routeMode: routeMode,
-              onConnect: _toggleConnection,
+              onConnect: showSetup
+                  ? () => importProfileSubscription(context, _store, selectFirst: true)
+                  : _toggleConnection,
               onAllowLanChanged: _active == null || !configEditable
                   ? null
                   : (v) => _updateLaunchOption((o) {
@@ -528,22 +585,40 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           ..addAll(next);
                       }),
             ),
-            if (controls.isConnected &&
-                _runtimeStore.state.effectiveMuxMode.isNotEmpty)
+            if (showSetup)
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 12,
+                children: [
+                  TextButton(onPressed: _addProfile, child: const Text('手动添加配置')),
+                  if (!needsSetup)
+                    TextButton(onPressed: _toggleConnection, child: const Text('连接默认配置')),
+                ],
+              ),
+            if (active != null)
               Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  'VMUX: ${_runtimeStore.state.effectiveMuxDisplayName}',
-                  textAlign: TextAlign.center,
+                padding: const EdgeInsets.fromLTRB(8, 12, 8, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('已选配置：${active.name}', style: theme.textTheme.titleSmall),
+                    Text('已保存的应用范围：$_savedScope'),
+                    Text('已保存的路由：$savedRoute'),
+                  ],
                 ),
               ),
             if (controls.isConnected)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  'Path: ${_runtimeStore.state.effectivePathDisplayName}',
-                  textAlign: TextAlign.center,
-                ),
+              ExpansionTile(
+                key: const PageStorageKey<String>('effective-connection-details'),
+                title: const Text('当前连接详情'),
+                expandedAlignment: Alignment.centerLeft,
+                expandedCrossAxisAlignment: CrossAxisAlignment.start,
+                childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                children: [
+                  if (_runtimeStore.state.effectiveMuxMode.isNotEmpty)
+                    Text('VMUX: ${_runtimeStore.state.effectiveMuxDisplayName}'),
+                  Text('Path: ${_runtimeStore.state.effectivePathDisplayName}'),
+                ],
               ),
             const SizedBox(height: 16),
             Row(
@@ -556,26 +631,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   ),
                 ),
                 const Spacer(),
-                PopupMenuButton<String>(
-                  icon: const Icon(Icons.add_circle_outline),
-                  tooltip: '添加配置',
-                  onSelected: configEditable
-                      ? (value) {
-                          if (value == 'new') _addProfile();
-                        }
-                      : null,
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'new',
-                      child: ListTile(
-                        leading: Icon(Icons.add_rounded),
-                        title: Text('新增配置'),
-                        contentPadding: EdgeInsets.zero,
-                        dense: true,
-                      ),
-                    ),
-                  ],
-                ),
+                if (!showSetup)
+                  IconButton(
+                    icon: const Icon(Icons.add_circle_outline),
+                    tooltip: '手动添加配置',
+                    onPressed: configEditable ? _addProfile : null,
+                  ),
               ],
             ),
             const SizedBox(height: 6),

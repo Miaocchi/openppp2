@@ -34,6 +34,13 @@ namespace ppp {
                     return FromRuntimeJsonString(root[name].asString());
                 }
 
+                inline bool ValidPathControlState(const std::string& state) noexcept {
+                    return state.empty() || state == "disabled" || state == "probing" ||
+                        state == "warming" || state == "active" || state == "degraded" ||
+                        state == "draining" || state == "retiring" || state == "backoff" ||
+                        state == "rejected" || state == "stopped";
+                }
+
                 inline void WriteRuntimeError(
                     Json::Value& root,
                     const RuntimeError& error) noexcept {
@@ -143,6 +150,152 @@ namespace ppp {
                     peer.peer_candidate = RuntimeJsonString(value, "peer_candidate");
                 }
 
+                inline bool SafeRuntimeToken(const std::string& value, std::size_t maximum) noexcept {
+                    if (value.empty() || value.size() > maximum) return false;
+                    for (unsigned char c : value) {
+                        const bool ascii_alnum = (c >= 'a' && c <= 'z') ||
+                            (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+                        if (!(ascii_alnum || c == '_' || c == '-' || c == '.')) return false;
+                    }
+                    return true;
+                }
+
+                inline void WriteOptionalRuntimeNumber(Json::Value& object,
+                    const char* name, const std::optional<std::uint64_t>& number) noexcept {
+                    object[name] = number ? Json::Value(Json::UInt64(*number))
+                                          : Json::Value(Json::nullValue);
+                }
+
+                inline void WriteRuntimeMultipath(Json::Value& root,
+                    const ppp::app::multipath::RuntimeState& state) noexcept {
+                    Json::Value value(Json::objectValue);
+                    value["enabled"] = state.enabled;
+                    value["policy"] = ToRuntimeJsonString(
+                        state.policy == "adaptive" || state.policy == "failover" ? state.policy : "");
+                    const bool valid_session_state = state.state == "idle" || state.state == "creating" ||
+                        state.state == "active" || state.state == "recovering" ||
+                        state.state == "failed" || state.state == "stopped" || state.state == "unknown";
+                    value["state"] = ToRuntimeJsonString(valid_session_state ? state.state : "unknown");
+                    value["active_paths"] = Json::UInt(std::min<std::uint32_t>(state.active_paths, 8));
+                    WriteOptionalRuntimeNumber(value, "remaining_grace_ms", state.remaining_grace_ms);
+                    Json::Value capabilities(Json::arrayValue);
+                    for (const std::string& capability : state.capabilities) {
+                        if (capabilities.size() >= 32) break;
+                        if (SafeRuntimeToken(capability, 64)) capabilities.append(ToRuntimeJsonString(capability));
+                    }
+                    value["capabilities"] = std::move(capabilities);
+                    Json::Value paths(Json::arrayValue);
+                    std::size_t written_paths = 0;
+                    for (const auto& path : state.paths) {
+                        if (written_paths >= 8) break;
+                        ++written_paths;
+                        Json::Value item(Json::objectValue);
+                        const std::string safe_id = SafeRuntimeToken(path.id, 64)
+                            ? path.id : "unknown-" + std::to_string(written_paths);
+                        item["id"] = ToRuntimeJsonString(safe_id);
+                        const bool valid_state = path.state == "waiting" || path.state == "connecting" ||
+                            path.state == "authenticating" || path.state == "joined" ||
+                            path.state == "backoff" || path.state == "stopped" || path.state == "unknown";
+                        item["state"] = ToRuntimeJsonString(valid_state ? path.state : "unknown");
+                        if (SafeRuntimeToken(path.control_state, 32)) {
+                            item["control_state"] = ToRuntimeJsonString(path.control_state);
+                        }
+                        item["carriers"] = Json::UInt(std::min<std::uint32_t>(path.carriers, 32));
+                        item["reconnect_attempts"] = Json::UInt(std::min<std::uint32_t>(path.reconnect_attempts, 1000000));
+                        item["error_code"] = ToRuntimeJsonString(
+                            path.error_code.empty() || SafeRuntimeToken(path.error_code, 64) ? path.error_code : "");
+                        WriteOptionalRuntimeNumber(item, "rtt_ms", path.rtt_ms);
+                        WriteOptionalRuntimeNumber(item, "rx_bytes", path.rx_bytes);
+                        WriteOptionalRuntimeNumber(item, "tx_bytes", path.tx_bytes);
+                        WriteOptionalRuntimeNumber(item, "inflight_bytes", path.inflight_bytes);
+                        WriteOptionalRuntimeNumber(item, "retransmit_bytes", path.retransmit_bytes);
+                        WriteOptionalRuntimeNumber(item, "capacity_rate_bytes_per_second",
+                            path.capacity_rate_bytes_per_second);
+                        WriteOptionalRuntimeNumber(item, "queue_delay_ms", path.queue_delay_ms);
+                        WriteOptionalRuntimeNumber(item, "bdp_bytes", path.bdp_bytes);
+                        WriteOptionalRuntimeNumber(item, "confidence", path.confidence);
+                        item["at_capacity"] = path.at_capacity;
+                        paths.append(std::move(item));
+                    }
+                    value["paths"] = std::move(paths);
+                    root["multipath"] = std::move(value);
+                }
+
+                inline bool ReadOptionalRuntimeNumber(const Json::Value& object,
+                    const char* name, std::optional<std::uint64_t>& output) noexcept {
+                    output.reset();
+                    if (!object.isMember(name) || object[name].isNull()) return true;
+                    if (!object[name].isUInt64()) return false;
+                    output = object[name].asUInt64();
+                    return true;
+                }
+
+                inline bool ReadRuntimeMultipath(const Json::Value& root,
+                    ppp::app::multipath::RuntimeState& state) noexcept {
+                    using ppp::app::multipath::RuntimePathState;
+                    state = {};
+                    if (!root.isMember("multipath")) return true;
+                    const Json::Value& value = root["multipath"];
+                    if (!value.isObject() || !value.isMember("enabled") || !value["enabled"].isBool() ||
+                        !value.isMember("paths") || !value["paths"].isArray() || value["paths"].size() > 8 ||
+                        !value.isMember("active_paths") || !value["active_paths"].isUInt()) return false;
+                    state.enabled = value["enabled"].asBool();
+                    state.policy = RuntimeJsonString(value, "policy");
+                    state.state = RuntimeJsonString(value, "state");
+                    state.active_paths = value["active_paths"].asUInt();
+                    if (state.active_paths > 8 ||
+                        (!state.policy.empty() && state.policy != "adaptive" && state.policy != "failover") ||
+                        (!state.state.empty() && state.state != "idle" && state.state != "creating" &&
+                         state.state != "active" && state.state != "recovering" && state.state != "failed" &&
+                         state.state != "stopped" && state.state != "unknown")) return false;
+                    if (!ReadOptionalRuntimeNumber(value, "remaining_grace_ms", state.remaining_grace_ms)) return false;
+                    if (value.isMember("capabilities")) {
+                        if (!value["capabilities"].isArray() || value["capabilities"].size() > 32) return false;
+                        for (const Json::Value& capability : value["capabilities"]) {
+                            if (!capability.isString() || !SafeRuntimeToken(FromRuntimeJsonString(capability.asString()), 64)) return false;
+                            state.capabilities.emplace_back(FromRuntimeJsonString(capability.asString()));
+                        }
+                    }
+                    for (const Json::Value& item : value["paths"]) {
+                        if (!item.isObject()) return false;
+                        RuntimePathState path;
+                        path.id = RuntimeJsonString(item, "id");
+                        path.state = RuntimeJsonString(item, "state");
+                        path.control_state = RuntimeJsonString(item, "control_state");
+                        path.error_code = RuntimeJsonString(item, "error_code");
+                        if (!SafeRuntimeToken(path.id, 64) ||
+                            (!path.error_code.empty() && !SafeRuntimeToken(path.error_code, 64)) ||
+                            !ValidPathControlState(path.control_state) ||
+                            (path.state != "waiting" && path.state != "connecting" &&
+                             path.state != "authenticating" && path.state != "joined" &&
+                             path.state != "backoff" && path.state != "stopped" && path.state != "unknown") ||
+                            !item.isMember("carriers") || !item["carriers"].isUInt() ||
+                            !item.isMember("reconnect_attempts") || !item["reconnect_attempts"].isUInt()) return false;
+                        if (std::any_of(state.paths.begin(), state.paths.end(),
+                            [&path](const RuntimePathState& prior) { return prior.id == path.id; })) return false;
+                        path.carriers = item["carriers"].asUInt();
+                        path.reconnect_attempts = item["reconnect_attempts"].asUInt();
+                        if (path.carriers > 32 || path.reconnect_attempts > 1000000 ||
+                            !ReadOptionalRuntimeNumber(item, "rtt_ms", path.rtt_ms) ||
+                            !ReadOptionalRuntimeNumber(item, "rx_bytes", path.rx_bytes) ||
+                            !ReadOptionalRuntimeNumber(item, "tx_bytes", path.tx_bytes) ||
+                            !ReadOptionalRuntimeNumber(item, "inflight_bytes", path.inflight_bytes) ||
+                            !ReadOptionalRuntimeNumber(item, "retransmit_bytes", path.retransmit_bytes) ||
+                            !ReadOptionalRuntimeNumber(item, "capacity_rate_bytes_per_second",
+                                path.capacity_rate_bytes_per_second) ||
+                            !ReadOptionalRuntimeNumber(item, "queue_delay_ms", path.queue_delay_ms) ||
+                            !ReadOptionalRuntimeNumber(item, "bdp_bytes", path.bdp_bytes) ||
+                            !ReadOptionalRuntimeNumber(item, "confidence", path.confidence)) return false;
+                        if (item.isMember("at_capacity")) {
+                            if (!item["at_capacity"].isBool()) return false;
+                            path.at_capacity = item["at_capacity"].asBool();
+                        }
+                        state.paths.emplace_back(std::move(path));
+                    }
+                    if (state.enabled && state.paths.empty()) return false;
+                    return true;
+                }
+
             }
 
             inline std::string SerializeRuntimeSnapshot(
@@ -182,6 +335,7 @@ namespace ppp {
                 detail::WriteRuntimeTraffic(root, snapshot.traffic);
                 root["connected_monotonic_ms"] = Json::UInt64(snapshot.connected_monotonic_ms);
                 detail::WriteRuntimeError(root, snapshot.last_error);
+                detail::WriteRuntimeMultipath(root, snapshot.multipath);
 
                 Json::FastWriter writer;
                 const Json::String encoded = writer.write(root);
@@ -276,6 +430,7 @@ namespace ppp {
                     parsed.connected_monotonic_ms = root["connected_monotonic_ms"].asUInt64();
                 }
                 detail::ReadRuntimeError(root, parsed.last_error);
+                if (!detail::ReadRuntimeMultipath(root, parsed.multipath)) return false;
 
                 snapshot = std::move(parsed);
                 return true;

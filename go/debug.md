@@ -1,77 +1,67 @@
-# OpenPPP2 Go control-plane surfaces
+# OpenPPP2 products: native `ppp`, Go manager, and Guardian
 
-> [中文](debug_CN.md) · [Core service](ppp/debug.md) · [Infrastructure](io/debug.md) · [Local daemon](daemon/README.md) · [Guardian](guardian/ARCHITECTURE.md)
+> [中文](debug_CN.md) · [Native documentation](../docs/README.md) · [Management backend](../docs/guides/MANAGEMENT_BACKEND.md) · [Guardian architecture](guardian/ARCHITECTURE.md)
 
-**Status:** Experimental and internal
+**Status:** Experimental/internal companion surfaces
 
-**Type:** Go control-plane, local-operation, and process-management surfaces
+**Type:** Task-first product map
 
-**Last verified:** 2026-07-22
+**Last verified:** 2026-11-20 (local source and linked documentation)
 
-`go/` contains several separate Go programs and packages. They support management/control-plane work; they do not implement the VPN data path and are not published as a stable Go SDK.
+OpenPPP2 has three related but separate products. Choose one before reading configuration or operational instructions:
 
-## Surface map
-
-| Surface | Purpose | Current boundary |
+| Product | What it is for | What it is not |
 |---|---|---|
-| Root module (`main.go`, `ppp/`, `io/`) | Node control plane, managed users/servers, subscription/admin HTTP routes, and websocket node traffic. | Experimental internal service. |
-| `daemon/` | Manages one local `ppp` child process and exposes a small HTTP UI/API. | Unauthenticated local operator tool; do not expose it to a network. |
-| `guardian/` | Multi-instance process/profile/binary manager with REST, SSE, embedded Web UI, and a separate TUI client. | Experimental operator surface, defaulting to loopback and token auth. |
+| **Native `ppp`** | The C++ client/server/proxy process that implements the VPN/tunnel data path, transport, host networking, and runtime lifecycle. | Not a Go service, subscription/admin database, or process supervisor. |
+| **Go management backend** (`go/`) | An HTTP/admin and optional C++-node control backend: users, servers, subscriptions, and managed node authentication/traffic accounting. | Not the VPN data path, not Guardian, and not a general-purpose launcher for `ppp`. |
+| **Guardian** (`go/guardian/`) | A local host supervisor for configured native `ppp` child processes, profiles, binaries, logs, and lifecycle actions; it exposes REST/SSE, an embedded Web UI, and a separate TUI client. | Not the native runtime, not the Go management backend, and not a replacement for a production service manager or remote-control security boundary. |
 
-The root `go.mod` declares Go 1.22 and external dependencies including GORM/MySQL, Redis Sentinel support, Gorilla WebSocket, and UUID handling. The root service is not a stdlib-only component.
+The native executable is built by the root CMake project. `go/` and `go/guardian/` are separate Go modules and have separate configuration files, APIs, and lifecycle ownership. None of these pages defines a stable SDK or ABI.
 
-## Root control-plane modes
+## Choose by task
 
-`ppp.NewManagedServer()` loads a configuration path from the first positional process argument. If none is supplied, it falls back to `appsettings.json` and then default values where the loader permits them.
+| I need to… | Start here | Configuration boundary |
+|---|---|---|
+| Run a tunnel client, server, or proxy | [Native getting started](../docs/getting-started/README.md) and [configuration reference](../docs/reference/CONFIGURATION.md) | Native `ppp` configuration and CLI; see [startup and lifecycle](../docs/architecture/STARTUP_AND_LIFECYCLE.md). |
+| Manage users, VPN servers, subscriptions, or C++ node links | [Management backend guide](../docs/guides/MANAGEMENT_BACKEND.md) and [Go core map](ppp/debug.md) | Root Go configuration; `server.backend` in native configuration is the optional managed-mode link. |
+| Start/stop local `ppp` processes, edit profiles, inspect logs, or use a local operator UI | [Guardian architecture](guardian/ARCHITECTURE.md) | `guardian.json` (or `-config` path), instance profiles, and binary records; this configuration is not interchangeable with the root Go manager. |
 
-### Managed mode
+## Product boundaries
 
-Managed mode is enabled only when configuration supplies both:
+### Native `ppp`
 
-- a complete `database.master` section; and
-- Redis Sentinel addresses plus a master name.
+Native `ppp` owns packet forwarding and the client/server/proxy runtime. Its configuration selects the role and controls transports, tunnel keys, routes, DNS, and other runtime policy. A native process can optionally connect to the root Go manager as a server node; that control link does not turn the native process into Guardian or move the data path into Go.
 
-In this mode the service initializes database/Redis-backed users and servers, accepts node websocket connections, and runs its periodic server work.
+Use the native documentation for exact fields, command-line behavior, privileges, and shutdown semantics:
 
-### Standalone local-store mode
+- [Native documentation index](../docs/README.md)
+- [Configuration reference](../docs/reference/CONFIGURATION.md)
+- [CLI reference](../docs/reference/CLI_REFERENCE.md)
+- [Startup and lifecycle](../docs/architecture/STARTUP_AND_LIFECYCLE.md)
+- [Project interface map](../docs/reference/PROJECT_INTERFACE_MAP.md)
 
-If neither database nor Redis is configured, the service opens a local subscription manager based on `admin.data` (default `manager-data.json`). This is not a degraded database-backed node service: the websocket acceptor closes node connections in standalone mode. It is intended for local server/subscription administration only.
+### Go management backend (`go/`)
 
-A partial database/Redis setup is invalid; it is not interpreted as standalone mode.
+The root Go program creates `ppp.NewManagedServer()` and serves the management plane. Its first positional argument selects a configuration file; otherwise its loader tries `appsettings.json` and then built-in defaults where applicable.
 
-## Local checks and startup
+The backend has two explicit modes:
 
-From `go/`, use non-mutating source checks first:
+- **Managed:** complete `database.master` and Redis Sentinel addresses plus a master name. It initializes database/cache-backed users and servers, accepts C++ node WebSocket links, and runs managed server work.
+- **Standalone:** neither database nor Redis is configured. It stores local subscription/admin state (default `manager-data.json`) and rejects C++ node WebSocket connections. It is not a database-backed service with a reduced feature set.
 
-```sh
-go test ./...
-```
+Partial database/Redis configuration is a startup error, not standalone mode. The manager's HTTP/admin routes, storage, node protocol, and security cautions are documented in the [management backend guide](../docs/guides/MANAGEMENT_BACKEND.md), [Go core map](ppp/debug.md), and [infrastructure map](io/debug.md). Do not use those routes as evidence that Guardian is running or that a native child is supervised.
 
-To run the root service, give the configuration file as the first positional argument when one is needed:
+### Guardian (`go/guardian/`)
 
-```sh
-go run . ./path/to/control-plane.json
-```
+Guardian is the local process-management product. It starts configured native binaries, captures their output, optionally health-checks and restarts them, stores profiles/backups, and reports status through its own API and operator clients. It has no root-manager database/Redis mode and cannot be used as a native `server.backend`.
 
-Startup may contact configured Redis/MySQL services or create/read local management data. Use a disposable configuration for development and never commit passwords, database credentials, admin tokens, or real subscription links.
+See [Guardian architecture](guardian/ARCHITECTURE.md) for its quick path, lifecycle behavior, and local security boundary. The [project interface map](../docs/reference/PROJECT_INTERFACE_MAP.md) records Guardian and the manager as distinct experimental/stable surfaces; source paths are implementation evidence, not compatibility promises.
 
-## Security boundary
+## Do not combine these configurations
 
-The root service is not documented here as production-hardened:
+- Native `ppp` uses its native JSON/CLI configuration; Guardian uses `guardian.json` and per-instance launch settings.
+- The root Go manager's `admin.token`, database, Redis, and node-link key are unrelated to Guardian's generated JWT secret and API tokens.
+- Guardian can launch a native binary, but it does not supply that binary's tunnel configuration or become its management backend.
+- A native `server.backend` points at the root Go manager's C++ control link, not at Guardian's REST/SSE API.
 
-- Its default listen prefix is `:10000`; review the bind address before starting it outside a local environment.
-- The Gorilla WebSocket upgrader currently accepts every Origin, and this layer does not configure TLS.
-- `/api/v1/*` admin operations use a Bearer token. Set `admin.token` or `OPENPPP2_ADMIN_TOKEN` deliberately; when the service needs to generate a token, it logs it.
-- Public subscription routes are intentionally separate from authenticated admin routes.
-- Database, Redis, configuration, and cache state can all influence observed authentication/traffic behavior.
-
-Place a reviewed network boundary, TLS termination, authentication policy, and secret handling in front of any non-local deployment. That work is outside the guarantees of these internal documents.
-
-## Read by responsibility
-
-- [Core service](ppp/debug.md): configuration modes, websocket lifecycle, admin/subscription handler boundary, and source entry points.
-- [Infrastructure](io/debug.md): MySQL/GORM, Redis Sentinel, WebSocket, and file helpers.
-- [Single-instance daemon](daemon/README.md): intentionally local process wrapper with no authentication.
-- [Guardian](guardian/ARCHITECTURE.md): independently configured multi-instance manager with its own module, auth, Web UI, and TUI.
-
-The paths and interfaces described here are implementation maps, not compatibility promises.
+All three surfaces can involve secrets and host/network privileges. Keep each listener, configuration file, profile, environment map, subscription URL, and backend key within the intended trust boundary. Detailed security facts belong in the linked product pages above; this index is navigation, not a deployment guarantee.

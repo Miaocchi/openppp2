@@ -7,6 +7,9 @@
 > **用途：** 用规则文件描述分流和 DNS 策略（`client.policy`），并用 `ppp policy` 检查、解释、迁移和更新。
 > **读者：** 需要比 `client.routing` 更精确分流控制的客户端用户。
 > **上级索引：** [指南](README_CN.md) · **English:** [Policy v2 and `ppp policy`](POLICY_CLI.md)
+> **前提：** 使用 v2.1.7 或更新版本的客户端，并准备好加入 `client.policy` 及其规则文件的客户端配置。
+> **不包括：** 旧版 `client.routing` 语法和服务端管理；策略 v2 也不能与旧版路由配置键共存。
+> **下一参考：** 旧版机制参阅[路由与 DNS](ROUTING_AND_DNS_CN.md)，字段详情参阅[配置文件参考](../reference/CONFIGURATION_CN.md)。
 
 v2.1.7 起提供；v2.1.6 及更早版本没有 `client.policy` 和 `ppp policy`。
 

@@ -321,7 +321,7 @@ Creating a supported native SDK would require a deliberately small installed hea
 
 | Entrypoint | Output / purpose | Stability | Coverage gap |
 |---|---|---|---|
-| Root CMake and `build-openppp2-by-builds.sh` | Native `ppp` and Linux variants | **Stable developer interface** | Root build is separate from unit-test CMake |
+| Root CMake and `bash build-openppp2-by-builds.sh [third-party-root]` | Builds seven non-baseline Linux amd64 variants with root CMake as `bin/openppp2-linux-amd64-*.zip`. Run `bash tools/prepare_xtcp.sh` first; local `-simd` packages retain AVX2. | **Stable developer interface** | Root build is separate from unit-test CMake |
 | `build_windows.bat` | Windows x86/x64 Ninja builds | **Stable developer interface** | Environment/toolchain discovery is machine-dependent |
 | `android/CMakeLists.txt`, build scripts | Four Android `libopenppp2.so` ABIs | **Internal build interface** | Hard-coded third-party defaults; no JNI export check |
 | `ios/CMakeLists.txt` | `libopenppp2_ios.a` | **Experimental build interface** | Not built by current Actions |

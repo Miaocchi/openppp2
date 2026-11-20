@@ -1,4 +1,10 @@
 # VMUX Validation and Rollout Gate
+> **Scope:** This reference separates the implemented VMUX runtime contract from the evidence needed to change the default or promote an experimental mode.
+> **Evidence:** The state, negotiation, backpressure, scheduling, and fallback sections describe source-backed behavior; the harness/parser facts are evidence about tooling, not proof that a device run occurred.
+> **Acceptance criteria:** Use **Rollout evidence required for a default change** and **Default-change rule** as the release gate; a parser pass is meaningful only for a complete, qualifying result bundle.
+> **Unverified gaps:** No qualifying physical Linux-plus-mobile throughput/p99 bundle is recorded here, and `stripe` has no promotion scenario; therefore this page makes no performance-pass claim.
+> **Paths:** For source-backed test selection and build boundaries, see [development testing](../development/TESTING.md); for deployment, monitoring, and runtime decisions, see [operations](../operations/README.md), [deployment](../operations/DEPLOYMENT.md), and [operations and troubleshooting](../operations/OPERATIONS.md).
+
 
 > Status: Active
 > Type: Reference
@@ -40,6 +46,12 @@ server agrees `flow_v2` when its own preset needs it **or** the client
 requested it, provided both ends advertise `FLOW_V2`. The server keeps its own
 scheduler preset; only receiver ordering, which both ends share, changes.
 Older servers ignore bit3 and keep the previous behavior.
+
+## TCP stream close
+
+In both receiver ordering modes, `cmd_fin` with a single `W` byte means the sender reached TCP read EOF. It is sequenced after the last PUSH. The receiver finishes writing all preceding bytes to its TCP socket, then shuts down only the socket's send side. The reverse direction remains open for responses, including application receipts sent after EOF.
+
+The client advertises capability bit `0x20`; the server echoes it only if offered. Without agreement, TCP EOF uses the original empty FIN and full close. Even with agreement, an empty FIN remains terminal (including explicit close and errors), as does an unknown FIN payload. Applications requiring a receipt after half-close need updated endpoints on both sides.
 
 ## Receive backpressure
 

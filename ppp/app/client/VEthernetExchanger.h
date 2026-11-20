@@ -37,16 +37,24 @@
 
 #include <atomic>
 #include <mutex>
+#include <unordered_map>
 #include <ppp/app/protocol/VirtualEthernetLinklayer.h>
 #include <ppp/app/protocol/SessionResumeAuthenticator.h>
 #include <ppp/app/client/routing/HumanRoutingRules.h>
 #include <ppp/app/client/policy/PolicyCompiler.h>
 #include <ppp/configurations/AppConfigurationFwd.h>
+#include <ppp/configurations/MultipathConfiguration.h>
 #include <ppp/configurations/MappingConfiguration.h>
 #include <ppp/app/protocol/VirtualEthernetMappingPort.h>
 #include <ppp/app/protocol/VirtualEthernetPacket.h>
 #include <ppp/app/mux/MuxRuntimeState.h>
 #include <ppp/app/runtime/RuntimeSnapshot.h>
+#include <ppp/app/multipath/PathManager.h>
+#include <ppp/app/multipath/PathDialer.h>
+#include <ppp/app/multipath/BypassLease.h>
+#include <ppp/app/multipath/RuntimeState.h>
+#include <ppp/app/multipath/Session.h>
+#include <ppp/app/multipath/Control.h>
 #include <ppp/cryptography/Ciphertext.h>
 #include <ppp/diagnostics/LinkTelemetry.h>
 #include <ppp/Int128.h>
@@ -75,6 +83,7 @@
 #include <ppp/app/client/dns/IDnsTunnelTransport.h>
 
 namespace ppp::app::mux { class MuxCoordinator; }
+namespace ppp::transmissions { class MultipathTransmission; }
 
 namespace ppp {
     namespace app {
@@ -91,6 +100,13 @@ namespace ppp {
                 return policy_enabled && peer_supports_v1 && peer_enables_v1 &&
                     (kind == ppp::transmissions::AuthenticatedCarrierKind::Tcp ||
                      kind == ppp::transmissions::AuthenticatedCarrierKind::WebSocket);
+            }
+
+            inline bool IsClientMultipathCarrierAuthenticated(
+                ppp::transmissions::AuthenticatedCarrierMethod method,
+                bool binding_active, bool has_exporter) noexcept {
+                return method == ppp::transmissions::AuthenticatedCarrierMethod::MultipathNoiseV1 &&
+                    binding_active && has_exporter;
             }
 
             inline bool IsClientSessionRecoveryCarrierEligible(
@@ -250,6 +266,7 @@ namespace ppp {
                  */
                 NetworkState                                                            GetNetworkState()       noexcept { return network_state_.load(); }
                 RuntimeStateSnapshot                                                    GetRuntimeState() const noexcept;
+                ppp::app::multipath::RuntimeState                                       GetMultipathRuntimeState() noexcept;
                 /** @brief Changes candidate family preference for current and future peers. */
                 void                                                                    SetP2PPeerPriority(ppp::p2p::P2PPeerPriority priority) noexcept;
                 /** @brief Changes candidate preference for one authenticated peer UUID. */
@@ -709,6 +726,23 @@ namespace ppp {
                     const ppp::function<bool()>& active = {},
                     const ppp::function<void(const ppp::function<void()>&)>& register_cancel = {}) noexcept;
 
+                ITransmissionPtr                                                        OpenMultipathPathTransmission(
+                    const ContextPtr& context, const StrandPtr& strand,
+                    const ppp::configurations::MultipathConfiguration::Path& path,
+                    const std::shared_ptr<ppp::app::multipath::PathAttempt>& attempt,
+                    const ppp::app::multipath::PathDialer::AddressLeaseAcquire& acquire_address,
+                    ppp::transmissions::TcpTransmissionRole role,
+                    YieldContext& y) noexcept;
+                ITransmissionPtr                                                        OpenMultipathCarrier(
+                    const ContextPtr& context, const StrandPtr& strand,
+                    const ppp::app::multipath::PathManager::Attempt& path_slot,
+                    ppp::transmissions::TcpTransmissionRole role, bool resume,
+                    std::shared_ptr<ppp::app::multipath::PathAttempt>& path_attempt,
+                    YieldContext& y) noexcept;
+                bool                                                                    HandleMultipathControlRecord(
+                    const std::shared_ptr<ppp::transmissions::MultipathTransmission>& transmission,
+                    const std::shared_ptr<const std::vector<std::uint8_t>>& payload) noexcept;
+
             protected:
                 /**
                  * @brief Allocates and configures an asynchronous TCP socket with platform options.
@@ -933,15 +967,16 @@ namespace ppp {
                  *
                  * @param allocator  Buffer allocator for sub-link transmission buffers.
                  * @param mux        VMUX instance to populate with sub-links.
-                 * @return true if all sub-links were connected; false if any failed.
+                 * @param primary_transmission  Optional multipath primary to attach during normal linking.
+                 * @param token      Nonzero to dial one multipath trial child instead of replenishing.
+                 * @return true if the dial coroutine was spawned; false if busy or unavailable.
                  */
-                bool                                                                    MuxConnectAllLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux) noexcept;
+                bool                                                                    MuxConnectAllLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux, const ITransmissionPtr& primary_transmission = nullptr, uint64_t token = 0) noexcept;
                 /**
-                 * @brief Connect N extra carrier links at runtime and attach each via
-                 *        add_linklayer's established-session path (turbo dynamic pool grow).
+                 * @brief Dials one extra legacy carrier for the specified pool trial token.
                  * @return true when the grow coroutine was spawned.
                  */
-                bool                                                                    MuxGrowLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux, int count) noexcept;
+                bool                                                                    MuxGrowLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux, uint64_t token) noexcept;
 
             private:
                 /**
@@ -1186,6 +1221,24 @@ namespace ppp {
 
                 /** @brief Owns the active VMUX session and its runtime projection. */
                 std::unique_ptr<ppp::app::mux::MuxCoordinator>                          mux_coordinator_;
+                ppp::app::multipath::PathManager                                        multipath_paths_;
+                ppp::app::multipath::BypassLeaseManager                                multipath_bypass_leases_;
+                std::mutex                                                              multipath_session_mutex_;
+                ppp::app::multipath::SessionTicket                                      multipath_ticket_;
+                std::string                                                             multipath_create_request_id_;
+                bool                                                                    multipath_query_pending_create_ = false;
+                std::atomic_bool                                                        multipath_resume_primary_{false};
+                std::mutex                                                              multipath_control_mutex_;
+                ppp::app::multipath::ReliableControlState                              multipath_control_state_;
+                std::mutex                                                              multipath_link_attempts_mutex_;
+                std::unordered_map<const ppp::transmissions::ITransmission*, ppp::app::multipath::PathManager::Attempt>
+                                                                                        multipath_link_attempts_;
+                std::atomic_bool                                                        multipath_child_connecting_{false};
+                ITransmissionPtr                                                        multipath_primary_transmission_;
+                ITransmissionPtr                                                        multipath_primary_mux_channel_;
+                std::string                                                             multipath_primary_path_id_;
+                std::atomic_bool                                                        multipath_primary_mux_attached_{false};
+                std::mutex                                                              multipath_primary_mutex_;
                 /** @brief VLAN identifier assigned during VMUX negotiation. */
                 uint16_t                                                                mux_vlan_           = 0;
 
