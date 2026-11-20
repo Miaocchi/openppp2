@@ -340,7 +340,10 @@ public:
                     pending.fetch_sub(1);
                 });
             if (!server_spawned || !client_spawned || !WaitFor([&]() { return pending.load() == 0; }) ||
-                !client_handshake.load() || !server_handshake.load()) return false;
+                !client_handshake.load() || !server_handshake.load()) {
+                Dispose();
+                return false;
+            }
         }
 
         std::array<std::string, 4> payloads = {
@@ -408,6 +411,7 @@ public:
                     pending.fetch_sub(1);
                 });
         const bool complete = spawned && WaitFor([&]() { return pending.load() == 0 && control_seen.load(); });
+        if (!complete) Dispose();
         BOOST_CHECK_MESSAGE(complete, "pending=" << pending.load() << " control=" << control_seen.load());
         for (int i = 0; i < 4; ++i) {
             BOOST_CHECK_MESSAGE(reads[i].load(), "logical read " << i << " length=" << lengths[i] << " error=" << errors[i]);

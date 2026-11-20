@@ -700,6 +700,7 @@ bool MultipathTransmission::SubmitSealedRecord(std::uint8_t type, const std::uin
                         bool complete_now = false;
                         {
                             std::lock_guard<std::mutex> lock(completion->mutex);
+                            if (completion->received) return;
                             completion->received = true;
                             completion->succeeded = ok;
                             complete_now = !completion->submitting;
@@ -708,21 +709,19 @@ bool MultipathTransmission::SubmitSealedRecord(std::uint8_t type, const std::uin
                     });
             }
         }
-        bool complete_deferred = false;
-        bool deferred_result = false;
-        {
-            std::lock_guard<std::mutex> lock(completion->mutex);
-            completion->submitting = false;
-            complete_deferred = completion->received;
-            deferred_result = completion->succeeded;
-        }
-        if (complete_deferred && accepted) {
-            // Process inline callbacks only after both transmission locks are released.
-            // record_write_mutex_ still preserves submission order here.
-            if (!deferred_result) Dispose();
-            callback(deferred_result);
-        }
     }
+    // A completion can submit the next fragment. Release both transmission
+    // locks before allowing it to run, while keeping seal and write ordered.
+    bool complete_deferred = false;
+    bool deferred_result = false;
+    {
+        std::lock_guard<std::mutex> lock(completion->mutex);
+        complete_deferred = accepted && completion->received;
+        deferred_result = completion->succeeded;
+        completion->received = completion->received || !accepted;
+        completion->submitting = false;
+    }
+    if (complete_deferred) completion->Complete(deferred_result);
     if (sealed && !accepted) Dispose();
     return accepted;
 }
