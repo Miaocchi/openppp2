@@ -2791,9 +2791,12 @@ namespace vmux {
                 link->first_delivery_send_tick_ = now;
                 link->delivered_tick_ = now;
             }
+            // An empty local queue can coexist with a full carrier flight.
+            const bool app_limited = tx_data_frames_ == 0 &&
+                link->queued_bytes_ < PPP_MUX_LINK_BYTE_HIGH_WATER &&
+                !get_link_telemetry(*link, now).at_capacity;
             stamp = {link->delivered_payload_bytes_, link->delivered_tick_,
-                link->first_delivery_send_tick_, tx_data_frames_ == 0 &&
-                    link->queued_bytes_ < PPP_MUX_LINK_BYTE_HIGH_WATER, true};
+                link->first_delivery_send_tick_, app_limited, true};
         }
         if (!rtx_.Track(key_cid, seq, packet, packet_length, now, rtx_hard_cap, link_id, stamp, payload_bytes)) {
             // Retransmit buffer exhausted: degrade exactly like an unrecovered gap.
