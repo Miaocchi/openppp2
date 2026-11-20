@@ -144,6 +144,10 @@ func (m *Manager) Add(name string, cfg Config) error {
 	cfg = normalizeConfig(name, cfg)
 
 	m.mu.Lock()
+	if m.shuttingDown {
+		m.mu.Unlock()
+		return errors.New("manager is shutting down")
+	}
 	if _, exists := m.instances[name]; exists {
 		m.mu.Unlock()
 		return fmt.Errorf("instance %s already exists", name)
@@ -173,7 +177,11 @@ func (m *Manager) Update(name string, cfg Config) error {
 		return err
 	}
 
-	wasRunning := instRunning(inst)
+	inst.mu.Lock()
+	inst.cancelRestartLocked()
+	wasRunning := inst.running
+	inst.manualStop = true
+	inst.mu.Unlock()
 	if wasRunning {
 		if err := m.stopInstance(inst); err != nil {
 			return fmt.Errorf("stop instance %s before update: %w", name, err)
@@ -190,7 +198,7 @@ func (m *Manager) Update(name string, cfg Config) error {
 	inst.logMu.Unlock()
 
 	if wasRunning {
-		if err := m.startInstance(inst, true); err != nil {
+		if err := m.startInstance(inst, true, nil); err != nil {
 			return fmt.Errorf("restart instance %s after update: %w", name, err)
 		}
 	}
@@ -200,20 +208,28 @@ func (m *Manager) Update(name string, cfg Config) error {
 }
 
 func (m *Manager) Remove(name string) error {
-	inst, err := m.getInstance(name)
-	if err != nil {
-		return err
+	m.mu.Lock()
+	inst, ok := m.instances[name]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("instance %s not found", name)
 	}
-	if instRunning(inst) {
-		if err := m.stopInstance(inst); err != nil {
-			return fmt.Errorf("stop instance %s before remove: %w", name, err)
-		}
+	inst.mu.Lock()
+	inst.shutdown = true
+	inst.cancelRestartLocked()
+	inst.mu.Unlock()
+	m.mu.Unlock()
+	if err := m.stopInstance(inst); err != nil {
+		return fmt.Errorf("stop instance %s before remove: %w", name, err)
 	}
 
 	m.mu.Lock()
+	if m.instances[name] != inst {
+		m.mu.Unlock()
+		return fmt.Errorf("instance %s was already removed", name)
+	}
 	delete(m.instances, name)
 	m.mu.Unlock()
-
 	m.publishEvent(Event{Type: "removed", Name: name, At: time.Now()})
 	return nil
 }
@@ -223,7 +239,7 @@ func (m *Manager) Start(name string) error {
 	if err != nil {
 		return err
 	}
-	return m.startInstance(inst, false)
+	return m.startInstance(inst, false, nil)
 }
 
 func (m *Manager) Stop(name string) error {
@@ -242,7 +258,7 @@ func (m *Manager) Restart(name string) error {
 	if err := m.stopInstance(inst); err != nil {
 		return err
 	}
-	return m.startInstance(inst, true)
+	return m.startInstance(inst, true, nil)
 }
 
 func (m *Manager) Status(name string) (*StatusResponse, error) {
@@ -331,6 +347,10 @@ func (m *Manager) Shutdown() {
 	m.shuttingDown = true
 	instances := make([]*instance, 0, len(m.instances))
 	for _, inst := range m.instances {
+		inst.mu.Lock()
+		inst.shutdown = true
+		inst.cancelRestartLocked()
+		inst.mu.Unlock()
 		instances = append(instances, inst)
 	}
 	for ch := range m.eventSubscribers {
@@ -340,9 +360,6 @@ func (m *Manager) Shutdown() {
 	m.mu.Unlock()
 
 	for _, inst := range instances {
-		inst.mu.Lock()
-		inst.shutdown = true
-		inst.mu.Unlock()
 		_ = m.stopInstance(inst)
 		inst.logMu.Lock()
 		for ch := range inst.logSubscribers {
@@ -363,10 +380,35 @@ func (m *Manager) getInstance(name string) (*instance, error) {
 	return inst, nil
 }
 
-func (m *Manager) startInstance(inst *instance, isRestart bool) error {
+func (m *Manager) startInstance(inst *instance, isRestart bool, retry chan struct{}) error {
+	m.mu.RLock()
 	inst.mu.Lock()
+	name := inst.cfg.Name
+	if current, ok := m.instances[name]; !ok || current != inst {
+		inst.mu.Unlock()
+		m.mu.RUnlock()
+		if retry != nil {
+			return nil
+		}
+		return fmt.Errorf("instance %s is no longer managed", name)
+	}
+	if m.shuttingDown || inst.shutdown {
+		inst.mu.Unlock()
+		m.mu.RUnlock()
+		if retry != nil {
+			return nil
+		}
+		return errors.New("instance is shutting down")
+	}
+	if retry != nil && (inst.pendingRestart != retry || inst.manualStop) {
+		inst.mu.Unlock()
+		m.mu.RUnlock()
+		return nil
+	}
+	inst.cancelRestartLocked()
 	if inst.running {
 		inst.mu.Unlock()
+		m.mu.RUnlock()
 		return nil
 	}
 	inst.manualStop = false
@@ -385,6 +427,7 @@ func (m *Manager) startInstance(inst *instance, isRestart bool) error {
 	master, slave, err := openPty()
 	if err != nil {
 		inst.mu.Unlock()
+		m.mu.RUnlock()
 		return err
 	}
 	cmd.Stdin = slave
@@ -396,10 +439,12 @@ func (m *Manager) startInstance(inst *instance, isRestart bool) error {
 	if err := cmd.Start(); err != nil {
 		_ = master.Close()
 		inst.mu.Unlock()
+		m.mu.RUnlock()
 		return err
 	}
 	now := time.Now()
 	inst.cmd = cmd
+	inst.exited = make(chan struct{})
 	inst.running = true
 	inst.pid = cmd.Process.Pid
 	inst.startedAt = &now
@@ -408,38 +453,42 @@ func (m *Manager) startInstance(inst *instance, isRestart bool) error {
 		inst.restartCount = 0
 	}
 	inst.restartWindowAt = now
+	name, pid, tui := inst.cfg.Name, inst.pid, inst.cfg.TUIEnabled
 	inst.mu.Unlock()
+	m.mu.RUnlock()
 
 	// Inject startup log entry so user sees at least one line
 	mode := "PTY"
-	if inst.cfg.TUIEnabled {
+	if tui {
 		mode = "TUI"
 	}
 	startupEntry := LogEntry{
 		At: now, Stream: "guardian",
-		Text: fmt.Sprintf("Instance '%s' started (PID: %d, mode: %s)", inst.cfg.Name, inst.pid, mode),
+		Text: fmt.Sprintf("Instance '%s' started (PID: %d, mode: %s)", name, pid, mode),
 	}
 	inst.logMu.Lock()
 	inst.logs.add(startupEntry)
 	inst.logMu.Unlock()
 
-	m.StartHealthCheck(inst.cfg.Name)
-	m.publishEvent(Event{Type: eventType(isRestart, "restarted", "started"), Name: inst.cfg.Name, At: now})
+	m.StartHealthCheck(name)
+	m.publishEvent(Event{Type: eventType(isRestart, "restarted", "started"), Name: name, At: now})
 	if ptyMaster != nil {
 		go m.capturePty(inst, ptyMaster)
-		go m.waitForExit(inst)
+		go m.waitForExit(inst, cmd)
 	}
 	return nil
 }
 
 func (m *Manager) stopInstance(inst *instance) error {
 	inst.mu.Lock()
+	inst.manualStop = true
+	inst.cancelRestartLocked()
 	if !inst.running || inst.cmd == nil || inst.cmd.Process == nil {
 		inst.mu.Unlock()
 		return nil
 	}
-	inst.manualStop = true
 	cmd := inst.cmd
+	exited := inst.exited
 	stopSignal := inst.cfg.StopSignal
 	waitMs := inst.cfg.StopWaitMs
 	inst.mu.Unlock()
@@ -449,34 +498,26 @@ func (m *Manager) stopInstance(inst *instance) error {
 		_ = killProcessGroup(cmd.Process.Pid, sig) // signal entire process group
 	}
 
-	deadline := time.Now().Add(time.Duration(waitMs) * time.Millisecond)
-	for time.Now().Before(deadline) {
-		inst.mu.RLock()
-		running := inst.running
-		inst.mu.RUnlock()
-		if !running {
-			return nil
+	timer := time.NewTimer(time.Duration(waitMs) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-exited:
+		return nil
+	case <-timer.C:
+	}
+	inst.mu.Lock()
+	if inst.cmd == cmd {
+		if err := forceKillProcessGroup(cmd.Process.Pid); err != nil {
+			inst.mu.Unlock()
+			return err
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
-
-	inst.mu.RLock()
-	stillRunning := inst.running
-	process := cmd.Process
-	inst.mu.RUnlock()
-	if stillRunning && process != nil {
-		_ = forceKillProcessGroup(process.Pid) // force kill process group
-	}
+	inst.mu.Unlock()
+	<-exited
 	return nil
 }
 
-func (m *Manager) waitForExit(inst *instance) {
-	inst.mu.RLock()
-	cmd := inst.cmd
-	inst.mu.RUnlock()
-	if cmd == nil {
-		return
-	}
+func (m *Manager) waitForExit(inst *instance, cmd *exec.Cmd) {
 
 	err := cmd.Wait()
 	now := time.Now()
@@ -497,6 +538,8 @@ func (m *Manager) waitForExit(inst *instance) {
 	inst.running = false
 	inst.pid = 0
 	inst.cmd = nil
+	close(inst.exited)
+	inst.exited = nil
 	inst.stoppedAt = &now
 	inst.lastExit = &exit
 	manualStop := inst.manualStop
@@ -509,24 +552,36 @@ func (m *Manager) waitForExit(inst *instance) {
 	retries := inst.restartCount
 	maxRetries := inst.cfg.AutoRestart.MaxRetries
 	retryDelay := inst.cfg.AutoRestart.RetryDelayMs
+	name := inst.cfg.Name
+	var retry chan struct{}
+	if allowRestart && (maxRetries <= 0 || retries <= maxRetries) {
+		retry = make(chan struct{})
+		inst.pendingRestart = retry
+	}
 	inst.mu.Unlock()
 	stopHealthChecker(hc)
 
-	m.publishEvent(Event{Type: "stopped", Name: inst.cfg.Name, At: now, Message: exit.Error})
+	m.publishEvent(Event{Type: "stopped", Name: name, At: now, Message: exit.Error})
 	if err != nil {
-		log.Printf("instance %s exited: %v", inst.cfg.Name, err)
+		log.Printf("instance %s exited: %v", name, err)
 	}
 
 	if allowRestart {
 		if maxRetries > 0 && retries > maxRetries {
-			m.publishEvent(Event{Type: "restart_exhausted", Name: inst.cfg.Name, At: time.Now()})
+			m.publishEvent(Event{Type: "restart_exhausted", Name: name, At: time.Now()})
 			return
 		}
 		if retryDelay > 0 {
-			time.Sleep(time.Duration(retryDelay) * time.Millisecond)
+			timer := time.NewTimer(time.Duration(retryDelay) * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-retry:
+				return
+			case <-timer.C:
+			}
 		}
-		if startErr := m.startInstance(inst, true); startErr != nil {
-			m.publishEvent(Event{Type: "restart_failed", Name: inst.cfg.Name, At: time.Now(), Message: startErr.Error()})
+		if startErr := m.startInstance(inst, true, retry); startErr != nil {
+			m.publishEvent(Event{Type: "restart_failed", Name: name, At: time.Now(), Message: startErr.Error()})
 		}
 	}
 }
@@ -743,12 +798,6 @@ func mergeEnv(extra map[string]string) []string {
 		env = append(env, k+"="+v)
 	}
 	return env
-}
-
-func instRunning(inst *instance) bool {
-	inst.mu.RLock()
-	defer inst.mu.RUnlock()
-	return inst.running
 }
 
 func shouldResetRestartWindow(inst *instance) bool {

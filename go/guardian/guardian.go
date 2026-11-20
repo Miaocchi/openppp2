@@ -147,48 +147,60 @@ func (g *Guardian) SaveConfig() error {
 		return fmt.Errorf("guardian config path is empty")
 	}
 
-	instances := g.instances.ListConfigs()
-	savedInstances := make([]InstanceConfig, 0, len(instances))
-	for _, inst := range instances {
-		savedInstances = append(savedInstances, InstanceConfig{
-			Name:       inst.Name,
-			Enabled:    true,
-			Binary:     inst.Binary,
-			WorkDir:    inst.WorkDir,
-			ConfigPath: inst.ConfigPath,
-			Args:       append([]string(nil), inst.Args...),
-			Env:        cloneStringMap(inst.Env),
-			StopSignal: inst.StopSignal,
-			StopWaitMs: inst.StopWaitMs,
-			AutoRestart: AutoRestartConfig{
-				Enabled:      inst.AutoRestart.Enabled,
-				MaxRetries:   inst.AutoRestart.MaxRetries,
-				RetryDelayMs: inst.AutoRestart.RetryDelayMs,
-				ResetAfterMs: inst.AutoRestart.ResetAfterMs,
-			},
-			HealthCheck: HealthCheckConfig{
-				Enabled:      inst.HealthCheck.Enabled,
-				IntervalMs:   inst.HealthCheck.IntervalMs,
-				TCPPort:      inst.HealthCheck.TCPPort,
-				HTTPEndpoint: inst.HealthCheck.HTTPEndpoint,
-			},
-			LogLines:   inst.LogLines,
-			TUIEnabled: inst.TUIEnabled,
-		})
+	instances := g.instances.ListConfigs() // Sorted by name, with Args and Env cloned.
+	active := make(map[string]*instance.Config, len(instances))
+	for i := range instances {
+		active[instances[i].Name] = &instances[i]
 	}
 
-	g.cfg.Instances = savedInstances
+	merged := make([]InstanceConfig, 0, len(instances))
+	for _, original := range g.cfg.Instances {
+		if inst, ok := active[original.Name]; ok {
+			merged = append(merged, enabledInstanceConfig(inst))
+			delete(active, original.Name)
+		} else if !original.Enabled {
+			merged = append(merged, original)
+		}
+	}
+	for i := range instances {
+		if _, ok := active[instances[i].Name]; ok {
+			merged = append(merged, enabledInstanceConfig(&instances[i]))
+		}
+	}
 
-	return SaveConfigFile(g.configPath, g.cfg)
+	snapshot := *g.cfg
+	snapshot.Instances = merged
+	if err := SaveConfigFile(g.configPath, &snapshot); err != nil {
+		return err
+	}
+	g.cfg.Instances = merged
+	return nil
 }
 
-func cloneStringMap(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return map[string]string{}
+func enabledInstanceConfig(inst *instance.Config) InstanceConfig {
+	return InstanceConfig{
+		Name:       inst.Name,
+		Enabled:    true,
+		Binary:     inst.Binary,
+		WorkDir:    inst.WorkDir,
+		ConfigPath: inst.ConfigPath,
+		Args:       inst.Args,
+		Env:        inst.Env,
+		StopSignal: inst.StopSignal,
+		StopWaitMs: inst.StopWaitMs,
+		AutoRestart: AutoRestartConfig{
+			Enabled:      inst.AutoRestart.Enabled,
+			MaxRetries:   inst.AutoRestart.MaxRetries,
+			RetryDelayMs: inst.AutoRestart.RetryDelayMs,
+			ResetAfterMs: inst.AutoRestart.ResetAfterMs,
+		},
+		HealthCheck: HealthCheckConfig{
+			Enabled:      inst.HealthCheck.Enabled,
+			IntervalMs:   inst.HealthCheck.IntervalMs,
+			TCPPort:      inst.HealthCheck.TCPPort,
+			HTTPEndpoint: inst.HealthCheck.HTTPEndpoint,
+		},
+		LogLines:   inst.LogLines,
+		TUIEnabled: inst.TUIEnabled,
 	}
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
 }

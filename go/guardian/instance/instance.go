@@ -7,12 +7,13 @@ import (
 )
 
 type instance struct {
-	mu sync.RWMutex
+	mu    sync.RWMutex
 	logMu sync.RWMutex
 
 	cfg Config
 
 	cmd       *exec.Cmd
+	exited    chan struct{}
 	running   bool
 	pid       int
 	startedAt *time.Time
@@ -21,12 +22,21 @@ type instance struct {
 
 	restartCount    int
 	restartWindowAt time.Time
+	pendingRestart  chan struct{}
 	manualStop      bool
 	shutdown        bool
 	healthCheck     *HealthChecker
 	logs            *ringBuffer
 	logSubscribers  map[chan LogEntry]struct{}
 	runtimeStats    map[string]string
+}
+
+// Caller holds i.mu. Closing the token wakes a worker still in backoff.
+func (i *instance) cancelRestartLocked() {
+	if i.pendingRestart != nil {
+		close(i.pendingRestart)
+		i.pendingRestart = nil
+	}
 }
 
 type ringBuffer struct {
@@ -60,16 +70,34 @@ func (r *ringBuffer) list(n int, stream string) []LogEntry {
 	if n <= 0 || n > r.count {
 		n = r.count
 	}
-	result := make([]LogEntry, 0, n)
-	for i := 0; i < r.count; i++ {
-		entry := r.items[(r.start+i)%len(r.items)]
-		if stream != "" && stream != "all" && stream != entry.Stream {
-			continue
+	if n == 0 {
+		return nil
+	}
+	if stream == "" || stream == "all" {
+		first := (r.start + r.count - n) % len(r.items)
+		result := make([]LogEntry, n)
+		copied := copy(result, r.items[first:])
+		copy(result[copied:], r.items)
+		return result
+	}
+
+	// Find only the suffix containing the last n matching entries.
+	first, matches := r.count, 0
+	for first > 0 && matches < n {
+		first--
+		if r.items[(r.start+first)%len(r.items)].Stream == stream {
+			matches++
 		}
-		result = append(result, entry)
 	}
-	if len(result) <= n {
-		return append([]LogEntry(nil), result...)
+	if matches == 0 {
+		return nil
 	}
-	return append([]LogEntry(nil), result[len(result)-n:]...)
+	result := make([]LogEntry, 0, matches)
+	for i := first; i < r.count; i++ {
+		entry := r.items[(r.start+i)%len(r.items)]
+		if entry.Stream == stream {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
