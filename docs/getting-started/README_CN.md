@@ -23,4 +23,3 @@
 | 了解平台差异（Windows / Linux / macOS / Android / iOS） | [平台说明](../guides/PLATFORMS_CN.md) |
 | 部署为系统服务、上线检查 | [部署](../operations/DEPLOYMENT_CN.md) · [运维与排障](../operations/OPERATIONS_CN.md) |
 | 用图形界面管理 | [桌面客户端](DESKTOP_CLIENT_CN.md)（实验性，需从源码运行） |
-| 自己编译或阅读源码 | [开发](../development/README_CN.md) · [源码阅读指南](../development/SOURCE_READING_GUIDE_CN.md) |
