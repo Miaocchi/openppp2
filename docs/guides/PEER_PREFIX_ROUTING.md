@@ -7,6 +7,9 @@
 > **Purpose:** Let other clients reach the whole LAN behind a "gateway client".
 > **Audience:** Operators interconnecting site networks.
 > **Parent index:** [Guides](README.md) · **Chinese:** [对端前缀路由（站点互联）](PEER_PREFIX_ROUTING_CN.md)
+> **Prerequisite:** A server with `server.subnet` and peer routing enabled, an allowlisted gateway client, IP forwarding, and a LAN return route.
+> **Not covered:** IPv6 prefixes or general LAN bridging; proxy mode keeps these routes inside the process.
+> **Next reference:** [Routing and DNS](ROUTING_AND_DNS.md) for static peer routes and the [configuration reference](../reference/CONFIGURATION.md) for field definitions.
 
 ## 1. Scenario
 

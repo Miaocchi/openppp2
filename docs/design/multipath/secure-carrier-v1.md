@@ -1,4 +1,8 @@
 # Multipath Secure Carrier v1
+> Status: Design-bound
+> Type: Design
+> Last verified: 2026-11-20
+
 
 Status: implementation draft for independent protocol review.
 

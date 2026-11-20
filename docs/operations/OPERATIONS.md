@@ -8,6 +8,12 @@
 > **Audience:** Operators and users running a server or client.
 > **Parent index:** [Operations](README.md) · **Chinese:** [运维与排障](OPERATIONS_CN.md)
 
+> **Read this / not this**
+> - **Read this** for diagnosing the base `ppp` tunnel process, including runtime phases, safe operation, and restarts under systemd or Guardian.
+> - **Not this** for writing the initial configuration or deploying a long-lived service; use [Writing the configuration file](../getting-started/CONFIGURE.md) or [Deployment](DEPLOYMENT.md). For central authentication and accounting, use [Management backend](../guides/MANAGEMENT_BACKEND.md).
+> - **Boundary:** the base `ppp` executable carries the tunnel; Guardian is a separate local supervisor and configuration manager; the management backend is a separate service for authentication and accounting.
+
+
 ## 1. What you can observe
 
 | Source | How | Shows |
@@ -78,7 +84,7 @@ idle → starting → preparing_host → connecting → handshaking → applying
 
 Share only redacted information: the error line, the phase, platform and version, and configuration excerpts without addresses or keys. Never post full configurations, node addresses, subscription links, or keys.
 
-## Related documents
+## Continue with
 
-- [Deployment](DEPLOYMENT.md) · [Security](SECURITY.md) · [Error codes](../reference/ERROR_CODES.md)
-- [Writing the configuration file · common mistakes](../getting-started/CONFIGURE.md) · [Routing and DNS](../guides/ROUTING_AND_DNS.md)
+- [Security](SECURITY.md) · [Error codes](../reference/ERROR_CODES.md)
+- [Routing and DNS](../guides/ROUTING_AND_DNS.md)

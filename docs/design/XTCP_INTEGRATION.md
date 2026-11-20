@@ -3,6 +3,8 @@
 > Status: Active
 > Type: Design
 > Last verified: 2026-10-20 (against root `CMakeLists.txt`, `ppp.vcxproj`, `android/build.sh`, `tools/run_windows_xtcp_loopback_benchmark.ps1`)
+> **Status boundary:** This page records design, implementation notes, and bounded evidence; it is not the current user contract, and an implemented item is not automatically a cross-platform or release guarantee. For supported behavior, configuration, and operations, use [Architecture](../architecture/README.md), [Reference](../reference/README.md), [Guides](../guides/README.md), [Operations](../operations/README.md), and the applicable release/testing pages; durable decisions belong in [ADRs](../adr/README.md). Verification is limited to the sources, commits, and lab records named here; untested production, cross-platform, or deployment conditions are not implied.
+
 
 ## SYN-cookie MAC widening (0054)
 

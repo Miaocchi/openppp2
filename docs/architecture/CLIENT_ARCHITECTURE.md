@@ -6,6 +6,10 @@
 > **Purpose:** Describe the native client runtime and its role boundaries.
 > **Audience:** Contributors and operators.
 > **Parent index:** [Architecture](README.md) · **Chinese:** [客户端架构](CLIENT_ARCHITECTURE_CN.md)
+> **Read this for:** Contributors and operators tracing native client ownership and packet paths.
+> **Question answered:** Which component owns the client device, session, and tunnel actions?
+> **Implementation detail vs user contract:** The owner and packet-path descriptions below are implementation details. Treat stated CLI/configuration behavior as the current runtime contract; use [Reference](../reference/README.md) for public fields.
+> **Next canonical page:** [Startup and Lifecycle](STARTUP_AND_LIFECYCLE.md)
 
 ## Scope
 
@@ -61,10 +65,3 @@ An established exchanger therefore does not always imply an externally published
 ## MUX and P2P limits
 
 MUX is not enabled by the handshake bit alone. Client runtime MUX work uses later link-layer `MUX`/`MUXON` exchanges and can open child carrier transmissions. Direct P2P code exists, but the production capability gate is false, so normal production execution remains relay-only.
-
-## Related pages
-
-- [Startup and Lifecycle](STARTUP_AND_LIFECYCLE.md)
-- [Tunnel Design](TUNNEL_DESIGN.md)
-- [EDSM State Machines](EDSM_STATE_MACHINES.md)
-- [Transport and Protected Transmission](TRANSMISSION.md)

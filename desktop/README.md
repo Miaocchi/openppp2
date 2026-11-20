@@ -1,20 +1,28 @@
 # OpenPPP2 Windows desktop client
 
 Experimental Windows client built with Svelte, Tauri 2 and Rust. Supply a compatible external `ppp.exe`; bundling is disabled. This project does not install a service or manage servers.
+>
+> **Audience:** Windows desktop developers and evaluators working with a compatible local `ppp.exe`.
+> **Supported status:** Experimental, source-run client only; no supported installer or release package is provided.
+> **Build/runtime boundary:** The Tauri/Svelte UI launches an external `ppp.exe`; bundling is disabled, and this client neither installs a service nor manages servers.
+> **Canonical next page:** [Desktop Client getting started guide](../docs/getting-started/DESKTOP_CLIENT.md) for prerequisites, checks, and source-run setup.
+
 
 ## Run
 
-From `desktop/client`:
+For prerequisites and frontend/native checks, use the [Desktop Client getting started guide](../docs/getting-started/DESKTOP_CLIENT.md). To launch the development shell, run these commands from `desktop/client`:
 
 ```sh
-npm ci
-npm test
-npm run build
-cargo test --manifest-path src-tauri/Cargo.toml
 npm run dev
 ```
 
-Keep Vite running on `http://127.0.0.1:1420`, then run `npm run desktop` in another terminal. A normal Cargo build uses embedded frontend assets; the desktop script uses the development URL.
+Keep Vite running on `http://127.0.0.1:1420`, then in another terminal run:
+
+```sh
+npm run desktop
+```
+
+The desktop script uses the development URL; it is a local evaluation path, not a packaged release.
 
 ## Daily workflows
 

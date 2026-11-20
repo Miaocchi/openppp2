@@ -2,6 +2,10 @@
 
 [English](COROCC_VALIDATION.md) | [构建指南](COROCC_BACKEND_CN.md) |
 [设计](../adr/0003-corocc-coroutine-backend_CN.md)
+> **适用对象：**判断 corocc 证据支持范围的审阅者和维护者。
+> **前置条件：**先阅读[corocc 构建与验证](COROCC_BACKEND_CN.md)及关联 ADR，并结合所述日期、基线提交、环境和默认关闭策略理解结果。
+> **验证边界：**本页是有日期的证据记录，不是生产验收证书。通过的检查和实验室 A/B 测量只覆盖记录中的配置；未测试的平台、设备、真实网络和后续版本不在结论范围内。
+> **下一步：**用[测试](TESTING_CN.md)选择当前运行方式；需要可复现准备时返回[corocc 构建指南](COROCC_BACKEND_CN.md)。
 
 验证日期：2026-10-29。基线为 `bfd5b88101943ba370bb9f04858af54787a5a461`，
 叠加工作区中尚未提交的 corocc 实现。默认保持 OFF。

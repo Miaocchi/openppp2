@@ -7,6 +7,9 @@
 > **用途：** 部署 Go 管理端，用来发布订阅、管理用户和节点，并让 C++ 服务端接入认证与流量统计。
 > **读者：** 运营多台节点或需要订阅分发的运维人员。
 > **上级索引：** [指南](README_CN.md) · **English:** [Management backend](MANAGEMENT_BACKEND.md)
+> **前提：** 具备 Go 工具链，并选择独立模式的本地 JSON 存储，或准备完整的托管模式 MySQL 与 Redis Sentinel 配置。
+> **不包括：** `go/guardian/` 下独立的进程守护管理，也不包括与管理端连接无关的 C++ 服务端运行细节。
+> **下一参考：** 客户端消费的订阅文档格式见[远程订阅](REMOTE_SUBSCRIPTION_CN.md)。
 
 ## 1. 先分清两个 Go 程序
 

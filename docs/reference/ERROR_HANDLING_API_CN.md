@@ -6,6 +6,7 @@
 > Parent index: [参考索引](README_CN.md)
 > English: [English version](ERROR_HANDLING_API.md)
 > Related: [错误码](ERROR_CODES_CN.md) · [诊断错误系统](DIAGNOSTICS_ERROR_SYSTEM_CN.md)
+> **查阅边界：** 本页用于查找面向实现的诊断 API，不是分步用户指南。配置选择见[配置文件参考](CONFIGURATION_CN.md)；部署、运维和排障见[运维与排障](../operations/OPERATIONS_CN.md)和[部署](../operations/DEPLOYMENT_CN.md)。
 
 本文说明 `ppp/diagnostics/Error.h`、`Error.cpp` 和 `ErrorHandler.*` 实现的
 头文件可见 `ppp::diagnostics` C++ 接口。它是实现接口，不是独立支持的公共 SDK。

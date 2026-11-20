@@ -8,6 +8,12 @@
 > **Audience:** Operators deploying a server or an always-on client.
 > **Parent index:** [Operations](README.md) · **Chinese:** [部署](DEPLOYMENT_CN.md)
 
+> **Read this / not this**
+> - **Read this** for running the base `ppp` tunnel process as a long-lived service, including system service units, Guardian supervision, upgrades, rollback, and multiple instances.
+> - **Not this** for writing the initial `ppp` configuration; start with [Writing the configuration file](../getting-started/CONFIGURE.md). For implementing or operating a central authentication and accounting service, use [Management backend](../guides/MANAGEMENT_BACKEND.md).
+> - **Boundary:** the base `ppp` executable carries the tunnel; Guardian is a separate local supervisor and configuration manager; the management backend is a separate service for authentication and accounting.
+
+
 Get it working in the foreground first (see the [User manual](../getting-started/USER_MANUAL.md)), then turn it into a service with this page.
 
 ## 1. Pre-deployment checks
@@ -167,6 +173,6 @@ Read the release notes before upgrading. v2.1.7 added `client.policy` and `ppp p
 | Multiple nodes with central auth and accounting | [Management backend](../guides/MANAGEMENT_BACKEND.md) |
 | Site-to-site | [Peer prefix routing](../guides/PEER_PREFIX_ROUTING.md) |
 
-## Related documents
+## Continue with
 
 - [Operations and troubleshooting](OPERATIONS.md) · [Security](SECURITY.md) · [Platforms](../guides/PLATFORMS.md)

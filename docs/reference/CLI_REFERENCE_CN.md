@@ -9,6 +9,7 @@
 > **上级索引：** [参考](README_CN.md) · **English:** [CLI reference](CLI_REFERENCE.md)
 
 JSON 配置字段见 [配置文件参考](CONFIGURATION_CN.md)。`ppp --help` 打印的是当前构建实际支持的参数列表（平台相关参数只在对应平台显示）。
+> **查阅边界：** 本页用于查找有源码依据的参数和命令，不是分步用户指南。配置选择见[配置文件参考](CONFIGURATION_CN.md)；部署、运维和排障见[运维与排障](../operations/OPERATIONS_CN.md)和[部署](../operations/DEPLOYMENT_CN.md)。
 
 ## 1. 语法
 

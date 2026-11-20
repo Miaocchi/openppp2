@@ -1,4 +1,10 @@
 # 多入口多路径需求（供 Astra 制定方案）
+> Status: Design-bound
+> Type: Requirements
+> Last verified: 2026-11-20
+> **状态边界：**本页是需求输入、方案边界与验收要求，不是当前用户合同，也不承诺其中目标已经实现。当前受支持行为、配置与操作请以[架构](../architecture/README_CN.md)、[参考](../reference/README_CN.md)、[指南](../guides/README_CN.md)、[运维](../operations/README_CN.md)及对应发行/测试页面为准；持久决策见[ADR](../adr/README_CN.md)。验证仅限本页列明的源码核对、测试与验收约束；未覆盖的生产、跨平台或真实 CDN/VPN 验收不能由本页推出。
+
+
 
 ## 目标与范围
 

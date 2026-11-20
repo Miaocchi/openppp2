@@ -4,6 +4,8 @@
 > Type: Design
 > Last verified: 2026-10-08 (`claude/inspiring-galileo-ngpcc1`)
 > **上一层索引：**[设计文档](README.md)
+> **状态边界：**本页是提案/路线图与现状证据，不是当前用户合同；路线图目标、阶段和指标不表示已交付。当前受支持行为、配置与操作请以[架构](../architecture/README_CN.md)、[参考](../reference/README_CN.md)、[指南](../guides/README_CN.md)、[运维](../operations/README_CN.md)及对应发行/测试页面为准；持久决策见[ADR](../adr/README_CN.md)。验证仅限本页列明的源码核对与测试记录，未覆盖的真实设备、跨平台或发布验收不能由本页推出。
+
 
 ## 目标
 

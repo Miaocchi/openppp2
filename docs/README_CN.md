@@ -1,48 +1,52 @@
 # 按任务查找文档
-> Status: Active
-> Type: Reference
-> Last verified: 63fc030
 
-> **用途：**说明本主题的当前行为、配置或实现边界。
-> **适用对象：**OPENPPP2 用户、运维人员与开发者。
-> **当前状态：**当前有效。
-> **最后核对依据：**当前仓库结构、实现路径与文档链接，2026-10-07。
-> **上一层索引：**[返回索引](../README_CN.md) · **English：**[Documentation by Task](README.md)
-
+> Status: Current
+> Type: Navigation
+> Last verified: 2026-10-07
+> Parent index: [仓库 README](../README_CN.md) · English: [Documentation by Task](README.md)
 
 [English](README.md)
 
-本页是当前有效文档的统一入口。历史设计、计划、审计和状态记录已隔离到 [`archive/`](archive/README_CN.md)。
+本页是原生 `ppp` 目录的当前任务优先索引。仓库[根 README](../README_CN.md)说明核心与配套
+表面的边界并保留原生启动链；本页只负责把读者导向细节，避免重复那段启动顺序。
 
-## 从这里开始
+## 一条首次使用路径
 
-| 任务 | 当前文档 |
+首次运行原生程序时，按以下顺序阅读：
+
+1. [下载安装与首次运行](getting-started/USER_MANUAL_CN.md)
+2. [编写配置文件](getting-started/CONFIGURE_CN.md)
+3. [配置参考](reference/CONFIGURATION_CN.md)与 [CLI 参考](reference/CLI_REFERENCE_CN.md)
+4. [运维清单与故障排查](operations/OPERATIONS_CN.md)
+
+## 按职责选择入口
+
+| 职责或需求 | 当前规范页面 |
 |---|---|
-| 安装与构建 | [下载安装与首次运行](getting-started/USER_MANUAL_CN.md) |
-| 编写配置文件 | [编写配置文件：最小配置、两端一致字段、按需扩展](getting-started/CONFIGURE_CN.md) |
-| 启动服务端或客户端 | [启动命令](reference/CLI_REFERENCE_CN.md) |
-| 验证隧道 | [运维与排障](operations/OPERATIONS_CN.md) |
-| 配置路由与 DNS | [路由与 DNS 指南](guides/ROUTING_AND_DNS_CN.md) |
-| 使用客户端策略 CLI | [策略 CLI 指南](guides/POLICY_CLI_CN.md) · [English](guides/POLICY_CLI.md) |
-| 使用纯代理模式 | [纯代理模式](guides/PROXY_MODE_CN.md) |
-| 管理订阅和后台 | [管理后端](guides/MANAGEMENT_BACKEND_CN.md) |
-| 部署为系统服务 | [部署说明](operations/DEPLOYMENT_CN.md) |
-| 排查故障 | [运维与故障排查](operations/OPERATIONS_CN.md) |
-| 查找项目全部接口和已知缺口 | [项目接口全景图](reference/PROJECT_INTERFACE_MAP_CN.md) |
-| 查看本地策略实现证据与 Linux 实机结果 | [开发文档](development/README_CN.md) · [Linux 实机报告](testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md) |
+| 用户：安装、首次运行和配置 | [快速开始](getting-started/README_CN.md) |
+| 用户：路由、DNS、代理、管理或平台行为 | [任务指南](guides/README_CN.md) |
+| 运维人员：部署、安全、监控和事故处理 | [部署与运维](operations/README_CN.md) |
+| 开发者：运行时、传输、协议、并发和源码 | [当前架构](architecture/README_CN.md) · [开发文档](development/README_CN.md) |
+| 参考：配置、CLI、错误、协议和数据格式 | [参考手册](reference/README_CN.md) |
+| 接口边界与已知缺口 | [项目接口全景图](reference/PROJECT_INTERFACE_MAP_CN.md) |
+| 历史依据、决策、计划或证据 | [历史归档](archive/README_CN.md) · [ADR](adr/README_CN.md) · [设计索引](design/README_CN.md) |
 
-## 按职责浏览
+## 常用细分页面
 
-- [快速开始](getting-started/README_CN.md)：安装、最小配置、启动和首次验证。
-- [任务指南](guides/README_CN.md)：路由、DNS、代理、订阅、管理后台、IPv6 和平台操作。
-- [参考手册](reference/README_CN.md)：完整配置、CLI、错误、协议和数据格式。
-- [项目接口全景图](reference/PROJECT_INTERFACE_MAP_CN.md)、[Project Interface Map](reference/PROJECT_INTERFACE_MAP.md)：全仓库稳定、实验、内部、废弃和缺失接口。
-- [运行时契约与发布门槛](reference/UI_RUNTIME_CONTRACT_CN.md)、[VMUX 验证](reference/VMUX_VALIDATION_CN.md)：当前平台契约和发布证据。
-- [当前架构](architecture/README_CN.md)：当前运行时、协议、传输和子系统模型。
-- [开发文档](development/README_CN.md)：源码阅读、构建、测试和兼容性。
-- [部署与运维](operations/README_CN.md)：部署、生产运维、安全和故障排查。
-- [历史归档](archive/README_CN.md)：历史设计、计划、审计和状态记录。
+- [路由与 DNS 指南](guides/ROUTING_AND_DNS_CN.md) · [策略 CLI 指南](guides/POLICY_CLI_CN.md) · [English](guides/POLICY_CLI.md)
+- [纯代理模式](guides/PROXY_MODE_CN.md) · [管理后端](guides/MANAGEMENT_BACKEND_CN.md)
+- [部署说明](operations/DEPLOYMENT_CN.md) · [运维与故障排查](operations/OPERATIONS_CN.md)
+- [运行时契约](reference/UI_RUNTIME_CONTRACT_CN.md) · [VMUX 验证](reference/VMUX_VALIDATION_CN.md)
+- [原生启动与关闭顺序](architecture/STARTUP_AND_LIFECYCLE_CN.md)——启动链本身保留在[根 README](../README_CN.md#ppp-启动链)。
+- [源码阅读、构建、测试和兼容性](development/README_CN.md)
+- [本地策略实现证据与 Linux 实机结果](development/README_CN.md) · [Linux 实机报告](testing/DNS_ROUTING_POLICY_LINUX_LIVE_CN.md)
 
-## 文档规则
+## 范围与状态规则
 
-当前文档说明现在可以使用的行为；归档文档只保留设计依据和验证记录，不得作为当前配置依据。稳定的中英文文档继续配对，每篇文档都提供上一层索引入口。
+上方页面是原生 `ppp` 指导的当前规范入口。`go/`、`go/guardian/`、`android/`、`ios/` 和
+`desktop/client/` 是由各自清单管理的配套或平台表面；它们的本地文档定义自己的构建和就绪
+边界。不要推断核心 `ppp` 构建会生成或验证这些表面；参见[根 README 的边界说明](../README_CN.md#核心与配套表面)。
+
+`archive/`、`adr/` 和 `design/` 保存历史依据、决策、计划和证据。除非当前页面明确说明，
+它们不是当前配置或部署说明。依赖页面前请核对 Status、Type、Last verified、语言配对和
+父级索引元数据。本页与[英文配对页](README.md)是持续维护的双语导航。

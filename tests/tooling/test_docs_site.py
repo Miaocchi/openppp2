@@ -18,9 +18,18 @@ class DocsSiteTests(unittest.TestCase):
             'docs/guides/PAIR.md': '# Pair\n## A title\n',
             'docs/guides/PAIR_CN.md': '# 配对\n## 中文标题\n',
             'docs/guides/ONLY.md': '# English only\n',
+            'docs/design/README.md': '# Design\n',
             'docs/design/ONLY_CN.md': '# 中文设计\n',
-            'docs/archive/audits/OLD.md': '# Old audit\n> Status: Historical\n',
-            'docs/development/BOOST_187_COMPATIBILITY.md': '# Boost 审计\n',
+            'docs/design/README_CN.md': '# 设计\n',
+            'docs/design/notes/README.md': '# Notes\n',
+            'docs/design/notes/README_CN.md': '# 笔记\n',
+            'docs/design/notes/DETAIL.md': '# Detail\n',
+            'docs/archive/README.md': '# Archive\n',
+            'docs/archive/README_CN.md': '# 归档\n',
+            'docs/archive/audits/README.md': '# Audits\n',
+            'docs/archive/audits/README_CN.md': '# 审计\n',
+             'docs/archive/audits/OLD.md': '# Old audit\n> Status: Historical\n',
+             'docs/development/BOOST_187_COMPATIBILITY.md': '# Boost 审计\n',
             'docs/guides/image.svg': '<svg/>',
             'docs/archive/untracked/PRIVATE.md': '# Private\n',
             'docs/superpowers/plans/AGENT.md': '# Agent\n',
@@ -34,6 +43,34 @@ class DocsSiteTests(unittest.TestCase):
             path.write_text(text)
         self.site = DocsSite(self.root)
         self.site.discover([Path(p) for p in self.files if p.startswith('docs/')])
+
+    def test_navigation_groups_categories_and_nested_directories(self):
+        navigation = self.site.navigation('en')
+        sections = {next(iter(item)): next(iter(item.values())) for item in navigation[1:]}
+
+        self.assertEqual({'Home': 'index.md'}, navigation[0])
+        self.assertEqual({'Guides': 'guides/index.md'}, sections['Guides'][0])
+        self.assertEqual({'English only': 'guides/ONLY.md'}, sections['Guides'][1])
+        self.assertEqual({'Pair': 'guides/PAIR.md'}, sections['Guides'][2])
+        design = sections['Designs and decisions']
+        self.assertEqual({'Design': 'design/index.md'}, design[0])
+        self.assertEqual({'中文设计': 'design/ONLY.md'}, design[1])
+        self.assertEqual({'Notes': [
+            {'Notes': 'design/notes/index.md'},
+            {'Detail': 'design/notes/DETAIL.md'},
+        ]}, design[2])
+
+        archive = sections['History']
+        self.assertEqual({'Archive': 'archive/index.md'}, archive[0])
+        self.assertEqual({'Audits': [
+            {'Audits': 'archive/audits/index.md'},
+            {'Old audit': 'archive/audits/OLD.md'},
+        ]}, archive[1])
+
+        chinese = self.site.navigation('zh')
+        chinese_sections = {next(iter(item)): next(iter(item.values())) for item in chinese[1:]}
+        self.assertEqual({'设计': 'design/index.md'}, chinese_sections['设计与决策'][0])
+        self.assertEqual('笔记', next(iter(chinese_sections['设计与决策'][2])))
 
     def test_pairs_and_homepages_share_paths(self):
         self.assertEqual(Path('index.md'), canonical(Path('README_CN.md')))
@@ -58,6 +95,9 @@ class DocsSiteTests(unittest.TestCase):
         self.assertEqual('/openppp2/guides/', self.site.destination('README.md', source, 'en'))
         self.assertEqual('/openppp2/', self.site.destination('../README.md', source, 'en'))
         self.assertEqual('/openppp2/zh/guides/ONLY/', self.site.destination('ONLY.md', source, 'zh'))
+        self.assertEqual('/openppp2/guides/PAIR/', self.site.destination('PAIR.md', Path('guides/README_CN.md'), 'zh', 'English'))
+        with self.assertRaises(ValueError):
+            self.site.destination('MISSING.md', source, 'en')
         self.assertEqual('/openppp2/guides/PAIR/', self.site.destination('PAIR.md', Path('guides/PAIR_CN.md'), 'zh'))
 
     def test_assets_and_repository_links(self):

@@ -7,6 +7,9 @@
 > **Purpose:** Describe split routing and DNS policy with a rules file (`client.policy`), and check, explain, migrate, and update it with `ppp policy`.
 > **Audience:** Client users who need finer split control than `client.routing`.
 > **Parent index:** [Guides](README.md) · **Chinese:** [策略 v2 与 `ppp policy`](POLICY_CLI_CN.md)
+> **Prerequisite:** A client binary v2.1.7 or newer and a client configuration ready to add `client.policy` and its rules file.
+> **Not covered:** The legacy `client.routing` syntax and server-side management; policy v2 also cannot coexist with legacy routing keys.
+> **Next reference:** [Routing and DNS](ROUTING_AND_DNS.md) for the legacy mechanism, or the [configuration reference](../reference/CONFIGURATION.md) for field details.
 
 Available since v2.1.7; v2.1.6 and earlier have neither `client.policy` nor `ppp policy`.
 

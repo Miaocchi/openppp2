@@ -8,6 +8,12 @@
 > **Audience:** First-time OPENPPP2 users.
 > **Parent index:** [Getting started](README.md) · **Chinese:** [编写配置文件](CONFIGURE_CN.md)
 
+> **Read this / not this**
+> - **Read this** for writing configuration files for the base `ppp` executable in server, TUN client, or proxy mode, and for matching the two ends.
+> - **Not this** for long-lived service deployment or local Guardian management; use [Deployment](../operations/DEPLOYMENT.md). For a central authentication and accounting service, use [Management backend](../guides/MANAGEMENT_BACKEND.md).
+> - **Boundary:** the base `ppp` executable is the tunnel process; Guardian is a separate local supervisor and configuration manager; the management backend is a separate service for authentication and accounting.
+
+
 This page covers *how to write* the file. Full field behavior is in the [Configuration reference](../reference/CONFIGURATION.md); flags are in the [CLI reference](../reference/CLI_REFERENCE.md).
 
 ## 1. Four things to know first
@@ -175,3 +181,8 @@ Change the client to:
 | JSON parse failure | Remove comments and trailing commas; save as UTF-8 |
 
 See [Operations and troubleshooting](../operations/OPERATIONS.md) and [Error codes](../reference/ERROR_CODES.md).
+
+## Continue with
+
+- [Operations and troubleshooting](../operations/OPERATIONS.md) · [Error codes](../reference/ERROR_CODES.md)
+- [Deployment](../operations/DEPLOYMENT.md) · [User manual](USER_MANUAL.md)

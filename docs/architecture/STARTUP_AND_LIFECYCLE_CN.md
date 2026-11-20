@@ -6,6 +6,10 @@
 > **用途：**说明原生 `ppp` 进程如何准备、bootstrap、发布状态和拆除。
 > **适用对象：**排查生命周期行为的贡献者与运维。
 > **上一层索引：**[架构](README_CN.md) · **English:** [Startup and Lifecycle](STARTUP_AND_LIFECYCLE.md)
+> **阅读导向：**供贡献者和运维排查原生进程的启动、运行阶段、关闭与重启。
+> **回答的问题：**进程如何进入角色、发布 readiness 并安全拆除？
+> **实现细节与用户契约：**下文的调用序列和生命周期投影属于实现细节；文中记载的 phase 与 CLI 行为是当前运行时契约，公开字段以[参考](../reference/README_CN.md)为准。
+> **下一权威页面：**[系统架构](ARCHITECTURE.md)
 
 ## 入口与进程 owner
 

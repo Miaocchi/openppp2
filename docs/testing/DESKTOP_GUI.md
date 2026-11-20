@@ -1,4 +1,10 @@
 # Desktop GUI verification
+> **Scope:** This page combines recorded desktop evidence with the checks still required before Windows GUI and kernel behavior can be accepted.
+> **Evidence:** The dated results and automated commands below are evidence only; they do not imply that the live acceptance list has passed.
+> **Acceptance criteria:** Use **Automated checks**, **Isolated native commands**, and **Required live acceptance** as separate gates; the last section requires a trusted server and, where noted, UAC and policy-v2 scenarios.
+> **Unverified gaps:** The offline record did not launch the desktop application or kernel, and the live traffic, administrator-restart, TUN, crash-recovery, and autostart checks remain explicitly outstanding below.
+> **Paths:** For test selection and native test boundaries, see [development testing](../development/TESTING.md); for deployment, runtime troubleshooting, and Windows operational handling, see [operations](../operations/README.md), [deployment](../operations/DEPLOYMENT.md), and [operations and troubleshooting](../operations/OPERATIONS.md).
+
 
 Offline checks last run: 2026-10-18. All 40 frontend tests, the production frontend build and 59 Windows Rust tests passed after updating the redesign onto main. No desktop application or kernel was launched; `OPENPPP2_POLICY_CLI` was unset, so the optional real-kernel policy test returned early.
 

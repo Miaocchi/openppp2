@@ -6,6 +6,7 @@
 > Parent index: [Reference index](README.md)
 > Chinese: [中文版本](ERROR_HANDLING_API_CN.md)
 > Related: [Error codes](ERROR_CODES.md) · [Diagnostics error system](DIAGNOSTICS_ERROR_SYSTEM.md)
+> **Lookup boundary:** Use this page to look up the implementation-facing diagnostics API; it is not a step-by-step user guide. For configuration choices, see the [Configuration reference](CONFIGURATION.md); for deployment, operation, and troubleshooting, see [Operations](../operations/OPERATIONS.md) and [Deployment](../operations/DEPLOYMENT.md).
 
 This page describes the header-visible `ppp::diagnostics` C++ interface
 implemented by `ppp/diagnostics/Error.h`, `Error.cpp`, and `ErrorHandler.*`.

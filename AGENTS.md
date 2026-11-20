@@ -17,7 +17,7 @@ tools and dependencies; do not assume a particular machine or cloud image.
 | `android/`, `ios/` | Mobile clients and platform integration |
 | `windows/`, `linux/`, `darwin/`, `Driver/`, `sln/` | Platform code, drivers, and auxiliary projects |
 | `tests/`, `bench/`, `benchmarks/` | Unit, integration, fault, and performance checks |
-| `cmake/`, `builds/`, `scripts/`, `tools/`, `.github/` | Build definitions, tooling, deployment, and CI |
+| `cmake/`, `scripts/`, `tools/`, `.github/` | Build definitions, tooling, deployment, and CI |
 
 ## Working Rules
 

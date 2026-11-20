@@ -7,6 +7,9 @@
 > **用途：** 只在本机提供 HTTP / SOCKS5 代理，不修改系统路由和 DNS。
 > **读者：** 不想接管整机网络、只想让部分应用走隧道的用户。
 > **上级索引：** [指南](README_CN.md) · **English:** [Proxy mode](PROXY_MODE.md)
+> **前提：** 客户端配置包含 `key`、`client.guid`、`client.server`，并有能使用本地 HTTP 或 SOCKS5 代理的应用。
+> **不包括：** 系统级路由或 DNS 修改、向局域网开放代理，以及代理模式下的对端前缀路由。
+> **下一参考：** 平台差异参阅[平台说明](PLATFORMS_CN.md)，分流规则参阅[路由与 DNS](ROUTING_AND_DNS_CN.md)。
 
 ## 1. 什么时候用
 

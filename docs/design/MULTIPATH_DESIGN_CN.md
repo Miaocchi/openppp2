@@ -1,8 +1,14 @@
 # TCP / WS / WSS 多入口多路径设计
+> Status: Design-bound
+> Type: Design
+> Last verified: 2026-11-20
+
 
 > 状态：设计基准，实现与集成验收进行中；尚未达到生产验收条件。当前证据见 [MULTIPATH_ACCEPTANCE_CN.md](../testing/MULTIPATH_ACCEPTANCE_CN.md)。
 > 日期：2026-11-15。
 > 需求来源：[MULTIPATH_REQUIREMENTS_CN.md](MULTIPATH_REQUIREMENTS_CN.md)。
+> **状态边界：**本页是设计/计划与已核对证据，不是当前用户合同；“已实现”不等于跨平台或发布级支持。当前受支持行为、配置与操作请以[架构](../architecture/README_CN.md)、[参考](../reference/README_CN.md)、[指南](../guides/README_CN.md)、[运维](../operations/README_CN.md)及对应发行/测试页面为准；持久决策见[ADR](../adr/README_CN.md)。验证仅限本页列明的源码、提交或实验记录，未覆盖的生产、跨平台、真实 CDN/VPN 验收不能由本页推出。
+
 
 ## 1. 目标与首版边界
 

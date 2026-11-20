@@ -9,6 +9,7 @@
 > **Boundary:** This describes the current `ITransmission` C++ handshake and
 > related tunnel payload behavior. It is not a public SDK, protocol API, or
 > formal compatibility specification.
+> **Lookup boundary:** Use this page to look up source-derived handshake and session details; it is not a step-by-step user guide. For configuration choices, see the [Configuration reference](CONFIGURATION.md); for deployment, operation, and troubleshooting, see [Operations](../operations/OPERATIONS.md) and [Deployment](../operations/DEPLOYMENT.md).
 
 ## Ownership
 

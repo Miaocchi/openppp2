@@ -12,7 +12,9 @@ builds and use a child process.
 >
 > **Purpose:** Select and run the test entry point that actually covers the changed surface.
 > **Audience:** Contributors and CI maintainers.
-> **Parent index:** [Development](README.md) · **Chinese:** [测试](TESTING_CN.md)
+> **Prerequisites:** Read [Source Reading Guide](SOURCE_READING_GUIDE.md) to identify the changed boundary, and prepare the toolchain/dependencies required by the selected command. Do not assume one test path covers another.
+> **Verification limit:** A passing test, sanitizer, coverage run, or build is evidence only for the exercised configuration and paths; it is not by itself production acceptance, live-network acceptance, or device/platform acceptance.
+> **Next:** For optional coroutine work, follow [corocc build and validation](COROCC_BACKEND.md) and [the validation record](COROCC_VALIDATION.md); for lifecycle boundaries, consult [VPN Network Lifecycle Contract](../architecture/NETWORK_LIFECYCLE_CONTRACT.md).
 
 ## Choose the correct C++ test boundary
 

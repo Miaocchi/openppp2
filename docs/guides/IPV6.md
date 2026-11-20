@@ -7,6 +7,9 @@
 > **Purpose:** Have the server assign IPv6 to clients and carry their IPv6 traffic.
 > **Audience:** Operators deploying the server.
 > **Parent index:** [Guides](README.md) · **Chinese:** [IPv6](IPV6_CN.md)
+> **Prerequisite:** A Linux server running with root or `CAP_NET_ADMIN`, `/dev/net/tun`, and either `ip6tables` for `nat66` or a routed global prefix for `gua`.
+> **Not covered:** IPv6 server operation on Windows, macOS, or Android, or mobile VPN-framework internals.
+> **Next reference:** [Platforms](PLATFORMS.md) for platform limits and [Deployment](../operations/DEPLOYMENT.md) for host setup.
 
 ## 1. Support
 

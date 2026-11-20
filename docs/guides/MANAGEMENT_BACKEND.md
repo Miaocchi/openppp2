@@ -7,6 +7,9 @@
 > **Purpose:** Deploy the Go manager to publish subscriptions, manage users and nodes, and connect C++ servers for authentication and traffic accounting.
 > **Audience:** Operators running several nodes or distributing subscriptions.
 > **Parent index:** [Guides](README.md) · **Chinese:** [管理后端](MANAGEMENT_BACKEND_CN.md)
+> **Prerequisite:** Go tooling plus either standalone local JSON storage or complete managed-mode MySQL and Redis Sentinel configuration.
+> **Not covered:** Guardian process supervision, which is a separate program under `go/guardian/`, or C++ server operation unrelated to the manager link.
+> **Next reference:** [Remote subscription](REMOTE_SUBSCRIPTION.md) for the document clients consume.
 
 ## 1. Two different Go programs
 

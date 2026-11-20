@@ -1,6 +1,9 @@
 # corocc 后端：构建与验证
 
-[English](COROCC_BACKEND.md) | [设计 ADR](../adr/0003-corocc-coroutine-backend_CN.md)
+> **适用对象：**评估可选协程后端的贡献者和审阅者。
+> **前置条件：**先阅读[corocc 设计 ADR](../adr/0003-corocc-coroutine-backend_CN.md)，按平台准备原生依赖，并以默认 Boost 路径作为对照基线。
+> **验证边界：**下列命令及离线/性能流程只覆盖实际执行的构建和实验路径；不能证明生产、真实网络或所有平台已验收。已记录证据和限制见[验证记录](COROCC_VALIDATION_CN.md)。
+> **下一步：**先看[测试](TESTING_CN.md)，完成运行后再阅读[验证记录](COROCC_VALIDATION_CN.md)。
 
 corocc 是默认关闭的可选实验性 L0 后端。默认构建继续使用 Boost fcontext，
 不下载或配置 corocc。YieldContext 公开 API 和 Anchor 调用点保持不变。

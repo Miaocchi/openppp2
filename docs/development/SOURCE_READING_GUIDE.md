@@ -5,7 +5,9 @@
 >
 > **Purpose:** Follow the current native application path before relying on design summaries.
 > **Audience:** New contributors and reviewers.
-> **Parent index:** [Development](README.md) · **Chinese:** [源码阅读指南](SOURCE_READING_GUIDE_CN.md)
+> **Prerequisites:** Know basic C++ navigation and the repository layout; use the linked architecture and reference pages only as maps while checking the current source tree.
+> **Verification limit:** This is a source-reading path, not a build or runtime acceptance record. Reading the listed files does not establish production, platform, or live-network behavior.
+> **Next:** Continue with [Testing](TESTING.md) for changed code, or use [Startup and lifecycle](../architecture/STARTUP_AND_LIFECYCLE.md) for the canonical lifecycle map.
 
 ## Goal
 

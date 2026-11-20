@@ -6,6 +6,10 @@
 > **用途：**定义承载适配器、`ITransmission` 与隧道动作之间的边界。
 > **适用对象：**贡献者与运维。
 > **上一层索引：**[架构](README_CN.md) · **English:** [Transport and Protected Transmission](TRANSMISSION.md)
+> **阅读导向：**供贡献者和运维追踪承载、成帧、变换与隧道动作分发。
+> **回答的问题：**承载适配在哪里结束，受保护会话与动作处理从哪里开始？
+> **实现细节与用户契约：**下文的握手、成帧和变换说明属于实现细节；文中列出的承载/配置行为是当前运行时契约，公开字段以[参考](../reference/README_CN.md)为准。
+> **下一权威页面：**[握手序列](HANDSHAKE_SEQUENCE_CN.md)
 
 ## 分层边界
 

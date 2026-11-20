@@ -13,6 +13,8 @@
 > **P2 实施记录：**[执行路径接入](DNS_ROUTING_POLICY_P2_CN.md)，记录快照、连接与 DNS 出口接入及验证边界。
 > **分析基线：**`99892a8cf1dda90f8da475fb044016e7ae33d195`。
 > **上一层索引：**[Design Documents](README.md)。
+> **状态边界：**本页保留重构方案、实现证据与已知缺口，不是单独的当前用户合同；已发布策略资产和实际支持范围仍以对应发行说明、CI 与当前用户文档为准。当前行为、配置与操作请以[架构](../architecture/README_CN.md)、[参考](../reference/README_CN.md)、[指南](../guides/README_CN.md)、[运维](../operations/README_CN.md)及测试页面为准；持久决策见[ADR](../adr/README_CN.md)。验证仅限本页列明的源码、提交、平台和实验记录，未覆盖的跨平台 VPN、真实 NAT、设备或生产验收不能由本页推出。
+
 
 ## 1. 目标、范围与已确定的取舍
 

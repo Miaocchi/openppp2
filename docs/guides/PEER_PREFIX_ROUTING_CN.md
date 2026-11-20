@@ -7,6 +7,9 @@
 > **用途：** 让其他客户端经某台“网关客户端”访问它背后的整个局域网。
 > **读者：** 需要把多个站点的内网互联起来的运维人员。
 > **上级索引：** [指南](README_CN.md) · **English:** [Peer prefix routing](PEER_PREFIX_ROUTING.md)
+> **前提：** 服务端启用 `server.subnet` 和对端路由，网关客户端已列入白名单，且主机开启 IP 转发并具备局域网回程路由。
+> **不包括：** IPv6 前缀或通用二层局域网桥接；代理模式只在进程内使用这些路由。
+> **下一参考：** 静态对端路由参阅[路由与 DNS](ROUTING_AND_DNS_CN.md)，字段定义参阅[配置文件参考](../reference/CONFIGURATION_CN.md)。
 
 ## 1. 场景
 

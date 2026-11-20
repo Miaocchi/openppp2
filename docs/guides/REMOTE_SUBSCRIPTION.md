@@ -7,6 +7,9 @@
 > **Purpose:** Subscription link format, how clients use it, and security when publishing.
 > **Audience:** Operators publishing subscriptions and users consuming them.
 > **Parent index:** [Guides](README.md) · **Chinese:** [远程订阅](REMOTE_SUBSCRIPTION_CN.md)
+> **Prerequisite:** The root Go manager under `go/` is publishing a subscription endpoint, and the client can import a subscription URL.
+> **Not covered:** Guardian profiles and process supervision, or manager administration and node-link setup.
+> **Next reference:** [Management backend](MANAGEMENT_BACKEND.md) for publishing and administering subscriptions.
 
 ## 1. Overview
 

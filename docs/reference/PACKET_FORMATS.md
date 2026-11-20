@@ -9,6 +9,7 @@
 > **Boundary:** These are current C++ implementation details, not a public SDK
 > or formal compatibility specification. This note intentionally contains no
 > raw packet fixtures.
+> **Lookup boundary:** Use this page to look up source-derived packet and framing details; it is not a step-by-step user guide. For configuration choices, see the [Configuration reference](CONFIGURATION.md); for deployment, operation, and troubleshooting, see [Operations](../operations/OPERATIONS.md) and [Deployment](../operations/DEPLOYMENT.md).
 
 ## Normal tunnel frames
 

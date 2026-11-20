@@ -8,6 +8,8 @@
 > **当前状态:**已实现,与 `ppp/app/mux/` 代码一致;可靠性默认开启(协商失败自动回落),FEC 默认关闭。
 > **最后核对依据:**`ppp/app/mux/vmux_net.{h,cpp}`、`MuxAckTracker.h`、`MuxRetransmitBuffer.h`、`MuxFecCodec.h`、`MuxRuntimeState.h`,2026-07-22。
 > **上一层索引:**[Design Documents](README.md)
+> **状态边界：**本页记录协议设计、实现说明与已核对证据，不替代当前用户合同；实现状态仍须以当前代码、发布说明和测试记录为准。当前受支持行为、配置与操作请以[架构](../architecture/README_CN.md)、[参考](../reference/README_CN.md)、[指南](../guides/README_CN.md)、[运维](../operations/README_CN.md)及对应发行/测试页面为准；持久决策见[ADR](../adr/README_CN.md)。验证仅限列明的代码与测试依据，未覆盖的跨平台、生产或网络条件不能由本页推出。
+
 
 ## 1. 动机
 

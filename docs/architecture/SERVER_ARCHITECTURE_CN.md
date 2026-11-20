@@ -6,6 +6,10 @@
 > **用途：**说明 server bootstrap、监听器角色、会话所有权和 managed backend 边界。
 > **适用对象：**贡献者与运维。
 > **上一层索引：**[架构](README_CN.md) · **English:** [Server Architecture](SERVER_ARCHITECTURE.md)
+> **阅读导向：**供贡献者和运维追踪 server bootstrap、监听器与会话所有权。
+> **回答的问题：**server 监听器、client 会话和 managed backend 分别由哪个组件持有？
+> **实现细节与用户契约：**下文的 owner、监听器和 backend 边界属于实现细节；文中列出的配置行为是当前运行时契约，公开字段以[参考](../reference/README_CN.md)为准。
+> **下一权威页面：**[启动与生命周期](STARTUP_AND_LIFECYCLE_CN.md)
 
 ## Owner 模型
 
@@ -51,10 +55,3 @@ bridge 异步连接并重试失败连接。server 可以在该链接可用前启
 ## 平台与 P2P 限制
 
 server mode 通常没有 client 式宿主 tunnel 运行时，但 Linux 在配置后可以创建 IPv6 transit TAP 路径。直连 P2P 仍受共享 production capability gate 的 fail-closed 限制。两者都不能写成普遍适用的 server 数据面行为。
-
-## 相关页面
-
-- [启动与生命周期](STARTUP_AND_LIFECYCLE_CN.md)
-- [传输与受保护会话层](TRANSMISSION_CN.md)
-- [隧道设计](TUNNEL_DESIGN_CN.md)
-- [项目接口地图](../reference/PROJECT_INTERFACE_MAP_CN.md)
