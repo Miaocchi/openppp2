@@ -104,8 +104,10 @@ public:
         telemetry.updated_ms = updated_ms_;
         telemetry.sample_count = sample_count_;
         telemetry.current_rate_bytes_per_second = latest_;
-        if (now_ms - capacity_updated_ms_ <= MetricExpiryMs) {
+        if (capacity_ != 0 && now_ms >= capacity_updated_ms_ &&
+            now_ms - capacity_updated_ms_ <= MetricExpiryMs) {
             telemetry.capacity_rate_bytes_per_second = capacity_;
+            telemetry.capacity_updated_ms = capacity_updated_ms_;
         }
         telemetry.confidence = 100;
         return telemetry;

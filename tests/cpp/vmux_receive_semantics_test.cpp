@@ -474,6 +474,11 @@ struct vmux_net_test_access {
         });
     }
 
+    static ppp::app::multipath::PathTelemetry LinkTelemetry(
+        vmux_net& mux, const vmux_net::vmux_linklayer_ptr& link, std::uint64_t now) {
+        return RunOnStrand(mux, [&]() { return mux.get_link_telemetry(*link, now); });
+    }
+
     static void OnLinkExit(vmux_net& mux, const vmux_net::vmux_linklayer_ptr& link, const char* reason) {
         RunOnStrandVoid(mux, [&]() { mux.on_link_exit(link, reason); });
     }
@@ -1987,6 +1992,40 @@ void TestVmuxAckFeedsSchedulerAndPathSnapshot() {
         "scheduler uses the same ACK-driven estimate");
 }
 
+void TestStaleCapacityDoesNotBoostWeightOrBdp() {
+    using namespace ppp::app::multipath;
+    using Access = vmux::vmux_net_test_access;
+    auto mux = MakeMux();
+    auto link = Access::MakeDeadLink(true);
+    link->id_ = 1;
+    link->path_id_ = "stale-capacity";
+    link->path_estimator_ = MakePathEstimator(PathEstimatorMode::Kcc);
+    link->adaptive_weight_ = 100;
+    constexpr std::uint64_t now = 20000;
+    link->has_rtt_sample_ = true;
+    link->srtt_ms_ = 10;
+    link->min_rtt_ms_ = 10;
+    link->last_rtt_sample_ms_ = now;
+
+    // Capacity sample is 6001 ms old; the low application-limited sample then
+    // refreshes only the delivery/RTT timestamp, not the capacity estimate.
+    link->path_estimator_->OnSample({1000, 10000, 0, 1000, false}, now - 6001);
+    link->path_estimator_->OnSample({100, 10000, 1000, 1100, true}, now);
+
+    const auto stale = Access::LinkTelemetry(*mux, link, now);
+    Require(stale.has_sample, "delivery sample remains fresh while capacity expires");
+    Require(stale.capacity_rate_bytes_per_second == 0,
+        "expired capacity is not reported as fresh");
+    Require(stale.bdp_bytes == 0, "expired capacity does not seed BDP credit");
+    Require(stale.scheduling_weight == 50, "expired capacity halves scheduling weight");
+
+    link->path_estimator_->OnSample({1000, 10000, 1100, 2100, false}, now);
+    const auto fresh = Access::LinkTelemetry(*mux, link, now);
+    Require(fresh.capacity_rate_bytes_per_second != 0, "fresh capacity is reported");
+    Require(fresh.bdp_bytes != 0, "fresh capacity seeds BDP credit");
+    Require(fresh.scheduling_weight == 100, "fresh capacity restores full weight");
+}
+
 void TestVmuxCompressedAckUsesSendInterval() {
     using namespace ppp::app::multipath;
     auto mux = MakeMux();
@@ -2046,6 +2085,7 @@ int main() {
         TestLateAckAfterShrinkDoesNotUpdateReplacementLinkMetrics();
         TestPathRuntimeStatsAggregateCarriersByStablePathId();
         TestVmuxAckFeedsSchedulerAndPathSnapshot();
+        TestStaleCapacityDoesNotBoostWeightOrBdp();
         TestVmuxCompressedAckUsesSendInterval();
         TestTxFlowDrrPrefersOtherCidAfterQuantum();
         TestTxFlowDrrDrainsBytesWithinQuantumBeforeRotating();

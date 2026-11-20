@@ -245,6 +245,7 @@ public:
     /**
      * Collect keys whose last (re)transmission is older than the per-entry
      * exponential-backoff PTO, oldest first, bounded by @p max_count.
+     * A nonzero link_id restricts collection to that carrier's current flight.
      *
      * Each entry's timeout is  base_pto << min(attempts, 5)  using saturating
      * shift-left (so it never overflows to zero), then clamped to @p pto_max.
@@ -253,12 +254,15 @@ public:
      */
     void CollectExpired(std::uint64_t now, std::uint64_t base_pto,
         std::uint64_t pto_max, std::size_t max_count,
-        std::vector<std::uint64_t>& expired) const {
-        for (const auto& kv : entries_) {
+        std::vector<std::uint64_t>& expired, std::uint16_t link_id = 0) const {
+        for (const auto key : order_) {
             if (expired.size() >= max_count) {
                 break;
             }
-            const MuxRtxEntry& entry = kv.second;
+            const MuxRtxEntry& entry = entries_.find(key)->second;
+            if (link_id != 0 && entry.last_link_id != link_id) {
+                continue;
+            }
             if (now < entry.last_sent_tick) {
                 continue;
             }
@@ -276,7 +280,7 @@ public:
                 effective = pto_max;
             }
             if ((now - entry.last_sent_tick) >= effective) {
-                expired.push_back(kv.first);
+                expired.push_back(key);
             }
         }
     }

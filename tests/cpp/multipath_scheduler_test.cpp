@@ -53,6 +53,76 @@ BOOST_AUTO_TEST_CASE(adaptive_accounts_for_rate_instead_of_rtt_alone) {
     BOOST_TEST(selected.carrier_id == 2);
 }
 
+BOOST_AUTO_TEST_CASE(adaptive_flight_credit_bootstraps_and_bounds_each_carrier) {
+    constexpr std::uint64_t window = 32 * 1024 * 1024;
+    constexpr std::uint64_t startup = 256 * 1024;
+    constexpr std::uint64_t frame = 65535;
+    constexpr std::uint64_t high_rtt_bdp = 6750000;
+    BOOST_TEST(Scheduler::AdaptiveFlightCredit(window, 3, 0, 0, 50, startup, frame) ==
+        startup / 2);
+    BOOST_TEST(Scheduler::AdaptiveFlightCredit(window, 3, high_rtt_bdp, 0, 100, startup, frame) ==
+        window / 3);
+    BOOST_TEST(Scheduler::AdaptiveFlightCredit(window, 3, high_rtt_bdp, high_rtt_bdp, 100, startup, frame) >
+        frame);
+    BOOST_TEST(Scheduler::AdaptiveFlightCredit(window, 3, high_rtt_bdp, high_rtt_bdp, 25, startup, frame) ==
+        0u);
+    BOOST_TEST(Scheduler::AdaptiveFlightCredit(window, 3, high_rtt_bdp, window / 3, 100, startup, frame) ==
+        0u);
+}
+
+BOOST_AUTO_TEST_CASE(capacity_freshness_uses_its_own_sample_time) {
+    mp::PathTelemetry telemetry;
+    telemetry.has_sample = true;
+    telemetry.updated_ms = 4000;
+    telemetry.capacity_rate_bytes_per_second = 8 * 1024 * 1024;
+    telemetry.current_rate_bytes_per_second = 256 * 1024;
+    telemetry.srtt_ms = 20;
+    telemetry.confidence = 100;
+
+    // Nonzero capacity alone is not enough: it needs the sample that produced it.
+    BOOST_TEST(!Scheduler::CapacityIsFresh(telemetry, 5000));
+    telemetry.capacity_updated_ms = 4000;
+    BOOST_TEST(Scheduler::CapacityIsFresh(telemetry, 5000));
+    telemetry.capacity_updated_ms = 4999;
+    BOOST_TEST(!Scheduler::CapacityIsFresh(telemetry, 10000));
+    BOOST_TEST(telemetry.updated_ms == 4000u); // RTT/delivery freshness is separate.
+
+    mp::PathControlSnapshot snapshot;
+    snapshot.state = mp::PathState::Active;
+    snapshot.telemetry = telemetry;
+    snapshot.telemetry.updated_ms = 9800;
+    snapshot.capabilities.payload_delivery_rate = true;
+
+    // Fresh delivery metrics with an expired capacity sample must fall back to
+    // the observed delivery rate, not keep using the stale capacity estimate.
+    const auto stale = Scheduler::ProjectCandidate(1, snapshot, 10000, 1024 * 1024);
+    BOOST_REQUIRE(stale.throughput_bytes_per_second);
+    BOOST_TEST(*stale.throughput_bytes_per_second == 256u * 1024u);
+
+    snapshot.telemetry.capacity_updated_ms = 9900;
+    const auto fresh = Scheduler::ProjectCandidate(1, snapshot, 10000, 1024 * 1024);
+    BOOST_REQUIRE(fresh.throughput_bytes_per_second);
+    BOOST_TEST(*fresh.throughput_bytes_per_second == 8u * 1024u * 1024u);
+}
+
+BOOST_AUTO_TEST_CASE(adaptive_carrier_uses_baseline_flight_and_responds_to_pressure) {
+    Scheduler scheduler;
+    Candidate high_capacity = Measured(1, 90, 30 * 1024 * 1024, 1000);
+    high_capacity.bdp_bytes = 2 * 1024 * 1024;
+    high_capacity.unacked_bytes = *high_capacity.bdp_bytes;
+
+    Candidate slower = Measured(2, 125, 12 * 1024 * 1024, 1000);
+    slower.bdp_bytes = 0;
+    auto selected = scheduler.Select(Scheduler::Policy::Adaptive,
+        {high_capacity, slower}, 1000, 4096);
+    BOOST_TEST(selected.carrier_id == 1);
+
+    high_capacity.jitter_ms = 20;
+    high_capacity.scheduling_weight = 50;
+    selected = scheduler.Select(Scheduler::Policy::Adaptive, {high_capacity, slower}, 1100, 4096);
+    BOOST_TEST(selected.carrier_id == 2);
+}
+
 BOOST_AUTO_TEST_CASE(unknown_and_stale_measurements_get_conservative_nonzero_costs) {
     Scheduler scheduler;
     Candidate unknown;

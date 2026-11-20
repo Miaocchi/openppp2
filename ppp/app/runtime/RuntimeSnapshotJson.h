@@ -166,6 +166,27 @@ namespace ppp {
                                           : Json::Value(Json::nullValue);
                 }
 
+                using ppp::app::multipath::RuntimeCarrierState;
+                inline constexpr std::pair<const char*, std::uint64_t RuntimeCarrierState::*> CarrierNumbers[] = {
+                    {"generation", &RuntimeCarrierState::generation},
+                    {"tx_bytes", &RuntimeCarrierState::tx_bytes},
+                    {"rx_bytes", &RuntimeCarrierState::rx_bytes},
+                    {"tx_unique_payload_bytes", &RuntimeCarrierState::tx_unique_payload_bytes},
+                    {"rx_unique_payload_bytes", &RuntimeCarrierState::rx_unique_payload_bytes},
+                    {"retransmit_bytes", &RuntimeCarrierState::retransmit_bytes},
+                    {"retransmit_events", &RuntimeCarrierState::retransmit_events},
+                    {"queued_bytes", &RuntimeCarrierState::queued_bytes},
+                    {"wire_inflight_bytes", &RuntimeCarrierState::wire_inflight_bytes},
+                    {"send_credit_bytes", &RuntimeCarrierState::send_credit_bytes},
+                    {"rtt_ms", &RuntimeCarrierState::rtt_ms},
+                    {"jitter_ms", &RuntimeCarrierState::jitter_ms},
+                    {"queue_delay_ms", &RuntimeCarrierState::queue_delay_ms},
+                    {"delivery_rate_bytes_per_second", &RuntimeCarrierState::delivery_rate_bytes_per_second},
+                    {"capacity_rate_bytes_per_second", &RuntimeCarrierState::capacity_rate_bytes_per_second},
+                    {"scheduling_weight", &RuntimeCarrierState::scheduling_weight},
+                    {"confidence", &RuntimeCarrierState::confidence},
+                };
+
                 inline void WriteRuntimeMultipath(Json::Value& root,
                     const ppp::app::multipath::RuntimeState& state) noexcept {
                     Json::Value value(Json::objectValue);
@@ -178,6 +199,11 @@ namespace ppp {
                     value["state"] = ToRuntimeJsonString(valid_session_state ? state.state : "unknown");
                     value["active_paths"] = Json::UInt(std::min<std::uint32_t>(state.active_paths, 8));
                     WriteOptionalRuntimeNumber(value, "remaining_grace_ms", state.remaining_grace_ms);
+                    if (state.vmux_session_id) {
+                        WriteOptionalRuntimeNumber(value, "vmux_session_id", state.vmux_session_id);
+                        WriteOptionalRuntimeNumber(value, "reorder_events", state.reorder_events);
+                        WriteOptionalRuntimeNumber(value, "reorder_buffered_bytes", state.reorder_buffered_bytes);
+                    }
                     Json::Value capabilities(Json::arrayValue);
                     for (const std::string& capability : state.capabilities) {
                         if (capabilities.size() >= 32) break;
@@ -209,6 +235,12 @@ namespace ppp {
                         WriteOptionalRuntimeNumber(item, "tx_bytes", path.tx_bytes);
                         WriteOptionalRuntimeNumber(item, "inflight_bytes", path.inflight_bytes);
                         WriteOptionalRuntimeNumber(item, "retransmit_bytes", path.retransmit_bytes);
+                        if (path.tx_unique_payload_bytes) {
+                            WriteOptionalRuntimeNumber(item, "tx_unique_payload_bytes", path.tx_unique_payload_bytes);
+                        }
+                        if (path.rx_unique_payload_bytes) {
+                            WriteOptionalRuntimeNumber(item, "rx_unique_payload_bytes", path.rx_unique_payload_bytes);
+                        }
                         WriteOptionalRuntimeNumber(item, "capacity_rate_bytes_per_second",
                             path.capacity_rate_bytes_per_second);
                         WriteOptionalRuntimeNumber(item, "queue_delay_ms", path.queue_delay_ms);
@@ -218,6 +250,22 @@ namespace ppp {
                         paths.append(std::move(item));
                     }
                     value["paths"] = std::move(paths);
+                    if (!state.links.empty()) {
+                        Json::Value links(Json::arrayValue);
+                        for (const auto& link : state.links) {
+                            if (links.size() >= 32) break;
+                            Json::Value item(Json::objectValue);
+                            if (SafeRuntimeToken(link.path_id, 64)) item["path_id"] = ToRuntimeJsonString(link.path_id);
+                            item["link_id"] = Json::UInt(link.link_id);
+                            for (const auto& [name, field] : CarrierNumbers) {
+                                item[name] = Json::UInt64(link.*field);
+                            }
+                            item["metrics_known"] = link.metrics_known;
+                            item["app_limited"] = link.app_limited;
+                            links.append(std::move(item));
+                        }
+                        value["links"] = std::move(links);
+                    }
                     root["multipath"] = std::move(value);
                 }
 
@@ -248,7 +296,10 @@ namespace ppp {
                         (!state.state.empty() && state.state != "idle" && state.state != "creating" &&
                          state.state != "active" && state.state != "recovering" && state.state != "failed" &&
                          state.state != "stopped" && state.state != "unknown")) return false;
-                    if (!ReadOptionalRuntimeNumber(value, "remaining_grace_ms", state.remaining_grace_ms)) return false;
+                    if (!ReadOptionalRuntimeNumber(value, "remaining_grace_ms", state.remaining_grace_ms) ||
+                        !ReadOptionalRuntimeNumber(value, "vmux_session_id", state.vmux_session_id) ||
+                        !ReadOptionalRuntimeNumber(value, "reorder_events", state.reorder_events) ||
+                        !ReadOptionalRuntimeNumber(value, "reorder_buffered_bytes", state.reorder_buffered_bytes)) return false;
                     if (value.isMember("capabilities")) {
                         if (!value["capabilities"].isArray() || value["capabilities"].size() > 32) return false;
                         for (const Json::Value& capability : value["capabilities"]) {
@@ -281,6 +332,8 @@ namespace ppp {
                             !ReadOptionalRuntimeNumber(item, "tx_bytes", path.tx_bytes) ||
                             !ReadOptionalRuntimeNumber(item, "inflight_bytes", path.inflight_bytes) ||
                             !ReadOptionalRuntimeNumber(item, "retransmit_bytes", path.retransmit_bytes) ||
+                            !ReadOptionalRuntimeNumber(item, "tx_unique_payload_bytes", path.tx_unique_payload_bytes) ||
+                            !ReadOptionalRuntimeNumber(item, "rx_unique_payload_bytes", path.rx_unique_payload_bytes) ||
                             !ReadOptionalRuntimeNumber(item, "capacity_rate_bytes_per_second",
                                 path.capacity_rate_bytes_per_second) ||
                             !ReadOptionalRuntimeNumber(item, "queue_delay_ms", path.queue_delay_ms) ||
@@ -292,7 +345,32 @@ namespace ppp {
                         }
                         state.paths.emplace_back(std::move(path));
                     }
-                    if (state.enabled && state.paths.empty()) return false;
+                    if (value.isMember("links")) {
+                        if (!value["links"].isArray() || value["links"].size() > 32) return false;
+                        for (const Json::Value& item : value["links"]) {
+                            if (!item.isObject() || !item.isMember("link_id") || !item["link_id"].isUInt() ||
+                                item["link_id"].asUInt() == 0 || item["link_id"].asUInt() > UINT16_MAX ||
+                                !item.isMember("metrics_known") || !item["metrics_known"].isBool() ||
+                                !item.isMember("app_limited") || !item["app_limited"].isBool()) return false;
+                            RuntimeCarrierState link;
+                            link.link_id = static_cast<std::uint16_t>(item["link_id"].asUInt());
+                            link.metrics_known = item["metrics_known"].asBool();
+                            link.app_limited = item["app_limited"].asBool();
+                            if (item.isMember("path_id")) {
+                                if (!item["path_id"].isString()) return false;
+                                link.path_id = RuntimeJsonString(item, "path_id");
+                                if (!SafeRuntimeToken(link.path_id, 64)) return false;
+                            }
+                            for (const auto& [name, field] : CarrierNumbers) {
+                                if (!item.isMember(name) || !item[name].isUInt64()) return false;
+                                link.*field = item[name].asUInt64();
+                            }
+                            if (link.generation == 0 || std::any_of(state.links.begin(), state.links.end(),
+                                [&link](const auto& prior) { return prior.link_id == link.link_id; })) return false;
+                            state.links.emplace_back(std::move(link));
+                        }
+                    }
+                    if (state.enabled && state.paths.empty() && !state.vmux_session_id) return false;
                     return true;
                 }
 

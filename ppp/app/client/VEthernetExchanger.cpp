@@ -3971,7 +3971,14 @@ namespace ppp {
                 }
                 const auto mux = mux_coordinator_->Session();
                 if (mux && !mux->is_disposed()) {
-                    for (const auto& mux_path : mux->get_multipath_path_runtime_stats()) {
+                    auto mux_stats = mux->get_multipath_runtime_stats();
+                    if (mux_stats.session_id != 0) {
+                        state.vmux_session_id = mux_stats.session_id;
+                        state.reorder_events = mux_stats.reorder_events;
+                        state.reorder_buffered_bytes = mux_stats.reorder_buffered_bytes;
+                    }
+                    state.links = std::move(mux_stats.links);
+                    for (const auto& mux_path : mux_stats.paths) {
                         auto found = std::find_if(state.paths.begin(), state.paths.end(),
                             [&mux_path](const auto& path) { return path.id == mux_path.path_id; });
                         if (found == state.paths.end()) continue;
@@ -3979,6 +3986,8 @@ namespace ppp {
                         found->rx_bytes = mux_path.rx_bytes;
                         found->inflight_bytes = mux_path.inflight_bytes;
                         found->retransmit_bytes = mux_path.retransmit_bytes;
+                        found->tx_unique_payload_bytes = mux_path.tx_unique_payload_bytes;
+                        found->rx_unique_payload_bytes = mux_path.rx_unique_payload_bytes;
                         if (mux_path.has_rtt) found->rtt_ms = mux_path.rtt_ms;
                         if (mux_path.has_telemetry) {
                             found->capacity_rate_bytes_per_second =

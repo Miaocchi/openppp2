@@ -21,26 +21,24 @@ IO_TIMEOUT = 20
 CHUNK = 32768
 
 
-def send(stream, direction, flow, duration):
+def write_payload(stream, direction, flow, duration):
     # Make a substitution across streams or frame positions visible in SHA-256.
     body = hashlib.shake_256(f"{direction}/{flow}".encode()).digest(CHUNK - 8)
     digest = hashlib.sha256()
     total = 0
-    end = time.monotonic() + duration
+    started = time.monotonic()
+    end = started + duration
     while time.monotonic() < end:
         block = struct.pack("!Q", total) + body
         stream.sendall(struct.pack("!H", CHUNK) + block)
         digest.update(block)
         total += CHUNK
+    finished = time.monotonic()
     stream.sendall(b"\x00\x00")
-    receipt = exact(stream, 40)
-    if not total or receipt != struct.pack("!Q", total) + digest.digest():
-        raise RuntimeError(f"bad receipt for {total} bytes, sha256={digest.hexdigest()}")
-    stream.sendall(b"K")
-    return {"sent_bytes": total, "sent_sha256": digest.hexdigest(), "sender_receipt": True}
+    return total, digest.digest(), started, finished
 
 
-def receive(stream):
+def read_payload(stream):
     digest = hashlib.sha256()
     total = 0
     while True:
@@ -51,10 +49,55 @@ def receive(stream):
             raise RuntimeError(f"invalid frame length {length} after {total} bytes")
         digest.update(exact(stream, length))
         total += length
-    stream.sendall(struct.pack("!Q", total) + digest.digest())
-    if exact(stream, 1) != b"K" or stream.recv(1):
+    return total, digest.digest()
+
+
+def verify_receipt(stream, sent):
+    total, digest, started, finished = sent
+    receipt = exact(stream, 40)
+    if not total or receipt != struct.pack("!Q", total) + digest:
+        raise RuntimeError(f"bad receipt for {total} bytes, sha256={digest.hex()}")
+    return {"sent_bytes": total, "sent_sha256": digest.hex(), "sender_receipt": True,
+            "send_start_monotonic_ms": int(started * 1000),
+            "send_end_monotonic_ms": int(finished * 1000)}
+
+
+def verify_confirmation(stream, received):
+    total, digest = received
+    if exact(stream, 1) != b"K":
+        raise RuntimeError("expected sender confirmation")
+    return {"received_bytes": total, "received_sha256": digest.hex(), "sender_confirmed": True}
+
+
+def transfer(stream, server, direction, flow, duration):
+    if direction == "bidirectional":
+        send_direction, receive_direction = ("download", "upload") if server else ("upload", "download")
+        with ThreadPoolExecutor(max_workers=1) as sender:
+            sending = sender.submit(write_payload, stream, send_direction, flow, duration)
+            received = read_payload(stream)
+            sent = sending.result()
+        total, digest = received
+        stream.sendall(struct.pack("!Q", total) + digest)
+        send_report = verify_receipt(stream, sent)
+        stream.sendall(b"K")
+        receive_report = verify_confirmation(stream, received)
+        stream.shutdown(socket.SHUT_WR)
+        if stream.recv(1):
+            raise RuntimeError("expected exact EOF")
+        return {send_direction: send_report, receive_direction: {**receive_report, "exact_eof": True}}
+
+    if server == (direction == "download"):
+        report = verify_receipt(stream, write_payload(stream, direction, flow, duration))
+        stream.sendall(b"K")
+        return report
+
+    received = read_payload(stream)
+    total, digest = received
+    stream.sendall(struct.pack("!Q", total) + digest)
+    report = verify_confirmation(stream, received)
+    if stream.recv(1):
         raise RuntimeError("expected sender confirmation and EOF")
-    return {"received_bytes": total, "received_sha256": digest.hexdigest(), "sender_confirmed": True}
+    return {**report, "exact_eof": True}
 
 
 def phase(role, address, port, direction, ready_file, flows, duration):
@@ -95,8 +138,7 @@ def phase(role, address, port, direction, ready_file, flows, duration):
                         # All SOCKS streams must open before sending payload.
                         barrier.wait()
                         stream.sendall(b"G")
-                    sender = server == (direction == "download")
-                    result = send(stream, direction, flow, duration) if sender else receive(stream)
+                    result = transfer(stream, server, direction, flow, duration)
                     return {"flow": flow, **result}
             except Exception as error:
                 barrier.abort()
@@ -116,7 +158,7 @@ def phase(role, address, port, direction, ready_file, flows, duration):
 if __name__ == "__main__":
     role, address, port, direction, ready, *options = sys.argv[1:]
     flows = int(options[0]) if options else FLOWS
-    duration = int(options[1]) if len(options) > 1 else SECONDS[direction]
+    duration = int(options[1]) if len(options) > 1 else SECONDS.get(direction, 25)
     if not 1 <= flows <= 64:
         raise SystemExit("flow count must be between 1 and 64")
     if not 12 <= duration <= 120:
