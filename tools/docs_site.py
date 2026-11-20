@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build and preview the bilingual docs without changing repository Markdown.
 
-Only tracked documents (plus the explicitly maintained site guide) are published.
+Only explicitly listed handbook pages are published.
 All generated inputs, caches, and output live in build/docs-site.
 """
 from __future__ import annotations
@@ -24,32 +24,51 @@ ROOT = Path(__file__).resolve().parents[1]
 SITE_URL = "https://miaocchi.github.io/openppp2/"
 REPOSITORY = "https://github.com/Miaocchi/openppp2"
 LANGUAGES = ("en", "zh")
-EXCLUDED = {"untracked", "superpowers", "node_modules", "build", "dist", "__pycache__"}
-EXCLUDED_FILES = {"AGENTS.md", "CLAUDE.md", "CRASH_ANALYSIS_CN.md", "PROJECT_CLEANUP_CN.md"}
+# The same allowlist controls build inputs, search, and navigation. Adding a
+# document to the repository does not add it to the public site.
 SECTIONS = (
-    ("getting-started", "Getting started", "快速开始"),
-    ("guides", "Guides", "指南"),
-    ("reference", "Reference", "参考"),
-    ("architecture", "Architecture", "架构"),
-    ("development", "Development", "开发"),
-    ("operations", "Operations", "运维"),
-    ("design", "Designs and decisions", "设计与决策"),
-    ("archive", "History", "历史归档"),
+    ("Getting started", "快速开始", (
+        "getting-started/index.md",
+        "getting-started/USER_MANUAL.md",
+        "getting-started/CONFIGURE.md",
+        "getting-started/DESKTOP_CLIENT.md",
+        "guides/PLATFORMS.md",
+    )),
+    ("Configuration", "配置", (
+        "reference/index.md",
+        "reference/CONFIGURATION.md",
+        "reference/configuration/client.md",
+        "reference/configuration/server.md",
+        "reference/configuration/transport.md",
+        "reference/configuration/security.md",
+        "reference/configuration/mux.md",
+        "reference/configuration/routing.md",
+        "reference/configuration/advanced.md",
+        "reference/CLI_REFERENCE.md",
+    )),
+    ("Guides", "使用指南", (
+        "guides/index.md",
+        "guides/PROXY_MODE.md",
+        "guides/ROUTING_AND_DNS.md",
+        "guides/POLICY_CLI.md",
+        "guides/IPV6.md",
+        "guides/PEER_PREFIX_ROUTING.md",
+        "guides/REMOTE_SUBSCRIPTION.md",
+    )),
+    ("Deployment", "部署", (
+        "operations/index.md",
+        "operations/DEPLOYMENT.md",
+        "operations/SECURITY.md",
+        "guides/MANAGEMENT_BACKEND.md",
+    )),
+    ("Troubleshooting", "排障", (
+        "operations/OPERATIONS.md",
+        "reference/ERROR_CODES.md",
+    )),
 )
-# Reader-facing order inside a section; unlisted pages follow alphabetically.
-ORDER = {name: rank for rank, name in enumerate((
-    "getting-started/USER_MANUAL.md",
-    "getting-started/CONFIGURE.md",
-    "getting-started/DESKTOP_CLIENT.md",
-    "guides/ROUTING_AND_DNS.md",
-    "guides/POLICY_CLI.md",
-    "guides/PROXY_MODE.md",
-    "guides/IPV6.md",
-    "guides/PEER_PREFIX_ROUTING.md",
-    "guides/MANAGEMENT_BACKEND.md",
-    "guides/REMOTE_SUBSCRIPTION.md",
-    "guides/PLATFORMS.md",
-))}
+PUBLIC_PAGES = {Path("index.md")} | {
+    Path(page) for _, _, pages in SECTIONS for page in pages
+}
 # Match inline code before links, so examples remain byte-for-byte intact.
 PROSE = re.compile(
     r"(?P<code>`+[^`\n]*`+)"
@@ -60,19 +79,15 @@ PROSE = re.compile(
 )
 
 
-def included(path: Path) -> bool:
-    return not (set(path.parts) & EXCLUDED) and path.name not in EXCLUDED_FILES
-
-
 def canonical(path: Path) -> Path:
     """Pairs have one public path, with each README becoming an index."""
     name = path.name.removesuffix(".md").removesuffix("_CN")
     return path.with_name(("index" if name == "README" else name) + ".md")
 
 
-def chinese(path: Path, text: str = "") -> bool:
-    # Some intentionally Chinese-only audits predate the _CN naming convention.
-    return path.stem.endswith(("_CN", "-cn")) or bool(re.search(r"[\u3400-\u9fff]", title(text)))
+def source_files(page: Path) -> tuple[Path, Path]:
+    stem = "README" if page.name == "index.md" else page.stem
+    return tuple(page.with_name(stem + suffix) for suffix in (".md", "_CN.md"))
 
 
 def title(text: str) -> str:
@@ -135,37 +150,23 @@ class DocsSite:
         self.output = self.work / "site"
         self.sources: dict[Path, dict[str, Path]] = {}
         self.texts: dict[Path, str] = {}
-        self.assets: set[Path] = set()
 
     def discover(self, paths: list[Path] | None = None) -> None:
-        if paths is None:
-            tracked = subprocess.check_output(
-                ["git", "ls-files", "-z", "--", "docs"], cwd=self.root
-            ).decode().split("\0")
-            paths = [Path(p) for p in tracked if p]
-            # Include this feature's new guide before its first commit.
-            paths += [Path("docs/development/DOCS_SITE.md"), Path("docs/development/DOCS_SITE_CN.md")]
-        for repo_path in sorted(set(paths)):
-            if not included(repo_path) or not (self.root / repo_path).is_file():
-                continue
-            path = repo_path.relative_to("docs")
-            if path.suffix != ".md":
-                self.assets.add(path)
-                continue
-            text = (self.root / repo_path).read_text(encoding="utf-8")
-            self.texts[path] = text
-            language = "zh" if chinese(path, text) else "en"
-            variants = self.sources.setdefault(canonical(path), {})
-            if language in variants:
-                raise ValueError(f"Duplicate {language} page: {path} and {variants[language]}")
-            variants[language] = path
+        paths = set(paths) if paths is not None else None
+        for page in sorted(PUBLIC_PAGES):
+            for language, source in zip(LANGUAGES, source_files(page), strict=True):
+                repo_path = Path("docs") / source
+                target = self.root / repo_path
+                if (paths is not None and repo_path not in paths) or not target.is_file():
+                    continue
+                self.texts[source] = target.read_text(encoding="utf-8")
+                self.sources.setdefault(page, {})[language] = source
+            if paths is None and page not in self.sources:
+                raise ValueError(f"Missing public handbook page: {page}")
 
     def selected(self, page: Path, language: str) -> Path:
         variants = self.sources[page]
         return variants.get(language) or next(iter(variants.values()))
-
-    def historical(self, path: Path) -> bool:
-        return path.parts[0] == "archive" or "AUDIT" in path.name.upper() or path.name == "BOOST_187_COMPATIBILITY.md"
 
     def destination(self, raw: str, source: Path, language: str, label: str = "") -> str:
         wrapped = raw.startswith("<") and raw.endswith(">")
@@ -182,7 +183,7 @@ class DocsSite:
             if target.is_dir():
                 relative /= "README.md"
             page = canonical(relative)
-            if page in self.sources and included(relative):
+            if page in self.sources and (target.is_dir() or relative in self.sources[page].values()):
                 # Explicit peers cross languages; ordinary links stay in this site.
                 target_language = "zh" if relative.stem.endswith(("_CN", "-cn")) else language
                 if language == "zh" and "en" in self.sources[page] and relative == self.sources[page]["en"]:
@@ -193,16 +194,15 @@ class DocsSite:
                 prefix = "zh/" if target_language == "zh" else ""
                 path = self.base + prefix + page_url(page)
                 return urlunsplit(("", "", path, url.query, url.fragment))
-            if relative in self.assets:
-                prefix = "zh/" if language == "zh" else ""
-                return urlunsplit(("", "", self.base + prefix + quote(relative.as_posix()), url.query, url.fragment))
-            raise ValueError(f"Missing documentation link: {source}: {raw}")
+            # Repository-only documents remain links to source, not site pages.
+            if not target.exists():
+                raise ValueError(f"Missing documentation link: {source}: {raw}")
         try:
             repo_path = target.relative_to(self.root).as_posix()
         except ValueError:
             raise ValueError(f"Link leaves repository: {source}: {raw}") from None
         kind = "tree" if target.is_dir() else "blob"
-        return urlunsplit(("https", "github.com", f"/Miaocchi/openppp2/{kind}/main/{quote(repo_path)}", url.query, url.fragment))
+        return urlunsplit(("https", urlsplit(REPOSITORY).netloc, f"{urlsplit(REPOSITORY).path}/{kind}/main/{quote(repo_path)}", url.query, url.fragment))
 
     def rewrite(self, text: str, source: Path, language: str) -> str:
         def replace(match: re.Match) -> str:
@@ -225,98 +225,25 @@ class DocsSite:
             metadata = yaml.safe_load(front) or {}
         notices = []
         if language not in self.sources[page]:
-            original = "Chinese" if chinese(source, text) else "English"
+            original = "Chinese" if source == self.sources[page].get("zh") else "English"
             notice = f"This document is available only in {original}; the original text is shown."
             if language == "zh":
                 notice = f"本文仅有{'中文' if original == 'Chinese' else '英文'}版本，以下保留原文。"
-            notices.append(f"> {notice}\n\n")
-        if self.historical(source):
-            metadata.setdefault("search", {})["exclude"] = True
-            notice = "Historical material: check its original status and date before relying on it."
-            if language == "zh":
-                notice = "历史资料：使用前请核对原始状态和日期。"
             notices.append(f"> {notice}\n\n")
         front = "---\n" + yaml.safe_dump(metadata, allow_unicode=True) + "---\n\n" if metadata else ""
         return front + "".join(notices) + heading_ids(self.rewrite(text, source, language))
 
     def navigation(self, language: str) -> list:
-        def page_item(page: Path) -> dict[str, str]:
-            return {title(self.texts[self.selected(page, language)]) or page.stem: page.as_posix()}
-
-        def sort_pages(pages: list[Path]) -> list[Path]:
-            return sorted(
-                pages,
-                key=lambda page: (
-                    page.name != "index.md",
-                    ORDER.get(page.as_posix(), len(ORDER)),
-                    page.as_posix(),
-                ),
-            )
-
-        def fallback_title(directory: Path) -> str:
-            return directory.name.replace("-", " ").replace("_", " ").title()
-
-        def directory_title(directory: Path) -> str:
-            index = directory / "index.md"
-            if index in self.sources:
-                return title(self.texts[self.selected(index, language)]) or fallback_title(directory)
-            return fallback_title(directory)
-
-        def pages_under(directory: Path) -> tuple[list, set[Path]]:
-            descendants = [
-                page
-                for page in self.sources
-                if len(page.parts) > len(directory.parts)
-                and page.parts[: len(directory.parts)] == directory.parts
-            ]
-            direct = [page for page in descendants if page.parent == directory]
-            children = sorted(
-                {
-                    directory / page.parts[len(directory.parts)]
-                    for page in descendants
-                    if len(page.parts) > len(directory.parts) + 1
-                }
-            )
-            items = [page_item(page) for page in sort_pages(direct)]
-            included_pages = set(direct)
-            for child in children:
-                child_items, child_pages = pages_under(child)
-                if child_items:
-                    items.append({directory_title(child): child_items})
-                    included_pages.update(child_pages)
-            return items, included_pages
-
         nav = [{"Home" if language == "en" else "首页": "index.md"}]
-        published = {Path("index.md")}
-        aliases = {
-            "guides": ("guide",),
-            "development": ("testing", "governance"),
-            "design": ("adr",),
-            "archive": ("vmux",),
-        }
-        known_roots = {directory for directory, _, _ in SECTIONS}
-        known_roots.update(extra for extras in aliases.values() for extra in extras)
-        for directory, english, zh in SECTIONS:
-            items, pages = pages_under(Path(directory))
-            published.update(pages)
-            for extra in aliases.get(directory, ()):
-                extra_items, extra_pages = pages_under(Path(extra))
-                if extra_items:
-                    items.append({directory_title(Path(extra)): extra_items})
-                    published.update(extra_pages)
+        for english, zh, pages in SECTIONS:
+            items = []
+            for name in pages:
+                page = Path(name)
+                if page in self.sources:
+                    heading = title(self.texts[self.selected(page, language)])
+                    items.append({heading or page.stem: name})
             if items:
                 nav.append({english if language == "en" else zh: items})
-
-        # Keep an unexpected top-level category visible rather than silently
-        # dropping its pages when a new document tree is added.
-        remaining_roots = sorted({page.parts[0] for page in self.sources if page not in published})
-        for root in remaining_roots:
-            if root in known_roots or root == ".":
-                continue
-            items, pages = pages_under(Path(root))
-            if items:
-                nav.append({directory_title(Path(root)): items})
-                published.update(pages)
         return nav
 
     def prepare(self) -> None:
@@ -331,10 +258,6 @@ class DocsSite:
                 output = docs / page
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(self.render(page, language), encoding="utf-8")
-            for asset in self.assets:
-                output = docs / asset
-                output.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(self.root / "docs" / asset, output)
             config = copy.deepcopy(base_config)
             project = config["project"]
             project.update(docs_dir="docs", site_dir="site", site_url=self.site_url + ("zh/" if language == "zh" else ""), nav=self.navigation(language))

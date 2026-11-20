@@ -23,4 +23,3 @@
 | Platform differences (Windows / Linux / macOS / Android / iOS) | [Platforms](../guides/PLATFORMS.md) |
 | Run as a system service, go-live checks | [Deployment](../operations/DEPLOYMENT.md) · [Operations and troubleshooting](../operations/OPERATIONS.md) |
 | Manage with a GUI | [Desktop client](DESKTOP_CLIENT.md) (experimental, runs from source) |
-| Build or read the source | [Development](../development/README.md) · [Source reading guide](../development/SOURCE_READING_GUIDE.md) |

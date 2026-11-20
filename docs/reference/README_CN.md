@@ -1,31 +1,24 @@
-# 参考手册
-> Status: Active
-> Type: Reference index
-> Last verified: 2026-10-07
-> Parent index: [文档索引](../README_CN.md)
-> Peer link: [English](README.md)
+# 配置
 
-本索引覆盖此 `openppp2/` 树中已由源码核对的当前接口。请先阅读面向任务的页面；协议与原生 C++ 页面描述的是与实现耦合的内部边界，不是第三方 SDK。
+OPENPPP2 使用 JSON 配置。第一次连接，建议先照着[最小服务端与客户端示例](../getting-started/CONFIGURE_CN.md)跑通；已知字段名时，按下表查类型、默认值和生效端。
 
-## 启动或配置 `ppp`
+## 配置字段索引
 
-- [命令行参考](CLI_REFERENCE_CN.md) — 参数、启动顺序、别名和副作用。
-- [策略 CLI 指南](../guides/POLICY_CLI_CN.md) — 策略检查、解释、迁移、导出、更新和状态工作流。
-- [配置模型](CONFIGURATION_CN.md) — 可接受的 JSON 结构、归一化和安全配置实践。
+| JSON 字段 | 专题 | 可以查到什么 |
+|---|---|---|
+| `client`、`client.server` | [客户端](configuration/client_CN.md) | 服务器 URL、客户端身份、本地 HTTP/SOCKS5 监听、重连、端口映射 |
+| `server` | [服务端](configuration/server_CN.md) | 虚拟 IPv4/IPv6 地址分配、客户端互通、会话恢复、管理后端 |
+| `tcp`、`udp`、`websocket`、`ip` | [连接与传输](configuration/transport_CN.md) | 监听地址与端口、TCP/UDP 超时、WS/WSS 路径和 TLS 证书 |
+| `key`、`transport-auth` | [加密与认证](configuration/security_CN.md) | 两端必须一致的设置、加密密钥、可选的传输层连接认证 |
+| `mux` | [多路复用](configuration/mux_CN.md) | 调度、缓冲、重传和前向纠错 |
+| `client.policy`、`client.routing`、`dns`、`routing`、`geo-rules` | [分流与 DNS](configuration/routing_CN.md) | 新版策略、旧版分流和 DNS 上游；新旧策略二选一 |
+| `p2p`、`vmem`、`virr`、`vbgp`、`telemetry` | [高级设置](configuration/advanced_CN.md) | 对端直连、文件缓冲池、规则更新、遥测 |
+| `concurrent`、`cdn` | [文件格式与通用设置](CONFIGURATION_CN.md#3-顶层字段) | 工作线程数、服务端额外 TCP 监听端口 |
 
-## 诊断运行中的进程
+## 启动前查阅
 
-- [诊断错误系统](DIAGNOSTICS_ERROR_SYSTEM_CN.md) — 错误状态模型和可观测性限制。
-- [错误码参考](ERROR_CODES_CN.md) — 错误目录的权威来源和查询规则。
-- [错误处理 API](ERROR_HANDLING_API_CN.md) — 内部 C++ 诊断 API。
-- [UI Runtime 契约](UI_RUNTIME_CONTRACT_CN.md) — 仓库内 UI 消费的版本化 snapshot。
+- [配置加载与默认值](CONFIGURATION_CN.md#1-加载过程)：程序读取哪个文件、省略字段时怎么处理。
+- [命令行参数](CLI_REFERENCE_CN.md)：启动方式、平台限制、哪些参数会覆盖 JSON。
+- [错误码](ERROR_CODES_CN.md)：查启动或连接时报告的错误。
 
-## 维护与实现耦合的边界
-
-- [项目接口全景图](PROJECT_INTERFACE_MAP_CN.md) — 契约清单、分类和已知缺口。
-- [链路层协议指南](LINKLAYER_PROTOCOL_CN.md) — opcode 载荷和分发边界。
-- [包格式](PACKET_FORMATS_CN.md) — transport 与 static-echo 包编解码器。
-- [会话与控制面模型](TRANSMISSION_PACK_SESSIONID_CN.md) — 握手值和 INFO 信封。
-- [VMUX 验证与发布门槛](VMUX_VALIDATION_CN.md) — 实验性调度器所需的证据。
-
-文档与源码不一致时，以各页面列出的源码路径为准。当前页面均有中英文配对；历史材料不属于本索引。
+[English](README.md)
