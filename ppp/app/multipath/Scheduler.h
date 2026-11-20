@@ -87,10 +87,10 @@ public:
             } else if (snapshot.telemetry.min_rtt_ms != 0) {
                 candidate.rtt_ms = snapshot.telemetry.min_rtt_ms;
             }
-            if (snapshot.capabilities.payload_delivery_rate &&
-                snapshot.telemetry.current_rate_bytes_per_second != 0) {
-                candidate.throughput_bytes_per_second =
-                    snapshot.telemetry.current_rate_bytes_per_second;
+            if (snapshot.capabilities.payload_delivery_rate) {
+                const auto capacity = snapshot.telemetry.capacity_rate_bytes_per_second;
+                const auto rate = capacity != 0 ? capacity : snapshot.telemetry.current_rate_bytes_per_second;
+                if (rate != 0) candidate.throughput_bytes_per_second = rate;
             }
         }
         return candidate;

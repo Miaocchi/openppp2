@@ -3,115 +3,157 @@
 #include "PathControlTypes.h"
 
 #include <algorithm>
-#include <cstddef>
+#include <array>
 #include <cstdint>
-#include <deque>
 #include <limits>
-#include <optional>
+#include <memory>
 
 namespace ppp::app::multipath {
 
-struct VmuxPathSample final {
-    std::optional<std::uint64_t> delivery_rate_bytes_per_second;
-    std::optional<std::uint64_t> srtt_ms;
-    std::optional<std::uint64_t> min_rtt_ms;
-    std::optional<std::uint64_t> wire_inflight_bytes;
-    std::optional<std::uint64_t> local_queue_bytes;
-    std::optional<std::uint64_t> retransmission_bytes;
-    std::uint64_t timestamp_ms = 0;
-    std::uint64_t epoch = 0;
+enum class PathEstimatorMode { Ewma, Bbr, Kcc };
+
+struct DeliverySample final {
+    std::uint64_t delivered_bytes = 0;
+    std::uint64_t interval_us = 0;
+    std::uint64_t prior_delivered = 0;
+    std::uint64_t total_delivered = 0;
+    bool is_app_limited = false;
 };
 
-struct VmuxPathEstimatorConfig final {
-    std::size_t round_max_samples = 8;
-    std::uint64_t metric_expiry_ms = 10000;
-};
-
-/** Pure VMUX metric estimator. It has no transport or clock dependencies. */
-class VmuxPathEstimator final {
+class IPathEstimator {
 public:
-    explicit VmuxPathEstimator(VmuxPathEstimatorConfig config = {}) noexcept
-        : config_(config) {
-        if (config_.round_max_samples == 0) config_.round_max_samples = 1;
-    }
+    virtual ~IPathEstimator() = default;
+    virtual void OnSample(const DeliverySample& sample, std::uint64_t now_ms) noexcept = 0;
+    virtual PathTelemetry GetTelemetry(std::uint64_t now_ms) const noexcept = 0;
+    virtual void Reset(std::uint64_t epoch) noexcept = 0;
+    virtual bool FullBandwidthReached() const noexcept = 0;
+};
 
-    PathTelemetry Observe(const VmuxPathSample& sample) noexcept {
-        if (!initialized_ || sample.epoch != epoch_) {
-            Reset(sample.epoch);
-        }
-        if (initialized_ && sample.timestamp_ms < last_timestamp_ms_) return Snapshot(last_timestamp_ms_);
-        initialized_ = true;
-        last_timestamp_ms_ = sample.timestamp_ms;
-        if (sample.delivery_rate_bytes_per_second) {
-            rate_samples_.push_back(*sample.delivery_rate_bytes_per_second);
-            while (rate_samples_.size() > config_.round_max_samples) rate_samples_.pop_front();
-        }
-        if (sample.min_rtt_ms) min_rtt_ms_ = *sample.min_rtt_ms;
-        if (sample.srtt_ms) srtt_ms_ = *sample.srtt_ms;
-        if (sample.wire_inflight_bytes) wire_inflight_bytes_ = *sample.wire_inflight_bytes;
-        if (sample.local_queue_bytes) local_queue_bytes_ = *sample.local_queue_bytes;
-        if (sample.retransmission_bytes) retransmission_bytes_ = *sample.retransmission_bytes;
-        if (sample.delivery_rate_bytes_per_second || sample.srtt_ms || sample.min_rtt_ms ||
-            sample.wire_inflight_bytes || sample.local_queue_bytes || sample.retransmission_bytes)
-            last_metric_timestamp_ms_ = sample.timestamp_ms;
+class VmuxPathEstimator final : public IPathEstimator {
+public:
+    explicit VmuxPathEstimator(PathEstimatorMode mode) noexcept : mode_(mode) {}
+
+    void OnSample(const DeliverySample& sample, std::uint64_t now_ms) noexcept override {
+        if (sample.interval_us == 0 || sample.delivered_bytes == 0 ||
+            sample.prior_delivered >= sample.total_delivered ||
+            (sample_count_ != 0 && (now_ms < updated_ms_ ||
+                sample.total_delivered <= total_delivered_))) return;
+
+        const auto maximum = std::numeric_limits<std::uint64_t>::max();
+        const long double rate = static_cast<long double>(sample.delivered_bytes) *
+            1000000.0L / sample.interval_us;
+        const auto measured = rate >= static_cast<long double>(maximum)
+            ? maximum : static_cast<std::uint64_t>(rate);
+        if (measured == 0) return;
+
+        updated_ms_ = now_ms;
+        total_delivered_ = sample.total_delivered;
+        latest_ = measured;
         ++sample_count_;
-        return Snapshot(sample.timestamp_ms);
+        const bool low_app_limited = sample.is_app_limited && measured < capacity_;
+        if (!low_app_limited && capacity_ != 0 && now_ms - capacity_updated_ms_ > MetricExpiryMs) {
+            ClearModel();
+        }
+        if (mode_ == PathEstimatorMode::Ewma) {
+            if (low_app_limited) return;
+            if (capacity_ == 0) {
+                capacity_ = measured;
+            } else if (measured > capacity_) {
+                capacity_ += (measured - capacity_) / 8;
+            } else {
+                const auto delta = capacity_ - measured;
+                capacity_ -= delta / 8 + (delta % 8 != 0);
+            }
+        } else {
+            const bool round_start = sample.prior_delivered >= next_round_delivered_;
+            if (round_start) {
+                next_round_delivered_ = sample.total_delivered;
+                ++round_;
+            }
+            // Advance the delivery clock even when this ACK contributes no capacity evidence.
+            if (low_app_limited) return;
+            auto& peak = round_max_[round_ % round_max_.size()];
+            if (peak.round != round_) peak = {round_, 0};
+            peak.rate = std::max(peak.rate, measured);
+            capacity_ = 0;
+            for (const auto& entry : round_max_) {
+                if (round_ - entry.round < round_max_.size()) {
+                    capacity_ = std::max(capacity_, entry.rate);
+                }
+            }
+            if (mode_ == PathEstimatorMode::Kcc && round_start &&
+                !sample.is_app_limited && !FullBandwidthReached()) {
+                // KCC declares the pipe full after three rounds below 25% growth.
+                if (full_bandwidth_ == 0 || (capacity_ >= full_bandwidth_ &&
+                    capacity_ - full_bandwidth_ >= std::max<std::uint64_t>(1, full_bandwidth_ / 4))) {
+                    full_bandwidth_ = capacity_;
+                    plateau_rounds_ = 0;
+                } else {
+                    ++plateau_rounds_;
+                }
+            }
+        }
+        capacity_updated_ms_ = now_ms;
     }
 
-    PathTelemetry SnapshotAt(std::uint64_t now_ms) const noexcept {
-        return Snapshot(now_ms);
+    PathTelemetry GetTelemetry(std::uint64_t now_ms) const noexcept override {
+        PathTelemetry telemetry;
+        if (sample_count_ == 0 || now_ms < updated_ms_ ||
+            now_ms - updated_ms_ > MetricExpiryMs) return telemetry;
+        telemetry.has_sample = true;
+        telemetry.updated_ms = updated_ms_;
+        telemetry.sample_count = sample_count_;
+        telemetry.current_rate_bytes_per_second = latest_;
+        if (now_ms - capacity_updated_ms_ <= MetricExpiryMs) {
+            telemetry.capacity_rate_bytes_per_second = capacity_;
+        }
+        telemetry.confidence = 100;
+        return telemetry;
     }
 
-    void Reset(std::uint64_t epoch = 0) noexcept {
-        epoch_ = epoch;
-        initialized_ = false;
-        last_timestamp_ms_ = 0;
-        last_metric_timestamp_ms_ = 0;
+    void Reset(std::uint64_t) noexcept override {
+        ClearModel();
+        updated_ms_ = 0;
+        total_delivered_ = 0;
+        latest_ = 0;
         sample_count_ = 0;
-        rate_samples_.clear();
-        min_rtt_ms_.reset(); srtt_ms_.reset(); wire_inflight_bytes_.reset();
-        local_queue_bytes_.reset(); retransmission_bytes_.reset();
     }
+
+    bool FullBandwidthReached() const noexcept override { return plateau_rounds_ >= 3; }
 
 private:
-    static std::uint64_t SaturatingProduct(std::uint64_t left,
-                                           std::uint64_t right) noexcept {
-        if (left == 0 || right == 0) return 0;
-        const auto maximum = std::numeric_limits<std::uint64_t>::max();
-        return left > maximum / right ? maximum : left * right;
+    struct RoundPeak {
+        std::uint64_t round = 0;
+        std::uint64_t rate = 0;
+    };
+
+    void ClearModel() noexcept {
+        capacity_ = 0;
+        capacity_updated_ms_ = 0;
+        next_round_delivered_ = 0;
+        round_ = 0;
+        round_max_.fill({});
+        full_bandwidth_ = 0;
+        plateau_rounds_ = 0;
     }
 
-    PathTelemetry Snapshot(std::uint64_t now_ms) const noexcept {
-        PathTelemetry out;
-        if (!initialized_ || now_ms < last_metric_timestamp_ms_ ||
-            now_ms - last_metric_timestamp_ms_ > config_.metric_expiry_ms) return out;
-        out.sample_count = sample_count_;
-        out.updated_ms = last_metric_timestamp_ms_;
-        if (!rate_samples_.empty()) {
-            out.current_rate_bytes_per_second = *std::max_element(rate_samples_.begin(), rate_samples_.end());
-            out.capacity_rate_bytes_per_second = out.current_rate_bytes_per_second;
-        }
-        if (min_rtt_ms_) out.min_rtt_ms = *min_rtt_ms_;
-        if (srtt_ms_) out.srtt_ms = *srtt_ms_;
-        if (srtt_ms_ && min_rtt_ms_) out.queue_delay_ms = *srtt_ms_ > *min_rtt_ms_ ? *srtt_ms_ - *min_rtt_ms_ : 0;
-        if (wire_inflight_bytes_) out.wire_inflight_bytes = *wire_inflight_bytes_;
-        if (local_queue_bytes_) out.local_queue_bytes = *local_queue_bytes_;
-        if (retransmission_bytes_) out.retransmission_bytes = *retransmission_bytes_;
-        if (out.current_rate_bytes_per_second && srtt_ms_)
-            out.bdp_bytes = SaturatingProduct(out.current_rate_bytes_per_second, *srtt_ms_) / 1000;
-        const bool any = !rate_samples_.empty() || min_rtt_ms_ || srtt_ms_ || wire_inflight_bytes_ || local_queue_bytes_ || retransmission_bytes_;
-        out.has_sample = any;
-        const unsigned known = static_cast<unsigned>(!rate_samples_.empty()) + static_cast<unsigned>(min_rtt_ms_.has_value()) + static_cast<unsigned>(srtt_ms_.has_value()) + static_cast<unsigned>(wire_inflight_bytes_.has_value()) + static_cast<unsigned>(local_queue_bytes_.has_value());
-        out.confidence = static_cast<std::uint8_t>((known * 100u) / 5u);
-        out.at_capacity = out.bdp_bytes != 0 && (out.wire_inflight_bytes >= out.bdp_bytes || out.local_queue_bytes >= out.bdp_bytes);
-        return out;
-    }
-
-    VmuxPathEstimatorConfig config_;
-    bool initialized_ = false;
-    std::uint64_t epoch_ = 0, last_timestamp_ms_ = 0, last_metric_timestamp_ms_ = 0, sample_count_ = 0;
-    std::deque<std::uint64_t> rate_samples_;
-    std::optional<std::uint64_t> min_rtt_ms_, srtt_ms_, wire_inflight_bytes_, local_queue_bytes_, retransmission_bytes_;
+    static constexpr std::uint64_t MetricExpiryMs = 5000;
+    PathEstimatorMode mode_;
+    std::array<RoundPeak, 10> round_max_{};
+    std::uint64_t round_ = 0;
+    std::uint64_t next_round_delivered_ = 0;
+    std::uint64_t full_bandwidth_ = 0;
+    unsigned plateau_rounds_ = 0;
+    std::uint64_t updated_ms_ = 0;
+    std::uint64_t capacity_updated_ms_ = 0;
+    std::uint64_t total_delivered_ = 0;
+    std::uint64_t latest_ = 0;
+    std::uint64_t capacity_ = 0;
+    std::uint64_t sample_count_ = 0;
 };
+
+inline std::unique_ptr<IPathEstimator> MakePathEstimator(PathEstimatorMode mode) {
+    return std::make_unique<VmuxPathEstimator>(mode);
+}
 
 } // namespace ppp::app::multipath
