@@ -855,6 +855,21 @@ def _validate_recovery_result(path: Path, label: str) -> dict:
         raise HarnessError(f"{label} did not complete a clean half-close: {result}")
     return result
 
+def _runtime_event_evidence(output: Path, label: str) -> dict[str, bool]:
+    texts = []
+    for role in ("server", "client"):
+        log = output / f"{label}-{role}.log"
+        try:
+            texts.append(log.read_text(errors="replace"))
+        except OSError:
+            texts.append("")
+    combined = "\n".join(texts)
+    return {
+        "carrier_exit_isolated": "carrier exit isolated" in combined,
+        "resume_window": "last carrier exited; retaining session for bounded resume window" in combined,
+        "resume_window_expired_close": "last carrier exited; closing session" in combined,
+    }
+
 
 def production_fault_matrix(args: argparse.Namespace) -> int:
     if args.outage_ms <= 0 or args.grace_ms <= 0 or args.stream_seconds <= 0 or args.timeout <= 0:
@@ -984,10 +999,39 @@ def production_fault_matrix(args: argparse.Namespace) -> int:
             raise HarnessError(f"{label} VMUX/carrier readiness timed out")
 
         def stop_session(processes):
+            if processes is None:
+                return
             for process in reversed(processes):
                 if process in children:
                     terminate_process_group(process)
                     children.remove(process)
+
+        def run_fresh_session_check(name: str) -> dict:
+            fresh_session = None
+            fresh_workload = None
+            result_path = output / f"{name}-fresh-workload.json"
+            ready_path = output / f"{name}-fresh-ready"
+            ready_path.unlink(missing_ok=True)
+            try:
+                fresh_session = start_session(f"{name}-fresh")
+                fresh_workload = spawn_owned(children, ["ip", "netns", "exec", lab.names["client"], sys.executable,
+                    RECOVERY_WORKLOAD, "client", BUSINESS_IP, str(echo_port), "5", str(result_path),
+                    "--ready-file", str(ready_path), "--io-timeout", "20"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                _wait_for_ready(ready_path, fresh_workload, args.startup_timeout, f"{name}-fresh")
+                stdout, stderr = fresh_workload.communicate(timeout=args.timeout)
+                if fresh_workload in children:
+                    children.remove(fresh_workload)
+                if fresh_workload.returncode:
+                    raise HarnessError(f"{name} fresh session workload failed: {stderr.strip()}")
+                result = _validate_recovery_result(result_path, f"{name} fresh session")
+                result["stdout"] = stdout.strip()
+                return result
+            finally:
+                stop_session(fresh_session)
+                if fresh_workload is not None and fresh_workload in children:
+                    terminate_process_group(fresh_workload)
+                    children.remove(fresh_workload)
 
         def run_case(name: str, fault_ids: list[str], outage_ms: int, expect_recovery: bool) -> dict:
             session = start_session(name)
@@ -1034,12 +1078,18 @@ def production_fault_matrix(args: argparse.Namespace) -> int:
                 evidence = _path_counter_evidence(counters_start, counters_fault_start,
                                                    counters_fault_end, counters_end)
                 elapsed_after_reset_ms = round((time.monotonic() - reset_at) * 1000)
+                runtime_events = _runtime_event_evidence(output, name)
                 record = {"name": name, "fault_paths": fault_ids, "outage_ms": outage_ms,
                           "expected_recovery": expect_recovery, "workload_exit": workload.returncode,
                           "workload_stdout": stdout.strip(), "workload_stderr": stderr.strip(),
                           "fault_started_at_ms": fault_started_at_ms, "fault_ended_at_ms": fault_ended_at_ms,
-                          "path_bytes": evidence, "reset_to_workload_exit_ms": elapsed_after_reset_ms,
+                          "runtime_events": runtime_events, "path_bytes": evidence,
+                          "reset_to_workload_exit_ms": elapsed_after_reset_ms,
                           "candidate": {"sha256": binary_sha256}}
+                if name in ("single-path-outage", "primary-path-outage") and not runtime_events["carrier_exit_isolated"]:
+                    raise HarnessError(f"{name} did not log an isolated carrier exit")
+                if name in ("all-short-outage", "all-grace-expired") and not runtime_events["resume_window"]:
+                    raise HarnessError(f"{name} did not log the bounded resume window")
                 _require_path_business_evidence(evidence, set(fault_ids), args.minimum_path_bytes,
                                                 expect_recovery=expect_recovery)
                 if expect_recovery:
@@ -1068,6 +1118,9 @@ def production_fault_matrix(args: argparse.Namespace) -> int:
                         raise HarnessError(f"{name} failed before the configured grace deadline: {failure}")
                     record["workload"] = failure
                     record["failure_after_grace"] = True
+                    stop_session(session)
+                    session = None
+                    record["fresh_session"] = run_fresh_session_check(name)
                     record["passed"] = True
                     record["expected_failure"] = True
                 return record
