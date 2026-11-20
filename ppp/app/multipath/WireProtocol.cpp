@@ -24,7 +24,7 @@ public:
         for (int i = 3; i >= 0; --i) if (!Put(static_cast<std::uint8_t>(value >> (i * 8)))) return false;
         return true;
     }
-    bool U64(std::uint64_t value) noexcept {
+    bool Uint64(std::uint64_t value) noexcept {
         for (int i = 7; i >= 0; --i) if (!Put(static_cast<std::uint8_t>(value >> (i * 8)))) return false;
         return true;
     }
@@ -71,7 +71,7 @@ public:
         for (int i = 0; i < 4; ++i) { std::uint8_t b; if (!U8(b)) return false; value = (value << 8) | b; }
         return true;
     }
-    bool U64(std::uint64_t& value) noexcept {
+    bool Uint64(std::uint64_t& value) noexcept {
         value = 0;
         for (int i = 0; i < 8; ++i) { std::uint8_t b; if (!U8(b)) return false; value = (value << 8) | b; }
         return true;
@@ -153,7 +153,7 @@ bool DecodeCreateRequest(const std::uint8_t* data, std::size_t size, CreateReque
 bool EncodeCreateResponse(const CreateResponse& v, std::vector<std::uint8_t>& out) noexcept {
     Writer w;
     return Valid(v) && Begin(w) && w.U8(static_cast<std::uint8_t>(v.result)) && w.Bytes(v.client_session_id) &&
-        w.Bytes(v.session_id) && w.U64(v.generation) && w.Bytes(v.credential) && w.U32(v.grace_ms) &&
+        w.Bytes(v.session_id) && w.Uint64(v.generation) && w.Bytes(v.credential) && w.U32(v.grace_ms) &&
         w.U8(v.failover ? 1 : 0) && w.Finish(out);
 }
 bool DecodeCreateResponse(const std::uint8_t* data, std::size_t size, CreateResponse& v) noexcept {
@@ -162,7 +162,7 @@ bool DecodeCreateResponse(const std::uint8_t* data, std::size_t size, CreateResp
     if (!Begin(r) || !r.U8(result) || result < static_cast<std::uint8_t>(CreateResult::Accepted) ||
         result > static_cast<std::uint8_t>(CreateResult::Conflict)) return false;
     x.result = static_cast<CreateResult>(result);
-    if (!r.Bytes(x.client_session_id) || !r.Bytes(x.session_id) || !r.U64(x.generation) ||
+    if (!r.Bytes(x.client_session_id) || !r.Bytes(x.session_id) || !r.Uint64(x.generation) ||
         !r.Bytes(x.credential) || !r.U32(x.grace_ms)) return false;
     std::uint8_t failover = 0;
     if (!r.U8(failover) || failover > 1 || !r.Done() || !Valid(x)) return false;
@@ -179,7 +179,7 @@ bool EncodeJoinRequest(const JoinRequest& v, std::vector<std::uint8_t>& out) noe
     return Begin(w) && w.U8(static_cast<std::uint8_t>(v.operation)) && w.U8(static_cast<std::uint8_t>(v.phase)) &&
         w.String(v.authenticated_identity, MaxIdentityBytes) && w.String(v.request_id, MaxRequestIdBytes) &&
         w.String(v.carrier_id, MaxCarrierIdBytes) && w.Bytes(v.client_session_id) && w.Bytes(v.session_id) &&
-        w.U64(v.generation) && w.U64(v.peer_committed_operation_sequence) &&
+        w.Uint64(v.generation) && w.Uint64(v.peer_committed_operation_sequence) &&
         w.Bytes(v.client_nonce) && w.Bytes(v.server_nonce) &&
         w.Bytes(v.candidate_binding) && w.Bytes(v.proof) && w.Finish(out);
 }
@@ -192,7 +192,7 @@ bool DecodeJoinRequest(const std::uint8_t* data, std::size_t size, JoinRequest& 
     x.operation = static_cast<JoinOperation>(operation); x.phase = static_cast<JoinPhase>(phase);
     if (!r.String(x.authenticated_identity, MaxIdentityBytes) || !r.String(x.request_id, MaxRequestIdBytes) ||
         !r.String(x.carrier_id, MaxCarrierIdBytes) || !r.Bytes(x.client_session_id) || !r.Bytes(x.session_id) ||
-        !r.U64(x.generation) || !r.U64(x.peer_committed_operation_sequence) ||
+        !r.Uint64(x.generation) || !r.Uint64(x.peer_committed_operation_sequence) ||
         !r.Bytes(x.client_nonce) || !r.Bytes(x.server_nonce) ||
         !r.Bytes(x.candidate_binding) || !r.Bytes(x.proof) || !r.Done()) return false;
     v = std::move(x); return true;
@@ -201,15 +201,15 @@ bool EncodeJoinResponse(const JoinResponse& v, std::vector<std::uint8_t>& out) n
     Writer w;
     if (v.result > JoinResult::Capacity) return false;
     return Begin(w) && w.U8(static_cast<std::uint8_t>(v.result)) && w.Bytes(v.server_nonce) &&
-        w.Bytes(v.proof) && w.U64(v.generation) &&
-        w.U64(v.server_committed_operation_sequence) && w.Finish(out);
+        w.Bytes(v.proof) && w.Uint64(v.generation) &&
+        w.Uint64(v.server_committed_operation_sequence) && w.Finish(out);
 }
 bool DecodeJoinResponse(const std::uint8_t* data, std::size_t size, JoinResponse& v) noexcept {
     if (data == nullptr || size > MaxPayloadBytes) return false;
     Reader r(data, size); JoinResponse x; std::uint8_t result = 0;
     if (!Begin(r) || !r.U8(result) || result > static_cast<std::uint8_t>(JoinResult::Capacity) ||
-        !r.Bytes(x.server_nonce) || !r.Bytes(x.proof) || !r.U64(x.generation) ||
-        !r.U64(x.server_committed_operation_sequence) || !r.Done()) return false;
+        !r.Bytes(x.server_nonce) || !r.Bytes(x.proof) || !r.Uint64(x.generation) ||
+        !r.Uint64(x.server_committed_operation_sequence) || !r.Done()) return false;
     x.result = static_cast<JoinResult>(result); v = x; return true;
 }
 bool EncodeQueryRequest(const QueryRequest& v, std::vector<std::uint8_t>& out) noexcept {
@@ -236,14 +236,14 @@ bool EncodeQueryResponse(const QueryResponse& v, std::vector<std::uint8_t>& out)
     if (v.operation == QueryOperation::Create) {
         if (!Valid(v.create)) return false;
         return w.U8(0) && w.U8(static_cast<std::uint8_t>(v.create.result)) && w.Bytes(v.create.client_session_id) &&
-            w.Bytes(v.create.session_id) && w.U64(v.create.generation) && w.Bytes(v.create.credential) &&
+            w.Bytes(v.create.session_id) && w.Uint64(v.create.generation) && w.Bytes(v.create.credential) &&
             w.U32(v.create.grace_ms) && w.U8(v.create.failover ? 1 : 0) && w.Finish(out);
     }
     if (v.operation == QueryOperation::Join) {
         if (v.join.result > JoinResult::Capacity) return false;
         return w.U8(0) && w.U8(static_cast<std::uint8_t>(v.join.result)) && w.Bytes(v.join.server_nonce) &&
-            w.Bytes(v.join.proof) && w.U64(v.join.generation) &&
-            w.U64(v.join.server_committed_operation_sequence) && w.Finish(out);
+            w.Bytes(v.join.proof) && w.Uint64(v.join.generation) &&
+            w.Uint64(v.join.server_committed_operation_sequence) && w.Finish(out);
     }
     return false;
 }
@@ -257,7 +257,7 @@ bool DecodeQueryResponse(const std::uint8_t* data, std::size_t size, QueryRespon
     if (x.operation == QueryOperation::Create) {
         if (result < static_cast<std::uint8_t>(CreateResult::Accepted) || result > static_cast<std::uint8_t>(CreateResult::Conflict)) return false;
         x.create.result = static_cast<CreateResult>(result);
-        if (!r.Bytes(x.create.client_session_id) || !r.Bytes(x.create.session_id) || !r.U64(x.create.generation) ||
+        if (!r.Bytes(x.create.client_session_id) || !r.Bytes(x.create.session_id) || !r.Uint64(x.create.generation) ||
             !r.Bytes(x.create.credential) || !r.U32(x.create.grace_ms)) return false;
         std::uint8_t failover = 0;
         if (!r.U8(failover) || failover > 1 || !r.Done()) return false;
@@ -266,8 +266,8 @@ bool DecodeQueryResponse(const std::uint8_t* data, std::size_t size, QueryRespon
     } else {
         if (result > static_cast<std::uint8_t>(JoinResult::Capacity)) return false;
         x.join.result = static_cast<JoinResult>(result);
-        if (!r.Bytes(x.join.server_nonce) || !r.Bytes(x.join.proof) || !r.U64(x.join.generation) ||
-            !r.U64(x.join.server_committed_operation_sequence) || !r.Done()) return false;
+        if (!r.Bytes(x.join.server_nonce) || !r.Bytes(x.join.proof) || !r.Uint64(x.join.generation) ||
+            !r.Uint64(x.join.server_committed_operation_sequence) || !r.Done()) return false;
     }
     v = x; return true;
 }
@@ -280,8 +280,8 @@ bool EncodeControlMessage(const ControlMessage& v, std::vector<std::uint8_t>& ou
         v.operation_id.size() <= MaxControlOperationId && v.payload.size() <= MaxControlPayload;
     if (v.session_generation == 0 || (!valid_ack && !valid_operation)) return false;
     Writer w;
-    return Begin(w) && w.U64(v.session_generation) && w.U8(v.acknowledgement_only ? 1 : 0) &&
-        w.U64(v.sequence) && w.U64(v.acknowledged) && w.U64(v.acknowledged_operation_sequence) && w.U64(v.operation_sequence) &&
+    return Begin(w) && w.Uint64(v.session_generation) && w.U8(v.acknowledgement_only ? 1 : 0) &&
+        w.Uint64(v.sequence) && w.Uint64(v.acknowledged) && w.Uint64(v.acknowledged_operation_sequence) && w.Uint64(v.operation_sequence) &&
         (v.operation_id.empty() ? w.U16(0) : w.String(v.operation_id, MaxControlOperationId)) &&
         w.U16(v.payload.size()) &&
         w.Bytes(v.payload.data(), v.payload.size()) && w.Finish(out);
@@ -291,9 +291,9 @@ bool DecodeControlMessage(const std::uint8_t* data, std::size_t size, ControlMes
     if (data == nullptr || size > MaxPayloadBytes) return false;
     Reader r(data, size); ControlMessage x; std::uint8_t acknowledgement_only = 0;
     std::uint16_t payload_size = 0;
-    if (!Begin(r) || !r.U64(x.session_generation) || x.session_generation == 0 ||
+    if (!Begin(r) || !r.Uint64(x.session_generation) || x.session_generation == 0 ||
         !r.U8(acknowledgement_only) || acknowledgement_only > 1 ||
-        !r.U64(x.sequence) || !r.U64(x.acknowledged) || !r.U64(x.acknowledged_operation_sequence) || !r.U64(x.operation_sequence) ||
+        !r.Uint64(x.sequence) || !r.Uint64(x.acknowledged) || !r.Uint64(x.acknowledged_operation_sequence) || !r.Uint64(x.operation_sequence) ||
         !r.StringAllowEmpty(x.operation_id, MaxControlOperationId) || !r.U16(payload_size) ||
         payload_size > MaxControlPayload || payload_size > size) return false;
     x.acknowledgement_only = acknowledgement_only != 0;

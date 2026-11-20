@@ -121,8 +121,8 @@ namespace ppp::app::multipath {
             return;
         }
         if (timer_) {
-            boost::system::error_code ignored;
-            timer_->cancel(ignored);
+            try { timer_->cancel(); }
+            catch (...) {}
         }
         std::lock_guard<std::mutex> lock(mutex_);
         cancellations_.clear();

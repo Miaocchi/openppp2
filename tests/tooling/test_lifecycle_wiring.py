@@ -233,8 +233,9 @@ class LifecycleWiringTests(unittest.TestCase):
         )
         self.assertIn("_pendingStopGeneration", dart)
         self.assertIn("_pendingStopGeneration == generation", dart)
-        self.assertIn("pendingStopGeneration", swift)
-        self.assertIn("pendingStopGeneration != generation", swift)
+        self.assertIn("pendingStop != nil", swift)
+        self.assertIn("pendingStop = (runtimeStore.state.generation, controls.action)", swift)
+        self.assertIn("state.generation != stop.generation", swift)
 
 
 if __name__ == "__main__":

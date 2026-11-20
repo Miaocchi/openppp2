@@ -2569,8 +2569,8 @@ namespace ppp {
                                 auth_error = auth_completion->GetError();
                                 ppp::diagnostics::SetLastErrorCode(auth_error);
                             }
-                            boost::system::error_code ignored;
-                            auth_timer->cancel(ignored);
+                            try { auth_timer->cancel(); }
+                            catch (...) {}
                             if (timed_out) {
                                 ppp::diagnostics::SetLastErrorCode(
                                     ppp::diagnostics::ErrorCode::SessionAuthFailed);

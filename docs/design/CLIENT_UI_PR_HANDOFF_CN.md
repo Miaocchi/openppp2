@@ -1,4 +1,9 @@
 # 客户端 UI PR 交接
+> Status: Handoff evidence
+> Type: Design
+> Last verified: 2026-11-20
+
+以下为冲突处理前的历史记录。已完成的冲突修复见 `c2023a78`。
 
 ## 当前状态
 

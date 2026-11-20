@@ -77,9 +77,8 @@ namespace ppp::app::multipath {
             return false;
         }
         try {
-            boost::system::error_code ec;
-            std::string value = address.to_string(ec);
-            if (ec || value.empty()) {
+            std::string value = address.to_string();
+            if (value.empty()) {
                 return false;
             }
             key = std::move(value);

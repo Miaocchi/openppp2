@@ -75,7 +75,7 @@ public:
 private:
     enum class Phase : std::uint8_t { Reserved, Confirmed, Committed };
     struct Transaction {
-        Transaction() noexcept = default;
+        Transaction() = default;
         ~Transaction() noexcept;
         Transaction(const Transaction&) = delete;
         Transaction& operator=(const Transaction&) = delete;
