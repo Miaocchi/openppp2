@@ -27,6 +27,11 @@ from pathlib import Path
 PROFILES = {
     "independent-12ms-24mbit": {"paths": [(12, 24, 0, 0)] * 2, "shared_mbps": None},
     "shared-12ms-24mbit": {"paths": [(12, 24, 0, 0)] * 2, "shared_mbps": 24},
+    "independent-90-125-180": {
+        "paths": [(90, 100, 0, 0), (125, 200, 25, 0), (180, 300, 0, 0)],
+        "shared_mbps": None,
+        "jitter_distribution": "uniform",
+    },
     "asymmetric-5-80-200": {"paths": [(5, 100, 0, 0), (80, 40, 8, 0), (200, 20, 20, 0)], "shared_mbps": None},
     "asymmetric-5-80": {"paths": [(5, 100, 0, 0), (80, 40, 8, 0)], "shared_mbps": None},
     "equal-rtt": {"paths": [(30, 50, 0, 0), (30, 50, 0, 0), (30, 50, 0, 0)], "shared_mbps": None},
@@ -156,8 +161,10 @@ class Lab:
             # Delay and caps are per path before traffic reaches the aggregate link.
             for ns, dev in ((self.names["client"], client), (self.names["router"], router_c),
                             (self.names["router"], router_b), (self.names["bottleneck"], bottle_r)):
-                self._shape(ns, dev, rtt, rate, jitter, loss)
+                self._shape(ns, dev, rtt, rate, jitter, loss,
+                            self.profile.get("jitter_distribution", "normal"))
             self.paths.append({"id": f"path{index}", "rtt_ms": rtt, "jitter_ms": jitter,
+                               "jitter_distribution": self.profile.get("jitter_distribution", "normal"),
                                "loss_percent": loss, "rate_mbps": rate,
                                "client_ip": cip, "server_ip": sip,
                                "client_ns": self.names["client"], "server_ns": self.names["server"],
@@ -218,19 +225,22 @@ class Lab:
 
     @staticmethod
     def _shape(ns: str, dev: str, rtt: int, rate: int, jitter: float = 0,
-               loss_percent: float = 0) -> None:
+               loss_percent: float = 0, jitter_distribution: str = "normal") -> None:
         # The round trip crosses four shaped path egresses.
         run(["ip", "netns", "exec", ns, "tc", "qdisc", "replace", "dev", dev,
              "root", "handle", "1:", "tbf", "rate", f"{rate}mbit", "burst", "128kb", "latency", "500ms"])
-        Lab._netem(ns, dev, rtt, jitter, loss_percent)
+        Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution)
 
     @staticmethod
     def _netem(ns: str, dev: str, rtt: float, jitter: float = 0,
-               loss_percent: float = 0) -> None:
+               loss_percent: float = 0, jitter_distribution: str = "normal") -> None:
         command = ["ip", "netns", "exec", ns, "tc", "qdisc", "replace", "dev", dev,
                    "parent", "1:1", "handle", "10:", "netem", "delay", f"{rtt / 4:g}ms"]
         if jitter:
-            command.extend((f"{jitter / 4:g}ms", "distribution", "normal"))
+            command.append(f"{jitter / 4:g}ms")
+            # netem uses uniform jitter when no distribution table is supplied.
+            if jitter_distribution == "normal":
+                command.extend(("distribution", "normal"))
         if loss_percent:
             command.extend(("loss", f"{loss_percent:g}%"))
         command.extend(("limit", "32768"))
@@ -339,6 +349,10 @@ class Lab:
                 self._root_tbf_bytes(path["router_ns"], path["router_client_if"]),
             ))
         return counters
+
+    def directional_path_bytes(self, direction: str) -> dict[str, int]:
+        ns, dev = ("client_ns", "client_if") if direction == "upload" else ("router_ns", "router_client_if")
+        return {path["id"]: self._root_tbf_bytes(path[ns], path[dev]) for path in self.paths}
 
 
 def validate_result(path: Path, scenario: str, *, min_ratio: float,
@@ -497,12 +511,14 @@ def check_directional_receipts(lab: Lab, children: list[subprocess.Popen], size:
             for tag, name in (("U", "upload"), ("D", "download"))}
 
 
-def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path) -> dict:
+def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path,
+                        flow_count: int, duration: int | None, sample_paths: bool) -> dict:
     import six_flow as workload
 
-    expected = set(range(workload.FLOWS))
+    expected = set(range(flow_count))
     directions = {}
     for direction, idle in (("upload", 6), ("download", 12)):
+        send_seconds = duration or workload.SECONDS[direction]
         time.sleep(idle)
         ready = output / f"{direction}.ready"
         reports = {}
@@ -511,7 +527,8 @@ def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path
             prefix = output / f"{direction}-{role}"
             with prefix.with_suffix(".ndjson").open("w") as out, prefix.with_suffix(".log").open("w") as err:
                 endpoints[role] = spawn_owned(children, ["ip", "netns", "exec", lab.names[role],
-                    sys.executable, workload.__file__, role, BUSINESS_IP, "19003", direction, str(ready)],
+                    sys.executable, workload.__file__, role, BUSINESS_IP, "19003", direction, str(ready),
+                    str(flow_count), str(send_seconds)],
                     stdout=out, stderr=err)
             if role == "server":
                 deadline = time.monotonic() + workload.CONNECT_TIMEOUT
@@ -521,16 +538,31 @@ def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path
                     time.sleep(.02)
                 ready.unlink()
 
-        # A single deadline for all twelve endpoint workers, not a fresh timeout per wait.
-        deadline = time.monotonic() + workload.SECONDS[direction] + workload.IO_TIMEOUT
+        # One deadline for all endpoint workers.
+        phase_started = time.monotonic()
+        deadline = phase_started + send_seconds + workload.IO_TIMEOUT
+        if sample_paths:
+            time.sleep(3)
+            started = time.monotonic()
+            before = lab.directional_path_bytes(direction)
+            with (output / f"{direction}-wire.ndjson").open("w") as wire:
+                for offset in range(9, send_seconds, 6):
+                    time.sleep(max(0, phase_started + offset - time.monotonic()))
+                    finished = time.monotonic()
+                    after = lab.directional_path_bytes(direction)
+                    rates = {path: (after[path] - before[path]) * 8 / (finished - started) / 1e6 for path in before}
+                    print(json.dumps({"start_seconds": started - phase_started,
+                                      "end_seconds": finished - phase_started, "mbps": rates}),
+                          file=wire, flush=True)
+                    started, before = finished, after
         for role, process in endpoints.items():
             if process.wait(timeout=max(0, deadline - time.monotonic())):
                 raise HarnessError(f"{direction} {role} failed; inspect {output}/{direction}-*.ndjson and *.log")
             children.remove(process)
             rows = [json.loads(line) for line in (output / f"{direction}-{role}.ndjson").read_text().splitlines()]
-            if (len(rows) != workload.FLOWS or any(type(r.get("flow")) is not int or "error" in r for r in rows)
+            if (len(rows) != flow_count or any(type(r.get("flow")) is not int or "error" in r for r in rows)
                     or {r["flow"] for r in rows} != expected):
-                raise HarnessError(f"{direction} {role}: expected six distinct successful flow IDs")
+                raise HarnessError(f"{direction} {role}: expected {flow_count} distinct successful flow IDs")
             reports[role] = {r["flow"]: r for r in rows}
 
         sender, receiver = ("client", "server") if direction == "upload" else ("server", "client")
@@ -544,13 +576,17 @@ def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path
                     src.get("sender_receipt") is not True or dst.get("sender_confirmed") is not True):
                 raise HarnessError(f"{direction} flow {flow}: count, SHA-256 or sender confirmation mismatch")
             flows.append({**src, **dst})
-        directions[direction] = {"send_seconds": workload.SECONDS[direction], "flows": flows}
+        directions[direction] = {"send_seconds": send_seconds, "flows": flows}
     time.sleep(6)
     return directions
 
 
 def production_smoke(args: argparse.Namespace) -> int:
     six_flow_mode = args.command == "six-flow-integrity"
+    fixed_pool = six_flow_mode and args.fixed_pool
+    carriers_per_path = args.carriers_per_path if six_flow_mode else 1
+    if carriers_per_path > 1 and not fixed_pool:
+        raise HarnessError("--carriers-per-path above one requires --fixed-pool")
     binary = Path(args.binary).resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise HarnessError(f"candidate PPP binary is not executable: {binary}")
@@ -585,7 +621,9 @@ def production_smoke(args: argparse.Namespace) -> int:
         for template in (server_template, client_template):
             template["telemetry"].update({"enabled": True, "level": 2, "console-log": True})
             if six_flow_mode:
-                template["mux"] = {"mode": "flow", "turbo": True}
+                template["mux"] = {"mode": "flow", "turbo": not fixed_pool}
+                if args.tcp_turbo:
+                    template["tcp"]["turbo"] = True
                 if args.pool_metrics:
                     template["telemetry"].update({"count": True, "console-metric": True})
         echo_port = 19002
@@ -629,11 +667,12 @@ def production_smoke(args: argparse.Namespace) -> int:
                 }},
             }
             if multipath:
+                connection_count = len(selected_paths) * carriers_per_path
                 client["client"]["multipath"] = {
-                    "enabled": True, "policy": "adaptive", "max_connections": len(selected_paths),
-                    "max_concurrent_connects": len(selected_paths), "resume_grace_ms": 30000,
+                    "enabled": True, "policy": "adaptive", "max_connections": connection_count,
+                    "max_concurrent_connects": min(connection_count, 4), "resume_grace_ms": 30000,
                     "paths": [{"id": p["id"], "transport": "tcp", "connect_host": p["server_ip"],
-                               "port": server_port, "connections": 1} for p in selected_paths],
+                               "port": server_port, "connections": carriers_per_path} for p in selected_paths],
                 }
             else:
                 client["client"].pop("multipath", None)
@@ -646,6 +685,7 @@ def production_smoke(args: argparse.Namespace) -> int:
             handles.extend((server_log, client_log))
             candidate_args = ["--rt=no"] if six_flow_mode else ([] if multipath else ["--tun-mux=1"])
             candidate_cwd = output if six_flow_mode else None
+            client_stats_args = [f"--stats-json={output / 'client-stats.ndjson'}"] if fixed_pool else []
             server_process = spawn_owned(children, ["ip", "netns", "exec", lab.names["server"], str(run_binary),
                 "--mode=server", f"--config={server_config}", *candidate_args], stdout=server_log, cwd=candidate_cwd,
                 stderr=subprocess.STDOUT)
@@ -654,12 +694,13 @@ def production_smoke(args: argparse.Namespace) -> int:
                 raise HarnessError(f"candidate server exited; inspect {output / f'{label}-{repeat}-server.log'}")
             client_process = spawn_owned(children, ["ip", "netns", "exec", lab.names["client"], str(run_binary),
                 "--mode=proxy", f"--config={client_config}", "--tun-host=no", "--tun-vnet=no",
-                *candidate_args, "--proxy-subnet=yes", "--proxy-internet=yes",
+                *candidate_args, *client_stats_args, "--proxy-subnet=yes", "--proxy-internet=yes",
                 "--tun-protect=no", "--tun-route=no"], stdout=client_log, cwd=candidate_cwd,
                 stderr=subprocess.STDOUT)
             # Adaptive starts on the primary. Joining secondary paths is a
             # result of subsequent application demand, not a startup gate.
-            primary = (selected_paths[0]["server_ip"], server_port)
+            required_paths = selected_paths if fixed_pool else selected_paths[:1]
+            required_endpoints = {(path["server_ip"], server_port) for path in required_paths}
             deadline = time.monotonic() + args.startup_timeout
             def mux_ready() -> bool:
                 server_text = Path(server_log.name).read_text(errors="replace")
@@ -671,16 +712,17 @@ def production_smoke(args: argparse.Namespace) -> int:
                     if int(first[1]) != 0x10:  # wire::RecordType::CreateRequest
                         raise HarnessError(f"fresh carrier sent record {first[1]} instead of CreateRequest")
                 client_text = Path(client_log.name).read_text(errors="replace")
-                return all(re.search(r"\[mux\][^\n]* :: link open\b", text)
+                ready_count = len(selected_paths) * carriers_per_path if fixed_pool else 1
+                return all(len(re.findall(r"\[mux\][^\n]* :: link open\b", text)) >= ready_count
                            for text in (client_text, server_text))
             while time.monotonic() < deadline:
-                if mux_ready() and primary in established_path_endpoints(lab.names["client"]):
+                if mux_ready() and required_endpoints <= established_path_endpoints(lab.names["client"]):
                     break
                 if server_process.poll() is not None or client_process.poll() is not None:
                     raise HarnessError(f"candidate PPP process exited; inspect {output}/*.log")
                 time.sleep(0.1)
-            if primary not in established_path_endpoints(lab.names["client"]):
-                raise HarnessError(f"primary carrier readiness timed out for {label} trial {repeat}")
+            if not required_endpoints <= established_path_endpoints(lab.names["client"]):
+                raise HarnessError(f"required carrier readiness timed out for {label} trial {repeat}")
             if not mux_ready():
                 raise HarnessError(f"VMUX link-open readiness timed out for {label} trial {repeat}")
             return server_process, client_process
@@ -692,16 +734,19 @@ def production_smoke(args: argparse.Namespace) -> int:
                 if not selected_paths:
                     raise HarnessError(f"{args.profile} has no path named {args.single_path}")
             server_process, client_process = start_trial("six-flow", 0, selected_paths, True)
-            directions = six_flow_acceptance(lab, children, output)
+            directions = six_flow_acceptance(lab, children, output, args.flows, args.duration, fixed_pool)
             if server_process.poll() is not None or client_process.poll() is not None:
                 raise HarnessError("candidate exited during six-flow acceptance")
             result = {"kind": "production-multipath-six-flow", "profile": args.profile,
                       "candidate": {"path": str(run_binary), "sha256": binary_sha256},
                       "topology": str(topology_path), "paths": [path["id"] for path in selected_paths],
+                      "fixed_pool": fixed_pool,
+                      "tcp_turbo": args.tcp_turbo,
+                      "carriers_per_path": carriers_per_path,
                       "directions": directions, "passed": True}
             result_path = output / "six-flow-integrity.json"
             result_path.write_text(json.dumps(result, indent=2) + "\n")
-            print(f"PASS: six verified uploads and six verified downloads; result={result_path}")
+            print(f"PASS: {args.flows} verified uploads and {args.flows} verified downloads; result={result_path}")
             return 0
 
         echo = spawn_owned(children, ["ip", "netns", "exec", lab.names["server"], sys.executable, "-u", "-c",
@@ -1201,16 +1246,13 @@ def impairment(args: argparse.Namespace) -> int:
 def apply_path_impairment(path: dict, action: str, loss_percent: float = 5) -> None:
     if not 0 <= loss_percent <= 100:
         raise HarnessError("loss percentage must be between 0 and 100")
+    loss_by_action = {"reset": path["loss_percent"], "blackhole": 100, "drop": loss_percent}
+    if action not in loss_by_action:
+        raise HarnessError(f"unknown impairment action: {action}")
     for ns, dev in ((path["client_ns"], path["client_if"]),
                     (path["router_ns"], path["router_client_if"])):
-        if action == "reset":
-            Lab._netem(ns, dev, path["rtt_ms"], path["jitter_ms"], path["loss_percent"])
-        elif action == "blackhole":
-            Lab._netem(ns, dev, path["rtt_ms"], path["jitter_ms"], 100)
-        elif action == "drop":
-            Lab._netem(ns, dev, path["rtt_ms"], path["jitter_ms"], loss_percent)
-        else:
-            raise HarnessError(f"unknown impairment action: {action}")
+        Lab._netem(ns, dev, path["rtt_ms"], path["jitter_ms"], loss_by_action[action],
+                   path.get("jitter_distribution", "normal"))
 
 
 def load_owned_topology(path: Path) -> dict:
@@ -1386,13 +1428,24 @@ def main() -> int:
     smoke_parser.set_defaults(func=production_smoke)
     six_parser = sub.add_parser("six-flow-integrity", help="require six concurrent timed streams per direction")
     six_parser.add_argument("--binary", default=str(Path(__file__).resolve().parents[3] / "bin/ppp"))
-    six_parser.add_argument("--profile", choices=("independent-12ms-24mbit", "shared-12ms-24mbit"),
+    six_parser.add_argument("--profile", choices=("independent-12ms-24mbit", "shared-12ms-24mbit",
+                                                  "independent-90-125-180"),
                             default="independent-12ms-24mbit")
     six_parser.add_argument("--output", required=True, help="new result directory (must not already exist)")
-    six_parser.add_argument("--single-path", choices=("path1", "path2"),
+    six_parser.add_argument("--single-path", choices=("path1", "path2", "path3"),
                             help="cap the authenticated multipath session at one carrier on this path")
     six_parser.add_argument("--pool-metrics", action="store_true",
                             help="record VMUX counters, including pool decisions, in the candidate logs")
+    six_parser.add_argument("--fixed-pool", action="store_true",
+                            help="disable Turbo and wait for all selected carriers before the workload")
+    six_parser.add_argument("--flows", type=int, choices=range(1, 65), default=6, metavar="1..64",
+                            help="number of concurrent streams per direction (default: 6)")
+    six_parser.add_argument("--duration", type=int, choices=range(12, 121), metavar="12..120",
+                            help="send window in seconds for each direction (default: 25 up, 12 down)")
+    six_parser.add_argument("--tcp-turbo", action="store_true",
+                            help="enable tcp.turbo on both candidate endpoints")
+    six_parser.add_argument("--carriers-per-path", type=int, choices=(1, 2, 3, 4), default=1,
+                            help="number of TCP carriers on each selected path in a fixed pool")
     six_parser.set_defaults(func=production_smoke, startup_timeout=15, startup_wait=1)
     matrix_parser = sub.add_parser("production-fault-matrix",
                                    help="run persistent application traffic through real path outages")

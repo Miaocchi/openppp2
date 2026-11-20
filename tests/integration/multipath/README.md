@@ -140,6 +140,16 @@ workload. Use `--pool-metrics` in all trials to capture pool decisions and
 retransmission counters in the PPP logs. Use a separate output directory for
 each trial.
 
+For a sustained three-carrier trial, select `independent-90-125-180` and
+`--fixed-pool`. The harness waits for all three carrier sockets and records
+directional TBF rates in `upload-wire.ndjson` and `download-wire.ndjson`.
+Use `--duration 48` for a longer send window and `--flows` to vary
+concurrency. In a fixed pool, `--carriers-per-path 2` configures two TCP
+carriers behind each path's existing rate cap. `--tcp-turbo` enables
+TCP_NODELAY on both endpoints. Compare the individual wire rates in the same sample window
+with the configured caps. Application goodput comes from the verified
+stream bytes in `six-flow-integrity.json`.
+
 ### External production scenarios
 
 The external scenario command can instead start the actual candidate client/server

@@ -1,4 +1,4 @@
-"""One endpoint of a timed six-stream phase in the production namespace fixture."""
+"""One endpoint of a timed concurrent-stream phase in the production namespace fixture."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
@@ -21,12 +21,12 @@ IO_TIMEOUT = 20
 CHUNK = 32768
 
 
-def send(stream, direction, flow):
+def send(stream, direction, flow, duration):
     # Make a substitution across streams or frame positions visible in SHA-256.
     body = hashlib.shake_256(f"{direction}/{flow}".encode()).digest(CHUNK - 8)
     digest = hashlib.sha256()
     total = 0
-    end = time.monotonic() + SECONDS[direction]
+    end = time.monotonic() + duration
     while time.monotonic() < end:
         block = struct.pack("!Q", total) + body
         stream.sendall(struct.pack("!H", CHUNK) + block)
@@ -57,15 +57,15 @@ def receive(stream):
     return {"received_bytes": total, "received_sha256": digest.hexdigest(), "sender_confirmed": True}
 
 
-def phase(role, address, port, direction, ready_file):
+def phase(role, address, port, direction, ready_file, flows, duration):
     server = role == "server"
     tag = direction[:1].upper().encode()
-    barrier = threading.Barrier(FLOWS, timeout=IO_TIMEOUT)
+    barrier = threading.Barrier(flows, timeout=IO_TIMEOUT)
     with (socket.socket() if server else nullcontext()) as listener:
         if server:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind((address, port))
-            listener.listen(FLOWS)
+            listener.listen(flows)
             listener.settimeout(IO_TIMEOUT)
             ready_file.touch()
 
@@ -82,7 +82,7 @@ def phase(role, address, port, direction, ready_file):
                     if server:
                         header = exact(stream, 2)
                         flow = header[1]
-                        if peer[0] != address or header[:1] != tag or flow >= FLOWS:
+                        if peer[0] != address or header[:1] != tag or flow >= flows:
                             raise RuntimeError(f"unexpected business connection: {peer}, {header!r}")
                         stream.sendall(b"R")
                         if exact(stream, 1) != b"G":
@@ -92,27 +92,33 @@ def phase(role, address, port, direction, ready_file):
                         stream.sendall(tag + bytes([flow]))
                         if exact(stream, 1) != b"R":
                             raise RuntimeError("origin not ready")
-                        # All six SOCKS streams must be open together before any carries payload.
+                        # All SOCKS streams must open before sending payload.
                         barrier.wait()
                         stream.sendall(b"G")
                     sender = server == (direction == "download")
-                    result = send(stream, direction, flow) if sender else receive(stream)
+                    result = send(stream, direction, flow, duration) if sender else receive(stream)
                     return {"flow": flow, **result}
             except Exception as error:
                 barrier.abort()
                 return {"flow": flow, "error": repr(error)}
 
-        with ThreadPoolExecutor(max_workers=FLOWS) as pool:
-            futures = [pool.submit(worker, slot) for slot in range(FLOWS)]
+        with ThreadPoolExecutor(max_workers=flows) as pool:
+            futures = [pool.submit(worker, slot) for slot in range(flows)]
             reports = []
             for future in as_completed(futures):
                 report = future.result()
                 print(json.dumps(report), flush=True)
                 reports.append(report)
     return (all("error" not in r for r in reports) and
-            {r["flow"] for r in reports} == set(range(FLOWS)))
+            {r["flow"] for r in reports} == set(range(flows)))
 
 
 if __name__ == "__main__":
-    role, address, port, direction, ready = sys.argv[1:]
-    raise SystemExit(0 if phase(role, address, int(port), direction, Path(ready)) else 1)
+    role, address, port, direction, ready, *options = sys.argv[1:]
+    flows = int(options[0]) if options else FLOWS
+    duration = int(options[1]) if len(options) > 1 else SECONDS[direction]
+    if not 1 <= flows <= 64:
+        raise SystemExit("flow count must be between 1 and 64")
+    if not 12 <= duration <= 120:
+        raise SystemExit("send duration must be between 12 and 120 seconds")
+    raise SystemExit(0 if phase(role, address, int(port), direction, Path(ready), flows, duration) else 1)
