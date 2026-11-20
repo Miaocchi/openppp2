@@ -67,6 +67,8 @@ namespace ppp {
             bool                                                                                IsReceiveClosed() const noexcept override;
             /** @brief Keeps the carrier alive on a clean peer FIN (any role); see ITransmission. */
             bool                                                                                EnableReceiveHalfClose() noexcept override;
+            // Keep scheduler backpressure visible without capping TCP's in-flight window.
+            void                                                                                LimitMultipathUnsentBytes() noexcept;
             /**
              * @brief Reads an exact number of bytes from the socket.
              * @param y Coroutine yield context.

@@ -1,6 +1,32 @@
 # 多路径实现与生产验收
+> **范围：** 本页是默认关闭的多路径功能验收记录，不是生产可用声明；设计背景见 [多路径设计](../design/MULTIPATH_DESIGN_CN.md)。
+> **证据：** 下文的离线测试、模拟承载、隔离网络和提交记录分别标为当前源码证据、旧产物证据或局部观察；它们不互相替代，也不自动证明真实业务通过。
+> **验收标准：** 将“隔离网络矩阵”和 `production-fault-matrix` 视为业务门禁；“实施与证据清单”逐项给出当前证据和仍需验收的条件。
+> **未验证缺口：** 真实 CDN/VPN 入口、完整故障恢复、跨平台行为、异构 RTT 上界、性能收益和安全审查等缺口必须保留在最终报告中，不能由本地模拟推断完成。
+> **路径：** 测试集合与构建边界见 [开发测试](../development/TESTING_CN.md)；发布、部署和故障处理见 [多路径发布](../operations/MULTIPATH_ROLLOUT_CN.md) 与 [运维索引](../operations/README_CN.md)。
+
 
 依据：`docs/design/MULTIPATH_DESIGN_CN.md`。功能默认关闭，完成本表前不视为生产可用。单元测试、模拟传输和真实端到端测试分别记录，不能互相替代。
+
+## VMUX 交付速率估计器
+
+进程启动前设置 `OPENPPP2_VMUX_PATH_ESTIMATOR=ewma|bbr|kcc` 可选择算法，未设置时默认使用 `kcc`；显式未知值仍回落到 EWMA。设置仅影响本地 VMUX 估计，旧配置和协议使用同一协商入口。Adaptive 排程与运行快照共用逐承载估计结果，在 ACK 采样有效时按估计容量排程。运行快照分别报告最近的交付样本速率和估计容量。
+
+三个算法共用 VMUX payload ACK 样本。采样窗口取发送与 ACK 经过时间的较大值，重传条目的 ACK 仍释放缓冲和参与既有字节记账。速率样本只使用未重传条目。发送队列和本地写入预算用于推断应用受限。BBR 与 KCC 模式取最近十个交付轮次的带宽峰值。KCC 模式增加连续三个非应用受限轮次增长低于 25% 的满带宽检测。
+
+容量样本超过 5 秒失效。偏低的应用受限样本仍更新最近交付速率，但不会刷新容量，也不会在容量失效后给调度提供替代速率。KCC 模式的满带宽判定目前供估计器测试读取，Adaptive 调度仍使用容量。排队延迟来自承载 RTT 遥测，KCC 容量计算尚未使用该信号。FEC 恢复的交付来源无法从现有 ACK 格式识别。
+
+## VMUX 池级收益试验
+
+客户端在同一 VMUX、同一发送方向统计首次被对端 VMUX ACK 确认的 PUSH 净载荷。跨链重传和已脱离承载的条目也只计一次；该指标不代表目标应用已读取。未协商 reliability 的传统 turbo 使用队列策略，不报告实测增益。
+
+有持续积压且有空余槽位时，一次只拨一条。以加入前窗口为基线，排除拨号和握手后的预热窗口，再比较全池 ACK 速率、RTT 排队时延和重传成本。收益至少提高 5% 且至少提高 1024 B/s，时延和重传成本不过线才保留；已测无益时只回收试验链并冷却 60 秒。换链、需求不可比、无 ACK 或超时算不可判定，不作为零收益。空闲缩链不低于已协商的下限。
+
+`client.multipath.enabled`、`policy=adaptive` 与 `mux.turbo` 同时开启时，请求可选能力位 `0x10`。仅在认证多路径、flow-v2 和 reliability 均协商成功且对端回显该位时，第一条即可建立；原 wire count 成为硬上限。正常补连以已保留的目标数为准。failover 和未回显的新旧端组合仍预建原池，不把探测当作容灾冗余。
+
+离线验收：`pool_controller_test` 验证比较窗口、正负收益、未知、超时和下限；`vmux_retransmit_buffer_test` 核对会话净载荷记账；`vmux_net_churn_integration_test` 用本地模拟承载核对启动门槛、保留/回滚和迟到拨号令牌。共享瓶颈与独立瓶颈真实吞吐比较仍需使用接收应用实收结果。
+
+本轮 Linux 离线 CTest：上述三个目标，加 `vmux_path_estimator_test`、`vmux_wave4_pto_rtx_test`、`vmux_negotiation_test`、`multipath_path_manager_test` 和 `vmux_receive_semantics_test`，共 8/8 通过。路径槽位测试区分主动回收与故障退避。未启动 PPP，未执行真实网络或双向吞吐测试。
 
 ## 已有验证与缺口
 
@@ -30,7 +56,12 @@
 - 桌面前端本轮 `npm test` 的 42 项测试与 `npm run build` 通过；当前环境仍未找到 Cargo，Rust 后端及 Windows 运行验证未完成。
 - 当前源码在独立 `/tmp/openppp2-asan` 构建目录以 ASan/UBSan 重编并运行八个受影响目标，8/8 通过。LeakSanitizer 在本机 ptrace 限制下无法启用，命令使用 `ASAN_OPTIONS=detect_leaks=0`，因此该结果不包含 leak 检测。
 - 当前源码的 `multipath_transmission_test` 已完成重编，但本机运行时创建本地监听 socket 被权限策略拒绝（`Operation not permitted`），9 个依赖监听器的用例未执行。该结果计为环境限制下的未验证，不能替代 `10c76d75` 提交级回环传输记录。
-- 隔离双路径业务 smoke 已进入连接阶段，但先前虚拟对端 SOCKS CONNECT 失败，且该通路不能证明 VMUX，测试方案已纠正。尚无成功的 VMUX 业务摘要或路径参与结果；该失败不计为业务验收通过。
+- Linux 隔离网络已用真实客户端、服务端验证认证首链、单链及 adaptive 的双向业务：每次 8 MiB，接收方核对字节、SHA-256 和 EOF，发送方在半关闭后收到回执。该检查不证明额外路径承载了有效业务，也不证明吞吐提升。
+- 独立限速和共享限速下均观测到负载期间活动 carrier 从 1 增至 2，第二路径有实际字节。早期六流上传的退役阶段出现接收端 `gap_timeout`；不得只凭连接数回落认定无损缩容，或将未收到回执的流计入有效吞吐。
+- 加入退役 ACK 等待后的六流实测（Linux 隔离网络，二进制 SHA-256 前缀 `36af3bbc4452`）：两种拓扑上传均出现 `1 → 2 → 1`。独立限速上传 4/6 条、共享限速上传 1/6 条完成回执；下载阶段均为单 carrier，最终回执均为 0/6。已验证自动增减，未通过并发完整性验收。缺回执不等于没有传送字节，也不能据此断言是退役导致了下载失败。
+- 随后在当前源码重编二进制（SHA-256 `c939bc504333818b6c9117debfa8b5ab7673129b7b9555b71663a7dc5b3a9035`）运行新增的 `six-flow-integrity`：独立瓶颈和共享瓶颈两种 12 ms/24 Mbit 配置均完成 6/6 上传与 6/6 下载；每流正字节数、SHA-256、发送方回执和接收方确认均通过。该结果覆盖并发完整性与回执，不代表吞吐优于单路径，也不覆盖 CDN/TLS 终止或异构 RTT。
+- 使用 `OPENPPP2_VMUX_PATH_ESTIMATOR=kcc` 对同一二进制（SHA-256 `c939bc504333818b6c9117debfa8b5ab7673129b7b9555b71663a7dc5b3a9035`）重跑两组隔离 netns 验收：`independent-12ms-24mbit` 与 `shared-12ms-24mbit` 均 PASS，均为 6/6 上传、6/6 下载，逐流 SHA-256、字节数和双向回执全部通过。固定 25 s 上传/12 s 下载窗口的观测总字节分别为独立瓶颈上传 `51,544,064`、下载 `16,613,376`，共享瓶颈上传 `35,291,136`、下载 `16,777,216`；这些是单次完整性场景观测，不是生产吞吐承诺或最优性结论。
+- 为选择默认估计器，在同一 fresh 二进制和同一隔离验收 harness 下各重复 3 次 EWMA/KCC（两种 12 ms/24 Mbit 配置，全部 12 次均 PASS）。独立瓶颈中 KCC 的 25 s 上传平均 `52,811,093` vs EWMA `52,101,120`（`+1.36%`），下载平均 `16,777,216` vs `16,678,912`（`+0.59%`）；共享瓶颈中 KCC 上传平均 `35,334,827` vs EWMA `35,859,115`（`-1.46%`），下载平均 `16,678,912` vs `16,711,680`（`-0.20%`）。用户已选择将默认切换为 KCC；EWMA 仍可显式选择。该单一 12 ms/24 Mbit 矩阵不足以证明所有生产网络上的最优性。
 
 ## 实施与证据清单
 
@@ -45,8 +76,8 @@
 | 所有权与并发 | listener/context 间安全交接，不迁移活动 TLS/WS，队列有限并支持取消 | 当前源码的八个多路径目标已通过 ASan/UBSan 重编运行，`PathControlOwner` 队列上限、关键事件保留和停止路径有离线覆盖。TSan `bypass_lease`、跨 executor 实际交接和真实 TLS/WS 生命周期仍未验证 |
 | 路径生命周期 | 部分可用启动、限制并发建连、退避抖动、黑洞探测、补连和先建后退 | 已在当前源码重编并通过：`multipath_path_manager_test`。隔离 netns 故障注入与真实入口下的补连仍**未验证** |
 | DNS 与绕行 | IPv4/IPv6 候选拨号前保护，引用计数，更新与取消释放，多平台行为明确 | 已在当前源码重编并通过：`multipath_bypass_lease_test`、`client_underlying_socket_protector_test`。多平台行为仍**未验证** |
-| 调度与背压 | adaptive/failover 双向调度，单流并行，异构 RTT 下在途与重排预算有界 | 已在当前源码重编并通过：`multipath_scheduler_test`。异构 RTT 下的实测在途/重排上界仍**未验证**（隔离 netns 矩阵未跑） |
-| TCP 连续性 | 双向字节完整且无重复，SYN/FIN/RST、半关闭、慢目标与受限重传 | 已在当前源码重编并通过：`transport_auth_lifecycle_test`（含新增 `transport_auth_completion_survives_late_caller_resume` 竞态用例）、`vmux_receive_semantics_test`；`multipath_transmission_test` 的 mux 饱和竞态修复已合入 `10c76d75`，提交验证记录为 15/15 通过。慢目标与受限重传的真实业务实测仍**未验证** |
+| 调度与背压 | adaptive/failover 双向调度，单流并行，异构 RTT 下在途与重排预算有界 | 已在当前源码重编并通过：`multipath_scheduler_test`；隔离 netns 的 `six-flow-integrity` 在独立/共享 12 ms、24 Mbit 配置均 6/6 双向通过。异构 RTT 下的实测在途/重排上界仍**未验证** |
+| TCP 连续性 | 双向字节完整且无重复，SYN/FIN/RST、半关闭、慢目标与受限重传 | 已在当前源码重编并通过：`transport_auth_lifecycle_test`（含新增 `transport_auth_completion_survives_late_caller_resume` 竞态用例）、`vmux_receive_semantics_test`；`multipath_transmission_test` 的 mux 饱和竞态修复已合入 `10c76d75`，提交验证记录为 15/15 通过；新增六流验收在两种瓶颈配置均核对 6/6 上传和 6/6 下载回执。慢目标与受限重传的更长时真实业务实测仍**未验证** |
 | 控制与恢复 | 主物理连接失效仍可用；控制序号/ACK/幂等；全断恢复和固定宽限期 | 已在当前源码重编并通过：`multipath_wire_protocol_test`（含非零 operation watermark；codec 证明范围为 v1 自洽 round-trip 与严格拒绝，不含跨版本字节级互解，不主张向后兼容）、完整内核 VMUX 行为目标的迟到 ACK/承载 ID 复用回归。主连接失效连续性与全断恢复仍**未验证** |
 | 过期与重启 | 失败候选不续期；进程重启后旧流明确失败；无旧数据注入新会话 | 待验收 |
 | 非 TCP 范围 | UDP 选健康承载与允许丢包；原始 IP/P2P/FRP 的适用范围逐项说明 | 待验收 |
@@ -57,6 +88,10 @@
 ## 隔离网络矩阵
 
 每个场景同时测试单流、多流、上传、下载和双向传输，以同环境最佳单路径为对照。记录配置、随机种子、构建 SHA、逐字节摘要、吞吐、延迟分位数、恢复耗时、峰值内存、重排占用及额外重传；失败或缺测不能计为通过。
+
+TCP 半关闭验收：发送方写完后执行 `shutdown(SHUT_WR)`；接收方必须收到约定长度、核对摘要并读到 EOF，然后沿同一连接返回回执。只有发送方收到回执才记为该方向成功。短传吞吐按接收方有效负载和接收耗时计算；不能用 carrier 字节数替代。
+
+自动扩缩容验收单独使用持续负载，记录空闲、上传、上传后空闲、下载和下载后空闲各阶段的活动 carrier 数，以及每条路径的字节增量。全程只有一条 carrier 说明没有观测到扩容，也没有验证缩容；单凭吞吐或测试进程正常退出不能判为通过。
 
 | 场景 | 路径条件 | 故障/约束 |
 |---|---|---|
@@ -70,5 +105,31 @@
 | 全断恢复 | 全入口断开后恢复 | 宽限内恢复，超时失败，失败候选不延长期限 |
 | 事务竞争 | 丢确认、重复加入、最后连接退出与加入并发 | 一致提交及代次隔离 |
 | 压力与清理 | 慢目标、长连接、反复建连/取消 | 内存有界、无泄漏、资源回落 |
+
+### 真实故障矩阵的通过口径
+
+新增 `production-fault-matrix` 作为真实 candidate 会话门禁。每个 case 都
+必须重新启动 client/server，但故障期间的业务是同一条不自动重连的 SOCKS
+TCP 流：
+
+| case | 注入 | 通过条件 |
+|---|---|---|
+| `single-path-outage` | 黑洞最后一条路径 | 原 TCP 流完成；未故障路径在故障后有业务字节 |
+| `primary-path-outage` | 黑洞 path1 | 原 TCP 流完成；剩余路径接管业务 |
+| `all-short-outage` | 全路径黑洞，时长小于 `resume_grace_ms` | 原 TCP 流恢复并完成 |
+| `all-grace-expired` | 全路径黑洞，时长超过 `resume_grace_ms` | 原 TCP 流明确失败；不能把新连接成功当作原流恢复 |
+
+成功恢复 case 必须同时记录并校验发送/接收字节数、双方 SHA-256、半关闭
+后的 EOF、无 workload 重连，以及每条配置路径的
+`pre_fault_bytes`、`during_fault_bytes`、`post_fault_bytes`、`total_bytes`。
+逐路径计数来自隔离网络中的 carrier TBF，是路径实际承载业务的证据，不能
+替代应用 goodput，也不能用 established socket、日志或连接数量代替。若任一
+配置路径没有达到 `--minimum-path-bytes`，或单路径故障后的存活路径没有
+达到 post-fault 门槛，case 失败。
+
+`fault-plan`/`impair` 只负责 qdisc 故障注入；单独运行它们不构成故障恢复
+验收。每次运行保留 candidate SHA、拓扑、每个 case 的 JSON、workload 结果、
+路径计数快照和两端日志。未执行真实 candidate 矩阵前，不得把下表状态改为
+“已验证”。
 
 仅在任务专用网络命名空间或回环测试端口中故障注入。不触碰宿主路由、DNS、系统代理或活动安装。未验证的真实 CDN、平台及运行行为必须保留在最终报告中，不能由模拟结果推断完成。

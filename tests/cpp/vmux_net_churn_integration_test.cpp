@@ -1,6 +1,7 @@
 #include <ppp/stdafx.h>
 #include <ppp/app/mux/vmux_net.h>
 #include <ppp/Random.h>
+#include <ppp/configurations/AppConfiguration.h>
 
 #include <iostream>
 #include <stdexcept>
@@ -22,6 +23,25 @@ struct vmux_net_test_access {
 
     static void MarkEstablished(vmux_net& mux) noexcept {
         mux.base_.established_ = true;
+    }
+
+    static void RecordStartupHandshake(vmux_net& mux) noexcept {
+        ++mux.status_.opened_connections;
+        mux.linklayer_established();
+    }
+
+    static void Sample(vmux_net& mux, uint64_t now, uint64_t acked, uint64_t offered) {
+        mux.reliability_on_ = true;
+        mux.tx_data_bytes_total_ = 16000;
+        mux.pool_acked_payload_bytes_ = acked;
+        mux.pool_offered_bytes_ = offered;
+        mux.turbo_controller_tick(now);
+    }
+
+    static void AttachTrial(vmux_net& mux, const vmux_net::IMuxTransportPtr& transport) {
+        AttachEstablished(mux, transport, mux.pool_trial_link_);
+        // Make the original carrier the preferred idle victim of an untargeted shrink.
+        mux.pool_trial_link_->queued_bytes_ = 1024;
     }
 
     static void Finalize(vmux_net& mux) noexcept {
@@ -88,6 +108,54 @@ int main() {
 
         auto context = std::make_shared<boost::asio::io_context>();
         auto strand = std::make_shared<Executors::Strand>(context->get_executor());
+        for (bool lazy : {false, true}) {
+            auto startup = ppp::make_shared_object<vmux::vmux_net>(
+                context, strand, 2, true, false);
+            Require(static_cast<bool>(startup), "startup mux allocation failed");
+            startup->AppConfiguration = ppp::make_shared_object<ppp::configurations::AppConfiguration>();
+            Require(static_cast<bool>(startup->AppConfiguration), "startup configuration allocation failed");
+            startup->set_pool_hard_max(4);
+            if (lazy) startup->enable_lazy_pool();
+            Require(startup->is_pool_lazy() == lazy, "incorrect pool negotiation state");
+            Require(startup->get_pool_floor() == (lazy ? 1 : 2), "incorrect startup floor");
+            Require(startup->get_pool_target() == startup->get_pool_floor(), "initial target must be the floor");
+            Require(startup->get_max_connections() == 2, "pool negotiation changed the wire count");
+            Require(startup->get_pool_hard_max() == (lazy ? 2 : 4), "incorrect negotiated ceiling");
+            vmux::vmux_net_test_access::RecordStartupHandshake(*startup);
+            Require(startup->is_established() == lazy, "incorrect first-handshake gate");
+            if (!lazy) {
+                vmux::vmux_net_test_access::RecordStartupHandshake(*startup);
+                Require(startup->is_established(), "legacy session did not establish at its wire count");
+            }
+        }
+
+        for (bool gain : {false, true}) {
+            auto pool = ppp::make_shared_object<vmux::vmux_net>(context, strand, 2, false, false);
+            pool->enable_lazy_pool();
+            auto original = ppp::make_shared_object<FakeMuxTransport>(context, strand, ppp::Int128(1));
+            auto probe = ppp::make_shared_object<FakeMuxTransport>(context, strand, ppp::Int128(2));
+            vmux::vmux_net::vmux_linklayer_ptr link;
+            using Access = vmux::vmux_net_test_access;
+            Access::AttachEstablished(*pool, original, link);
+            Access::MarkEstablished(*pool);
+            uint64_t token = 0;
+            unsigned calls = 0;
+            pool->set_pool_grow_callback([&](uint64_t request) { token = request; ++calls; return true; });
+            Access::Sample(*pool, 1000, 0, 0);
+            Access::Sample(*pool, 3000, 30000, 40000);
+            Access::Sample(*pool, 4000, 45000, 60000);
+            Require(calls == 1 && token && pool->get_pool_target() == 1, "dial was duplicated or committed early");
+            Access::AttachTrial(*pool, probe);
+            Access::Sample(*pool, 5000, 60000, 80000);
+            Access::Sample(*pool, 7000, 90000, 120000);
+            Access::Sample(*pool, 9000, gain ? 129000 : 120000, 160000);
+            Require(original->disposals() == 0 && probe->disposals() == (gain ? 0 : 1), "rollback retired wrong instance");
+            Require(pool->get_pool_target() == (gain ? 2 : 1), "committed pool target ignored measured gain");
+            vmux::vmux_net::vmux_native_add_linklayer_after_success_before_callback cb;
+            Require(!pool->add_pool_trial_linklayer(probe, link, cb, token), "completed token accepted another carrier");
+            Access::Finalize(*pool);
+        }
+
         auto mux = ppp::make_shared_object<vmux::vmux_net>(
             context, strand, 1, true, false, vmux::vmux_net::mux_mode_compat);
         Require(static_cast<bool>(mux), "vmux allocation failed");

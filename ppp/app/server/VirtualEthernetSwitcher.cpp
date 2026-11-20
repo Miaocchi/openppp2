@@ -2223,6 +2223,7 @@ namespace ppp {
                     carrier, std::move(parameters), std::move(psk),
                     HandshakeRole::NetworkServerResponder, first_frame, first_frame_length);
                 if (!secured || !secured->StartSecureServer(y)) {
+                    ppp::telemetry::Log(Level::kDebug, "multipath", "admission failed stage=secure-handshake");
                     return STATUS_ERROR;
                 }
 
@@ -2295,7 +2296,12 @@ namespace ppp {
 
                 std::uint8_t initial_type = 0;
                 std::vector<std::uint8_t> initial_payload;
-                if (!read_record(initial_type, initial_payload)) return STATUS_ERROR;
+                if (!read_record(initial_type, initial_payload)) {
+                    ppp::telemetry::Log(Level::kDebug, "multipath", "admission failed stage=read-first-authenticated-record");
+                    return STATUS_ERROR;
+                }
+                ppp::telemetry::Log(Level::kDebug, "multipath", "first authenticated record type=%u",
+                    static_cast<unsigned>(initial_type));
 
                 MultipathSessionEntryPtr entry;
                 Int128 logical_id = 0;
@@ -3269,7 +3275,7 @@ namespace ppp {
                     auto mux_strand = mux_stream->GetStrand();
                     auto mux_allocator = mux_stream->BufferAllocator;
                     auto self = shared_from_this();
-                    if (!mux_context || !mux_strand || !mux_allocator ||
+                    if (!mux_context || !mux_strand ||
                         !YieldContext::Spawn(mux_allocator.get(), *mux_context, mux_strand.get(),
                             [self, mux_stream, session_id, mux_registration](YieldContext& mux_y) noexcept {
                                 const int result = self->Connect(mux_stream, session_id, mux_y,

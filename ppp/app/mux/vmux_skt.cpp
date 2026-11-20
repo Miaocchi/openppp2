@@ -15,6 +15,12 @@ namespace vmux {
     static constexpr int kTransmissionBinaryHeaderSize = 3;
     static constexpr int kPlaintextBase94MaxWriteSize = (PPP_BUFFER_SIZE / 2) - kTransmissionBinaryHeaderSize;
 
+    // A stopped read pump cannot backpressure the application until the kernel
+    // receive queue fills. Autotuning on a fast app-facing leg can otherwise
+    // ACK megabytes per stream ahead of a shared, much slower VMUX carrier.
+    // Allow four 64 KiB reads; Linux may reserve twice this SO_RCVBUF request.
+    static constexpr int kDefaultIngressReceiveBuffer = 256 << 10;
+
     /**
      * @brief Initialize a vmux logical socket state.
      * @param mux Parent vmux multiplexer instance.
@@ -54,12 +60,9 @@ namespace vmux {
      */
     void vmux_skt::finalize() noexcept {
         std::shared_ptr<boost::asio::ip::tcp::socket> tx_socket;
-        bool fin = false;
-
-        if (!status_.fin_) { 
-            fin = true;
-            status_.connected_ = false;
-        }
+        if (status_.disposed_) return;
+        const bool fin = !status_.fin_ && !mux_->is_disposed();
+        status_.connected_ = false;
 
         status_.fin_ = true;
         status_.disposed_ = true;
@@ -77,10 +80,9 @@ namespace vmux {
             event(this, false);
         }
 
-        mux_->release_connection(connection_id_, this);
-        if (fin) {
-            mux_->post(vmux_net::cmd_fin, NULLPTR, 0, connection_id_);
-        }
+        // Number a terminal FIN in the existing DSN space before releasing it.
+        bool drain_tx = fin && mux_->post(vmux_net::cmd_fin, NULLPTR, 0, connection_id_);
+        mux_->release_connection(connection_id_, this, drain_tx);
 
         if (NULLPTR != tx_socket) {
             auto tx_context = tx_context_;
@@ -450,22 +452,72 @@ namespace vmux {
         return forward_to_rx_socket();
     }
 
-    /**
-     * @brief Queue inbound peer payload and flush to local socket.
-     *
-     * Legacy 2-arg overload — delegates to the zero-copy 3-arg variant with a
-     * null owner, preserving the original alloc+memcpy behavior.
-     *
-     * @param payload Payload bytes from vmux frame.
-     * @param payload_size Payload size in bytes.
-     * @return true when payload is accepted for forwarding.
-     */
-    bool vmux_skt::input(Byte* payload, int payload_size) noexcept {
-        return input(nullptr, payload, payload_size);
+    bool vmux_skt::send_write_fin() noexcept {
+        if (status_.disposed_ || status_.fin_) return false;
+        if (!mux_->write_fin_on_) {
+            close(); // Old peer will fully close; don't wait for a reverse FIN.
+            return true;
+        }
+        const Byte marker = vmux_net::fin_write_only;
+        auto self = shared_from_this();
+        // Unlike an accelerated PUSH completion, this must mean the carrier
+        // actually finished the write, not just that the mux enqueued it.
+        return mux_->post(vmux_net::cmd_fin, &marker, 1, connection_id_, false,
+            [self](bool ok) noexcept {
+                if (!ok) {
+                    self->close();
+                    return;
+                }
+                self->local_fin_sent_ = true;
+                self->maybe_finish_stream();
+            });
+    }
+
+    bool vmux_skt::receive_fin(bool write_only) noexcept {
+        peer_eof_ = true;
+        if (!write_only || !mux_->write_fin_on_ || !status_.connected_) status_.fin_ = true;
+        return drain_peer_fin();
+    }
+
+    bool vmux_skt::drain_peer_fin() noexcept {
+        if (!peer_eof_ || status_.sending_ || !rx_queue_.empty()) return true;
+        if (status_.fin_) {
+            close(); // terminal FIN: retain legacy full-close semantics after drain
+            return true;
+        }
+        if (shutdown_started_) return true;
+        shutdown_started_ = true;
+        auto socket = tx_socket_;
+        if (!socket) return false;
+        auto self = shared_from_this();
+        return vmux_post_exec(tx_context_, tx_strand_, [self, socket]() noexcept {
+            boost::system::error_code ec;
+            socket->shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+            vmux_post_exec(self->mux_->context_, self->mux_->strand_, [self, ec]() noexcept {
+                if (ec) {
+                    self->close();
+                } else {
+                    self->shutdown_done_ = true;
+                    self->maybe_finish_stream();
+                }
+            });
+        });
+    }
+
+    void vmux_skt::maybe_finish_stream() noexcept {
+        if (!shutdown_done_ || !local_fin_sent_ || status_.disposed_ || status_.fin_) return;
+        // Releasing a v2 socket also releases its retransmit window. Don't
+        // discard the peer's last PUSH/FIN on an outstanding carrier.
+        if (mux_->ordering_mode_ == vmux_net::ordering_flow_v2 && mux_->reliability_on_) {
+            if (mux_->rtx_.CidBytes(connection_id_) != 0) return;
+            mux_->maybe_send_ack(mux_->now_tick(), true);
+        }
+        status_.fin_ = true;
+        close();
     }
 
     /**
-     * @brief Zero-copy variant of @ref input.
+     * @brief Queue inbound peer payload and flush to the local TCP socket.
      * @param owner Shared pointer that owns the memory region of @p payload.
      *              When non-null, the payload is referenced via wrap_shared_pointer
      *              instead of being copied into a freshly allocated buffer.
@@ -478,43 +530,34 @@ namespace vmux {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionDisposed);
             return false;
         }
+        if (peer_eof_ || payload_size <= 0 || !payload) return false;
 
         std::shared_ptr<Byte> buffer;
-        if (payload_size > 0) {
-            // Hard cap: a peer ignoring XOFF must not grow the queue without bound.
-            if (ppp::app::mux::MuxRxQueueOverflows(rx_queue_.size(), rx_queue_bytes_, payload_size, mux_->AppConfiguration->mux.congestions)) {
-                ppp::telemetry::Count("mux.rx.queue.overflow", 1);
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTaskPostFailed);
-                return false;
-            }
+        // Hard cap: a peer ignoring XOFF must not grow the queue without bound.
+        if (ppp::app::mux::MuxRxQueueOverflows(rx_queue_.size(), rx_queue_bytes_, payload_size, mux_->AppConfiguration->mux.congestions)) {
+            ppp::telemetry::Count("mux.rx.queue.overflow", 1);
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTaskPostFailed);
+            return false;
+        }
 
-            if (NULLPTR != owner) {
-                // Zero-copy: alias the owner buffer to reference the payload region.
-                buffer = ppp::wrap_shared_pointer(payload, owner);
-            }
-            else {
-                buffer = mux_->make_byte_array(payload_size);
-                if (NULLPTR != buffer) {
-                    memcpy(buffer.get(), payload, payload_size);
-                }
-            }
-
-            if (NULLPTR == buffer) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VmuxSocketInputBufferAllocFailed);
-                return false;
-            }
-
-            if (!rx_congestions(payload_size)) {
-                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTaskPostFailed);
-                return false;
-            }
+        if (owner) {
+            buffer = ppp::wrap_shared_pointer(payload, owner);
+        } else {
+            buffer = mux_->make_byte_array(payload_size);
+            if (buffer) memcpy(buffer.get(), payload, payload_size);
+        }
+        if (!buffer) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VmuxSocketInputBufferAllocFailed);
+            return false;
+        }
+        if (!rx_congestions(payload_size)) {
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTaskPostFailed);
+            return false;
         }
 
         rx_queue_.emplace_back(packet{ buffer,  payload_size });
         rx_queue_bytes_ += payload_size;
-        if (payload_size > 0) {
-            ppp::diagnostics::datapath_perf::RecordVmuxAccepted(payload_size);
-        }
+        ppp::diagnostics::datapath_perf::RecordVmuxAccepted(payload_size);
         if (status_.sending_) {
             return true;
         }
@@ -553,7 +596,7 @@ namespace vmux {
         }
 
         // Open barrier: do not post PUSH until local open completes (syn_ok / connected_).
-        if (!status_.connected_) {
+        if (!status_.connected_ || local_eof_ || status_.fin_) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VmuxSocketSendContextNotReady);
             return false;
         }
@@ -864,13 +907,21 @@ namespace vmux {
      * @tparam T3 Completion handler type.
      */
     template <class T1, class T2, class T3>
-    static inline void vmux_skt_async_read_some(const std::shared_ptr<T1>& socket, const T2& buffers, T3&& handler) noexcept {
+    static inline void vmux_skt_async_read_some(const std::shared_ptr<T1>& socket, const T2& buffers, bool limit_ingress, T3&& handler) noexcept {
         if (NULLPTR == socket) {
             return;
         }
 
         boost::asio::post(socket->get_executor(),
-            [socket, buffers, handler]() noexcept {
+            [socket, buffers, limit_ingress, handler]() noexcept {
+                if (limit_ingress) {
+                    boost::system::error_code ec;
+                    socket->set_option(boost::asio::socket_base::receive_buffer_size(kDefaultIngressReceiveBuffer), ec);
+                    if (ec) {
+                        handler(ec, 0);
+                        return;
+                    }
+                }
                 socket->async_read_some(buffers, handler);
             });
     }
@@ -896,7 +947,7 @@ namespace vmux {
             return false;
         }
 
-        if (!status_.tx_acceleration_) {
+        if (local_eof_ || status_.fin_ || !status_.tx_acceleration_) {
             return true;
         }
         
@@ -933,16 +984,22 @@ namespace vmux {
                             return true;
                         }
 
-                        if (ec == boost::system::errc::success) {
+                        if (status_.disposed_ || status_.fin_) return false;
+                        const bool eof = ec == boost::asio::error::eof;
+                        if (eof) local_eof_ = true; // XON must never re-arm this read.
+                        if (eof && bytes_transferred == 0) {
+                            if (send_write_fin()) return true;
+                        }
+                        else if (!ec || eof) {
                             // Open barrier: no data until connected_ (syn_ok observed).
                             if (!status_.connected_) {
                                 close();
                                 return false;
                             }
                             auto on_posted =
-                                    [self, this](bool successed) noexcept {
+                                    [self, this, eof](bool successed) noexcept {
                                         if (successed) {
-                                            if (forward_to_rx_socket()) {
+                                            if (eof ? send_write_fin() : forward_to_rx_socket()) {
                                                 return true;
                                             }
                                         }
@@ -975,7 +1032,12 @@ namespace vmux {
                     });
             };
         
-        vmux_skt_async_read_some(tx_socket, boost::asio::buffer(frame.get() + sizeof(vmux_net::vmux_hdr), read_length), reading_cb);
+        // Both the accepted proxy socket and the connected origin socket enter
+        // here before their first bulk read (some handoffs aren't open at SYN).
+        // Explicit tcp.rwnd was already applied by the socket's creator.
+        const bool limit_ingress = !ingress_started_ && mux_->AppConfiguration->tcp.rwnd == 0;
+        ingress_started_ = true;
+        vmux_skt_async_read_some(tx_socket, boost::asio::buffer(frame.get() + sizeof(vmux_net::vmux_hdr), read_length), limit_ingress, reading_cb);
         return true;
     }
 
@@ -1060,7 +1122,8 @@ namespace vmux {
                 }
                 vmux_post_exec(mux_->context_, mux_->strand_, 
                     [self, this, ec, payload, payload_size, bytes_transferred]() noexcept {
-                        if (ec == boost::system::errc::success && rx_congestions(-static_cast<int>(bytes_transferred))) {
+                        if (status_.disposed_) return false;
+                        if (!ec && bytes_transferred == static_cast<size_t>(payload_size) && rx_congestions(-payload_size)) {
                             int location = TRUE; 
                             if (status_.sending_.compare_exchange_strong(location, FALSE)) {
                                 active();
@@ -1073,6 +1136,7 @@ namespace vmux {
                             packet_queue::iterator packet_endl = rx_queue_.end();
 
                             if (packet_tail == packet_endl) {
+                                if (!drain_peer_fin()) close();
                                 return true;
                             }
 
@@ -1081,7 +1145,7 @@ namespace vmux {
                                 return true;
                             }
                         }
-                        elif(ec == boost::system::errc::resource_unavailable_try_again) {
+                        elif(ec == boost::system::errc::resource_unavailable_try_again && bytes_transferred == 0) {
                             constexpr packet_queue::iterator* const null_expr = NULLPTR;
                             if (forward_to_tx_socket(payload, payload_size, null_expr)) {
                                 return true;

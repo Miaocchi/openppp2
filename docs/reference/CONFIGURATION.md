@@ -114,7 +114,7 @@ Adds connection authentication with a 32-byte pre-shared key on top of `key`. Of
 | `inactive.timeout` | int (s) | `300` | TCP relay idle timeout; `< 1` becomes 300. |
 | `turbo` | bool | `false` | Sets `TCP_NODELAY`. |
 | `fast-open` | bool | `false` | TCP Fast Open where supported. |
-| `cwnd` / `rwnd` | int | `0` | Socket send / receive buffer size; `0` = system default. |
+| `cwnd` / `rwnd` | int | `0` | TCP send / receive buffer sizes. `0` normally uses the system default. At VMUX application ingress, `rwnd=0` requests a 256 KiB receive buffer so TCP applies backpressure before the tunnel builds seconds of unread data. An explicit `rwnd` takes precedence. Linux raw TCP multipath carriers also limit unsent bytes independently of `cwnd`; bytes already in flight are not capped by that option. |
 
 ## 7. `udp`
 

@@ -239,7 +239,7 @@ BOOST_AUTO_TEST_CASE(link_bytes_follow_ack_and_report_new_bytes_by_original_link
     BOOST_TEST(rtx.LinkBytes(2) == 50u);
 }
 
-BOOST_AUTO_TEST_CASE(link_bytes_move_on_retransmit_but_ack_credit_uses_original_link) {
+BOOST_AUTO_TEST_CASE(link_bytes_and_ack_credit_follow_the_final_transmission) {
     mux::MuxRetransmitBuffer rtx;
     BOOST_TEST(rtx.Track(4, 1, make_frame(1), 120, 1000, 1 << 20, 2));
     BOOST_TEST(rtx.Track(4, 2, make_frame(2), 80, 1010, 1 << 20, 2));
@@ -251,11 +251,30 @@ BOOST_AUTO_TEST_CASE(link_bytes_move_on_retransmit_but_ack_credit_uses_original_
     std::vector<mux::MuxAckRange> ranges = { {1, 2} };
     std::unordered_map<std::uint16_t, std::size_t> newly_acked;
     rtx.Ack(4, 2, ranges, 1200, 1000, 0, fast, nullptr, &newly_acked);
-    BOOST_REQUIRE_EQUAL(newly_acked.size(), 1u);
+    BOOST_REQUIRE_EQUAL(newly_acked.size(), 2u);
     BOOST_TEST(newly_acked[2] == 80u);
-    BOOST_TEST(newly_acked.count(3) == 0u); // retransmitted frames get no throughput/RTT credit
+    BOOST_TEST(newly_acked[3] == 120u);
     BOOST_TEST(rtx.LinkBytes(2) == 0u);
     BOOST_TEST(rtx.LinkBytes(3) == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(cumulative_payload_counts_retransmitted_and_orphaned_frames_once) {
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_REQUIRE(rtx.Track(4, 1, make_frame(1), 100, 1000, 1024, 2, {}, 80));
+    BOOST_REQUIRE(rtx.Track(4, 2, make_frame(2), 60, 1010, 1024, 2, {}, 40));
+    rtx.MarkRetransmitted(mux::MuxRetransmitBuffer::Key(4, 1), 1100, 3);
+    std::vector<std::uint64_t> orphaned;
+    rtx.TakeLinkInflight(2, orphaned);
+    BOOST_REQUIRE_EQUAL(orphaned.size(), 1u);
+
+    std::uint64_t total = UINT64_MAX - 110;
+    std::vector<std::uint64_t> fast;
+    rtx.Ack(4, 2, {{2, 2}}, 1200, 3, 0, fast, nullptr, nullptr, nullptr, &total);
+    BOOST_TEST(total == UINT64_MAX - 70);
+    rtx.Ack(4, 2, {{2, 2}}, 1210, 3, 0, fast, nullptr, nullptr, nullptr, &total);
+    BOOST_TEST(total == UINT64_MAX - 70);
+    rtx.Ack(4, 2, {{1, 2}}, 1220, 3, 0, fast, nullptr, nullptr, nullptr, &total);
+    BOOST_TEST(total == UINT64_MAX);
 }
 
 BOOST_AUTO_TEST_CASE(link_exit_and_flow_clear_keep_reused_id_accounting_exact) {

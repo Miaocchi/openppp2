@@ -1,4 +1,6 @@
 #include <ppp/transmissions/MultipathTransmission.h>
+#include <ppp/transmissions/ITcpipTransmission.h>
+#include <ppp/transmissions/TransmissionFrameLimits.h>
 
 #include <algorithm>
 #include <cstring>
@@ -106,6 +108,7 @@ MultipathTransmission::MultipathTransmission(const std::shared_ptr<ITransmission
         disposed_ = true;
         return;
     }
+    if (auto tcp = dynamic_cast<ITcpipTransmission*>(carrier_.get())) tcp->LimitMultipathUnsentBytes();
     secure_started_ = false;
 }
 
@@ -426,7 +429,7 @@ void MultipathTransmission::CloseLogicalChannel(std::uint8_t type) noexcept {
 
 std::shared_ptr<Byte> MultipathTransmission::ReadLogicalBytes(YieldContext& y,
     int length, std::uint8_t type) noexcept {
-    if (length < 1 || length > PPP_BUFFER_SIZE || disposed_ ||
+    if (length < 1 || length > MaxEncodedTransmissionFrame || disposed_ ||
         (type != ApplicationRecord && type != MuxRecord)) return nullptr;
     LogicalChannel& channel = type == ApplicationRecord ? main_channel_ : mux_channel_;
     {

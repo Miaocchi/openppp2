@@ -1225,6 +1225,7 @@ namespace ppp {
                     std::lock_guard<std::mutex> lock(multipath_session_mutex_);
                     multipath_ticket_ = ppp::app::multipath::SessionTicket();
                     multipath_create_request_id_.clear();
+                    multipath_query_pending_create_ = false;
                 }
                 {
                     std::lock_guard<std::mutex> lock(multipath_primary_mutex_);
@@ -1883,10 +1884,12 @@ namespace ppp {
                     if (create_request_id.empty() && !make_id("create/", create_request_id)) {
                         path_attempt->Complete(); raw->Dispose(); return nullptr;
                     }
+                    bool recover_create;
                     {
                         std::lock_guard<std::mutex> lock(multipath_session_mutex_);
                         if (multipath_create_request_id_.empty()) multipath_create_request_id_ = create_request_id;
                         else create_request_id = multipath_create_request_id_;
+                        recover_create = multipath_query_pending_create_;
                     }
                     Secret32 nonce{};
                     Secret32 binding{};
@@ -1894,27 +1897,37 @@ namespace ppp {
                         !bind_candidate(create_request_id, carrier_id, nonce, binding)) {
                         path_attempt->Complete(); raw->Dispose(); return nullptr;
                     }
-                    QueryRequest query;
-                    query.operation = QueryOperation::Create;
-                    query.authenticated_identity = identity;
-                    query.request_id = create_request_id;
-                    query.carrier_id = carrier_id;
-                    query.client_session_id = client_session_id;
-                    query.client_nonce = nonce;
-                    query.candidate_binding = binding;
                     std::vector<std::uint8_t> request_payload, response_payload;
-                    QueryResponse query_response;
-                    bool found_create = EncodeQueryRequest(query, request_payload) &&
-                        exchange_record(RecordType::QueryRequest, request_payload,
-                            RecordType::QueryResponse, response_payload) &&
-                        DecodeQueryResponse(response_payload.data(), response_payload.size(), query_response) &&
-                        query_response.operation == QueryOperation::Create &&
-                        (query_response.create.result == CreateResult::Accepted ||
-                            query_response.create.result == CreateResult::Duplicate);
-                    ClearSensitivePayload(response_payload);
                     CreateResponse created;
-                    if (found_create) {
-                        created = query_response.create;
+                    if (recover_create) {
+                        // Recover an ambiguous response, including after key rotation to verify-only.
+                        QueryRequest query;
+                        query.operation = QueryOperation::Create;
+                        query.authenticated_identity = identity;
+                        query.request_id = create_request_id;
+                        query.carrier_id = carrier_id;
+                        query.client_session_id = client_session_id;
+                        query.client_nonce = nonce;
+                        query.candidate_binding = binding;
+                        QueryResponse response;
+                        const bool decoded = EncodeQueryRequest(query, request_payload) &&
+                            exchange_record(RecordType::QueryRequest, request_payload,
+                                RecordType::QueryResponse, response_payload) &&
+                            DecodeQueryResponse(response_payload.data(), response_payload.size(), response) &&
+                            response.operation == QueryOperation::Create;
+                        ClearSensitivePayload(response_payload);
+                        if (!decoded) {
+                            ppp::telemetry::Log(Level::kInfo, "multipath", "create recovery failed: no valid query response");
+                            path_attempt->Complete(); raw->Dispose(); return nullptr;
+                        }
+                        created = response.create;
+                        OPENSSL_cleanse(response.create.credential.data(), response.create.credential.size());
+                        if (created.result == CreateResult::Rejected && created.client_session_id == client_session_id) {
+                            // A miss ends this carrier. Retry the same idempotent Create
+                            // only on a newly authenticated carrier with a fresh binding.
+                            std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                            multipath_query_pending_create_ = false;
+                        }
                     }
                     else {
                         CreateRequest create;
@@ -1925,16 +1938,27 @@ namespace ppp {
                         create.client_nonce = nonce;
                         create.candidate_binding = binding;
                         create.failover = configuration->client.multipath.policy == "failover";
-                        request_payload.clear(); response_payload.clear();
-                        if (!EncodeCreateRequest(create, request_payload) ||
-                            !exchange_record(RecordType::CreateRequest, request_payload,
-                                RecordType::CreateResponse, response_payload) ||
-                            !DecodeCreateResponse(response_payload.data(), response_payload.size(), created) ||
-                            (created.result != CreateResult::Accepted && created.result != CreateResult::Duplicate)) {
-                            ClearSensitivePayload(response_payload);
+                        if (!EncodeCreateRequest(create, request_payload)) {
                             path_attempt->Complete(); raw->Dispose(); return nullptr;
                         }
+                        {
+                            std::lock_guard<std::mutex> lock(multipath_session_mutex_);
+                            multipath_query_pending_create_ = true;
+                        }
+                        const bool decoded = exchange_record(RecordType::CreateRequest, request_payload,
+                                RecordType::CreateResponse, response_payload) &&
+                            DecodeCreateResponse(response_payload.data(), response_payload.size(), created);
                         ClearSensitivePayload(response_payload);
+                        if (!decoded) {
+                            ppp::telemetry::Log(Level::kInfo, "multipath", "create failed: no valid create response");
+                            path_attempt->Complete(); raw->Dispose(); return nullptr;
+                        }
+                    }
+                    if (created.result != CreateResult::Accepted && created.result != CreateResult::Duplicate) {
+                        ppp::telemetry::Log(Level::kInfo, "multipath", "create refused: recovery=%d result=%d",
+                            recover_create ? 1 : 0, static_cast<int>(created.result));
+                        OPENSSL_cleanse(created.credential.data(), created.credential.size());
+                        path_attempt->Complete(); raw->Dispose(); return nullptr;
                     }
                     OPENSSL_cleanse(nonce.data(), nonce.size());
                     OPENSSL_cleanse(binding.data(), binding.size());
@@ -2889,7 +2913,21 @@ namespace ppp {
                             SessionResumeNegotiationResult negotiation =
                                 SessionResumeNegotiationResult::Fresh;
                             established = transmission->HandshakeServer(y, GetId(), true);
-                            if (established && ShouldRunClientTransportAuth(
+                            if (established && multipath_enabled) {
+                                // RunMultipath has already authenticated and committed this carrier.
+                                // Its inner handshake advertises the underlying TCP/WS capabilities,
+                                // but Establish does not accept another transport-auth INFO exchange.
+                                established = IsClientMultipathCarrierAuthenticated(
+                                    transmission->GetAuthenticatedCarrierMethod(),
+                                    transmission->IsAuthenticatedCarrierBindingActive(),
+                                    transmission->HasAuthenticatedSessionExporter());
+                                if (!established) {
+                                    transport_auth_failed = true;
+                                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionAuthFailed);
+                                    ppp::telemetry::Log(Level::kInfo, "multipath", "admission failed stage=inner-handshake-binding");
+                                }
+                            }
+                            elif(established && ShouldRunClientTransportAuth(
                                     transmission->GetAuthenticatedCarrierKind(),
                                     configuration->client.transport_auth.enabled,
                                     transmission->PeerSupportsTransportAuthV1(),
@@ -3157,22 +3195,11 @@ namespace ppp {
                         }
 
                         if (breaking) {
-                            // turbo dynamic pool: if the quality controller asked to
-                            // grow, connect that many extra carrier links at runtime
-                            // and attach each through add_linklayer's established-
-                            // session path (single-link, single forwarding coroutine).
-                            if (mux->is_established()) {
-                                if (configuration->client.multipath.enabled &&
-                                    (!multipath_primary_mux_attached_.load(std::memory_order_acquire) ||
-                                     multipath_paths_.JoinedCarriers() <
-                                        static_cast<std::size_t>(configuration->client.multipath.max_connections))) {
-                                    MuxConnectAllLinklayers(switcher_->GetBufferAllocator(), mux,
-                                        GetTransmission());
-                                }
-                                int grow = mux->take_turbo_pending_grow();
-                                if (grow > 0 && !configuration->client.multipath.enabled) {
-                                    MuxGrowLinklayers(switcher_->GetBufferAllocator(), mux, grow);
-                                }
+                            if (mux->is_established() && configuration->client.multipath.enabled &&
+                                (!multipath_primary_mux_attached_.load(std::memory_order_acquire) ||
+                                 multipath_paths_.JoinedCarriers() < mux->get_pool_target())) {
+                                MuxConnectAllLinklayers(switcher_->GetBufferAllocator(), mux,
+                                    GetTransmission());
                             }
                             break;
                         }
@@ -3198,10 +3225,23 @@ namespace ppp {
                         if (NULLPTR == mux) {
                             break;
                         }
-                        if (configuration->client.multipath.enabled) {
-                            std::weak_ptr<VEthernetExchanger> weak_self =
-                                std::static_pointer_cast<VEthernetExchanger>(shared_from_this());
-                            mux->set_link_exit_callback([weak_self](const ITransmissionPtr& transmission) noexcept {
+                        const bool multipath_enabled = configuration->client.multipath.enabled;
+                        std::weak_ptr<VEthernetExchanger> weak_self =
+                            std::static_pointer_cast<VEthernetExchanger>(shared_from_this());
+                        std::weak_ptr<vmux::vmux_net> weak_mux = mux;
+                        mux->set_pool_grow_callback([weak_self, weak_mux, multipath_enabled](uint64_t token) noexcept -> bool {
+                            auto self = weak_self.lock();
+                            auto mux = weak_mux.lock();
+                            if (!token || !self || !mux || self->disposed_.load(std::memory_order_acquire) ||
+                                !self->mux_coordinator_->IsCurrent(mux) || mux->is_disposed() || !mux->is_established()) {
+                                return false;
+                            }
+                            return multipath_enabled
+                                ? self->MuxConnectAllLinklayers(mux->BufferAllocator, mux, nullptr, token)
+                                : self->MuxGrowLinklayers(mux->BufferAllocator, mux, token);
+                        });
+                        if (multipath_enabled) {
+                            mux->set_link_exit_callback([weak_self](const ITransmissionPtr& transmission, bool retired) noexcept {
                                 auto self = weak_self.lock();
                                 if (!self || !transmission) return;
                                 {
@@ -3221,8 +3261,8 @@ namespace ppp {
                                     attempt = found->second;
                                     self->multipath_link_attempts_.erase(found);
                                 }
-                                self->multipath_paths_.CarrierLost(attempt,
-                                    Executors::GetTickCount());
+                                if (retired) self->multipath_paths_.CarrierRetired(attempt);
+                                else self->multipath_paths_.CarrierLost(attempt, Executors::GetTickCount());
                                 if (self->multipath_paths_.JoinedCarriers() == 0) {
                                     self->multipath_resume_primary_.store(true,
                                         std::memory_order_release);
@@ -3295,6 +3335,7 @@ namespace ppp {
                                 // of the current scheduler preset. Whether it is *used* is decided
                                 // later by mode_requires_flow_v2 + peer intersection.
                                 Byte ordering_caps = (Byte)vmux::vmux_net::ordering_caps_flow_v2;
+                                ordering_caps |= (Byte)vmux::vmux_net::ordering_caps_write_fin;
                                 // Separately ask for flow_v2 when this client's own preset needs
                                 // it (flow+turbo / balance / stripe): the server otherwise decides
                                 // from its own preset and may keep a compat global sequence space
@@ -3314,6 +3355,10 @@ namespace ppp {
                                     if (configuration->mux.fec.enabled) {
                                         ordering_caps |= (Byte)vmux::vmux_net::ordering_caps_fec;
                                     }
+                                }
+                                if (configuration->client.multipath.enabled &&
+                                    configuration->client.multipath.policy == "adaptive" && configuration->mux.turbo) {
+                                    ordering_caps |= (Byte)vmux::vmux_net::ordering_caps_lazy_pool;
                                 }
                                 ok = DoMux(vnet_transmission, mux->Vlan, max_connections, (switcher_->mux_acceleration_ & PPP_MUX_ACCELERATION_REMOTE) != 0, ordering_caps, y);
                             }
@@ -3383,7 +3428,7 @@ namespace ppp {
             bool VEthernetExchanger::MuxConnectAllLinklayers(
                 const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator,
                 const std::shared_ptr<void>& session,
-                const ITransmissionPtr& primary_transmission) noexcept {
+                const ITransmissionPtr& primary_transmission, uint64_t token) noexcept {
                 using ppp::app::protocol::VirtualEthernetTcpipConnection;
                 const std::shared_ptr<vmux::vmux_net> mux =
                     std::static_pointer_cast<vmux::vmux_net>(session);
@@ -3393,22 +3438,28 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeIoContextMissing);
                 }
 
-                auto self = shared_from_this();
+                auto self = std::static_pointer_cast<VEthernetExchanger>(shared_from_this());
                 auto strand = mux->get_strand();
                 const auto configuration = GetConfiguration();
                 const bool multipath_enabled = configuration && configuration->client.multipath.enabled;
+                if (token && !multipath_enabled) return false;
                 if (multipath_enabled && multipath_child_connecting_.exchange(true, std::memory_order_acq_rel)) {
-                    return true;
+                    return !token; // a normal fill is already in progress; a trial has not been claimed
                 }
 
                 const bool spawned = YieldContext::Spawn(allocator.get(), *context, strand.get(),
                     [self, this, mux, context, strand, multipath_enabled,
-                        primary_transmission](YieldContext& y) noexcept -> bool {
+                        primary_transmission, token](YieldContext& y) noexcept -> bool {
                         struct ConnectGuard final {
                             std::atomic_bool* active;
                             ~ConnectGuard() { if (active) active->store(false, std::memory_order_release); }
                         } connect_guard{multipath_enabled ? &multipath_child_connecting_ : nullptr};
-                        if (disposed_.load(std::memory_order_acquire) || !mux_coordinator_->IsCurrent(mux)) {
+                        if (disposed_.load(std::memory_order_acquire) || !mux_coordinator_->IsCurrent(mux) ||
+                            mux->is_disposed() || (token && !mux->is_established())) {
+                            if (token) {
+                                mux->pool_dial_failed(token);
+                                return false;
+                            }
                             mux->close_exec();
                             return false;
                         }
@@ -3418,22 +3469,18 @@ namespace ppp {
 
                         const uint32_t& tx_seq = mux->get_tx_seq();
                         const uint32_t& rx_ack = mux->get_rx_ack();
-                        if (!mux->is_established() && !mux->ftt(vmux::vmux_net::ftt_random_aid(1, INT32_MAX), vmux::vmux_net::ftt_random_aid(1, INT32_MAX))) {
+                        if (!token && !mux->is_established() && !mux->ftt(vmux::vmux_net::ftt_random_aid(1, INT32_MAX), vmux::vmux_net::ftt_random_aid(1, INT32_MAX))) {
                             mux->close_exec();
                             return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolMuxFailed);
                         }
 
-                        auto context = mux->get_context();
-                        auto strand = mux->get_strand();
-
-                        if (auto configuration = GetConfiguration(); configuration &&
-                            configuration->client.multipath.enabled) {
+                        if (multipath_enabled) {
                             int attached_count = 0;
-                            ITransmissionPtr main = primary_transmission;
+                            ITransmissionPtr main;
                             std::string primary_path_id;
-                            {
+                            if (!token) {
                                 std::lock_guard<std::mutex> lock(multipath_primary_mutex_);
-                                if (!main) main = multipath_primary_transmission_;
+                                main = primary_transmission ? primary_transmission : multipath_primary_transmission_;
                                 primary_path_id = multipath_primary_path_id_;
                             }
                             if (main && !multipath_primary_mux_attached_.load(std::memory_order_acquire)) {
@@ -3452,11 +3499,15 @@ namespace ppp {
                                     }
                                     const bool attached = mux->do_yield(y,
                                         [self, mux, connection, primary_path_id]() noexcept -> bool {
+                                            if (self->disposed_.load(std::memory_order_acquire) ||
+                                                !self->mux_coordinator_->IsCurrent(mux)) return false;
                                             vmux::vmux_net::vmux_linklayer_ptr linklayer;
                                             vmux::vmux_net::vmux_native_add_linklayer_after_success_before_callback handling;
                                             auto transport = ppp::app::mux::MakeMuxTransport(
                                                 connection, {}, primary_path_id);
-                                            return mux->add_linklayer(transport, linklayer, handling);
+                                            if (!mux->add_linklayer(transport, linklayer, handling)) return false;
+                                            linklayer->pool_primary_ = true;
+                                            return true;
                                         });
                                     if (attached) ++attached_count;
                                     else {
@@ -3468,10 +3519,13 @@ namespace ppp {
                                     }
                                 }
                             }
-                            const int child_limit = std::max(0, max_connections - attached_count);
+                            // JoinedCarriers includes the primary independently of its mux channel.
+                            const int child_limit = token ? 1 : std::max(0,
+                                static_cast<int>(mux->get_pool_target()) - static_cast<int>(multipath_paths_.JoinedCarriers()));
                             for (int i = 0; i < child_limit; ++i) {
                                 if (disposed_.load(std::memory_order_acquire) ||
                                     !mux_coordinator_->IsCurrent(mux) || mux->is_disposed()) break;
+                                if (!token && multipath_paths_.JoinedCarriers() >= mux->get_pool_target()) break;
                                 ppp::app::multipath::PathManager::Attempt path_slot;
                                 if (!multipath_paths_.BeginAttempt(Executors::GetTickCount(), path_slot)) break;
                                 multipath_paths_.MarkAuthenticating(path_slot);
@@ -3483,6 +3537,18 @@ namespace ppp {
                                 if (!transmission || !path_attempt) {
                                     multipath_paths_.Fail(path_slot, Executors::GetTickCount(),
                                         ppp::app::multipath::PathManager::Failure::Network);
+                                    continue;
+                                }
+                                // The server reads the PPP session ID and primary/child role
+                                // after authenticated Join commit, before it can accept MUXON.
+                                if (!transmission->HandshakeServer(y, GetId(), false) ||
+                                    !IsClientMultipathCarrierAuthenticated(transmission->GetAuthenticatedCarrierMethod(),
+                                        transmission->IsAuthenticatedCarrierBindingActive(),
+                                        transmission->HasAuthenticatedSessionExporter()) || !path_attempt->IsActive()) {
+                                    path_attempt->Complete();
+                                    multipath_paths_.Fail(path_slot, Executors::GetTickCount(),
+                                        ppp::app::multipath::PathManager::Failure::Authentication);
+                                    transmission->Dispose();
                                     continue;
                                 }
                                 std::shared_ptr<void> lease = path_attempt->TakeLifetime();
@@ -3520,12 +3586,16 @@ namespace ppp {
                                     path_id.assign(attached_path.id.data(), attached_path.id.size());
                                 }
                                 const bool attached = mux->do_yield(y,
-                                    [self, mux, connection, path_id]() noexcept -> bool {
+                                    [self, mux, connection, path_id, token]() noexcept -> bool {
+                                        if (self->disposed_.load(std::memory_order_acquire) ||
+                                            !self->mux_coordinator_->IsCurrent(mux) || mux->is_disposed()) return false;
+                                        if (!token && self->multipath_paths_.JoinedCarriers() > mux->get_pool_target()) return false;
                                         vmux::vmux_net::vmux_linklayer_ptr linklayer;
                                         vmux::vmux_net::vmux_native_add_linklayer_after_success_before_callback handling;
                                         auto transport = ppp::app::mux::MakeMuxTransport(
                                             connection, {}, path_id);
-                                        return mux->add_linklayer(transport, linklayer, handling);
+                                        return token ? mux->add_pool_trial_linklayer(transport, linklayer, handling, token)
+                                                     : mux->add_linklayer(transport, linklayer, handling);
                                     });
                                 if (!attached) {
                                     {
@@ -3537,6 +3607,10 @@ namespace ppp {
                                     continue;
                                 }
                                 ++bok_connections;
+                            }
+                            if (token) {
+                                if (!bok_connections) mux->pool_dial_failed(token);
+                                return bok_connections != 0;
                             }
                             if (mux->is_established() || attached_count > 0 || bok_connections > 0) return true;
                             mux->close_exec();
@@ -3578,6 +3652,8 @@ namespace ppp {
 
                             bool bok = mux->do_yield(y,
                                 [self, mux, connection]() noexcept -> bool {
+                                    if (self->disposed_.load(std::memory_order_acquire) ||
+                                        !self->mux_coordinator_->IsCurrent(mux)) return false;
                                     vmux::vmux_net::vmux_linklayer_ptr linklayer;
                                     vmux::vmux_net::vmux_native_add_linklayer_after_success_before_callback handling;
                                     auto transport = ppp::app::mux::MakeMuxTransport(connection);
@@ -3610,13 +3686,13 @@ namespace ppp {
                 return spawned;
             }
 
-            /** @brief Connects `count` extra carrier links at runtime (turbo grow, C-B3 caller). */
-            bool VEthernetExchanger::MuxGrowLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& session, int count) noexcept {
+            /** @brief Dials one extra legacy carrier without disturbing the established session. */
+            bool VEthernetExchanger::MuxGrowLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& session, uint64_t token) noexcept {
                 using ppp::app::protocol::VirtualEthernetTcpipConnection;
                 const std::shared_ptr<vmux::vmux_net> mux =
                     std::static_pointer_cast<vmux::vmux_net>(session);
 
-                if (NULLPTR == mux || count <= 0) {
+                if (!mux || !token) {
                     return false;
                 }
 
@@ -3625,57 +3701,36 @@ namespace ppp {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::RuntimeIoContextMissing);
                 }
 
-                auto self = shared_from_this();
+                auto self = std::static_pointer_cast<VEthernetExchanger>(shared_from_this());
                 auto strand = mux->get_strand();
 
                 return YieldContext::Spawn(allocator.get(), *context, strand.get(),
-                    [self, this, mux, count, context, strand](YieldContext& y) noexcept -> bool {
-                        // Grow is best-effort and non-fatal: a failed extra link must
-                        // never tear down the established base pool. Stop on the first
-                        // failure and leave the existing links untouched.
-                        const uint32_t& tx_seq = mux->get_tx_seq();
-                        const uint32_t& rx_ack = mux->get_rx_ack();
-
-                        for (int i = 0; i < count; i++) {
-                            if (disposed_.load(std::memory_order_acquire) || !mux_coordinator_->IsCurrent(mux) || mux->is_disposed()) {
-                                break;
-                            }
-
-                            ITransmissionPtr transmission = ConnectTransmission(context, strand, y);
-                            if (NULLPTR == transmission) {
-                                break;
-                            }
-
-                            std::shared_ptr<boost::asio::ip::tcp::socket> default_socket;
-                            std::shared_ptr<VirtualEthernetTcpipConnection> connection =
-                                make_shared_object<VirtualEthernetTcpipConnection>(
-                                    mux->AppConfiguration, context, strand, GetId(), default_socket);
-                            if (NULLPTR == connection) {
-                                break;
-                            }
-
-                            if (!connection->ConnectMux(y, transmission, mux->Vlan, rx_ack, tx_seq)) {
-                                break;
-                            }
-
-                            bool bok = mux->do_yield(y,
-                                [self, mux, connection]() noexcept -> bool {
-                                    vmux::vmux_net::vmux_linklayer_ptr linklayer;
-                                    vmux::vmux_net::vmux_native_add_linklayer_after_success_before_callback handling;
-                                    // The mux strand enforces the runtime hard ceiling.
-                                    // add_linklayer detects the established session and
-                                    // attaches this as a single runtime link (one
-                                    // forwarding coroutine; no batch re-spawn).
-                                    auto transport = ppp::app::mux::MakeMuxTransport(connection);
-                                    return mux->add_linklayer(transport, linklayer, handling);
-                                });
-
-                            if (!bok) {
-                                break;
+                    [self, mux, token, context, strand](YieldContext& y) noexcept -> bool {
+                        if (!self->disposed_.load(std::memory_order_acquire) && self->mux_coordinator_->IsCurrent(mux) &&
+                            !mux->is_disposed() && mux->is_established()) {
+                            ITransmissionPtr transmission = self->ConnectTransmission(context, strand, y);
+                            if (transmission) {
+                                std::shared_ptr<boost::asio::ip::tcp::socket> default_socket;
+                                auto connection = make_shared_object<VirtualEthernetTcpipConnection>(
+                                    mux->AppConfiguration, context, strand, self->GetId(), default_socket);
+                                if (connection && connection->ConnectMux(y, transmission, mux->Vlan,
+                                    mux->get_rx_ack(), mux->get_tx_seq())) {
+                                    const bool attached = mux->do_yield(y, [self, mux, connection, token]() noexcept -> bool {
+                                        if (self->disposed_.load(std::memory_order_acquire) ||
+                                            !self->mux_coordinator_->IsCurrent(mux) || mux->is_disposed()) return false;
+                                        vmux::vmux_net::vmux_linklayer_ptr linklayer;
+                                        vmux::vmux_net::vmux_native_add_linklayer_after_success_before_callback handling;
+                                        auto transport = ppp::app::mux::MakeMuxTransport(connection);
+                                        return mux->add_pool_trial_linklayer(transport, linklayer, handling, token);
+                                    });
+                                    if (attached) return true;
+                                }
+                                transmission->Dispose();
                             }
                         }
-
-                        return true;
+                        // Both start and resume run on the captured mux strand.
+                        mux->pool_dial_failed(token);
+                        return false;
                     });
             }
 
@@ -4167,6 +4222,12 @@ namespace ppp {
                                 const bool agreed_fec =
                                     (ordering_caps & vmux::vmux_net::ordering_caps_fec) != 0;
                                 mux->apply_agreed_ordering(agreed_flow_v2, agreed_reliability, agreed_fec);
+                                mux->apply_write_fin_cap(ordering_caps);
+                                if (configuration->client.multipath.enabled &&
+                                    configuration->client.multipath.policy == "adaptive" && configuration->mux.turbo &&
+                                    (ordering_caps & vmux::vmux_net::ordering_caps_lazy_pool) != 0) {
+                                    mux->enable_lazy_pool();
+                                }
                             }
 
                             successed = MuxConnectAllLinklayers(allocator, mux, transmission);

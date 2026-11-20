@@ -194,6 +194,23 @@ BOOST_AUTO_TEST_CASE(path_control_owner_tracks_legacy_lifecycle) {
     BOOST_TEST(static_cast<int>(snapshot.state) == static_cast<int>(mp::PathState::Probing));
 }
 
+BOOST_AUTO_TEST_CASE(planned_retirement_releases_slot_without_failure_backoff) {
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(MakeConfig(1, 1, 1, 1)));
+    mp::PathManager::Attempt first, next;
+    BOOST_REQUIRE(manager.BeginAttempt(100, first));
+    BOOST_REQUIRE(manager.MarkJoined(first));
+    BOOST_REQUIRE(manager.CarrierRetired(first));
+    BOOST_TEST(manager.JoinedCarriers() == 0u);
+    mp::PathManager::SlotSnapshot slot;
+    BOOST_REQUIRE(manager.GetSlot(0, slot));
+    BOOST_TEST(slot.failures == 0u);
+    BOOST_REQUIRE(manager.BeginAttempt(100, next));
+    BOOST_REQUIRE(manager.MarkJoined(next));
+    BOOST_TEST(!manager.CarrierRetired(first));
+    BOOST_TEST(manager.JoinedCarriers() == 1u);
+}
+
 BOOST_AUTO_TEST_CASE(concurrent_snapshots_and_late_attempts_survive_stop_restart) {
     mp::PathManager manager;
     const auto config = MakeConfig(4, 2, 8, 4);

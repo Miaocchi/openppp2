@@ -131,6 +131,64 @@ struct vmux_net_test_access {
         });
     }
 
+    // Only the carrier is stepped by the test. Both TCP read/write pumps,
+    // TX sequencing/completions, and both receiver ordering paths are real.
+    static void AttachStream(const std::shared_ptr<vmux_net>& mux,
+        const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) {
+        RunOnStrandVoid(*mux, [&]() {
+            mux->status_.tx_seq_ = 1;
+            auto skt = std::make_shared<vmux_skt>(mux, 1);
+            mux->skts_[1] = skt;
+            skt->tx_socket_ = socket;
+            skt->tx_buffer_ = mux->make_byte_array(vmux_net::max_buffers_size);
+            if (!skt->connect_ok(true)) throw std::runtime_error("start stream");
+        });
+    }
+
+    struct WireFrame {
+        std::shared_ptr<Byte> buffer;
+        int length;
+        bool fin;
+    };
+
+    static bool IsFinForm(const WireFrame& frame, bool directional) {
+        const auto* hdr = reinterpret_cast<const vmux_net::vmux_hdr*>(frame.buffer.get());
+        const int bytes = frame.length - static_cast<int>(sizeof(*hdr));
+        return frame.fin && (directional ? bytes == 1 && frame.buffer.get()[sizeof(*hdr)] == vmux_net::fin_write_only : bytes == 0);
+    }
+
+    static void CloseStream(vmux_net& mux) {
+        RunOnStrandVoid(mux, [&]() { mux.get_connection(1)->close(); });
+    }
+
+    static WireFrame TakeFrame(vmux_net& mux) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        do {
+            auto frame = RunOnStrand(mux, [&]() -> WireFrame {
+                vmux_net::tx_packet packet;
+                if (!mux.drr_pop_next(packet)) return {};
+                mux.tx_assign_seq(packet);
+                auto* hdr = reinterpret_cast<vmux_net::vmux_hdr*>(packet.buffer.get());
+                mux.finish_tx_completion(packet.completion, true);
+                return {packet.buffer, packet.length, hdr->cmd == vmux_net::cmd_fin};
+            });
+            if (frame.buffer) return frame;
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw std::runtime_error("timed out waiting for stream frame");
+    }
+
+    static void Deliver(vmux_net& mux, const std::vector<WireFrame>& frames) {
+        RunOnStrandVoid(mux, [&]() {
+            for (const auto& frame : frames) {
+                auto* h = reinterpret_cast<vmux_net::vmux_hdr*>(frame.buffer.get());
+                bool ok = mux.ordering_mode_ == vmux_net::ordering_flow_v2
+                    ? mux.packet_input_flow({}, h, frame.length, mux.now_tick(), frame.buffer)
+                    : mux.packet_input_unorder({}, h, frame.length, mux.now_tick(), frame.buffer);
+                if (!ok) throw std::runtime_error("receiver rejected stream frame");
+            }
+        });
+    }
+
     static std::size_t QueuedRx(const vmux_skt& skt) noexcept {
         return skt.rx_queue_.size();
     }
@@ -200,9 +258,10 @@ struct vmux_net_test_access {
         });
     }
 
-    static bool TrackSentCompat(vmux_net& mux, std::uint32_t seq, std::uint16_t link_id, std::uint64_t now) {
+    static bool TrackSentCompat(vmux_net& mux, std::uint32_t seq, std::uint16_t link_id,
+        std::uint64_t now, const vmux_net::vmux_linklayer_ptr& link = {}, int payload_bytes = 1) {
         return RunOnStrand(mux, [&]() {
-            const int frame_len = static_cast<int>(sizeof(vmux_net::vmux_hdr)) + 1;
+            const int frame_len = static_cast<int>(sizeof(vmux_net::vmux_hdr)) + payload_bytes;
             auto buf = mux.make_byte_array(frame_len);
             if (!buf) {
                 throw std::runtime_error("alloc tracked frame");
@@ -212,7 +271,7 @@ struct vmux_net_test_access {
             h->seq = htonl(seq);
             h->cmd = static_cast<std::uint8_t>(vmux_net::cmd_push);
             h->connection_id = htonl(1);
-            return mux.track_sent_frame(buf, frame_len, now, link_id);
+            return mux.track_sent_frame(buf, frame_len, now, link_id, link.get());
         });
     }
 
@@ -523,9 +582,14 @@ struct vmux_net_test_access {
         return RunOnStrand(mux, [&]() { return mux.rtx_.LinkBytes(id); });
     }
 
+    static bool StartRetire(vmux_net& mux, const vmux_net::vmux_linklayer_ptr& link) {
+        return RunOnStrand(mux, [&]() { return mux.retire_linklayer_runtime(link); });
+    }
+
     static void RetireAndReap(vmux_net& mux, const vmux_net::vmux_linklayer_ptr& link) {
         RunOnStrandVoid(mux, [&]() {
             link->drain_.BeginRetire();
+            link->retire_ack_deadline_ = 0;
             mux.reap_retired_linklayers();
         });
     }
@@ -629,7 +693,7 @@ struct vmux_net_test_access {
         RunOnStrandVoid(mux, [&]() { mux.rtx_cap_bytes_ = bytes; });
     }
 
-    static bool TrackSentFlow(vmux_net& mux, std::uint32_t cid, std::uint32_t dsn, int frame_len, std::uint64_t now) {
+    static bool TrackSentFlow(vmux_net& mux, std::uint32_t cid, std::uint32_t dsn, int frame_len, std::uint64_t now, std::uint16_t link_id = 0) {
         return RunOnStrand(mux, [&]() {
             auto buf = mux.make_byte_array(frame_len);
             if (!buf) {
@@ -640,7 +704,7 @@ struct vmux_net_test_access {
             h->seq = htonl(dsn);
             h->cmd = static_cast<std::uint8_t>(vmux_net::cmd_push);
             h->connection_id = htonl(cid);
-            return mux.track_sent_frame(buf, frame_len, now, 0);
+            return mux.track_sent_frame(buf, frame_len, now, link_id);
         });
     }
 
@@ -790,6 +854,110 @@ ScopedMux MakeMux() {
     cfg->mux.congestions = 0; // disable congestion accounting path in tests
     mux->AppConfiguration = cfg;
     return ScopedMux(std::move(mux));
+}
+
+// Compare real socket options, not literal getsockopt values: kernels may
+// round or clamp the request. Only the app-facing socket should be changed.
+void TestIngressReceiveBuffer(int configured_rwnd) {
+    using tcp = boost::asio::ip::tcp;
+    using ReceiveBuffer = boost::asio::socket_base::receive_buffer_size;
+    using Access = vmux::vmux_net_test_access;
+    auto mux = MakeMux();
+    Access::ConfigureFlowV2(*mux, 65536, 1000);
+    mux->AppConfiguration->tcp.rwnd = configured_rwnd;
+    auto& io = *mux->get_context();
+    tcp::acceptor listener(io, {boost::asio::ip::address_v4::loopback(), 0});
+    tcp::socket producer(io);
+    producer.connect(listener.local_endpoint());
+    auto ingress = std::make_shared<tcp::socket>(io);
+    listener.accept(*ingress);
+    // A positive rwnd is installed by the socket creator, before VMUX handoff.
+    // Seed a distinct value in the default case to catch a no-op on handoff.
+    ingress->set_option(ReceiveBuffer(configured_rwnd ? configured_rwnd : (16 << 10)));
+    producer.set_option(ReceiveBuffer(configured_rwnd ? configured_rwnd : (256 << 10)));
+    ReceiveBuffer expected, actual;
+    producer.get_option(expected);
+    Access::AttachStream(mux, ingress);
+    io.restart();
+    io.poll(); // starts the first bulk read on the socket executor
+    ingress->get_option(actual);
+    Require(actual.value() == expected.value(), "VMUX ingress uses bounded default or explicit tcp.rwnd");
+}
+
+// Upload receipt contract: R, payload, SHUT_WR, then K *after* exact EOF.
+// Deliver FIN ahead of the last two PUSHes so the replay loop delivers it
+// while one TCP write is in flight and another is still in the socket FIFO.
+void TestHalfCloseReceipt(bool flow_v2, bool new_client, bool new_server, bool abort = false) {
+    using tcp = boost::asio::ip::tcp;
+    using Access = vmux::vmux_net_test_access;
+    auto client = MakeMux(), server = MakeMux();
+    constexpr auto cap = vmux::vmux_net::ordering_caps_write_fin;
+    // An older server does not echo unknown offer bits. An older client
+    // never sets the bit in its offer. Neither may leave a half-open CID.
+    const std::uint8_t reply = new_server ? server->apply_write_fin_cap(new_client ? cap : 0) : 0;
+    const bool agreed = client->apply_write_fin_cap(reply) != 0;
+    Require(agreed == (new_client && new_server), "bilateral write-FIN negotiation");
+    auto attach = [&](ScopedMux& mux, tcp::socket& app) {
+        if (flow_v2) Access::ConfigureFlowV2(*mux, 65536, 1000);
+        else Access::ConfigureCompat(*mux, 1000);
+        tcp::acceptor listener(*mux->get_context(), {boost::asio::ip::address_v4::loopback(), 0});
+        app.connect(listener.local_endpoint());
+        auto relay = std::make_shared<tcp::socket>(*mux->get_context());
+        listener.accept(*relay);
+        Access::AttachStream(mux, relay);
+        app.non_blocking(true);
+    };
+    tcp::socket sender(*client->get_context()), receiver(*server->get_context());
+    attach(client, sender);
+    attach(server, receiver);
+    auto expect = [](ScopedMux& mux, tcp::socket& app, const std::string& expected, bool eof) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        std::string result;
+        do {
+            auto& io = *mux->get_context();
+            io.restart();
+            io.poll();
+            char bytes[256];
+            boost::system::error_code ec;
+            result.append(bytes, app.read_some(boost::asio::buffer(bytes), ec));
+            if (ec == boost::asio::error::eof) {
+                Require(eof && result == expected, "early EOF or missing application data");
+                return;
+            }
+            if (ec && ec != boost::asio::error::would_block && ec != boost::asio::error::try_again)
+                throw boost::system::system_error(ec);
+            if (!eof && result == expected) return;
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw std::runtime_error("timed out waiting for application bytes/EOF");
+    };
+
+    boost::asio::write(receiver, boost::asio::buffer("R", 1));
+    Access::Deliver(*client, {Access::TakeFrame(*server)});
+    expect(client, sender, "R", false);
+    boost::asio::write(sender, boost::asio::buffer("A", 1));
+    auto first = Access::TakeFrame(*client);
+    boost::asio::write(sender, boost::asio::buffer("B", 1));
+    if (!abort) sender.shutdown(tcp::socket::shutdown_send);
+    auto second = Access::TakeFrame(*client);
+    if (abort) Access::CloseStream(*client);
+    auto fin = Access::TakeFrame(*client);
+    const bool directional = agreed && !abort;
+    Require(!first.fin && !second.fin && Access::IsFinForm(fin, directional), "upload PUSH/PUSH/FIN form and order");
+    Access::Deliver(*server, {fin, first, second});
+    expect(server, receiver, "AB", true);
+    if (!directional) {
+        Require(!Access::SktCount(*client) && !Access::SktCount(*server), "empty FIN still means terminal close");
+        return;
+    }
+
+    boost::asio::write(receiver, boost::asio::buffer("K", 1));
+    receiver.shutdown(tcp::socket::shutdown_send);
+    auto receipt = Access::TakeFrame(*server);
+    auto reverse_fin = Access::TakeFrame(*server);
+    Require(!receipt.fin && reverse_fin.fin, "reverse PUSH before FIN");
+    Access::Deliver(*client, {reverse_fin, receipt});
+    expect(client, sender, "K", true);
+    Require(!Access::SktCount(*client) && !Access::SktCount(*server), "fully drained sockets retired");
 }
 
 void TestGapTimeoutResetsFlowWithoutHoleDelivery() {
@@ -1625,17 +1793,74 @@ void TestPausedCarrierExitReleasesPause() {
 class SchedulerTestTransport final : public ppp::app::mux::IMuxTransport {
 public:
     bool linked = true;
+    ITransmissionPtr transmission;
     bool IsLinked() noexcept override { return linked; }
     ContextPtr GetContext() noexcept override { return {}; }
     StrandPtr GetStrand() noexcept override { return {}; }
-    ITransmissionPtr GetTransmission() noexcept override { return {}; }
+    ITransmissionPtr GetTransmission() noexcept override { return transmission; }
     ppp::Int128 GetId() noexcept override { return 0; }
     void Update() noexcept override {}
     void Dispose() noexcept override { linked = false; }
 };
 
+// Capture exactly what the VMUX write pump gives the surviving carrier.
+class CaptureTransmission final : public ppp::transmissions::ITransmission {
+public:
+    using Byte = ppp::Byte;
+    using ITransmission::ITransmission;
+    std::vector<vmux::vmux_net_test_access::WireFrame> frames;
+    bool ShiftToScheduler() noexcept override { return false; }
+    boost::asio::ip::tcp::endpoint GetRemoteEndPoint() noexcept override { return {}; }
+    std::shared_ptr<Byte> DoReadBytes(YieldContext&, int) noexcept override { return {}; }
+    bool DoWriteBytes(std::shared_ptr<Byte>, int, int, const AsynchronousWriteBytesCallback&) noexcept override { return false; }
+    bool Write(const void* data, int size, const AsynchronousWriteCallback& cb) noexcept override {
+        auto copy = ppp::make_shared_alloc<Byte>(size);
+        std::memcpy(copy.get(), data, size);
+        frames.push_back({copy, size, false});
+        cb(true);
+        return true;
+    }
+};
+
+void TestChurnRepairPrecedesFreshDataOnReturnedCredit() {
+    using Access = vmux::vmux_net_test_access;
+    auto sender = MakeMux(), receiver = MakeMux();
+    Access::ConfigureFlowV2(*sender, 65536, 1000);
+    Access::ConfigureFlowV2(*receiver, 65536, 1000);
+    Access::EnableFlowReliability(*sender);
+    constexpr std::uint32_t cid = 7;
+    auto skt = Access::InstallQueueOnlySkt(receiver, cid);
+    auto lost = Access::MakeDeadLink(true), live = Access::MakeDeadLink(true);
+    lost->id_ = 3;
+    live->id_ = 4;
+    auto carrier = std::make_shared<SchedulerTestTransport>();
+    auto wire = std::make_shared<CaptureTransmission>(sender->get_context(), sender->get_strand(), sender->AppConfiguration);
+    carrier->transmission = wire;
+    live->connection = carrier;
+    Access::AttachLink(*sender, lost);
+    Access::AttachLink(*sender, live);
+    Access::WithdrawLink(*sender, live);
+    Require(Access::TrackSentFlow(*sender, cid, 1, 41, 1000, lost->id_), "first DSN was written on lost carrier");
+    Require(Access::InjectPush(*receiver, cid, 2, "B", 1, 1010), "buffer next DSN");
+    Access::OnLinkExit(*sender, lost, "test");
+    Access::EmplaceDataFrameSeq(*sender, cid, 3, 1);
+    Require(Access::PendingRtx(*sender) == 1 && Access::QueuedRx(*skt) == 0, "wait for repair, never skip the gap");
+
+    Access::OfferLink(*sender, live);
+    Require(Access::ProcessTxAll(*sender), "drain returned credit without waiting for another ACK or PTO");
+    DrainContext(sender);
+    Require(wire->frames.size() == 2 && wire->frames[0].length == 41, "original before fresh data on survivor");
+    Access::Deliver(*receiver, {wire->frames[0], wire->frames[0], wire->frames[1]});
+    Require(Access::QueuedRx(*skt) == 3 && Access::QueuedRxBytes(*skt) == 34 &&
+        Access::FlowBufferedBytes(*receiver, cid) == 0, "repair releases contiguous bytes exactly once");
+    Require(Access::LinkOutstanding(*sender, live->id_) == 51, "local completion is not peer receipt");
+    Access::InjectAck(*sender, cid, 1, 3, 1100);
+    Require(Access::RtxBytes(*sender) == 0, "peer ACK releases both frames");
+}
+
 void TestMultipathSchedulerUsesPeerOutstandingAndFailoverCredit() {
     auto mux = MakeMux();
+    vmux::vmux_net_test_access::EnableCompatReliability(*mux, false);
     auto fast = vmux::vmux_net_test_access::MakeDeadLink(true);
     auto slow = vmux::vmux_net_test_access::MakeDeadLink(true);
     auto fast_transport = std::make_shared<SchedulerTestTransport>();
@@ -1646,9 +1871,10 @@ void TestMultipathSchedulerUsesPeerOutstandingAndFailoverCredit() {
     for (const auto& link : {fast, slow}) {
         link->has_rtt_sample_ = true;
         link->srtt_ms_ = link == fast ? 5 : 80;
-        link->delivery_rate_bytes_per_second_ = 1000000;
-        link->delivery_updated_ms_ = ppp::threading::Executors::GetTickCount();
-        link->last_active_ = link->delivery_updated_ms_;
+        link->last_active_ = ppp::threading::Executors::GetTickCount();
+        link->path_estimator_ = ppp::app::multipath::MakePathEstimator(
+            ppp::app::multipath::PathEstimatorMode::Ewma);
+        link->path_estimator_->OnSample({1000, 1000, 0, 1000, false}, link->last_active_);
         vmux::vmux_net_test_access::AttachLink(*mux, link);
     }
     mux->set_multipath_scheduler_policy(true, false);
@@ -1677,6 +1903,16 @@ void TestGracefulShrinkOrphansProtocolOutstandingBeforeIdReuse() {
     retired->connection = std::make_shared<SchedulerTestTransport>();
     vmux::vmux_net_test_access::AttachLink(*mux, retired);
     Require(vmux::vmux_net_test_access::TrackOutstanding(*mux, 3, 100), "track retiring carrier");
+    Require(vmux::vmux_net_test_access::TrackSentCompat(*mux, 4, 3, 1000), "track second frame");
+    auto survivor = vmux::vmux_net_test_access::MakeDeadLink(true);
+    survivor->id_ = 5;
+    vmux::vmux_net_test_access::AttachLink(*mux, survivor);
+    Require(vmux::vmux_net_test_access::StartRetire(*mux, retired), "begin planned drain");
+    vmux::vmux_net_test_access::InjectCompatAck(*mux, 4, 4, 1100);
+    // The initial deadline has elapsed, but peer ACKs are still draining this carrier.
+    vmux::vmux_net_test_access::RetireAndReap(*mux, retired);
+    Require(vmux::vmux_net_test_access::LinkOutstanding(*mux, 3) == 100 && !retired->exited_,
+        "partial peer ACK renews drain grace, without orphaning the remaining frame");
     vmux::vmux_net_test_access::RetireAndReap(*mux, retired);
     Require(vmux::vmux_net_test_access::LinkOutstanding(*mux, 3) == 0,
         "retirement orphans peer-unacknowledged bytes before releasing ID");
@@ -1697,14 +1933,17 @@ void TestLateAckAfterShrinkDoesNotUpdateReplacementLinkMetrics() {
     retired->id_ = 3;
     retired->connection = std::make_shared<SchedulerTestTransport>();
     vmux::vmux_net_test_access::AttachLink(*mux, retired);
-    Require(vmux::vmux_net_test_access::TrackSentCompat(*mux, 42, 3, 17000),
+    retired->path_estimator_ = ppp::app::multipath::MakePathEstimator(
+        ppp::app::multipath::PathEstimatorMode::Kcc);
+    Require(vmux::vmux_net_test_access::TrackSentCompat(*mux, 42, 3, 17000, retired),
         "track a frame sent on the retiring carrier");
 
     vmux::vmux_net_test_access::RetireAndReap(*mux, retired);
     auto replacement = vmux::vmux_net_test_access::MakeDeadLink(true);
     replacement->id_ = 3;
     replacement->connection = std::make_shared<SchedulerTestTransport>();
-    replacement->delivery_sample_start_ms_ = 17000;
+    replacement->path_estimator_ = ppp::app::multipath::MakePathEstimator(
+        ppp::app::multipath::PathEstimatorMode::Kcc);
     vmux::vmux_net_test_access::AttachLink(*mux, replacement);
 
     vmux::vmux_net_test_access::InjectCompatAck(*mux, 42, 42, 17100);
@@ -1712,10 +1951,60 @@ void TestLateAckAfterShrinkDoesNotUpdateReplacementLinkMetrics() {
         "late ACK still releases the retained frame");
     Require(!replacement->has_rtt_sample_ && replacement->srtt_ms_ == 0,
         "late ACK does not create an RTT sample for the replacement carrier");
-    Require(replacement->delivery_sample_bytes_ == 0 &&
-        replacement->delivery_rate_bytes_per_second_ == 0 &&
-        replacement->delivery_updated_ms_ == 0,
+    Require(replacement->delivered_payload_bytes_ == 0 &&
+        !replacement->path_estimator_->GetTelemetry(17100).has_sample,
         "late ACK does not create a delivery-rate sample for the replacement carrier");
+}
+
+void TestVmuxAckFeedsSchedulerAndPathSnapshot() {
+    using namespace ppp::app::multipath;
+    auto mux = MakeMux();
+    vmux::vmux_net_test_access::EnableCompatReliability(*mux, false);
+    auto fast = vmux::vmux_net_test_access::MakeDeadLink(true);
+    auto slow = vmux::vmux_net_test_access::MakeDeadLink(true);
+    const auto now = ppp::threading::Executors::GetTickCount();
+    fast->id_ = 2;
+    slow->id_ = 1;
+    for (const auto& link : {fast, slow}) {
+        link->connection = std::make_shared<SchedulerTestTransport>();
+        link->last_active_ = now;
+        link->path_estimator_ = MakePathEstimator(PathEstimatorMode::Kcc);
+        vmux::vmux_net_test_access::AttachLink(*mux, link);
+    }
+    Require(vmux::vmux_net_test_access::TrackSentCompat(*mux, 1, 2, now - 100, fast, 1000), "track fast payload");
+    Require(vmux::vmux_net_test_access::TrackSentCompat(*mux, 2, 1, now - 100, slow, 100), "track slow payload");
+    vmux::vmux_net_test_access::InjectCompatAck(*mux, 1, 2, now);
+    Require(fast->path_estimator_->GetTelemetry(now).capacity_rate_bytes_per_second == 10000,
+        "ACK drives capacity using acknowledged payload and send timing");
+    Require(slow->path_estimator_->GetTelemetry(now).capacity_rate_bytes_per_second == 1000,
+        "each carrier has an independent delivery clock");
+    vmux::vmux_net_test_access::PublishPathRuntimeStats(*mux, "fast", {{fast, 100}, {slow, 100}}, 0, 0, 0);
+    const auto paths = mux->get_multipath_path_runtime_stats();
+    Require(paths.size() == 1 && paths.front().capacity_rate_bytes_per_second == 11000,
+        "path snapshot publishes the ACK-driven estimator capacity");
+    mux->set_multipath_scheduler_policy(true, false);
+    Require(vmux::vmux_net_test_access::PickLink(*mux, 4096) == fast,
+        "scheduler uses the same ACK-driven estimate");
+}
+
+void TestVmuxCompressedAckUsesSendInterval() {
+    using namespace ppp::app::multipath;
+    auto mux = MakeMux();
+    vmux::vmux_net_test_access::EnableCompatReliability(*mux, false);
+    auto link = vmux::vmux_net_test_access::MakeDeadLink(true);
+    link->id_ = 1;
+    link->path_estimator_ = MakePathEstimator(PathEstimatorMode::Bbr);
+    vmux::vmux_net_test_access::AttachLink(*mux, link);
+
+    Require(vmux::vmux_net_test_access::TrackSentCompat(*mux, 1, 1, 1000, link, 1000), "track first payload");
+    Require(vmux::vmux_net_test_access::TrackSentCompat(*mux, 2, 1, 1001, link, 1000), "track pending payload");
+    vmux::vmux_net_test_access::InjectCompatAck(*mux, 1, 1, 1070);
+    Require(vmux::vmux_net_test_access::TrackSentCompat(*mux, 3, 1, 1080, link, 1000), "track latest payload");
+    vmux::vmux_net_test_access::InjectCompatAck(*mux, 2, 3, 1081);
+
+    const auto telemetry = link->path_estimator_->GetTelemetry(1081);
+    Require(telemetry.current_rate_bytes_per_second == 25000,
+        "2000 delivered bytes use the 80 ms send interval when the ACK interval is 11 ms");
 }
 
 void TestPathRuntimeStatsAggregateCarriersByStablePathId() {
@@ -1742,10 +2031,22 @@ void TestPathRuntimeStatsAggregateCarriersByStablePathId() {
 
 int main() {
     try {
+        TestIngressReceiveBuffer(0);
+        TestIngressReceiveBuffer(32 << 10);
+        TestIngressReceiveBuffer(1 << 20);
+        for (bool flow_v2 : {false, true}) {
+            TestHalfCloseReceipt(flow_v2, true, true);
+            TestHalfCloseReceipt(flow_v2, true, false);
+            TestHalfCloseReceipt(flow_v2, false, true);
+            TestHalfCloseReceipt(flow_v2, true, true, /*abort*/ true);
+        }
         TestMultipathSchedulerUsesPeerOutstandingAndFailoverCredit();
         TestGracefulShrinkOrphansProtocolOutstandingBeforeIdReuse();
+        TestChurnRepairPrecedesFreshDataOnReturnedCredit();
         TestLateAckAfterShrinkDoesNotUpdateReplacementLinkMetrics();
         TestPathRuntimeStatsAggregateCarriersByStablePathId();
+        TestVmuxAckFeedsSchedulerAndPathSnapshot();
+        TestVmuxCompressedAckUsesSendInterval();
         TestTxFlowDrrPrefersOtherCidAfterQuantum();
         TestTxFlowDrrDrainsBytesWithinQuantumBeforeRotating();
         TestTxFlowDrrSendsFrameLargerThanQuantumImmediately();

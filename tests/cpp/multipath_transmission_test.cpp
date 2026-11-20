@@ -316,7 +316,7 @@ public:
             read_ok.load() && write_ok.load();
     }
 
-    bool LogicalSubchannelsRoundTrip() {
+    bool LogicalSubchannelsRoundTrip(bool handshake_subchannel = true) {
         client_mux_ = client_secure_->CreateMuxSubchannel();
         server_mux_ = server_secure_->CreateMuxSubchannel();
         auto client_mux = client_mux_;
@@ -326,26 +326,37 @@ public:
             server_secure_->CreateMuxSubchannel() != server_mux) return false;
 
         std::atomic<int> pending{2};
-        std::atomic<bool> client_handshake{false}, server_handshake{false};
-        const bool server_spawned = ppp::coroutines::YieldContext::Spawn(nullptr, *context_, server_strand_.get(),
-            [this, server_mux, &pending, &server_handshake](ppp::coroutines::YieldContext& y) noexcept {
-                bool mux = false;
-                server_handshake.store(server_mux->HandshakeClient(y, mux) == static_cast<ppp::Int128>(0x1234) && mux);
-                pending.fetch_sub(1);
-            });
-        const bool client_spawned = ppp::coroutines::YieldContext::Spawn(nullptr, *context_, client_strand_.get(),
-            [client_mux, &pending, &client_handshake](ppp::coroutines::YieldContext& y) noexcept {
-                client_handshake.store(client_mux->HandshakeServer(y, static_cast<ppp::Int128>(0x1234), true));
-                pending.fetch_sub(1);
-            });
-        if (!server_spawned || !client_spawned || !WaitFor([&]() { return pending.load() == 0; }) ||
-            !client_handshake.load() || !server_handshake.load()) return false;
+        if (handshake_subchannel) {
+            std::atomic<bool> client_handshake{false}, server_handshake{false};
+            const bool server_spawned = ppp::coroutines::YieldContext::Spawn(nullptr, *context_, server_strand_.get(),
+                [this, server_mux, &pending, &server_handshake](ppp::coroutines::YieldContext& y) noexcept {
+                    bool mux = false;
+                    server_handshake.store(server_mux->HandshakeClient(y, mux) == static_cast<ppp::Int128>(0x1234) && mux);
+                    pending.fetch_sub(1);
+                });
+            const bool client_spawned = ppp::coroutines::YieldContext::Spawn(nullptr, *context_, client_strand_.get(),
+                [client_mux, &pending, &client_handshake](ppp::coroutines::YieldContext& y) noexcept {
+                    client_handshake.store(client_mux->HandshakeServer(y, static_cast<ppp::Int128>(0x1234), true));
+                    pending.fetch_sub(1);
+                });
+            if (!server_spawned || !client_spawned || !WaitFor([&]() { return pending.load() == 0; }) ||
+                !client_handshake.load() || !server_handshake.load()) return false;
+        }
 
-        const std::array<std::string, 4> payloads = {
+        std::array<std::string, 4> payloads = {
             "main client to server", "main server to client",
             "mux client to server", "mux server to client"
         };
+        if (!handshake_subchannel) {
+            // Primary MUXON uses the logical stream directly. Bytewise Base94
+            // expands this legal payload past the decoded 64 KiB ceiling.
+            payloads[2].resize(60000);
+            for (std::size_t n = 0; n < payloads[2].size(); ++n)
+                payloads[2][n] = static_cast<char>(n & 255);
+            payloads[3] = payloads[2];
+        }
         std::array<std::atomic<bool>, 4> reads{}, writes{};
+        std::array<int, 4> lengths{}, errors{};
         std::atomic<bool> control_seen{false};
         if (!server_secure_->SetControlRecordHandler([&control_seen](std::uint8_t type,
             const std::shared_ptr<const std::vector<std::uint8_t>>& record) noexcept {
@@ -356,13 +367,15 @@ public:
         })) return false;
 
         pending.store(9);
-        const auto spawn_read = [this, &pending, &reads, &payloads](int index,
+        const auto spawn_read = [this, &pending, &reads, &lengths, &errors, &payloads](int index,
             const std::shared_ptr<ppp::transmissions::ITransmission>& stream,
             const ppp::transmissions::ITransmission::StrandPtr& strand) noexcept {
             return ppp::coroutines::YieldContext::Spawn(nullptr, *context_, strand.get(),
                 [&, index, stream](ppp::coroutines::YieldContext& y) noexcept {
                     int length = 0;
                     auto bytes = stream->Read(y, length);
+                    lengths[index] = length;
+                    errors[index] = static_cast<int>(ppp::diagnostics::GetLastErrorCode());
                     reads[index].store(bytes && length == static_cast<int>(payloads[index].size()) &&
                         std::memcmp(bytes.get(), payloads[index].data(), payloads[index].size()) == 0);
                     pending.fetch_sub(1);
@@ -394,7 +407,12 @@ public:
                         control, sizeof(control));
                     pending.fetch_sub(1);
                 });
-        const bool complete = spawned && WaitFor([&]() { return pending.load() == 0; });
+        const bool complete = spawned && WaitFor([&]() { return pending.load() == 0 && control_seen.load(); });
+        BOOST_CHECK_MESSAGE(complete, "pending=" << pending.load() << " control=" << control_seen.load());
+        for (int i = 0; i < 4; ++i) {
+            BOOST_CHECK_MESSAGE(reads[i].load(), "logical read " << i << " length=" << lengths[i] << " error=" << errors[i]);
+            BOOST_CHECK_MESSAGE(writes[i].load(), "logical write " << i);
+        }
         server_secure_->ClearControlRecordHandler();
         return complete && reads[0] && reads[1] && reads[2] && reads[3] &&
             writes[0] && writes[1] && writes[2] && writes[3] && control_seen;
@@ -657,6 +675,12 @@ BOOST_AUTO_TEST_CASE(main_and_mux_logical_streams_share_one_authenticated_carrie
     BOOST_TEST(pair.LogicalSubchannelsRoundTrip());
     BOOST_TEST(pair.MuxChildDisposeKeepsMainAlive());
     BOOST_TEST(pair.RoundTrip("main survives local mux child disposal"));
+}
+
+BOOST_AUTO_TEST_CASE(primary_mux_reads_large_encoded_frames_without_a_second_handshake) {
+    TcpMultipathPair pair;
+    BOOST_REQUIRE(pair.Run());
+    BOOST_TEST(pair.LogicalSubchannelsRoundTrip(false));
 }
 
 BOOST_AUTO_TEST_CASE(dispose_wakes_main_and_mux_readers) {

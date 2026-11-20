@@ -223,6 +223,20 @@ namespace ppp::app::multipath {
         return true;
     }
 
+    bool PathManager::CarrierRetired(const Attempt& attempt) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!IsCurrentLocked(attempt)) return false;
+        Slot& slot = slots_[attempt.slot];
+        if (!slot.control || !slot.lifetime) return false;
+        PathTransition transition;
+        if (!ApplyControlEvent(slot, PathEvent::Disable, 0, slot.control->Snapshot().generation,
+                transition) || !transition.accepted) return false;
+        slot.lifetime.reset();
+        --joined_carriers_;
+        ProjectSlot(slot);
+        return true;
+    }
+
     bool PathManager::IsCurrent(const Attempt& attempt) const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         return IsCurrentLocked(attempt);

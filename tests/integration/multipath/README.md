@@ -21,9 +21,18 @@ proxy-only client using `tools/compat` fixtures. The client has a policy-v2
 business IP, where an echo service listens. This sends the application stream
 through the VMUX tunnel path and does not use FRP port mappings or virtual-peer
 NAT. It repeats each path as a best-single baseline and then runs
-multipath trials in the same isolated topology. Each trial checks an
-exact-byte, half-closed stream and measures fresh-connection latency probes.
-Before and after application traffic it samples per-path TBF byte counters;
+multipath trials in the same isolated topology. On a fresh multipath session,
+the first authenticated record must be CreateRequest, not a recovery query.
+The inner session handshake uses the committed multipath binding, without a
+second plain transport-auth INFO exchange. Both peers must report VMUX link
+open before the application transfer. The business target is a server address
+without a client route, not one of the routable carrier endpoints. Each trial
+times the exact-byte echo and fresh-connection latency probes. Outside that
+measurement window, `payload.py` checks upload and download on separate SOCKS
+streams. Each sender half-closes, then must read a receipt issued only after
+its receiver verified the payload and EOF. Both endpoint processes must succeed;
+a receiver digest or a negotiated VMUX link alone does not pass this check.
+Before and after the timed application traffic it samples per-path TBF byte counters;
 each configured path must carry a minimum byte delta during successful
 multipath transfers. Established sockets are only startup readiness, not path
 participation evidence. Results include per-trial hashes and byte deltas,
@@ -41,6 +50,85 @@ and records its SHA-256 before starting processes. It creates one random active
 transport-auth PSK there, uses it in mode-0600 configs, and deletes it after
 stopping the candidate processes. `--binary` defaults to the repository's
 `bin/ppp`.
+
+### Persistent application fault matrix
+
+Use `production-fault-matrix` for outages against one persistent SOCKS TCP
+stream. The command starts one real candidate client/server session for each
+case, waits until the business stream is established, samples path counters,
+injects the outage inside the private namespaces, restores the qdisc, and
+waits for the same application stream to finish. The workload never reconnects;
+continuity must come from the multipath session.
+
+The default cases are:
+
+| Case | Fault | Required result |
+|---|---|---|
+| `single-path-outage` | Blackhole the last configured path | Existing stream completes; surviving paths carry post-fault bytes |
+| `primary-path-outage` | Blackhole path 1 | Existing stream completes on the remaining paths |
+| `all-short-outage` | Blackhole every path for less than `resume_grace_ms` | Existing stream completes after restoration |
+| `all-grace-expired` | Blackhole every path longer than `resume_grace_ms` | Existing stream fails; a false successful stream is a failure |
+
+Run it with a fresh result directory:
+
+```sh
+sudo python3 tests/integration/multipath/run.py production-fault-matrix \
+  --binary ./bin/ppp --profile asymmetric-5-80-200 \
+  --grace-ms 30000 --outage-ms 1500 \
+  --output ./multipath-results/fault-matrix
+```
+
+Each successful recovery case requires exact sent/received byte counts,
+matching SHA-256, clean half-close/EOF, and no workload reconnect. The JSON
+records counter snapshots and deltas for every configured path:
+`pre_fault_bytes`, `during_fault_bytes`, `post_fault_bytes`, and
+`total_bytes`. A path must meet `--minimum-path-bytes`; for single-path
+outages every surviving path must also carry the minimum post-fault delta.
+These are carrier-side TBF byte deltas proving path participation, not
+application goodput. Established sockets, candidate logs, or a successful
+new connection alone do not satisfy the gate.
+
+`fault-plan` and `impair` remain low-level qdisc controls. Running either one
+without the persistent candidate session and its result JSON is not a fault
+recovery acceptance result. On failure, retain the per-case JSON, workload
+result, candidate logs, and topology until review.
+
+### Six concurrent streams per direction
+
+Use `six-flow-integrity` to check the timed workload without running the echo,
+best-single, or latency benchmarks. Run **both** profiles for independent and
+shared bottleneck acceptance. Give each invocation a new output directory:
+
+```sh
+for profile in independent-12ms-24mbit shared-12ms-24mbit; do
+  sudo python3 tests/integration/multipath/run.py six-flow-integrity \
+    --binary ./bin/ppp --profile "$profile" \
+    --output "./multipath-results/six-flow/$profile" || exit 1
+done
+```
+
+Each profile uses two adaptive TCP carriers at 12 ms RTT and 24 Mbit/s per
+path; the shared profile also caps the common link at 24 Mbit/s. After VMUX
+readiness the flow/turbo session idles for 6 s, runs six concurrent uploads
+for 25 s, idles for 12 s, runs six concurrent downloads for 12 s, and idles
+for 6 s. The two directions use separate sets of SOCKS connections. All six
+connections must reach the server-local business target before data starts.
+Senders stream 32 KiB frames until their time window ends, not to a fixed
+byte target. Connections have a 4 s connect timeout, no retry, 128 KiB send
+buffers, and a 20 s I/O timeout. A phase has one outer send-window-plus-20 s
+deadline for the entire group, not six successive waits.
+
+For each flow the receiver returns its exact byte count and SHA-256. The
+sender must verify both and send confirmation; the receiver must read it.
+Both endpoint processes must exit successfully, and their six numbered
+records must match for **each** direction. Missing, empty, truncated, or
+mismatched streams fail the run; one completed stream cannot stand in for
+another. `six-flow-integrity.json` is written only on success. On failure
+inspect the per-role `upload-*.ndjson` / `download-*.ndjson` records and
+candidate and endpoint logs. This gate measures integrity under concurrent
+load, not throughput scaling, path participation, or fault recovery.
+
+### External production scenarios
 
 The external scenario command can instead start the actual candidate client/server
 or their test wrappers, exchange application traffic through the supplied

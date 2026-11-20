@@ -1400,6 +1400,7 @@ namespace ppp {
                     (need_flow_v2 && local_supports_flow_v2 && peer_supports_flow_v2)
                         ? vmux::vmux_net::ordering_flow_v2
                         : vmux::vmux_net::ordering_compat;
+                Byte agreed_caps = 0;
 
                 for (;;) {
                     if (disposed_) {
@@ -1463,7 +1464,22 @@ namespace ppp {
                         mux->apply_negotiation(local_supports_flow_v2, peer_supports_flow_v2,
                             local_reliability, peer_supports_reliability, local_fec, peer_supports_fec,
                             peer_requests_flow_v2);
+                        agreed_caps |= mux->apply_write_fin_cap(ordering_caps);
                         agreed = mux->get_ordering_mode();
+                        if (agreed == vmux::vmux_net::ordering_flow_v2) {
+                            agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_flow_v2;
+                        }
+                        if (mux->reliability_agreed()) {
+                            agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_reliability;
+                            if (multipath_carrier && agreed == vmux::vmux_net::ordering_flow_v2 &&
+                                (ordering_caps & vmux::vmux_net::ordering_caps_lazy_pool) != 0) {
+                                mux->enable_lazy_pool();
+                                agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_lazy_pool;
+                            }
+                        }
+                        if (mux->fec_agreed()) {
+                            agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_fec;
+                        }
 
                         if (mux->update()) {
                             err = false;
@@ -1487,13 +1503,6 @@ namespace ppp {
                 }
                 else {
                     // Echo the agreed capabilities back so the client learns the result.
-                    Byte agreed_caps = (agreed == vmux::vmux_net::ordering_flow_v2) ? (Byte)vmux::vmux_net::ordering_caps_flow_v2 : (Byte)0;
-                    if (mux_coordinator_->Session() != NULLPTR && mux_coordinator_->Session()->reliability_agreed()) {
-                        agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_reliability;
-                    }
-                    if (mux_coordinator_->Session() != NULLPTR && mux_coordinator_->Session()->fec_agreed()) {
-                        agreed_caps |= (Byte)vmux::vmux_net::ordering_caps_fec;
-                    }
                     DoMux(transmission, vlan, max_connections, acceleration, agreed_caps, y);
                 }
 

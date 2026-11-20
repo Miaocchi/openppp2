@@ -32,6 +32,32 @@
 
 namespace ppp::app::mux {
 
+// State of the carrier delivery clock when a new payload frame is sent.
+struct MuxDeliveryStamp final {
+    std::uint64_t prior_delivered = 0;
+    std::uint64_t delivered_tick = 0;
+    std::uint64_t first_sent_tick = 0;
+    bool is_app_limited = false;
+    bool valid = false;
+};
+
+struct MuxAckDelivery final {
+    std::uint64_t bytes = 0;
+    std::uint64_t sent_tick = 0;
+    MuxDeliveryStamp stamp;
+
+    void Merge(const MuxAckDelivery& delivery) noexcept {
+        bytes += delivery.bytes;
+        if (!stamp.valid || delivery.stamp.prior_delivered > stamp.prior_delivered ||
+            (delivery.stamp.prior_delivered == stamp.prior_delivered &&
+                (delivery.sent_tick > sent_tick || (delivery.sent_tick == sent_tick &&
+                    stamp.is_app_limited && !delivery.stamp.is_app_limited)))) {
+            sent_tick = delivery.sent_tick;
+            stamp = delivery.stamp;
+        }
+    }
+};
+
 /** One retained outbound frame awaiting peer acknowledgment. */
 struct MuxRtxEntry final {
     std::shared_ptr<std::uint8_t> buffer;         ///< Full vmux frame (header + payload).
@@ -42,6 +68,8 @@ struct MuxRtxEntry final {
     std::uint32_t                 fast_rtx_mark = 0;   ///< largest-acked value at the last fast retransmit (dedup).
     std::uint16_t                 orig_link_id = 0;  ///< Carrier link the frame was FIRST sent on (for per-link RTT attribution).
     std::uint16_t                 last_link_id = 0;  ///< Carrier link the frame was most recently (re)sent on (for per-link PTO).
+    MuxDeliveryStamp delivery_stamp;
+    std::size_t payload_bytes = 0;
     std::list<std::uint64_t>::iterator order;     ///< Position in the insertion-ordered list (stable iterator).
 };
 
@@ -67,7 +95,9 @@ public:
         int length,
         std::uint64_t now,
         std::size_t byte_cap,
-        std::uint16_t link_id = 0) {
+        std::uint16_t link_id = 0,
+        const MuxDeliveryStamp& delivery_stamp = {},
+        std::size_t payload_bytes = 0) {
         const std::uint64_t key = Key(connection_id, sequence);
         if (entries_.find(key) != entries_.end()) {
             return true; // Already tracked (defensive; sends are unique per key).
@@ -84,6 +114,8 @@ public:
         entry.last_sent_tick = now;
         entry.orig_link_id = link_id;
         entry.last_link_id = link_id;
+        entry.delivery_stamp = delivery_stamp;
+        entry.payload_bytes = payload_bytes;
         entry.order = (--order_.end());
         entries_.emplace(key, std::move(entry));
         bytes_ += static_cast<std::size_t>(length);
@@ -99,6 +131,8 @@ public:
      * acked above the hole", the QUIC dup-ACK rule) AND whose first_sent_tick
      * is at least @p fast_time_threshold ago (QUIC time threshold ≈ SRTT/4).
      * A candidate is reported at most once per advancing @p largest.
+     * If supplied, @p cumulative_payload accumulates newly acknowledged payload
+     * bytes across calls, saturating at UINT64_MAX regardless of carrier attribution.
      * @return RTT sample in ms from the first newly-acked entry that was never
      *         retransmitted (Karn's rule); 0 when no usable sample exists.
      */
@@ -111,7 +145,9 @@ public:
         std::uint64_t fast_time_threshold,
         std::vector<std::uint64_t>& fast_candidates,
         std::uint16_t* out_link_id = nullptr,
-        std::unordered_map<std::uint16_t, std::size_t>* out_link_acked_bytes = nullptr) {
+        std::unordered_map<std::uint16_t, std::size_t>* out_link_acked_bytes = nullptr,
+        std::unordered_map<std::uint16_t, MuxAckDelivery>* out_deliveries = nullptr,
+        std::uint64_t* cumulative_payload = nullptr) {
         std::uint64_t rtt_sample = 0;
         if (nullptr != out_link_id) {
             *out_link_id = 0;
@@ -119,6 +155,8 @@ public:
         if (nullptr != out_link_acked_bytes) {
             out_link_acked_bytes->clear();
         }
+
+        if (out_deliveries) out_deliveries->clear();
 
         // Collect keys first: erasing while iterating the map is fine, but the
         // candidate scan below walks the whole map anyway, so do one pass.
@@ -153,6 +191,18 @@ public:
             if (nullptr != out_link_acked_bytes && it->second.last_link_id != 0) {
                 (*out_link_acked_bytes)[it->second.last_link_id] +=
                     static_cast<std::size_t>(it->second.length);
+            }
+            // VMUX ACKs can confirm an earlier copy after a retransmission.
+            // Only an unambiguous first send can anchor a delivery sample.
+            const auto& entry = it->second;
+            if (out_deliveries && entry.last_link_id != 0 && entry.attempts == 0 &&
+                entry.delivery_stamp.valid && entry.payload_bytes != 0) {
+                (*out_deliveries)[entry.last_link_id].Merge(
+                    {entry.payload_bytes, entry.first_sent_tick, entry.delivery_stamp});
+            }
+            if (cumulative_payload) {
+                *cumulative_payload = entry.payload_bytes > UINT64_MAX - *cumulative_payload
+                    ? UINT64_MAX : *cumulative_payload + entry.payload_bytes;
             }
             ReleaseLinkBytes(it->second.last_link_id, static_cast<std::size_t>(it->second.length));
             bytes_ -= static_cast<std::size_t>(it->second.length);

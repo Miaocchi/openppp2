@@ -92,10 +92,12 @@ namespace vmux {
         /** @brief Complete connect transition after SYN-ACK processing. */
         bool                                            connect_ok(bool successed) noexcept;
 
-        /** @brief Push peer payload into local output queue. */
-        bool                                            input(Byte* payload, int payload_size) noexcept;
-        /** @brief Zero-copy variant: queue inbound peer payload backed by owner shared_ptr. */
+        /** @brief Queue peer payload for writing; alias its frame buffer when owned. */
         bool                                            input(const std::shared_ptr<Byte>& owner, Byte* payload, int payload_size) noexcept;
+        bool                                            receive_fin(bool write_only) noexcept;
+        bool                                            send_write_fin() noexcept;
+        bool                                            drain_peer_fin() noexcept;
+        void                                            maybe_finish_stream() noexcept;
         /** @brief Send local payload to peer; synchronously rejects calls outside the mux strand. */
         bool                                            send_to_peer(const void* packet, int packet_length, const SendAsynchronousCallback& ac) noexcept;
         
@@ -140,7 +142,7 @@ namespace vmux {
             struct {
                 bool                                    disposed_        : 1; ///< Set when the socket has been finalized.
                 bool                                    connected_       : 1; ///< Set when the remote peer acknowledged the connection.
-                bool                                    fin_             : 1; ///< Set when a FIN command was received from peer.
+                bool                                    fin_             : 1; ///< Suppress terminal FIN on finalize (peer closed, handshake failed, or graceful end).
                 bool                                    tx_acceleration_ : 1; ///< Transmit acceleration mode is active.
                 bool                                    rx_acceleration_ : 1; ///< Receive acceleration mode is active.
                 bool                                    connecton_       : 3; ///< Reserved / connection-phase sub-state.
@@ -148,6 +150,14 @@ namespace vmux {
             std::atomic<int>                            sending_    = false; ///< Non-zero while an async send to peer is in flight.
             std::atomic<int>                            forwarding_ = false; ///< Non-zero while local-socket forwarding is in progress.
         }                                               status_;
+
+        // Strand-owned. FIN is ordered with PUSH in each direction independently.
+        bool                                            ingress_started_ = false; ///< First local TCP read installs the VMUX receive-buffer default once.
+        bool                                            local_eof_ = false;
+        bool                                            local_fin_sent_ = false;
+        bool                                            peer_eof_ = false;
+        bool                                            shutdown_started_ = false;
+        bool                                            shutdown_done_ = false;
 
 #if defined(_WIN32)
         std::shared_ptr<ppp::net::QoSS>                 qoss_;              ///< Windows QoS socket service handle.
@@ -160,7 +170,7 @@ namespace vmux {
 
         packet_queue                                    rx_queue_;          ///< Inbound payload queue pending delivery to local socket.
         int64_t                                         rx_queue_bytes_ = 0; ///< Bytes currently held in rx_queue_ (hard-cap accounting).
-        int64_t                                         rx_congestions_;    ///< Signed congestion counter; negative means backpressure applied.
+        int64_t                                         rx_congestions_ = 0; ///< In-flight and queued local socket write bytes for XON/XOFF.
         uint32_t                                        fc_tx_version_ = 0;      ///< Version stamped on the next XON/XOFF this socket sends.
         uint32_t                                        fc_rx_version_ = 0;      ///< Version of the last peer XON/XOFF applied.
         bool                                            fc_rx_versioned_ = false; ///< True once a versioned peer XON/XOFF was applied.

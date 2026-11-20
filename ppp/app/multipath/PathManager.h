@@ -51,6 +51,7 @@ namespace ppp::app::multipath {
         bool MarkJoined(const Attempt& attempt, const std::shared_ptr<void>& lifetime = nullptr) noexcept;
         bool Fail(const Attempt& attempt, std::uint64_t now_ms, Failure failure) noexcept;
         bool CarrierLost(const Attempt& attempt, std::uint64_t now_ms) noexcept;
+        bool CarrierRetired(const Attempt& attempt) noexcept;
         bool IsCurrent(const Attempt& attempt) const noexcept;
         bool IsRunning() const noexcept;
         std::size_t ActiveAttempts() const noexcept;

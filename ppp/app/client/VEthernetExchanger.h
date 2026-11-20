@@ -102,6 +102,13 @@ namespace ppp {
                      kind == ppp::transmissions::AuthenticatedCarrierKind::WebSocket);
             }
 
+            inline bool IsClientMultipathCarrierAuthenticated(
+                ppp::transmissions::AuthenticatedCarrierMethod method,
+                bool binding_active, bool has_exporter) noexcept {
+                return method == ppp::transmissions::AuthenticatedCarrierMethod::MultipathNoiseV1 &&
+                    binding_active && has_exporter;
+            }
+
             inline bool IsClientSessionRecoveryCarrierEligible(
                 ppp::transmissions::AuthenticatedCarrierKind kind,
                 ppp::transmissions::AuthenticatedCarrierMethod method,
@@ -960,15 +967,16 @@ namespace ppp {
                  *
                  * @param allocator  Buffer allocator for sub-link transmission buffers.
                  * @param mux        VMUX instance to populate with sub-links.
-                 * @return true if all sub-links were connected; false if any failed.
+                 * @param primary_transmission  Optional multipath primary to attach during normal linking.
+                 * @param token      Nonzero to dial one multipath trial child instead of replenishing.
+                 * @return true if the dial coroutine was spawned; false if busy or unavailable.
                  */
-                bool                                                                    MuxConnectAllLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux, const ITransmissionPtr& primary_transmission = nullptr) noexcept;
+                bool                                                                    MuxConnectAllLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux, const ITransmissionPtr& primary_transmission = nullptr, uint64_t token = 0) noexcept;
                 /**
-                 * @brief Connect N extra carrier links at runtime and attach each via
-                 *        add_linklayer's established-session path (turbo dynamic pool grow).
+                 * @brief Dials one extra legacy carrier for the specified pool trial token.
                  * @return true when the grow coroutine was spawned.
                  */
-                bool                                                                    MuxGrowLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux, int count) noexcept;
+                bool                                                                    MuxGrowLinklayers(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, const std::shared_ptr<void>& mux, uint64_t token) noexcept;
 
             private:
                 /**
@@ -1218,6 +1226,7 @@ namespace ppp {
                 std::mutex                                                              multipath_session_mutex_;
                 ppp::app::multipath::SessionTicket                                      multipath_ticket_;
                 std::string                                                             multipath_create_request_id_;
+                bool                                                                    multipath_query_pending_create_ = false;
                 std::atomic_bool                                                        multipath_resume_primary_{false};
                 std::mutex                                                              multipath_control_mutex_;
                 ppp::app::multipath::ReliableControlState                              multipath_control_state_;
