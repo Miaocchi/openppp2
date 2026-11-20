@@ -1,6 +1,7 @@
 #include <ppp/app/mux/MuxFecCodec.h>
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -25,8 +26,6 @@ std::uint8_t InputByte(const std::uint8_t* data, std::size_t size,
 
 void ParseMutations(const std::uint8_t* data, std::size_t size,
     const std::uint8_t* source, std::size_t source_size) {
-    // Parse the untrusted input itself first. The length cap also bounds the
-    // parity copy made by ParseMuxFecFrame.
     ppp::app::mux::MuxFecFrameView view;
     ParseMuxFecFrame(data, static_cast<int>(size), kParseMaxCount, view);
 
@@ -43,8 +42,6 @@ void ParseMutations(const std::uint8_t* data, std::size_t size,
             InputByte(data, size, i * 5 + 1, static_cast<std::uint8_t>(0xA5u + i)) | 1u);
     }
 
-    // Every parse below receives a pointer into the bounded copy and a length
-    // no larger than that copy, including deliberately truncated payloads.
     ParseMuxFecFrame(mutated.data(), static_cast<int>(mutated.size()), kParseMaxCount, view);
     const std::size_t truncations = mutated.size() < 5 ? mutated.size() : 5;
     for (std::size_t i = 0; i < truncations; ++i) {
@@ -58,9 +55,6 @@ void ParseMutations(const std::uint8_t* data, std::size_t size,
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
     const std::size_t bounded_size = size < kMaxInput ? size : kMaxInput;
-
-    // Exercise the parser directly on arbitrary bytes before constructing a
-    // valid bounded group. ParseMuxFecFrame is required to tolerate truncation.
     ParseMutations(data, bounded_size, nullptr, 0);
 
     ppp::app::mux::MuxFecEncoder encoder;
@@ -92,16 +86,15 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     const std::size_t payload_capacity = encoder.MaxPayloadSize();
     std::vector<std::uint8_t> wire(payload_capacity);
     const int wire_length = encoder.Build(wire.data(), static_cast<int>(wire.size()));
-    if (wire_length <= 0) {
-        return 0;
-    }
+    assert(wire_length > 0 && static_cast<std::size_t>(wire_length) == wire.size());
 
     ppp::app::mux::MuxFecFrameView view;
-    if (!ParseMuxFecFrame(wire.data(), wire_length, kParseMaxCount, view)) {
-        return 0;
+    const bool parsed = ParseMuxFecFrame(wire.data(), wire_length, kParseMaxCount, view);
+    assert(parsed && view.entries.size() == frame_count);
+    for (std::size_t i = 0; i < frame_count; ++i) {
+        assert(view.entries[i].connection_id == encoder.entries()[i].connection_id);
+        assert(view.entries[i].sequence == encoder.entries()[i].sequence);
     }
-
-    // Exercise mutation and truncation against a real, well-formed frame too.
     ParseMutations(data, bounded_size, wire.data(), static_cast<std::size_t>(wire_length));
 
     std::array<const std::uint8_t*, kMaxFrames> present{};

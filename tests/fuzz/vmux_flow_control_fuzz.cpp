@@ -62,8 +62,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
 
-    // Keep every resource bound independent of the input length.
-    const std::size_t byte_cap = 1 + (data[0] % kMaxByteCap);
+    const std::size_t byte_cap = 1 + (static_cast<std::size_t>(data[0]) * 17 % kMaxByteCap);
     const std::size_t entry_cap = 1 + (data[1] % kMaxEntryCap);
     InputCursor input(data + 2, size - 2);
 
@@ -81,12 +80,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         const std::uint8_t opcode = input.ReadByte();
         const std::uint32_t sequence = input.ReadUint32();
         const std::uint32_t reference = input.ReadUint32();
-        const std::size_t payload_bytes = input.ReadByte() % (byte_cap + 2);
+        const std::size_t payload_bytes = (input.ReadByte() * 17u) % (byte_cap + 2);
         const unsigned action = opcode & 3u;
 
-        // This is the receive-queue guard used before attempting an insert.
-        // Its inputs are bounded, so the helper itself cannot overflow while
-        // the fuzzer explores large sequence and reference values.
         const int soft_congestion = static_cast<int>((reference >> 8) & 0x7ffu);
         const bool queue_overflow = MuxRxQueueOverflows(
             reorder.size(), static_cast<std::int64_t>(tracked_bytes),
@@ -98,8 +94,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
                 sequence, reference, packet_id, payload_bytes,
                 byte_cap, entry_cap);
             if (inserted) {
-                assert(!ContainsPendingSequence(
-                    pending, packet_sequences, sequence));
+                assert(!ContainsPendingSequence(pending, packet_sequences, sequence));
                 pending[operation] = true;
                 packet_sequences[operation] = sequence;
                 packet_bytes[operation] = payload_bytes;
@@ -109,16 +104,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         } else if (action == 1) {
             std::uint32_t packet_id = 0;
             if (reorder.Take(sequence, packet_id)) {
-                // Every value inserted above has a unique operation id.  A
-                // successful Take must deliver one still-pending packet and
-                // must never deliver that packet id a second time.
                 assert(packet_id < kMaxOperations);
                 assert(pending[packet_id]);
                 assert(!delivered[packet_id]);
                 assert(packet_sequences[packet_id] == sequence);
-                assert(ContainsPendingSequence(
-                    pending, packet_sequences, sequence));
-
                 pending[packet_id] = false;
                 delivered[packet_id] = true;
                 assert(pending_count != 0);
@@ -129,8 +118,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         } else if (action == 2) {
             std::uint32_t selected = 0;
             if (reorder.FirstSequence(reference, selected)) {
-                assert(ContainsPendingSequence(
-                    pending, packet_sequences, selected));
+                assert(ContainsPendingSequence(pending, packet_sequences, selected));
             }
         } else {
             const bool already_tracked = (opcode & 4u) != 0;
@@ -140,12 +128,20 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             const auto admission = AdmitFlowContext(
                 sequence, already_tracked, socket_exists,
                 current_contexts, context_cap);
-            assert(static_cast<unsigned>(admission) <=
-                   static_cast<unsigned>(
-                       ppp::app::mux::FlowContextAdmission::RejectZero));
+            using Decision = ppp::app::mux::FlowContextAdmission;
+            if (sequence == 0) {
+                assert(admission == Decision::RejectZero);
+            } else if (already_tracked) {
+                assert(admission == Decision::AllowExisting);
+            } else if (!socket_exists) {
+                assert(admission == Decision::RejectUnknown);
+            } else if (context_cap != 0 && current_contexts >= context_cap) {
+                assert(admission == Decision::RejectCap);
+            } else {
+                assert(admission == Decision::AllowCreate);
+            }
         }
 
-        // These invariants hold after both accepted and rejected operations.
         assert(reorder.size() == pending_count);
         assert(reorder.size() <= entry_cap);
         assert(reorder.buffered_bytes() == tracked_bytes);

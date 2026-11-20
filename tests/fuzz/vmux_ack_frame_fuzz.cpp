@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #include <ppp/app/mux/MuxAckTracker.h>
 
@@ -23,17 +24,16 @@ public:
         return data_[offset_++];
     }
 
-    std::uint16_t U16() noexcept {
-        return static_cast<std::uint16_t>(Byte()) |
-               static_cast<std::uint16_t>(static_cast<std::uint16_t>(Byte()) << 8);
+    std::uint32_t ReadLittleEndian(unsigned bytes) noexcept {
+        std::uint32_t value = 0;
+        for (unsigned i = 0; i < bytes; ++i) {
+            value |= static_cast<std::uint32_t>(Byte()) << (8 * i);
+        }
+        return value;
     }
 
-    std::uint32_t U32() noexcept {
-        return static_cast<std::uint32_t>(Byte()) |
-               (static_cast<std::uint32_t>(Byte()) << 8) |
-               (static_cast<std::uint32_t>(Byte()) << 16) |
-               (static_cast<std::uint32_t>(Byte()) << 24);
-    }
+    std::uint16_t U16() noexcept { return static_cast<std::uint16_t>(ReadLittleEndian(2)); }
+    std::uint32_t U32() noexcept { return ReadLittleEndian(4); }
 
 private:
     const std::uint8_t* data_ = nullptr;
@@ -105,7 +105,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     std::vector<std::uint8_t> wire(wire_capacity);
     const std::size_t encoded = ppp::app::mux::EncodeMuxAckFrame(
         blocks.data(), blocks.size(), wire.data(), wire.size(), kMaxRanges);
-    assert(encoded != 0);
+    assert(encoded != 0 && encoded <= wire.size());
 
     std::vector<ppp::app::mux::MuxAckBlock> roundtrip;
     assert(ppp::app::mux::DecodeMuxAckFrame(

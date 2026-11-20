@@ -5,9 +5,9 @@ option(ENABLE_COVERAGE "Enable LLVM coverage instrumentation" OFF)
 option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(ENABLE_TSAN "Enable ThreadSanitizer (cannot be combined with ENABLE_SANITIZERS)" OFF)
 option(ENABLE_XTCP_TESTS "Build the pinned XTCP dependency contract tests" OFF)
-option(ENABLE_VMUX_FUZZ "Build VMUX libFuzzer targets" OFF)
 option(ENABLE_XTCP_P64_PROBES "Build P64 allocation-pressure regression tests" OFF)
 option(ENABLE_POLICY_BENCHMARKS "Build offline policy benchmarks outside CTest" OFF)
+option(ENABLE_VMUX_FUZZ "Build VMUX libFuzzer targets" OFF)
 
 # Match the runtime library to the provisioned Boost/OpenSSL triplet.  The
 # static triplet ships MT libraries; a mismatch fails at link time (LNK2038).
@@ -1708,24 +1708,17 @@ if(ENABLE_POLICY_BENCHMARKS)
         endif()
     endforeach()
 endif()
+
 if(ENABLE_VMUX_FUZZ)
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        message(FATAL_ERROR "ENABLE_VMUX_FUZZ requires Clang for libFuzzer")
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR MSVC)
+        message(FATAL_ERROR "ENABLE_VMUX_FUZZ requires clang++ and libFuzzer")
     endif()
-    function(openppp2_add_vmux_fuzzer target source)
-        add_executable(${target} ${source})
-        target_compile_features(${target} PRIVATE cxx_std_17)
-        target_compile_definitions(${target} PRIVATE FUNCTION)
-        target_include_directories(${target} PRIVATE ${OPENPPP2_TEST_INCLUDES})
-        target_compile_options(${target} PRIVATE
-            -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
-        target_link_options(${target} PRIVATE
-            -fsanitize=fuzzer,address,undefined)
-    endfunction()
-    openppp2_add_vmux_fuzzer(vmux_ack_frame_fuzz
-        "${CMAKE_CURRENT_LIST_DIR}/../fuzz/vmux_ack_frame_fuzz.cpp")
-    openppp2_add_vmux_fuzzer(vmux_fec_frame_fuzz
-        "${CMAKE_CURRENT_LIST_DIR}/../fuzz/vmux_fec_frame_fuzz.cpp")
-    openppp2_add_vmux_fuzzer(vmux_flow_control_fuzz
-        "${CMAKE_CURRENT_LIST_DIR}/../fuzz/vmux_flow_control_fuzz.cpp")
+    foreach(_fuzzer vmux_ack_frame_fuzz vmux_fec_frame_fuzz vmux_flow_control_fuzz)
+        add_executable(${_fuzzer} "${CMAKE_CURRENT_LIST_DIR}/../fuzz/${_fuzzer}.cpp")
+        target_compile_features(${_fuzzer} PRIVATE cxx_std_17)
+        target_include_directories(${_fuzzer} PRIVATE "${OPENPPP2_ROOT}")
+        target_compile_options(${_fuzzer} PRIVATE -UNDEBUG -fsanitize=fuzzer,address,undefined
+            -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+        target_link_options(${_fuzzer} PRIVATE -fsanitize=fuzzer,address,undefined)
+    endforeach()
 endif()
