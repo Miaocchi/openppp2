@@ -9,6 +9,11 @@
 **Last verified:** 2026-07-22
 
 This directory is the Android client that is shipped with this OpenPPP2 tree. It is a Flutter application backed by an Android `VpnService` and the bundled native `libopenppp2.so`; it is not a standalone SDK or a replacement for the native command-line runtime.
+>
+> **Audience:** Flutter/Android developers, JNI/native maintainers, and evaluators testing the client on a disposable device.
+> **Supported status:** Experimental platform surface; the checked-in native artifact is arm64-v8a only, and no universal device or release support is claimed.
+> **Build/runtime boundary:** This directory builds the Flutter app, Android `VpnService`, and JNI bridge around `libopenppp2.so`; a successful build does not establish a working VPN session or replace the native command-line runtime.
+> **Canonical next page:** [Technical guide](debug.md) for the current lifecycle, JNI boundary, and troubleshooting signals.
 
 ## What is here
 

@@ -9,6 +9,11 @@
 **Last verified:** 2026-07-22
 
 本目录包含随本 OpenPPP2 树提供的 Android 客户端。它是由 Flutter UI、Android `VpnService` 和打包的原生 `libopenppp2.so` 组成的应用，不是独立 SDK，也不替代原生命令行运行时。
+>
+> **适用对象：**在可替换设备上测试客户端的 Flutter/Android 开发者、JNI/原生维护者和评估人员。
+> **支持状态：**实验性平台客户端；仓库内置原生库目前仅有 arm64-v8a，不承诺通用设备或发布支持。
+> **构建/运行边界：**本目录构建 Flutter 应用、Android `VpnService` 和围绕 `libopenppp2.so` 的 JNI 桥；构建成功不等于 VPN 会话可用，也不替代原生命令行运行时。
+> **后续规范页面：**当前生命周期、JNI 边界和排查信号见[技术指南](debug_CN.md)。
 
 ## 目录内容
 
