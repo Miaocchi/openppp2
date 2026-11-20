@@ -104,3 +104,33 @@ sudo python3 tests/integration/multipath/run.py production-fault-matrix \
 - [验收清单](../testing/MULTIPATH_ACCEPTANCE_CN.md)
 - [发布与回退](../operations/MULTIPATH_ROLLOUT_CN.md)
 - [隔离网络测试设施](../../tests/integration/multipath/README.md)
+
+## 本轮追加交接（2026-11-21）
+
+### 带宽聚合复测
+
+- 当前工作区保留四个未提交改动：`ppp/app/mux/vmux_net.cpp` 以及 `tests/integration/multipath/README.md`、`run.py`、`six_flow.py`。本轮没有提交或推送，也没有清理这些已有改动。
+- VMUX 发送采样已加入在途容量判断。`track_sent_frame` 只有在全局数据队列为空、本地链路队列低于水位且承载未达到估算 BDP 时，才将样本标记为应用受限。该改动通过既有 VMUX 单元和集成测试，但仍属于实验性修复。
+- 候选二进制 SHA-256 为 `26c810d4e0d023e1c01e60134c050641144d37a5eb8551fd3781a6c4d3b9ad63`。证据目录为 `build/private/multipath-flight-fix.KrEs8B/`，目录已忽略，不应提交其中的凭据、配置或日志。
+- 在 `independent-90-125-180`、固定三承载、六条业务流的真实隔离拓扑中，KCC 上传应用有效吞吐约 246.26 Mbps，下载约 299.30 Mbps。EWMA 上传约 297.80 Mbps，下载约 299.30 Mbps。两种模式均完成 6 条上传和 6 条下载，逐流字节数、SHA-256 和回执一致。
+- KCC 上传和下载各 5 个六秒窗口均没有同时达到 path1/path2/path3 各自 95% 限速。EWMA 下载 5 个窗口中 2 个达到阈值，上传 0 个达到。该结果不能证明 600 Mbps 持续聚合，仍未通过发布门槛。
+- 作为对照，同一拓扑的直接 `iperf3 -P 4` 三路径测试曾观察到接近 100/200/300 Mbps 的各路径窗口，说明 TBF 拓扑本身可以承载目标速率。VMUX 调度、容量估计、应用发送窗口或重排约束仍需继续定位。
+
+### 已排除的实验方向
+
+- 曾尝试将每链路发送高水位从 256 KiB 提高到 8 MiB，以覆盖 300 Mbps、180 ms 路径的带宽时延积。完整内核构建因 `websocket.cpp` 编译进程被系统杀掉，未形成候选压测结果。该改动已撤回，当前工作区没有保留高水位参数变化。
+- 不能把高水位改动作为修复依据，也不能把单个达到阈值的窗口描述为持续三路径聚合。
+
+### 接手顺序
+
+1. 先以低并发构建或复用已有可执行候选，验证 `PathScheduler::SelectAdaptive` 的实际选路比例、每链路 send credit、`queued_bytes_`、`wire_inflight_bytes`、容量估计和应用受限标记是否同步。重点检查 256 KiB 本地水位、32 MiB可靠重传窗口与 180 ms BDP 之间的关系，避免直接放大常量。
+2. 在同一六流脚本中增加按 path ID 的唯一 VMUX payload 统计，并与 TBF 窗口、重传字节和应用回执对齐。只看 TBF 或链数变化不足以证明业务聚合。
+3. 先跑短时单向上传和下载，再跑 36 秒双向六流。每次保留候选 SHA、逐窗口 `upload-wire.ndjson`/`download-wire.ndjson`、`client-stats.ndjson`、两端日志和 `six-flow-integrity.json`。
+4. 若修复涉及高水位、调度估计或重传窗口，必须补充对应单元测试，覆盖高 RTT、未知容量、应用受限样本和多链路信用耗尽场景。
+5. 在三路径持续窗口达到验收标准前，不提交、不推送，不宣布带宽聚合完成。故障恢复矩阵、部署兼容、TSan race 和公网/CDN 仍沿用前文未完成状态。
+
+### 当前工作区状态
+
+- 未提交文件：`ppp/app/mux/vmux_net.cpp`、`tests/integration/multipath/README.md`、`tests/integration/multipath/run.py`、`tests/integration/multipath/six_flow.py`。
+- 本轮未修改 PR 隔离 worktree，也未处理 PR #152/#153 冲突。
+- 真实网络测试仅使用已授权的隔离 netns。没有改动宿主路由、DNS、系统代理或活动服务。
