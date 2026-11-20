@@ -5,6 +5,7 @@ option(ENABLE_COVERAGE "Enable LLVM coverage instrumentation" OFF)
 option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(ENABLE_TSAN "Enable ThreadSanitizer (cannot be combined with ENABLE_SANITIZERS)" OFF)
 option(ENABLE_XTCP_TESTS "Build the pinned XTCP dependency contract tests" OFF)
+option(ENABLE_VMUX_FUZZ "Build VMUX libFuzzer targets" OFF)
 option(ENABLE_XTCP_P64_PROBES "Build P64 allocation-pressure regression tests" OFF)
 option(ENABLE_POLICY_BENCHMARKS "Build offline policy benchmarks outside CTest" OFF)
 
@@ -1680,4 +1681,25 @@ if(ENABLE_POLICY_BENCHMARKS)
             target_link_options(${_policy_benchmark} PRIVATE -fsanitize=thread)
         endif()
     endforeach()
+endif()
+if(ENABLE_VMUX_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "ENABLE_VMUX_FUZZ requires Clang for libFuzzer")
+    endif()
+    function(openppp2_add_vmux_fuzzer target source)
+        add_executable(${target} ${source})
+        target_compile_features(${target} PRIVATE cxx_std_17)
+        target_compile_definitions(${target} PRIVATE FUNCTION)
+        target_include_directories(${target} PRIVATE ${OPENPPP2_TEST_INCLUDES})
+        target_compile_options(${target} PRIVATE
+            -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+    endfunction()
+    openppp2_add_vmux_fuzzer(vmux_ack_frame_fuzz
+        "${CMAKE_CURRENT_LIST_DIR}/../fuzz/vmux_ack_frame_fuzz.cpp")
+    openppp2_add_vmux_fuzzer(vmux_fec_frame_fuzz
+        "${CMAKE_CURRENT_LIST_DIR}/../fuzz/vmux_fec_frame_fuzz.cpp")
+    openppp2_add_vmux_fuzzer(vmux_flow_control_fuzz
+        "${CMAKE_CURRENT_LIST_DIR}/../fuzz/vmux_flow_control_fuzz.cpp")
 endif()
