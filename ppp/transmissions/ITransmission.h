@@ -126,6 +126,8 @@ namespace ppp {
             typedef std::shared_ptr<boost::asio::strand<boost::asio::io_context::executor_type>>    StrandPtr;
             /** @brief Asynchronous write completion callback type. */
             typedef ppp::function<void(bool)>                                                       AsynchronousWriteBytesCallback, AsynchronousWriteCallback;
+            /** @brief Maximum number of independent payloads encrypted in one CFB batch. */
+            static constexpr int                                                                     kWriteBatchSize = 4;
 
         public:
             /**
@@ -264,6 +266,18 @@ namespace ppp {
              * @return true if write succeeds; otherwise false.
              */
             virtual bool                                                                            Write(YieldContext& y, const void* packet, int packet_length) noexcept;
+            /**
+             * @brief Encrypts and writes several independent payloads in one coroutine turn.
+             * @details Independent AES-CFB packet chains are scheduled together so the AES
+             *          round latency of one packet overlaps with the others. The method
+             *          preserves the existing per-packet frame format and ordering.
+             * @param y Coroutine yield context.
+             * @param packets Payload pointers.
+             * @param lengths Payload lengths.
+             * @param count Number of payloads.
+             * @return true when every frame was accepted and written; otherwise false.
+             */
+            virtual bool                                                                            WriteMany(YieldContext& y, const void* const* packets, const int* lengths, int count) noexcept;
             /**
              * @brief Encrypts and writes payload bytes using callback flow.
              * @param packet Payload pointer.

@@ -210,6 +210,11 @@ namespace ppp {
                  * @note Requires connected and non-disposed state.
                  */
                 virtual bool                                                    SendBufferToPeer(YieldContext& y, const void* packet, int packet_length) noexcept;
+                /**
+                 * @brief Sends independent queued upload chunks, batching CFB encryption.
+                 */
+                bool                                                            SendBuffersToPeer(YieldContext& y,
+                    const std::shared_ptr<XtcpUploadChunk>* chunks, int count) noexcept;
                 bool                                                            StartDirectBridge(const DirectReadHandler& on_data, const DirectCloseHandler& on_close, const DirectWritableHandler& on_writable) noexcept;
                 DirectIoResult                                                  SendDirectToPeer(const Byte* data, std::uint32_t length,
                     XtcpUploadBudget::Reservation&& credit) noexcept;

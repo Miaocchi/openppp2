@@ -248,6 +248,26 @@ public:
         return true;
     }
 
+    // True when a short bounded wait may let enough adjacent segments form a batch.
+    bool ShouldWaitForBatch(std::size_t target_items) noexcept {
+        Pull();
+        return target_items > 1 && queue_.size() > 1 &&
+            queue_.size() < target_items;
+    }
+
+    // Pops up to max_items independent chunks without copying. Each chunk keeps
+    // its own budget reservation so the writer can release them individually.
+    bool DrainBatch(std::size_t max_items, ChunkPtr* chunks, std::size_t& count) noexcept {
+        count = 0;
+        Pull();
+        if (NULLPTR == chunks || max_items == 0) return false;
+        while (!queue_.empty() && count < max_items) {
+            chunks[count++] = std::move(queue_.front());
+            queue_.pop_front();
+        }
+        return count != 0;
+    }
+
     // Accounts a finished write. Returns true exactly once when a successful
     // write drops a backpressured queue to the low watermark.
     bool Release(std::size_t bytes, std::size_t items, bool sent,
