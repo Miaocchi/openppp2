@@ -10,6 +10,7 @@
 
 | I want to… | Read |
 |---|---|
+| Read the current release notes and upgrade caveats | [Release notes](RELEASE_NOTES.md) |
 | Run the server or client as a service (systemd, Guardian, Windows, launchd); upgrade and roll back | [Deployment](DEPLOYMENT.md) |
 | Find out why it does not connect or carry traffic | [Operations and troubleshooting](OPERATIONS.md) |
 | Protect keys, management surfaces, and subscriptions | [Security](SECURITY.md) |

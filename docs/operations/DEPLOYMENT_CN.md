@@ -162,7 +162,7 @@ sudo launchctl load -w /Library/LaunchDaemons/org.openppp2.client.plist
 3. 停止服务 → 替换可执行文件 → 启动；查看启动输出中有无 `[security] WARN` 或配置相关警告。
 4. 有问题时换回旧的可执行文件和配置并重启。
 
-升级前请阅读发行说明。v2.1.7 起新增 `client.policy` 与 `ppp policy`；`client.policy` 与旧版分流字段不能混用（见 [策略 v2](../guides/POLICY_CLI_CN.md)）。
+升级前请阅读[当前发行说明](RELEASE_NOTES_CN.md)。v2.1.7 起新增 `client.policy` 与 `ppp policy`；`client.policy` 与旧版分流字段不能混用（见 [策略 v2](../guides/POLICY_CLI_CN.md)）。
 
 ## 9. 常见拓扑
 

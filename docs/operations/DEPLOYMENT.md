@@ -162,7 +162,7 @@ Within one mode, **the same configuration file** can run only once (a second ins
 3. Stop the service → replace the executable → start; check startup output for `[security] WARN` or configuration warnings.
 4. If something is wrong, restore the old executable and configuration and restart.
 
-Read the release notes before upgrading. v2.1.7 added `client.policy` and `ppp policy`; `client.policy` cannot be mixed with legacy split fields (see [Policy v2](../guides/POLICY_CLI.md)).
+Read the [current release notes](RELEASE_NOTES.md) before upgrading. v2.1.7 added `client.policy` and `ppp policy`; `client.policy` cannot be mixed with legacy split fields (see [Policy v2](../guides/POLICY_CLI.md)).
 
 ## 9. Common topologies
 

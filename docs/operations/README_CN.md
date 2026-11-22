@@ -10,6 +10,7 @@
 
 | 我想…… | 去看 |
 |---|---|
+| 阅读当前发行说明和升级注意事项 | [发行说明](RELEASE_NOTES_CN.md) |
 | 把服务端或客户端作为服务运行（systemd、Guardian、Windows、launchd），升级与回滚 | [部署](DEPLOYMENT_CN.md) |
 | 查明为什么连不上或不走流量 | [运维与排障](OPERATIONS_CN.md) |
 | 保护密钥、管理面和订阅 | [安全](SECURITY_CN.md) |

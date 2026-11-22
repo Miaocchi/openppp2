@@ -57,6 +57,7 @@ SECTIONS = (
     )),
     ("Deployment", "部署", (
         "operations/index.md",
+        "operations/RELEASE_NOTES.md",
         "operations/DEPLOYMENT.md",
         "operations/SECURITY.md",
         "guides/MANAGEMENT_BACKEND.md",
