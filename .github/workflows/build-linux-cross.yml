@@ -112,7 +112,8 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="$LINK_FLAGS" \
             -DCMAKE_CXX_FLAGS="$CPP_FLAGS" \
             -DTHIRD_PARTY_LIBRARY_DIR="$TP" \
-            -DENABLE_IO_URING=OFF \
+            -DENABLE_XTCP=ON \
+            -DENABLE_IO_URING=OFF
           make -j$(nproc)
 
       - name: Package artifact
