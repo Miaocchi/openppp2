@@ -16,6 +16,21 @@
 #include <ppp/IDisposable.h>
 
 namespace aesni {
+#if defined(__AES_NI_IMPL__)
+    void aes128_cfb_encrypt_batch(uint8_t* const* ciphertexts,
+        const uint8_t* const* plaintexts,
+        const int* lengths,
+        int count,
+        const uint8_t* iv,
+        const __m128i* round_key) noexcept;
+    void aes256_cfb_encrypt_batch(uint8_t* const* ciphertexts,
+        const uint8_t* const* plaintexts,
+        const int* lengths,
+        int count,
+        const uint8_t* iv,
+        const __m128i* round_key) noexcept;
+#endif
+
     bool aes_cpu_is_support() noexcept {
 #if defined(__AES_NI_IMPL__)
 #if defined(__GNUC__) || defined(__clang__)
@@ -261,6 +276,75 @@ namespace aesni {
             }
         }
 
+        return true;
+#endif
+    }
+
+    bool AES::EncryptManyTo(ppp::Byte* const* outputs,
+        const int* output_capacities,
+        ppp::Byte* const* data,
+        const int* datalens,
+        int count,
+        int* outlens) noexcept {
+#if !defined(__AES_NI_IMPL__)
+        (void)outputs;
+        (void)output_capacities;
+        (void)data;
+        (void)datalens;
+        (void)count;
+        (void)outlens;
+        return false;
+#else
+        if (count <= 0 || NULLPTR == outputs || NULLPTR == output_capacities ||
+            NULLPTR == data || NULLPTR == datalens || NULLPTR == outlens) {
+            return false;
+        }
+
+        for (int i = 0; i < count; i++) {
+            const int len = datalens[i];
+            if (NULLPTR == outputs[i] || NULLPTR == data[i] ||
+                len < 1 || output_capacities[i] < len) {
+                for (int j = 0; j < count; j++) {
+                    outlens[j] = -1;
+                }
+                return false;
+            }
+        }
+
+        if (!IsAttached()) {
+            for (int i = 0; i < count; i++) {
+                outlens[i] = -1;
+            }
+            return false;
+        }
+
+        if (__bgctr_) {
+            for (int i = 0; i < count; i++) {
+                if (!ProcessTo(outputs[i], data[i], datalens[i], true)) {
+                    for (int j = 0; j < count; j++) {
+                        outlens[j] = -1;
+                    }
+                    return false;
+                }
+                outlens[i] = datalens[i];
+            }
+            return true;
+        }
+
+        uint8_t* const* output_bytes = reinterpret_cast<uint8_t* const*>(outputs);
+        const uint8_t* const* input_bytes = reinterpret_cast<const uint8_t* const*>(data);
+        const uint8_t* iv = reinterpret_cast<const uint8_t*>(iv_);
+        const __m128i* round_key = reinterpret_cast<const __m128i*>(__round_key_.get());
+        if (__i128m_) {
+            aes128_cfb_encrypt_batch(output_bytes, input_bytes, datalens, count, iv, round_key);
+        }
+        else {
+            aes256_cfb_encrypt_batch(output_bytes, input_bytes, datalens, count, iv, round_key);
+        }
+
+        for (int i = 0; i < count; i++) {
+            outlens[i] = datalens[i];
+        }
         return true;
 #endif
     }

@@ -14,9 +14,7 @@
 #include <ppp/threading/Executors.h>
 #include <ppp/coroutines/asio/asio.h>
 #include <ppp/coroutines/YieldContext.h>
-#if defined(__linux__)
-#include <netinet/tcp.h>
-#endif
+#include <limits>
 
 using ppp::net::Socket;
 using ppp::net::IPEndPoint;
@@ -91,16 +89,63 @@ namespace ppp {
 #endif
         }
 
-        void ITcpipTransmission::LimitMultipathUnsentBytes() noexcept {
-#if defined(TCP_NOTSENT_LOWAT) && defined(__linux__)
-            // A local write is not delivery. On fast ingress a single carrier
-            // can otherwise hide many megabytes behind a pending retirement or ACK.
-            if (socket_ && socket_->is_open()) {
-                const std::uint32_t bytes = PPP_MUX_LINK_BYTE_HIGH_WATER;
-                (void)::setsockopt(socket_->native_handle(), IPPROTO_TCP, TCP_NOTSENT_LOWAT,
-                    &bytes, sizeof(bytes));
+        bool ITcpipTransmission::SupportsPacingRate() const noexcept {
+            return Socket::SupportsMaxPacingRate();
+        }
+
+        TransmissionPacingResult ITcpipTransmission::ApplyPacingRate(
+            std::uint64_t bytes_per_second) noexcept {
+#if defined(__linux__) && defined(SO_MAX_PACING_RATE)
+            std::shared_ptr<boost::asio::ip::tcp::socket> socket = std::atomic_load(&socket_);
+            if (!socket || !socket->is_open()) {
+                // A carrier that is already going away: never fail the session.
+                return TransmissionPacingResult::Failed;
             }
+
+            const int fd = socket->native_handle();
+            if (bytes_per_second == 0) {
+                if (pacing_rate_.load(std::memory_order_acquire) == 0) {
+                    return TransmissionPacingResult::Cleared;
+                }
+                if (!Socket::SetMaxPacingRate(fd, 0)) {
+                    ppp::telemetry::Count("tcp.pacing.clear_failed", 1);
+                    return TransmissionPacingResult::Failed;
+                }
+                pacing_rate_.store(0, std::memory_order_release);
+                ppp::telemetry::Count("tcp.pacing.clear", 1);
+                return TransmissionPacingResult::Cleared;
+            }
+
+            const std::uint64_t maximum = std::numeric_limits<std::uint32_t>::max();
+            const std::uint32_t rate = bytes_per_second > maximum
+                ? static_cast<std::uint32_t>(maximum)
+                : static_cast<std::uint32_t>(bytes_per_second);
+            if (pacing_rate_.load(std::memory_order_acquire) == rate) {
+                // The same cap is already in force: never repeat the syscall.
+                return TransmissionPacingResult::Unchanged;
+            }
+            if (!Socket::SetMaxPacingRate(fd, rate)) {
+                // Advisory: keep the carrier and its connection untouched.
+                ppp::telemetry::Count("tcp.pacing.apply_failed", 1);
+                return TransmissionPacingResult::Failed;
+            }
+            pacing_rate_.store(rate, std::memory_order_release);
+            ppp::telemetry::Count("tcp.pacing.apply", 1);
+            return TransmissionPacingResult::Applied;
+#else
+            (void)bytes_per_second;
+            return TransmissionPacingResult::Unsupported;
 #endif
+        }
+
+        void ITcpipTransmission::LimitMultipathUnsentBytes() noexcept {
+            // Deliberately a no-op. Programming TCP_NOTSENT_LOWAT to the VMUX
+            // high-water mark coupled socket writability to the kernel's
+            // unsent queue: EPOLLOUT stayed suppressed until unsent bytes
+            // drained below 256 KiB, delaying write completion for ~1s and
+            // starving VMUX credit. Leaving the option at its default lets
+            // EPOLLOUT follow ordinary sndbuf/ACK behaviour. The method and its
+            // call site are retained for ABI/source compatibility.
         }
 
         ITcpipTransmission::~ITcpipTransmission() noexcept {

@@ -53,6 +53,22 @@ namespace ppp {
              * @return True on success.
              */
             virtual bool                                        EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept;
+            /**
+             * @brief Encrypts several independent packets, batching AES-CFB when available.
+             * @param outputs Destination buffers.
+             * @param output_capacities Destination capacities.
+             * @param data Input plaintext buffers.
+             * @param datalens Input lengths.
+             * @param count Number of packets.
+             * @param outlens Receives one output length per packet.
+             * @return True on success; otherwise false with all outlens set to -1.
+             */
+            bool                                                EncryptManyTo(Byte* const* outputs,
+                                                                              const int* output_capacities,
+                                                                              Byte* const* data,
+                                                                              const int* datalens,
+                                                                              int count,
+                                                                              int* outlens) noexcept;
 
             /** @brief Extra destination bytes EncryptTo() may need beyond the input length (one cipher block). */
             static constexpr int                                EncryptToSlack = 32;

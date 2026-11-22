@@ -13,6 +13,7 @@
 
 // Cryptographic and I/O utilities.
 #include <ppp/cryptography/ssea.h>
+#include <ppp/cryptography/ssea_simd/sse_dispatch.h>
 #include <ppp/io/Stream.h>
 #include <ppp/io/MemoryStream.h>
 #include <ppp/net/Socket.h>
@@ -22,6 +23,7 @@
 #include <ppp/threading/Thread.h>
 #include <ppp/threading/Executors.h>
 #include <ppp/threading/BufferswapAllocator.h>
+#include <array>
 #include <chrono>
 
 namespace ppp {
@@ -109,6 +111,24 @@ namespace ppp {
              * @brief Encrypts binary payload using packet-level framing.
              */
             static std::shared_ptr<Byte> EncryptBinary(ITransmission* transmission, Byte* data, int datalen, int& outlen) noexcept;
+            /**
+             * @brief Encrypts several binary payloads and assembles independent frames.
+             * @param transmission Active transmission instance.
+             * @param packets Plaintext payload pointers.
+             * @param lengths Plaintext payload lengths.
+             * @param count Number of payloads.
+             * @param frames Receives one framed buffer per payload.
+             * @param outlens Receives one framed length per payload.
+             * @return True on success; otherwise false with all outlens set to -1.
+             */
+            static bool EncryptMany(ITransmission* transmission, const void* const* packets,
+                const int* lengths, int count, std::shared_ptr<Byte>* frames, int* outlens) noexcept;
+            /**
+             * @brief Encrypts several payloads into one contiguous frame buffer.
+             * @return True only when the active transport cipher is length-preserving.
+             */
+            static bool EncryptManyPacked(ITransmission* transmission, const void* const* packets,
+                const int* lengths, int count, std::shared_ptr<Byte>& frame, int& frame_length) noexcept;
 
             /**
              * @brief Decrypts binary payload produced by packet-level framing.
@@ -122,8 +142,8 @@ namespace ppp {
                 std::shared_ptr<Byte> packet = EncryptBinary(transmission, data, datalen, outlen);
                 if (NULLPTR != packet) {
                     AppConfigurationPtr& cfg = transmission->configuration_;
-                    // Base94 needed before handshake or when plaintext mode is forced.
-                    if (!transmission->handshaked_.load(std::memory_order_acquire) || cfg->key.plaintext) {
+                    // The authenticated multipath framing transition is independent of PPP key setup.
+                    if (transmission->UsesBase94OuterFraming()) {
                         packet = base94_encode(transmission, cfg, transmission->BufferAllocator,
                             packet.get(), outlen, cfg->key.kf, outlen);
                     }
@@ -144,7 +164,7 @@ namespace ppp {
             static std::shared_ptr<Byte> Decrypt(ITransmission* transmission, Byte* data, int datalen, int& outlen) noexcept {
                 std::shared_ptr<Byte> packet;
                 AppConfigurationPtr& cfg = transmission->configuration_;
-                if (!transmission->handshaked_.load(std::memory_order_acquire) || cfg->key.plaintext) {
+                if (transmission->UsesBase94OuterFraming()) {
                     // Base94 decode first, then binary decrypt.
                     packet = base94_decode(cfg, transmission->BufferAllocator,
                         data, datalen, cfg->key.kf, outlen);
@@ -176,7 +196,7 @@ namespace ppp {
              */
             static std::shared_ptr<Byte> Read(ITransmission* transmission, YieldContext& y, int& outlen) noexcept {
                 outlen = 0;
-                const bool handshaked = transmission->handshaked_.load(std::memory_order_acquire);
+                const bool base94_outer_framing = transmission->UsesBase94OuterFraming();
                 if (transmission->disposed_.load(std::memory_order_acquire)) {
                     return NULLPTR;
                 }
@@ -191,8 +211,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Byte> packet;
-                AppConfigurationPtr& cfg = transmission->configuration_;
-                if (!handshaked || cfg->key.plaintext) {
+                if (base94_outer_framing) {
                     packet = base94_decode(transmission, y, outlen);
                     if (NULLPTR == packet || outlen < 1) {
                         outlen = 0;
@@ -623,19 +642,61 @@ namespace ppp {
         // Packet encryption/decryption helpers.
         // -----------------------------------------------------------------------------
         /**
-         * @brief Builds and encrypts packet header containing payload length metadata.
+         * @brief Delta-codes a mutable buffer with the same SIMD dispatch as ssea.
+         * @return Number of bytes processed, or 0 on invalid input.
          */
-        static std::shared_ptr<Byte> Transmission_Header_Encrypt(
+        static int Transmission_Delta_Encode_Inplace(Byte* data, int data_size, int kf) noexcept {
+            if (NULLPTR == data || data_size < 1) {
+                return 0;
+            }
+
+            if (::ssea::SimdLevel::AVX2 == ::ssea::ssea_cpu_level()) {
+                const int encoded = ::ssea::delta_encode_inplace_avx2(data, data_size, kf);
+                if (encoded > 0) {
+                    return encoded;
+                }
+            }
+
+            return ::ssea::delta_encode_inplace_scalar(data, data_size, kf);
+        }
+
+        /**
+         * @brief Reverses @ref Transmission_Delta_Encode_Inplace in place.
+         * @return Number of bytes processed, or 0 on invalid input.
+         */
+        static int Transmission_Delta_Decode_Inplace(Byte* data, int data_size, int kf) noexcept {
+            if (NULLPTR == data || data_size < 1) {
+                return 0;
+            }
+
+            if (::ssea::SimdLevel::AVX2 == ::ssea::ssea_cpu_level()) {
+                const int decoded = ::ssea::delta_decode_inplace_avx2(data, data_size, kf);
+                if (decoded > 0) {
+                    return decoded;
+                }
+            }
+
+            return ::ssea::delta_decode_inplace_scalar(data, data_size, kf);
+        }
+
+        /**
+         * @brief Builds and encrypts packet header containing payload length metadata.
+         * @details The header is 3 bytes.  It is built in a stack buffer and
+         *          written to @p output, so the per-packet header path does not
+         *          allocate or concatenate a separate header buffer.
+         */
+        static bool Transmission_Header_Encrypt(
             const AppConfigurationPtr&                  APP,
-            const std::shared_ptr<BufferswapAllocator>& allocator,
             const CiphertextPtr&                        EVP_protocol,
             int                                         EVP_payload_length,
+            Byte*                                       output,
             int&                                        EVP_header_length,
             int&                                        EVP_header_kf) noexcept {
 
             // Adjust length: 65536 → 65535 (avoid zero‑length packets).
             if (--EVP_payload_length < 0) {
-                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TransmissionHeaderEncryptInvalidPayloadLength, NULLPTR);
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TransmissionHeaderEncryptInvalidPayloadLength);
+                return false;
             }
 
             // Header array: [seed_byte, high_byte, low_byte]
@@ -645,18 +706,21 @@ namespace ppp {
                 (Byte)(EVP_payload_length & 0xff)
             };
 
-            int EVP_header_datalen = sizeof(EVP_payload_length_array);
             EVP_header_kf = APP->key.kf ^ *EVP_payload_length_array;
 
             // Encrypt the length field using protocol cipher if available.
             if (EVP_protocol) {
-                std::shared_ptr<Byte> EVP_header_length_buff = EVP_protocol->Encrypt(
-                    allocator, EVP_payload_length_array + 1, EVP_HEADER_TSS, EVP_header_length);
-                if (NULLPTR == EVP_header_length_buff || EVP_header_length != EVP_HEADER_TSS) {
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed, NULLPTR);
+                Byte EVP_header_cipher[EVP_HEADER_TSS + ppp::cryptography::Ciphertext::EncryptToSlack];
+                int EVP_header_cipher_length = 0;
+                if (!EVP_protocol->EncryptTo(EVP_header_cipher,
+                    static_cast<int>(sizeof(EVP_header_cipher)),
+                    EVP_payload_length_array + 1, EVP_HEADER_TSS,
+                    EVP_header_cipher_length) || EVP_header_cipher_length != EVP_HEADER_TSS) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                    return false;
                 }
 
-                memcpy(EVP_payload_length_array + 1, EVP_header_length_buff.get(), EVP_HEADER_TSS);
+                memcpy(EVP_payload_length_array + 1, EVP_header_cipher, EVP_HEADER_TSS);
             }
 
             // XOR mask with per‑packet key.
@@ -664,16 +728,16 @@ namespace ppp {
                 EVP_payload_length_array[i] ^= EVP_header_kf;
             }
 
-            EVP_header_length = sizeof(EVP_payload_length_array);
+            EVP_header_length = EVP_HEADER_MSS;
             ssea::shuffle_data(reinterpret_cast<char*>(EVP_payload_length_array + 1), EVP_HEADER_TSS, EVP_header_kf);
 
-            std::shared_ptr<Byte> output;
-            if (ssea::delta_encode(allocator, EVP_payload_length_array, EVP_header_datalen,
-                APP->key.kf, output) != EVP_header_length) {
-                return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed, NULLPTR);
+            if (Transmission_Delta_Encode_Inplace(EVP_payload_length_array, EVP_header_length, APP->key.kf) != EVP_header_length) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                return false;
             }
 
-            return output;
+            memcpy(output, EVP_payload_length_array, EVP_header_length);
+            return true;
         }
 
         /**
@@ -686,14 +750,13 @@ namespace ppp {
             Byte*                                       EVP_header_array,
             int&                                        EVP_header_kf) noexcept {
 
-            std::shared_ptr<Byte> decoded;
-            if (ssea::delta_decode(allocator, EVP_header_array, EVP_HEADER_MSS,
-                APP->key.kf, decoded) != EVP_HEADER_MSS) {
+            if (Transmission_Delta_Decode_Inplace(EVP_header_array, EVP_HEADER_MSS,
+                APP->key.kf) != EVP_HEADER_MSS) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
                 return 0;
             }
 
-            Byte* array = decoded.get();
+            Byte* array = EVP_header_array;
             EVP_header_kf = APP->key.kf ^ *array;
 
             ssea::unshuffle_data(reinterpret_cast<char*>(array + 1), EVP_HEADER_TSS, EVP_header_kf);
@@ -703,13 +766,21 @@ namespace ppp {
 
             int len = 0;
             if (EVP_protocol) {
-                std::shared_ptr<Byte> dec = EVP_protocol->Decrypt(allocator, array + 1, EVP_HEADER_TSS, len);
-                if (NULLPTR == dec || len != EVP_HEADER_TSS) {
-                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
-                    return 0;
+                if (EVP_protocol->CanDecryptInPlace()) {
+                    if (!EVP_protocol->DecryptInPlace(array + 1, EVP_HEADER_TSS)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
+                        return 0;
+                    }
                 }
+                else {
+                    std::shared_ptr<Byte> dec = EVP_protocol->Decrypt(allocator, array + 1, EVP_HEADER_TSS, len);
+                    if (NULLPTR == dec || len != EVP_HEADER_TSS) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed);
+                        return 0;
+                    }
 
-                memcpy(array + 1, dec.get(), EVP_HEADER_TSS);
+                    memcpy(array + 1, dec.get(), EVP_HEADER_TSS);
+                }
             }
 
             len = array[1] << 0x08 | array[2];
@@ -732,40 +803,6 @@ namespace ppp {
 
             if (safest || APP->key.shuffle_data) {
                 ssea::shuffle_data(reinterpret_cast<char*>(data), datalen, kf);
-            }
-        }
-
-        /**
-         * @brief Encrypts payload transform stage and optional delta encoding.
-         */
-        static std::shared_ptr<Byte> Transmission_Payload_Encrypt(
-            const AppConfigurationPtr&                  APP,
-            const std::shared_ptr<BufferswapAllocator>& allocator,
-            int                                         kf,
-            Byte*                                       data,
-            int                                         datalen,
-            int&                                        outlen,
-            bool                                        safest) noexcept {
-
-            outlen = datalen;
-            Transmission_Payload_Encrypt_Partial(APP, kf, data, datalen, safest);
-
-            std::shared_ptr<Byte> output;
-            if (safest || APP->key.delta_encode) {
-                if (ssea::delta_encode(allocator, data, datalen, APP->key.kf, output) != datalen) {
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed, NULLPTR);
-                }
-
-                return output;
-            }
-            else {
-                output = BufferswapAllocator::MakeByteArray(allocator, datalen);
-                if (NULLPTR == output) {
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::TransmissionPayloadEncryptCopyAllocFailed, NULLPTR);
-                }
-
-                memcpy(output.get(), data, datalen);
-                return output;
             }
         }
 
@@ -802,18 +839,13 @@ namespace ppp {
 
             outlen = datalen;
             if (safest || APP->key.delta_encode) {
-                std::shared_ptr<Byte> decoded;
-                if (ssea::delta_decode(allocator, data.get(), datalen, APP->key.kf, decoded) != datalen) {
+                if (Transmission_Delta_Decode_Inplace(data.get(), datalen, APP->key.kf) != datalen) {
                     return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolDecodeFailed, NULLPTR);
                 }
+            }
 
-                Transmission_Payload_Decrypt_Partial(APP, kf, decoded.get(), datalen, safest);
-                return decoded;
-            }
-            else {
-                Transmission_Payload_Decrypt_Partial(APP, kf, data.get(), datalen, safest);
-                return data;
-            }
+            Transmission_Payload_Decrypt_Partial(APP, kf, data.get(), datalen, safest);
+            return data;
         }
 
         /**
@@ -841,31 +873,6 @@ namespace ppp {
         }
 
         /**
-         * @brief Concatenates encrypted header and payload into one packet buffer.
-         */
-        static std::shared_ptr<Byte> Transmission_Packet_Pack(
-            const std::shared_ptr<BufferswapAllocator>& allocator,
-            const std::shared_ptr<Byte>&                EVP_header,
-            int                                         EVP_header_length,
-            const std::shared_ptr<Byte>&                EVP_payload,
-            int                                         EVP_payload_length,
-            int&                                        EVP_packet_length) noexcept {
-
-            EVP_packet_length = EVP_header_length + EVP_payload_length;
-
-            auto packet = BufferswapAllocator::MakeByteArray(allocator, EVP_packet_length);
-            if (NULLPTR == packet) {
-                return NULLPTR;
-            }
-
-            Byte* mem = packet.get();
-            memcpy(mem, EVP_header.get(), EVP_header_length);
-            memcpy(mem + EVP_header_length, EVP_payload.get(), EVP_payload_length);
-
-            return packet;
-        }
-
-        /**
          * @brief Encrypts plaintext payload and assembles transmission packet bytes.
          */
         static std::shared_ptr<Byte> Transmission_Packet_Encrypt(
@@ -881,11 +888,11 @@ namespace ppp {
             int payload_len = 0, header_kf = 0, header_len = 0;
             outlen = 0;
 
-            if (EVP_protocol && EVP_transport && !(safest || APP->key.delta_encode)) {
-                // Same layers and order as the branch below, but the transport cipher
-                // writes straight into the frame after a reserved header slot and the
-                // payload obfuscation runs in place, so no separate payload buffer is
-                // allocated and no header+payload concatenation copy is needed.
+            if (EVP_protocol && EVP_transport) {
+                // The transport cipher writes straight into the frame after a reserved
+                // header slot, and the payload obfuscation and delta coding run in
+                // place, so no separate payload buffer is allocated and no
+                // header+payload concatenation copy is needed.
                 const int capacity = EVP_HEADER_MSS + datalen + ppp::cryptography::Ciphertext::EncryptToSlack;
                 auto packet = BufferswapAllocator::MakeByteArray(allocator, capacity);
                 if (NULLPTR == packet) {
@@ -903,9 +910,9 @@ namespace ppp {
 
                 // Layer 2: header encryption (protocol cipher).
                 ppp::diagnostics::datapath_perf::Scope header_encrypt_scope;
-                auto header = Transmission_Header_Encrypt(APP, allocator, EVP_protocol,
-                    payload_len, header_len, header_kf);
-                if (NULLPTR == header || header_len != EVP_HEADER_MSS) {
+                Byte header[EVP_HEADER_MSS];
+                if (!Transmission_Header_Encrypt(APP, EVP_protocol,
+                    payload_len, header, header_len, header_kf) || header_len != EVP_HEADER_MSS) {
                     return NULLPTR;
                 }
                 ppp::diagnostics::datapath_perf::RecordFrameHeaderEncrypt(header_len,
@@ -914,68 +921,25 @@ namespace ppp {
                 // Layer 3: payload obfuscation using header-derived key.
                 ppp::diagnostics::datapath_perf::Scope payload_encrypt_scope;
                 Transmission_Payload_Encrypt_Partial(APP, header_kf, payload, datalen, safest);
+                if (safest || APP->key.delta_encode) {
+                    if (Transmission_Delta_Encode_Inplace(payload, datalen, APP->key.kf) != datalen) {
+                        return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed, NULLPTR);
+                    }
+                }
                 ppp::diagnostics::datapath_perf::RecordFramePayloadEncrypt(payload_len,
                     payload_encrypt_scope.Elapsed());
 
                 ppp::diagnostics::datapath_perf::Scope pack_scope;
-                memcpy(packet.get(), header.get(), EVP_HEADER_MSS);
+                memcpy(packet.get(), header, EVP_HEADER_MSS);
                 outlen = EVP_HEADER_MSS + payload_len;
                 ppp::diagnostics::datapath_perf::RecordFramePack(outlen, pack_scope.Elapsed());
                 return packet;
             }
-            elif (EVP_protocol && EVP_transport) {
-                // Layer 1: transport cipher.
-                ppp::diagnostics::datapath_perf::Scope transport_encrypt_scope;
-                auto payload = EVP_transport->Encrypt(allocator, data, datalen, payload_len);
-                if (NULLPTR == payload || payload_len != datalen) {
-                    return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed, NULLPTR);
-                }
-                ppp::diagnostics::datapath_perf::RecordFrameTransportEncrypt(datalen,
-                    transport_encrypt_scope.Elapsed());
-
-                // Layer 2: header encryption (protocol cipher).
-                ppp::diagnostics::datapath_perf::Scope header_encrypt_scope;
-                auto header = Transmission_Header_Encrypt(APP, allocator, EVP_protocol,
-                    payload_len, header_len, header_kf);
-                if (NULLPTR == header) {
-                    return NULLPTR;
-                }
-                ppp::diagnostics::datapath_perf::RecordFrameHeaderEncrypt(header_len,
-                    header_encrypt_scope.Elapsed());
-                
-                // Layer 3: payload obfuscation using header-derived key.
-                ppp::diagnostics::datapath_perf::Scope payload_encrypt_scope;
-                if (safest || APP->key.delta_encode) {
-                    payload = Transmission_Payload_Encrypt(APP, allocator, header_kf,
-                        payload.get(), datalen, payload_len, safest);
-                }
-                else {
-                    // The transport cipher returned an exclusively owned buffer. The
-                    // payload transform is in-place, so retain that owner instead of
-                    // allocating and copying the same bytes in Transmission_Payload_Encrypt.
-                    Transmission_Payload_Encrypt_Partial(APP, header_kf,
-                        payload.get(), datalen, safest);
-                    payload_len = datalen;
-                }
-                if (NULLPTR == payload) {
-                    return NULLPTR;
-                }
-                ppp::diagnostics::datapath_perf::RecordFramePayloadEncrypt(payload_len,
-                    payload_encrypt_scope.Elapsed());
-
-                ppp::diagnostics::datapath_perf::Scope pack_scope;
-                auto packet = Transmission_Packet_Pack(allocator, header, header_len,
-                    payload, payload_len, outlen);
-                if (NULLPTR != packet) {
-                    ppp::diagnostics::datapath_perf::RecordFramePack(outlen, pack_scope.Elapsed());
-                }
-                return packet;
-            }
             else {
                 // No transport cipher – only header + payload obfuscation.
-                auto header = Transmission_Header_Encrypt(APP, allocator, EVP_protocol,
-                    datalen, header_len, header_kf);
-                if (NULLPTR == header) {
+                Byte header[EVP_HEADER_MSS];
+                if (!Transmission_Header_Encrypt(APP, EVP_protocol,
+                    datalen, header, header_len, header_kf)) {
                     return NULLPTR;
                 }
 
@@ -983,19 +947,240 @@ namespace ppp {
                 // VMUX can retain it for retransmission after this write.
                 auto packet = BufferswapAllocator::MakeByteArray(allocator, header_len + datalen);
                 if (!packet) return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::MemoryAllocationFailed, NULLPTR);
-                memcpy(packet.get(), header.get(), header_len);
+                memcpy(packet.get(), header, header_len);
                 Byte* payload = packet.get() + header_len;
                 memcpy(payload, data, datalen);
                 Transmission_Payload_Encrypt_Partial(APP, header_kf, payload, datalen, safest);
                 if (safest || APP->key.delta_encode) {
-                    std::shared_ptr<Byte> encoded;
-                    if (ssea::delta_encode(allocator, payload, datalen, APP->key.kf, encoded) != datalen)
+                    if (Transmission_Delta_Encode_Inplace(payload, datalen, APP->key.kf) != datalen)
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed, NULLPTR);
-                    memcpy(payload, encoded.get(), datalen);
                 }
                 outlen = header_len + datalen;
                 return packet;
             }
+        }
+
+        /**
+         * @brief Encrypts several independent payloads and assembles one frame per payload.
+         * @details The transport cipher receives all payloads at once so AES-CFB packet
+         *          chains are interleaved by the AES-NI backend. Header, masking, shuffle,
+         *          and delta transforms stay per packet, preserving the wire format.
+         */
+        static bool Transmission_Packet_EncryptMany(
+            const AppConfigurationPtr&                  APP,
+            const std::shared_ptr<BufferswapAllocator>& allocator,
+            const CiphertextPtr&                        EVP_protocol,
+            const CiphertextPtr&                        EVP_transport,
+            const void* const*                          data,
+            const int*                                  datalens,
+            int                                         count,
+            std::shared_ptr<Byte>*                      frames,
+            int*                                        outlens,
+            bool                                        safest) noexcept {
+
+            if (count <= 0 || count > ITransmission::kWriteBatchSize ||
+                NULLPTR == data || NULLPTR == datalens ||
+                NULLPTR == frames || NULLPTR == outlens) {
+                return false;
+            }
+
+            for (int i = 0; i < count; i++) {
+                outlens[i] = -1;
+            }
+
+            Byte* payloads[ITransmission::kWriteBatchSize] = {};
+            Byte* inputs[ITransmission::kWriteBatchSize] = {};
+            int capacities[ITransmission::kWriteBatchSize] = {};
+            int payload_lens[ITransmission::kWriteBatchSize] = {};
+
+            for (int i = 0; i < count; i++) {
+                const int datalen = datalens[i];
+                if (NULLPTR == data[i] || datalen < 1) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::EvpEncryptInvalidArguments);
+                    return false;
+                }
+
+                const int capacity = EVP_HEADER_MSS + datalen +
+                    ppp::cryptography::Ciphertext::EncryptToSlack;
+                std::shared_ptr<Byte> packet =
+                    BufferswapAllocator::MakeByteArray(allocator, capacity);
+                if (NULLPTR == packet) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                    return false;
+                }
+
+                frames[i] = std::move(packet);
+                payloads[i] = frames[i].get() + EVP_HEADER_MSS;
+                inputs[i] = const_cast<Byte*>(static_cast<const Byte*>(data[i]));
+                capacities[i] = capacity - EVP_HEADER_MSS;
+            }
+
+            ppp::diagnostics::datapath_perf::Scope transport_encrypt_scope;
+            if (!EVP_transport->EncryptManyTo(payloads, capacities, inputs,
+                    datalens, count, payload_lens)) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                return false;
+            }
+
+            const uint64_t transport_encrypt_us = transport_encrypt_scope.Elapsed();
+            for (int i = 0; i < count; i++) {
+                if (payload_lens[i] != datalens[i]) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                    return false;
+                }
+
+                ppp::diagnostics::datapath_perf::RecordFrameTransportEncrypt(datalens[i],
+                    transport_encrypt_us / static_cast<uint64_t>(count));
+
+                int header_kf = 0;
+                int header_len = 0;
+                Byte header[EVP_HEADER_MSS];
+                ppp::diagnostics::datapath_perf::Scope header_encrypt_scope;
+                if (!Transmission_Header_Encrypt(APP, EVP_protocol,
+                        payload_lens[i], header, header_len, header_kf) ||
+                    header_len != EVP_HEADER_MSS) {
+                    return false;
+                }
+                ppp::diagnostics::datapath_perf::RecordFrameHeaderEncrypt(header_len,
+                    header_encrypt_scope.Elapsed());
+
+                Byte* payload = payloads[i];
+                const int payload_len = payload_lens[i];
+                ppp::diagnostics::datapath_perf::Scope payload_encrypt_scope;
+                Transmission_Payload_Encrypt_Partial(APP, header_kf, payload,
+                    payload_len, safest);
+                if (safest || APP->key.delta_encode) {
+                    if (Transmission_Delta_Encode_Inplace(payload, payload_len,
+                            APP->key.kf) != payload_len) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                        return false;
+                    }
+                }
+                ppp::diagnostics::datapath_perf::RecordFramePayloadEncrypt(payload_len,
+                    payload_encrypt_scope.Elapsed());
+
+                ppp::diagnostics::datapath_perf::Scope pack_scope;
+                memcpy(frames[i].get(), header, EVP_HEADER_MSS);
+                outlens[i] = EVP_HEADER_MSS + payload_len;
+                ppp::diagnostics::datapath_perf::RecordFramePack(outlens[i],
+                    pack_scope.Elapsed());
+            }
+
+            return true;
+        }
+
+        /**
+         * @brief Encrypts several payloads into one contiguous frame buffer.
+         * @details Requires a length-preserving transport cipher. The frames remain
+         *          independently decodable in wire order, but share one allocation and
+         *          one carrier write.
+         */
+        static bool Transmission_Packet_EncryptManyPacked(
+            const AppConfigurationPtr&                  APP,
+            const std::shared_ptr<BufferswapAllocator>& allocator,
+            const CiphertextPtr&                        EVP_protocol,
+            const CiphertextPtr&                        EVP_transport,
+            const void* const*                          data,
+            const int*                                  datalens,
+            int                                         count,
+            std::shared_ptr<Byte>&                      frame,
+            int&                                        outlen,
+            bool                                        safest) noexcept {
+
+            outlen = 0;
+            if (count <= 0 || count > ITransmission::kWriteBatchSize ||
+                NULLPTR == data || NULLPTR == datalens) {
+                return false;
+            }
+
+            int total = 0;
+            for (int i = 0; i < count; i++) {
+                if (NULLPTR == data[i] || datalens[i] < 1) {
+                    return false;
+                }
+                total += EVP_HEADER_MSS + datalens[i];
+            }
+
+            std::shared_ptr<Byte> packet = BufferswapAllocator::MakeByteArray(
+                allocator, total + ppp::cryptography::Ciphertext::EncryptToSlack);
+            if (NULLPTR == packet) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                return false;
+            }
+
+            Byte* payloads[ITransmission::kWriteBatchSize] = {};
+            Byte* inputs[ITransmission::kWriteBatchSize] = {};
+            int capacities[ITransmission::kWriteBatchSize] = {};
+            int payload_lens[ITransmission::kWriteBatchSize] = {};
+            int offset = 0;
+            for (int i = 0; i < count; i++) {
+                payloads[i] = packet.get() + offset + EVP_HEADER_MSS;
+                inputs[i] = const_cast<Byte*>(static_cast<const Byte*>(data[i]));
+                // CFB/OFB/CTR emit exactly datalen bytes; the extra byte satisfies
+                // OpenSSL CFB's one-block output-capacity check without moving the
+                // next frame.
+                capacities[i] = datalens[i] + 1;
+                offset += EVP_HEADER_MSS + datalens[i];
+            }
+
+            ppp::diagnostics::datapath_perf::Scope transport_encrypt_scope;
+            if (!EVP_transport->EncryptManyTo(payloads, capacities, inputs,
+                    datalens, count, payload_lens)) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                return false;
+            }
+
+            const uint64_t transport_encrypt_us = transport_encrypt_scope.Elapsed();
+            offset = 0;
+            for (int i = 0; i < count; i++) {
+                if (payload_lens[i] != datalens[i]) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                    return false;
+                }
+
+                ppp::diagnostics::datapath_perf::RecordFrameTransportEncrypt(datalens[i],
+                    transport_encrypt_us / static_cast<uint64_t>(count));
+
+                int header_kf = 0;
+                int header_len = 0;
+                Byte header[EVP_HEADER_MSS];
+                ppp::diagnostics::datapath_perf::Scope header_encrypt_scope;
+                if (!Transmission_Header_Encrypt(APP, EVP_protocol,
+                        payload_lens[i], header, header_len, header_kf) ||
+                    header_len != EVP_HEADER_MSS) {
+                    return false;
+                }
+                ppp::diagnostics::datapath_perf::RecordFrameHeaderEncrypt(header_len,
+                    header_encrypt_scope.Elapsed());
+
+                Byte* payload = payloads[i];
+                const int payload_len = payload_lens[i];
+                ppp::diagnostics::datapath_perf::Scope payload_encrypt_scope;
+                Transmission_Payload_Encrypt_Partial(APP, header_kf, payload,
+                    payload_len, safest);
+                if (safest || APP->key.delta_encode) {
+                    if (Transmission_Delta_Encode_Inplace(payload, payload_len,
+                            APP->key.kf) != payload_len) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                        return false;
+                    }
+                }
+                ppp::diagnostics::datapath_perf::RecordFramePayloadEncrypt(payload_len,
+                    payload_encrypt_scope.Elapsed());
+
+                ppp::diagnostics::datapath_perf::Scope pack_scope;
+                memcpy(packet.get() + offset, header, EVP_HEADER_MSS);
+                offset += EVP_HEADER_MSS + payload_len;
+                ppp::diagnostics::datapath_perf::RecordFramePack(
+                    EVP_HEADER_MSS + payload_len, pack_scope.Elapsed());
+            }
+
+            if (offset != total) {
+                return false;
+            }
+            frame = std::move(packet);
+            outlen = total;
+            return true;
         }
 
         /**
@@ -1570,6 +1755,132 @@ namespace ppp {
         }
 
         /**
+         * @brief Encrypts and writes several payloads in one coroutine turn.
+         */
+        bool ITransmission::WriteMany(YieldContext& y, const void* const* packets,
+            const int* lengths, int count) noexcept {
+
+            if (count < 1 || NULLPTR == packets || NULLPTR == lengths) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TransmissionWriteAsyncInvalidPacket);
+                return false;
+            }
+
+            for (int i = 0; i < count; i++) {
+                if (NULLPTR == packets[i] || lengths[i] < 1) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TransmissionWriteAsyncInvalidPacket);
+                    return false;
+                }
+            }
+
+            if (count == 1) {
+                return Write(y, packets[0], lengths[0]);
+            }
+
+            if (disposed_.load(std::memory_order_acquire)) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionDisposed);
+                return false;
+            }
+
+            AppConfigurationPtr cfg = configuration_;
+            if (!handshaked_.load(std::memory_order_acquire) || cfg->key.plaintext) {
+                for (int i = 0; i < count; i++) {
+                    if (!Write(y, packets[i], lengths[i])) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            for (int base = 0; base < count; base += ITransmission::kWriteBatchSize) {
+                const int n = std::min<int>(ITransmission::kWriteBatchSize, count - base);
+
+                // A length-preserving cipher can place every frame in one contiguous
+                // allocation, avoiding per-frame writes while keeping one AES batch.
+                std::shared_ptr<Byte> packed;
+                int packed_length = 0;
+                if (ITransmissionBridge::EncryptManyPacked(this, packets + base,
+                        lengths + base, n, packed, packed_length)) {
+                    const bool written = DoWriteYield<AsynchronousWriteBytesCallback>(
+                        y, packed, packed_length,
+                        [this](const std::shared_ptr<Byte>& packet, int packet_length,
+                            const AsynchronousWriteBytesCallback& cb) noexcept {
+                            return WriteBytes(packet, packet_length, cb);
+                        });
+                    if (!written) {
+                        if (!disposed_.load(std::memory_order_acquire)) {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelWriteFailed);
+                        }
+                        return false;
+                    }
+                    continue;
+                }
+
+                std::array<std::shared_ptr<Byte>, ITransmission::kWriteBatchSize> frames;
+                std::array<int, ITransmission::kWriteBatchSize> frame_lengths = {};
+                if (!ITransmissionBridge::EncryptMany(this, packets + base, lengths + base,
+                        n, frames.data(), frame_lengths.data())) {
+                    if (ppp::diagnostics::ErrorCode::Success ==
+                        ppp::diagnostics::GetLastErrorCode()) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                    }
+                    return false;
+                }
+
+                auto remaining = make_shared_object<std::atomic<int>>(n);
+                auto status = make_shared_object<std::atomic<int>>(-1);
+                if (NULLPTR == remaining || NULLPTR == status) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::AsyncWriteQueueYieldStatusAllocFailed);
+                    return false;
+                }
+
+                const YieldContext::Anchor anchor = y.Arm();
+                if (!anchor) {
+                    return false;
+                }
+
+                const bool posted = ppp::threading::Executors::Post(
+                    addressof(y.GetContext()), y.GetStrand(),
+                    [this, frames, frame_lengths, n, remaining, status, anchor]() noexcept {
+                        for (int i = 0; i < n; i++) {
+                            const bool accepted = WriteBytes(frames[i], frame_lengths[i],
+                                [remaining, status, anchor](bool ok) noexcept {
+                                    if (!ok) {
+                                        status->store(0, std::memory_order_relaxed);
+                                    }
+                                    if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                                        if (status->load(std::memory_order_relaxed) < 0) {
+                                            status->store(1, std::memory_order_relaxed);
+                                        }
+                                        anchor.R();
+                                    }
+                                });
+                            if (!accepted) {
+                                status->store(0, std::memory_order_relaxed);
+                                if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                                    anchor.R();
+                                }
+                            }
+                        }
+                    });
+
+                if (!posted) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTaskPostFailed);
+                    return false;
+                }
+
+                y.Suspend(anchor);
+                if (status->load(std::memory_order_relaxed) != 1) {
+                    if (!disposed_.load(std::memory_order_acquire)) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TunnelWriteFailed);
+                    }
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /**
          * @brief Writes one message using callback-based bridge workflow.
          */
         bool ITransmission::Write(const void* packet, int packet_length, const AsynchronousWriteCallback& cb) noexcept {
@@ -1590,6 +1901,25 @@ namespace ppp {
             }
 
             return ok;
+        }
+
+        /**
+         * @brief Reports whether the Base94 outer envelope still applies.
+         */
+        bool ITransmission::UsesBase94OuterFraming() const noexcept {
+            return configuration_->key.plaintext ||
+                (!handshaked_.load(std::memory_order_acquire) &&
+                 !multipath_binary_framing_.load(std::memory_order_acquire));
+        }
+
+        bool ITransmission::EnableAuthenticatedMultipathBinaryFraming() noexcept {
+            if (disposed_.load(std::memory_order_acquire) || !configuration_ || configuration_->key.plaintext) {
+                return false;
+            }
+            // Admission owns raw I/O until its final Base94 write/read has completed.
+
+            multipath_binary_framing_.store(true, std::memory_order_release);
+            return true;
         }
 
         /**
@@ -2023,6 +2353,62 @@ namespace ppp {
         // -----------------------------------------------------------------------------
         // ITransmissionBridge binary encrypt/decrypt implementations.
         // -----------------------------------------------------------------------------
+        bool ITransmissionBridge::EncryptMany(ITransmission* transmission, const void* const* packets,
+            const int* lengths, int count, std::shared_ptr<Byte>* frames, int* outlens) noexcept {
+
+            if (count <= 0 || count > ITransmission::kWriteBatchSize ||
+                NULLPTR == packets || NULLPTR == lengths ||
+                NULLPTR == frames || NULLPTR == outlens) {
+                return false;
+            }
+
+            const bool safest = !transmission->handshaked_.load(std::memory_order_acquire);
+            AppConfigurationPtr cfg = transmission->configuration_;
+            const auto& alloc = transmission->BufferAllocator;
+            CiphertextPtr protocol = std::atomic_load(&transmission->protocol_);
+            CiphertextPtr transport = std::atomic_load(&transmission->transport_);
+
+            if (protocol && transport) {
+                return Transmission_Packet_EncryptMany(cfg, alloc, protocol, transport,
+                    packets, lengths, count, frames, outlens, safest);
+            }
+
+            for (int i = 0; i < count; i++) {
+                outlens[i] = -1;
+                std::shared_ptr<Byte> frame = EncryptBinary(transmission,
+                    const_cast<Byte*>(static_cast<const Byte*>(packets[i])), lengths[i], outlens[i]);
+                if (NULLPTR == frame) {
+                    return false;
+                }
+                frames[i] = std::move(frame);
+            }
+            return true;
+        }
+
+        bool ITransmissionBridge::EncryptManyPacked(ITransmission* transmission,
+            const void* const* packets, const int* lengths, int count,
+            std::shared_ptr<Byte>& frame, int& frame_length) noexcept {
+
+            frame.reset();
+            frame_length = 0;
+            if (count <= 1 || count > ITransmission::kWriteBatchSize ||
+                NULLPTR == transmission || NULLPTR == packets || NULLPTR == lengths) {
+                return false;
+            }
+
+            AppConfigurationPtr cfg = transmission->configuration_;
+            CiphertextPtr protocol = std::atomic_load(&transmission->protocol_);
+            CiphertextPtr transport = std::atomic_load(&transmission->transport_);
+            if (!protocol || !transport || !transport->CanDecryptInPlace()) {
+                return false;
+            }
+
+            const bool safest = !transmission->handshaked_.load(std::memory_order_acquire);
+            return Transmission_Packet_EncryptManyPacked(cfg,
+                transmission->BufferAllocator, protocol, transport,
+                packets, lengths, count, frame, frame_length, safest);
+        }
+
         /**
          * @brief Encrypts payload via packet encryption path selected by cipher state.
          */

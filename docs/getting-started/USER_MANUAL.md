@@ -30,11 +30,11 @@ Each release provides these binary packages (they unpack to `ppp` or `ppp.exe`):
 
 | Platform | Package | Notes |
 |---|---|---|
-| Linux x86_64 | `openppp2-linux-amd64.zip` | Generic |
-| | `openppp2-linux-amd64-simd.zip` | SIMD enabled, recommended for newer CPUs |
-| | `…-io-uring…`, `…-tc…` combinations | io_uring / other build variants |
+| Linux x86_64 | `openppp2-linux-amd64.zip` | Generic compatibility profile; no optional kernel or CPU features |
+| | `openppp2-linux-amd64-modern.zip` | Linux 5.10+, BPF/TC permissions, and modern x86 SIMD CPU required |
+| | `openppp2-linux-amd64-simd.zip` | SIMD-only feature variant |
+| | `…-io-uring…`, `…-tc…` combinations | Explicit io_uring / SYSNAT build variants |
 | | `openppp2-linux-amd64-debian10.zip` | For older glibc |
-| Other Linux architectures | `openppp2-linux-{aarch64,armv7l,riscv64,ppc64el,s390x,mipsel}-cross.zip` | Cross-compiled |
 | Windows | `openppp2-windows-x64-Release.zip`, `openppp2-windows-ARM64-Release.zip` | |
 | macOS | `openppp2-darwin-arm64.zip`, `openppp2-darwin-x86_64.zip` | |
 | Android | `openppp2-android-{arm64-v8a,armeabi-v7a,x86,x86_64}.zip` | Native libraries for app integration |
@@ -61,7 +61,7 @@ Stop a client with `Ctrl+C`, `openppp2 exit`, or the service manager's normal st
 
    ```bash
    mkdir -p /opt/openppp2 && cd /opt/openppp2
-   unzip openppp2-linux-amd64-simd.zip
+   unzip openppp2-linux-amd64-modern.zip
    chmod +x ppp
    ```
 

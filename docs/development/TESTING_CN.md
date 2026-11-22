@@ -237,10 +237,11 @@ bash scripts/test-runtime-contract.sh cpp
 | `ENABLE_VMUX_RECEIVE_SEMANTICS_TEST` | 构建并注册 root-linked VMUX receive-semantics 测试。 |
 | `ENABLE_ASAN`、`ENABLE_UBSAN` | 在根项目中启用诊断 sanitizer flags；不是生产构建模式。 |
 
-根生产构建选项另有平台默认值：Linux 构建（包括交叉编译）默认启用
-`ENABLE_XTCP`，配置前需要运行 `bash tools/prepare_xtcp.sh`；Android、macOS
-和 Windows 默认关闭，发布工作流会显式传入对应值。`ENABLE_SIMD` 在 x86/x64 上默认启用，
-ARM/Android 默认关闭；Windows MSBuild 可用 `/p:OpenPPP2EnableSimd=false` 显式移除
+根生产构建按档位显式配置。Linux 通用兼容构建保留
+`ENABLE_XTCP=ON`，但关闭 `ENABLE_IO_URING`、`ENABLE_SYSNAT`、`ENABLE_SIMD` 和
+`ENABLE_SSEA_SIMD`；Linux `-modern` 包全部开启，并要求 Linux 5.10+、BPF/TC
+权限以及支持所选 SIMD 等级的 CPU。
+Android、macOS 和 Windows 由各自 workflow 显式传入平台值。Windows MSBuild 可用
 `__SIMD__`。
 
 ## 当前 CI 覆盖

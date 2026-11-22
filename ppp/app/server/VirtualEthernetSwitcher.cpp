@@ -3,6 +3,8 @@
 #include <ppp/app/server/PeerRouteAnnouncePolicy.h>
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/server/VirtualEthernetExchanger.h>
+#include <ppp/app/mux/MuxCoordinator.h>
+#include <ppp/app/mux/vmux_net.h>
 #include <ppp/app/server/VirtualEthernetNetworkTcpipConnection.h>
 #include <ppp/app/server/VirtualEthernetManagedServer.h>
 #include <ppp/app/server/VirtualEthernetNamespaceCache.h>
@@ -2255,6 +2257,23 @@ namespace ppp {
                     ClearSensitivePayload(payload);
                     return ok;
                 };
+                bool binary_framing_negotiated = false;
+                const auto negotiate_binary_framing = [&](const std::string& carrier_id) noexcept {
+                    if (binary_framing_negotiated) return true;
+                    binary_framing_negotiated = true;
+                    const char* const prefix =
+                        ppp::transmissions::MultipathTransmission::BinaryFramingCarrierIdPrefix;
+                    const std::size_t prefix_length =
+                        sizeof(ppp::transmissions::MultipathTransmission::BinaryFramingCarrierIdPrefix) - 1;
+                    if (carrier_id.size() < prefix_length ||
+                        std::memcmp(carrier_id.data(), prefix, prefix_length) != 0) return true;
+                    if (!secured->NegotiateBinaryFramingServer(y)) {
+                        ppp::telemetry::Log(Level::kDebug, "multipath",
+                            "admission failed stage=binary-framing");
+                        return false;
+                    }
+                    return true;
+                };
                 const auto find_entry = [&](const Int128& logical_id) noexcept {
                     SynchronizedObjectScope scope(syncobj_);
                     auto found = multipath_sessions_.find(logical_id);
@@ -2321,6 +2340,7 @@ namespace ppp {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
                         return STATUS_ERROR;
                     }
+                    if (!negotiate_binary_framing(request.carrier_id)) return STATUS_ERROR;
                     logical_id = ClientSessionIdToInt128(request.client_session_id);
                     if (logical_id == 0 || !create_or_find_entry(logical_id, entry)) {
                         CreateResponse rejected;
@@ -2418,6 +2438,7 @@ namespace ppp {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
                         return STATUS_ERROR;
                     }
+                    if (!negotiate_binary_framing(request.carrier_id)) return STATUS_ERROR;
                     logical_id = ClientSessionIdToInt128(request.client_session_id);
                     entry = find_entry(logical_id);
                     QueryResponse response;
@@ -2530,6 +2551,7 @@ namespace ppp {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
                         return STATUS_ERROR;
                     }
+                    if (!negotiate_binary_framing(reserve_request.carrier_id)) return STATUS_ERROR;
                     logical_id = ClientSessionIdToInt128(reserve_request.client_session_id);
                     entry = find_entry(logical_id);
                     if (!entry) return STATUS_ERROR;
@@ -2935,6 +2957,35 @@ namespace ppp {
                 }
 
                 return Dictionary::FindObjectByKey(exchangers_, session_id);
+            }
+
+            ppp::app::multipath::RuntimeState VirtualEthernetSwitcher::GetMultipathRuntimeState() noexcept {
+                ppp::app::multipath::RuntimeState state;
+                VirtualEthernetExchangerPtr exchanger;
+                {
+                    SynchronizedObjectScope scope(syncobj_);
+                    // This snapshot represents one VMUX session. Suppress it when
+                    // the server has multiple authenticated multipath sessions.
+                    if (disposed_ || multipath_sessions_.size() != 1) return state;
+                    auto found = exchangers_.find(multipath_sessions_.begin()->first);
+                    if (found == exchangers_.end()) return state;
+                    exchanger = found->second;
+                }
+                auto coordinator = exchanger ? exchanger->GetMuxCoordinator() : nullptr;
+                if (!coordinator) return state;
+                auto mux = coordinator->Session();
+                if (!mux || mux->is_disposed()) return state;
+                auto stats = mux->get_multipath_runtime_stats();
+                if (stats.session_id == 0) return state;
+                state.enabled = true;
+                state.vmux_session_id = stats.session_id;
+                state.reorder_events = stats.reorder_events;
+                state.reorder_buffered_bytes = stats.reorder_buffered_bytes;
+                state.links = std::move(stats.links);
+                const auto remaining = mux->get_carrier_resume_remaining_ms();
+                state.state = remaining != 0 ? "recovering" : "active";
+                if (remaining != 0) state.remaining_grace_ms = remaining;
+                return state;
             }
 
             /**

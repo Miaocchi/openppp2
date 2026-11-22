@@ -222,7 +222,21 @@ namespace ppp::app::multipath {
 
             boost::system::error_code ec;
             socket->open(endpoint.protocol(), ec);
-            if (ec || (protect && !protect(socket, endpoint, y)) || !attempt->IsActive()) {
+            if (ec) {
+                ppp::net::Socket::Closesocket(socket);
+                continue;
+            }
+
+            // Match the primary TCP connect path: window overrides and
+            // transport options (keepalive, TOS, TCP_NODELAY, Fast Open) must
+            // be applied while the socket is open and before connect, so
+            // multipath carriers use the same configuration as the main link.
+            ppp::net::Socket::SetWindowSizeIfNotZero(
+                socket->native_handle(), configuration->tcp.cwnd, configuration->tcp.rwnd);
+            ppp::net::Socket::AdjustSocketOptional(*socket,
+                endpoint.address().is_v4(), configuration->tcp.fast_open, configuration->tcp.turbo);
+
+            if ((protect && !protect(socket, endpoint, y)) || !attempt->IsActive()) {
                 ppp::net::Socket::Closesocket(socket);
                 continue;
             }

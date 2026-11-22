@@ -30,11 +30,11 @@ OPENPPP2 是一个单文件、跨平台的虚拟网络程序 `ppp`。同一个�
 
 | 平台 | 包名 | 说明 |
 |---|---|---|
-| Linux x86_64 | `openppp2-linux-amd64.zip` | 通用版本 |
-| | `openppp2-linux-amd64-simd.zip` | 启用 SIMD，较新 CPU 推荐 |
-| | `…-io-uring…`、`…-tc…` 组合 | io_uring / 其他构建变体 |
+| Linux x86_64 | `openppp2-linux-amd64.zip` | 通用兼容档位，不启用可选内核或 CPU 特性 |
+| | `openppp2-linux-amd64-modern.zip` | 要求 Linux 5.10+、BPF/TC 权限和现代 x86 SIMD CPU |
+| | `openppp2-linux-amd64-simd.zip` | 仅启用 SIMD 的特性变体 |
+| | `…-io-uring…`、`…-tc…` 组合 | 显式 io_uring / SYSNAT 构建变体 |
 | | `openppp2-linux-amd64-debian10.zip` | 面向较旧的 glibc |
-| Linux 其他架构 | `openppp2-linux-{aarch64,armv7l,riscv64,ppc64el,s390x,mipsel}-cross.zip` | 交叉编译 |
 | Windows | `openppp2-windows-x64-Release.zip`、`openppp2-windows-ARM64-Release.zip` | |
 | macOS | `openppp2-darwin-arm64.zip`、`openppp2-darwin-x86_64.zip` | |
 | Android | `openppp2-android-{arm64-v8a,armeabi-v7a,x86,x86_64}.zip` | 原生库，供 App 集成 |
@@ -61,7 +61,7 @@ OPENPPP2 是一个单文件、跨平台的虚拟网络程序 `ppp`。同一个�
 
    ```bash
    mkdir -p /opt/openppp2 && cd /opt/openppp2
-   unzip openppp2-linux-amd64-simd.zip
+   unzip openppp2-linux-amd64-modern.zip
    chmod +x ppp
    ```
 

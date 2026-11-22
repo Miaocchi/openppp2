@@ -1805,8 +1805,11 @@ namespace ppp {
                     } catch (...) { return false; }
                     return true;
                 };
+                const char* const carrier_prefix = configuration->key.plaintext
+                    ? "carrier/"
+                    : ppp::transmissions::MultipathTransmission::BinaryFramingCarrierIdPrefix;
                 std::string carrier_id;
-                if (!make_id("carrier/", carrier_id)) return nullptr;
+                if (!make_id(carrier_prefix, carrier_id)) return nullptr;
 
                 const auto deadline_ms = static_cast<std::uint32_t>(std::max(1000,
                     configuration->tcp.connect.timeout * 1000 + configuration->transport_auth.handshake_timeout_ms));
@@ -1856,7 +1859,7 @@ namespace ppp {
                     std::uint8_t received_type = 0;
                     const bool ok = path_attempt->IsActive() && secured->WriteSecureRecord(y,
                         static_cast<std::uint8_t>(request_type), request.data(), request.size()) &&
-                        secured->ReadSecureRecord(y, received_type, response) &&
+                        secured->ReadAdmissionResponse(y, received_type, response) &&
                         received_type == static_cast<std::uint8_t>(response_type) && path_attempt->IsActive();
                     ClearSensitivePayload(request);
                     if (!ok) ClearSensitivePayload(response);
@@ -3486,9 +3489,24 @@ namespace ppp {
                             if (main && !multipath_primary_mux_attached_.load(std::memory_order_acquire)) {
                                 auto secured = std::dynamic_pointer_cast<ppp::transmissions::MultipathTransmission>(main);
                                 ITransmissionPtr mux_channel = secured ? secured->CreateMuxSubchannel() : nullptr;
-                                std::shared_ptr<boost::asio::ip::tcp::socket> default_socket;
-                                auto connection = mux_channel ? make_shared_object<VirtualEthernetTcpipConnection>(
-                                    mux->AppConfiguration, context, strand, GetId(), default_socket) : nullptr;
+                                // Primary forwarding gets its own strand on the VMUX context, so
+                                // this path's handshake/forwarding coroutine never queues behind
+                                // mux-wide work on the VMUX strand. Only the connection moves: the
+                                // main transmission keeps the strand that owns its socket, and the
+                                // attach itself still runs on the VMUX strand through do_yield().
+                                std::shared_ptr<VirtualEthernetTcpipConnection> connection;
+                                if (mux_channel) {
+                                    ppp::threading::Executors::StrandPtr primary_connection_strand =
+                                        make_shared_object<ppp::threading::Executors::Strand>(context->get_executor());
+                                    if (NULLPTR == primary_connection_strand) {
+                                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                                    }
+                                    else {
+                                        std::shared_ptr<boost::asio::ip::tcp::socket> default_socket;
+                                        connection = make_shared_object<VirtualEthernetTcpipConnection>(
+                                            mux->AppConfiguration, context, primary_connection_strand, GetId(), default_socket);
+                                    }
+                                }
                                 if (connection && connection->ConnectMux(y, mux_channel,
                                     mux->Vlan, rx_ack, tx_seq)) {
                                     {
@@ -3526,12 +3544,22 @@ namespace ppp {
                                 if (disposed_.load(std::memory_order_acquire) ||
                                     !mux_coordinator_->IsCurrent(mux) || mux->is_disposed()) break;
                                 if (!token && multipath_paths_.JoinedCarriers() >= mux->get_pool_target()) break;
+                                // Every carrier gets its own strand so this path's dial, socket
+                                // read/write completions and relay loops never queue behind the
+                                // VMUX session strand or another path's carrier. The VMUX strand
+                                // itself stays reserved for mux-wide state.
+                                ppp::threading::Executors::StrandPtr carrier_strand =
+                                    make_shared_object<ppp::threading::Executors::Strand>(context->get_executor());
+                                if (NULLPTR == carrier_strand) {
+                                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
+                                    break;
+                                }
                                 ppp::app::multipath::PathManager::Attempt path_slot;
                                 if (!multipath_paths_.BeginAttempt(Executors::GetTickCount(), path_slot)) break;
                                 multipath_paths_.MarkAuthenticating(path_slot);
                                 std::shared_ptr<ppp::app::multipath::PathAttempt> path_attempt;
                                 ITransmissionPtr transmission = OpenMultipathCarrier(
-                                    context, strand, path_slot,
+                                    context, carrier_strand, path_slot,
                                     ppp::transmissions::TcpTransmissionRole::Child,
                                     false, path_attempt, y);
                                 if (!transmission || !path_attempt) {
@@ -3556,7 +3584,7 @@ namespace ppp {
 
                                 std::shared_ptr<boost::asio::ip::tcp::socket> default_socket;
                                 auto connection = make_shared_object<VirtualEthernetTcpipConnection>(
-                                    mux->AppConfiguration, context, strand, GetId(), default_socket);
+                                    mux->AppConfiguration, context, carrier_strand, GetId(), default_socket);
                                 if (!connection || !connection->ConnectMux(y, transmission,
                                     mux->Vlan, rx_ack, tx_seq)) {
                                     multipath_paths_.Fail(path_slot, Executors::GetTickCount(),
@@ -3971,7 +3999,14 @@ namespace ppp {
                 }
                 const auto mux = mux_coordinator_->Session();
                 if (mux && !mux->is_disposed()) {
-                    for (const auto& mux_path : mux->get_multipath_path_runtime_stats()) {
+                    auto mux_stats = mux->get_multipath_runtime_stats();
+                    if (mux_stats.session_id != 0) {
+                        state.vmux_session_id = mux_stats.session_id;
+                        state.reorder_events = mux_stats.reorder_events;
+                        state.reorder_buffered_bytes = mux_stats.reorder_buffered_bytes;
+                    }
+                    state.links = std::move(mux_stats.links);
+                    for (const auto& mux_path : mux_stats.paths) {
                         auto found = std::find_if(state.paths.begin(), state.paths.end(),
                             [&mux_path](const auto& path) { return path.id == mux_path.path_id; });
                         if (found == state.paths.end()) continue;
@@ -3979,6 +4014,8 @@ namespace ppp {
                         found->rx_bytes = mux_path.rx_bytes;
                         found->inflight_bytes = mux_path.inflight_bytes;
                         found->retransmit_bytes = mux_path.retransmit_bytes;
+                        found->tx_unique_payload_bytes = mux_path.tx_unique_payload_bytes;
+                        found->rx_unique_payload_bytes = mux_path.rx_unique_payload_bytes;
                         if (mux_path.has_rtt) found->rtt_ms = mux_path.rtt_ms;
                         if (mux_path.has_telemetry) {
                             found->capacity_rate_bytes_per_second =

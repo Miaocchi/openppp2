@@ -59,6 +59,18 @@ namespace ppp {
             AuthenticatedCarrierKind                                                            GetTransportCarrierKind() const noexcept override {
                 return AuthenticatedCarrierKind::Tcp;
             }
+            /** @brief Raw Linux TCP carriers expose SO_MAX_PACING_RATE. */
+            bool                                                                                SupportsPacingRate() const noexcept override;
+            /** @brief Last wire pacing rate accepted by the kernel (0 = uncapped). */
+            std::uint64_t                                                                       GetPacingRateBytesPerSecond() const noexcept override {
+                return pacing_rate_.load(std::memory_order_acquire);
+            }
+            /**
+             * @brief Applies (or clears) the per-carrier SO_MAX_PACING_RATE cap.
+             * @note  Advisory only: failure never disposes the socket, and the
+             *        same rate is not re-applied to the kernel.
+             */
+            TransmissionPacingResult                                                            ApplyPacingRate(std::uint64_t bytes_per_second) noexcept override;
             /** @brief Only raw per-flow TCP carriers can preserve receive after send shutdown. */
             bool                                                                                SupportsSendHalfClose() const noexcept override;
             /** @brief Sends TCP FIN after pending writes have drained on this transmission's strand. */
@@ -67,7 +79,7 @@ namespace ppp {
             bool                                                                                IsReceiveClosed() const noexcept override;
             /** @brief Keeps the carrier alive on a clean peer FIN (any role); see ITransmission. */
             bool                                                                                EnableReceiveHalfClose() noexcept override;
-            // Keep scheduler backpressure visible without capping TCP's in-flight window.
+            // Retained for compatibility; intentionally no longer programs TCP_NOTSENT_LOWAT.
             void                                                                                LimitMultipathUnsentBytes() noexcept;
             /**
              * @brief Reads an exact number of bytes from the socket.
@@ -134,6 +146,8 @@ namespace ppp {
             std::atomic<bool>                                                                   receive_half_close_ = { false };
             /** @brief Owned connected TCP socket. */
             std::shared_ptr<boost::asio::ip::tcp::socket>                                       socket_;
+            /** @brief Wire pacing rate last accepted by the kernel (0 = uncapped). */
+            std::atomic<std::uint64_t>                                                          pacing_rate_ = { 0 };
             /**
              * @brief Bytes read ahead of the current ReadBytes() request.
              * @note Only the transmission's single reader coroutine touches these; the socket

@@ -31,9 +31,9 @@ python tools/docs_site.py build
 
 `build` runs both Zensical builds in strict mode, then verifies generated internal links and fragments. Output is `build/docs-site/site`; generated inputs and caches also stay under `build/docs-site`. Each run cleans this workspace so removed pages cannot survive. Use `--site-url https://example.com/project/` to test another deployment base path.
 
-Only tracked files under `docs/` are published, along with this guide before its first commit. Add new documents to Git before previewing. `README.md` becomes its directory's homepage; `NAME.md` and `NAME_CN.md` share one page path. Unpaired pages show their original language with a notice. Relative Markdown links are rewritten in generated copies; explicit language peers switch languages. Repository links outside `docs/` point to GitHub. Code examples and original GitHub reading links are preserved.
+The public site includes only the pages listed in `SECTIONS` in [the builder](../../tools/docs_site.py), plus the homepage. The list defines both what is published and the order of the navigation. Architecture, design notes, handoffs, tests, and archives stay in GitHub; they are not generated or indexed by the public site. Links to existing repository-only files open on GitHub.
 
-Archives and historical audits show a history notice and are excluded from search. `archive/untracked/`, local build directories, and agent work records are excluded entirely. Original document status and verification dates are retained. Edit navigation and theme defaults in [zensical.toml](../../zensical.toml); the builder creates localized category navigation from the document tree.
+Keep an English/Chinese pair for each public page. `README.md` becomes a directory homepage; `NAME.md` and `NAME_CN.md` share a path across the two sites. Keep existing page paths when changing the navigation. [zensical.toml](../../zensical.toml) controls theme defaults.
 
 ## Publish
 

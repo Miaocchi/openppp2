@@ -250,7 +250,7 @@ namespace ssea
             }
             kf = random_next_from_key_scalar(kf);
 
-            __m128i kv = _mm_set_epi32(ks[3], ks[2], ks[1], ks[0]);
+            __m128i kv = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ks));
             __m128i v = _mm_lddqu_si128(reinterpret_cast<const __m128i*>(p + i));  // SSE3 LDDQU
             _mm_storeu_si128(reinterpret_cast<__m128i*>(p + i), _mm_xor_si128(v, kv));
         }

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.docs_site import DocsSite, canonical, check_links, heading_ids, included
+from tools.docs_site import DocsSite, canonical, check_links, heading_ids
 
 
 class DocsSiteTests(unittest.TestCase):
@@ -15,26 +15,15 @@ class DocsSiteTests(unittest.TestCase):
             'docs/README_CN.md': '# 任务\n[English](README.md)\n',
             'docs/guides/README.md': '# Guides\n',
             'docs/guides/README_CN.md': '# 指南\n',
-            'docs/guides/PAIR.md': '# Pair\n## A title\n',
-            'docs/guides/PAIR_CN.md': '# 配对\n## 中文标题\n',
-            'docs/guides/ONLY.md': '# English only\n',
-            'docs/design/README.md': '# Design\n',
-            'docs/design/ONLY_CN.md': '# 中文设计\n',
-            'docs/design/README_CN.md': '# 设计\n',
-            'docs/design/notes/README.md': '# Notes\n',
-            'docs/design/notes/README_CN.md': '# 笔记\n',
-            'docs/design/notes/DETAIL.md': '# Detail\n',
-            'docs/archive/README.md': '# Archive\n',
-            'docs/archive/README_CN.md': '# 归档\n',
-            'docs/archive/audits/README.md': '# Audits\n',
-            'docs/archive/audits/README_CN.md': '# 审计\n',
-             'docs/archive/audits/OLD.md': '# Old audit\n> Status: Historical\n',
-             'docs/development/BOOST_187_COMPATIBILITY.md': '# Boost 审计\n',
+            'docs/guides/ROUTING_AND_DNS.md': '# Routing and DNS\n## A title\n',
+            'docs/guides/ROUTING_AND_DNS_CN.md': '# 分流和 DNS\n## 中文标题\n',
+            'docs/guides/PROXY_MODE.md': '# Proxy mode\n',
+            'docs/guides/PLATFORMS_CN.md': '# 平台说明\n',
             'docs/guides/image.svg': '<svg/>',
-            'docs/archive/untracked/PRIVATE.md': '# Private\n',
-            'docs/superpowers/plans/AGENT.md': '# Agent\n',
-            'docs/build/generated.md': '# Generated\n',
-            'docs/AGENTS.md': '# Instructions\n',
+            'docs/guides/INTERNAL.md': '# Internal guide\n',
+            'docs/reference/PROJECT_INTERFACE_MAP.md': '# Interface map\n',
+            'docs/design/README.md': '# Design\n',
+            'docs/archive/audits/OLD.md': '# Old audit\n',
             'README.md': '# Repository\n',
         }
         for relative, text in self.files.items():
@@ -44,82 +33,70 @@ class DocsSiteTests(unittest.TestCase):
         self.site = DocsSite(self.root)
         self.site.discover([Path(p) for p in self.files if p.startswith('docs/')])
 
-    def test_navigation_groups_categories_and_nested_directories(self):
-        navigation = self.site.navigation('en')
-        sections = {next(iter(item)): next(iter(item.values())) for item in navigation[1:]}
-
-        self.assertEqual({'Home': 'index.md'}, navigation[0])
-        self.assertEqual({'Guides': 'guides/index.md'}, sections['Guides'][0])
-        self.assertEqual({'English only': 'guides/ONLY.md'}, sections['Guides'][1])
-        self.assertEqual({'Pair': 'guides/PAIR.md'}, sections['Guides'][2])
-        design = sections['Designs and decisions']
-        self.assertEqual({'Design': 'design/index.md'}, design[0])
-        self.assertEqual({'中文设计': 'design/ONLY.md'}, design[1])
-        self.assertEqual({'Notes': [
-            {'Notes': 'design/notes/index.md'},
-            {'Detail': 'design/notes/DETAIL.md'},
-        ]}, design[2])
-
-        archive = sections['History']
-        self.assertEqual({'Archive': 'archive/index.md'}, archive[0])
-        self.assertEqual({'Audits': [
-            {'Audits': 'archive/audits/index.md'},
-            {'Old audit': 'archive/audits/OLD.md'},
-        ]}, archive[1])
-
-        chinese = self.site.navigation('zh')
-        chinese_sections = {next(iter(item)): next(iter(item.values())) for item in chinese[1:]}
-        self.assertEqual({'设计': 'design/index.md'}, chinese_sections['设计与决策'][0])
-        self.assertEqual('笔记', next(iter(chinese_sections['设计与决策'][2])))
+    def test_navigation_uses_handbook_order_and_localized_titles(self):
+        self.assertEqual([
+            {'Home': 'index.md'},
+            {'Getting started': [{'平台说明': 'guides/PLATFORMS.md'}]},
+            {'Guides': [
+                {'Guides': 'guides/index.md'},
+                {'Proxy mode': 'guides/PROXY_MODE.md'},
+                {'Routing and DNS': 'guides/ROUTING_AND_DNS.md'},
+            ]},
+        ], self.site.navigation('en'))
+        self.assertEqual({'使用指南': [
+            {'指南': 'guides/index.md'},
+            {'Proxy mode': 'guides/PROXY_MODE.md'},
+            {'分流和 DNS': 'guides/ROUTING_AND_DNS.md'},
+        ]}, self.site.navigation('zh')[-1])
 
     def test_pairs_and_homepages_share_paths(self):
         self.assertEqual(Path('index.md'), canonical(Path('README_CN.md')))
         self.assertEqual(Path('guides/index.md'), canonical(Path('guides/README.md')))
-        variants = self.site.sources[Path('guides/PAIR.md')]
-        self.assertEqual({'en', 'zh'}, set(variants))
-        self.assertEqual(Path('guides/PAIR_CN.md'), self.site.selected(Path('guides/PAIR.md'), 'zh'))
+        page = Path('guides/ROUTING_AND_DNS.md')
+        self.assertEqual(Path('guides/ROUTING_AND_DNS_CN.md'), self.site.selected(page, 'zh'))
 
     def test_unpaired_documents_preserve_original_language(self):
-        english = self.site.render(Path('guides/ONLY.md'), 'zh')
+        english = self.site.render(Path('guides/PROXY_MODE.md'), 'zh')
         self.assertIn('仅有英文版本', english)
-        self.assertIn('# English only', english)
-        chinese = self.site.render(Path('design/ONLY.md'), 'en')
+        self.assertIn('# Proxy mode', english)
+        chinese = self.site.render(Path('guides/PLATFORMS.md'), 'en')
         self.assertIn('available only in Chinese', chinese)
-        self.assertIn('# 中文设计', chinese)
-        audit = self.site.render(Path('development/BOOST_187_COMPATIBILITY.md'), 'en')
-        self.assertIn('available only in Chinese', audit)
+        self.assertIn('# 平台说明', chinese)
 
     def test_cross_language_and_directory_links(self):
-        source = Path('guides/PAIR.md')
-        self.assertEqual('/openppp2/zh/guides/PAIR/#中文标题', self.site.destination('PAIR_CN.md#中文标题', source, 'en'))
+        source = Path('guides/ROUTING_AND_DNS.md')
+        self.assertEqual('/openppp2/zh/guides/ROUTING_AND_DNS/#中文标题', self.site.destination('ROUTING_AND_DNS_CN.md#中文标题', source, 'en'))
         self.assertEqual('/openppp2/guides/', self.site.destination('README.md', source, 'en'))
         self.assertEqual('/openppp2/', self.site.destination('../README.md', source, 'en'))
-        self.assertEqual('/openppp2/zh/guides/ONLY/', self.site.destination('ONLY.md', source, 'zh'))
-        self.assertEqual('/openppp2/guides/PAIR/', self.site.destination('PAIR.md', Path('guides/README_CN.md'), 'zh', 'English'))
-        with self.assertRaises(ValueError):
+        self.assertEqual('/openppp2/zh/guides/PROXY_MODE/', self.site.destination('PROXY_MODE.md', source, 'zh'))
+        label = '[English](ROUTING_AND_DNS.md) · [分流和 DNS](ROUTING_AND_DNS.md)'
+        self.assertEqual('[English](/openppp2/guides/ROUTING_AND_DNS/) · [分流和 DNS](/openppp2/zh/guides/ROUTING_AND_DNS/)',
+                         self.site.rewrite(label, Path('guides/README_CN.md'), 'zh'))
+        with self.assertRaisesRegex(ValueError, 'Missing documentation link'):
             self.site.destination('MISSING.md', source, 'en')
-        self.assertEqual('/openppp2/guides/PAIR/', self.site.destination('PAIR.md', Path('guides/PAIR_CN.md'), 'zh'))
+        self.assertEqual('/openppp2/guides/ROUTING_AND_DNS/', self.site.destination('ROUTING_AND_DNS.md', Path('guides/ROUTING_AND_DNS_CN.md'), 'zh'))
 
-    def test_assets_and_repository_links(self):
-        source = Path('guides/PAIR.md')
-        self.assertEqual('/openppp2/zh/guides/image.svg', self.site.destination('image.svg', source, 'zh'))
+    def test_repository_links(self):
+        source = Path('guides/ROUTING_AND_DNS.md')
+        self.assertEqual('https://github.com/Miaocchi/openppp2/blob/main/docs/design/README.md#details',
+                         self.site.destination('../design/README.md#details', source, 'zh'))
         self.assertEqual('https://github.com/Miaocchi/openppp2/blob/main/README.md', self.site.destination('../../README.md', source, 'en'))
         self.assertEqual('https://example.com/a?q=1#x', self.site.destination('https://example.com/a?q=1#x', source, 'en'))
 
     def test_rewrite_preserves_examples_and_handles_reference_and_html_links(self):
-        text = ('[Pair](PAIR_CN.md#中文标题)\n'
-                '`[Example](PAIR_CN.md)`\n'
-                '````markdown\n[Example](PAIR_CN.md)\n```\n````\n'
-                '    [Indented](PAIR_CN.md)\n'
-                '[ref]: PAIR_CN.md "Title"\n'
+        text = ('[Routing](ROUTING_AND_DNS_CN.md#中文标题)\n'
+                '`[Example](ROUTING_AND_DNS_CN.md)`\n'
+                '````markdown\n[Example](ROUTING_AND_DNS_CN.md)\n```\n````\n'
+                '    [Indented](ROUTING_AND_DNS_CN.md)\n'
+                '[ref]: ROUTING_AND_DNS_CN.md "Title"\n'
                 '<img src="image.svg">\n')
-        result = self.site.rewrite(text, Path('guides/PAIR.md'), 'en')
-        self.assertIn('[Pair](/openppp2/zh/guides/PAIR/#中文标题)', result)
-        self.assertIn('`[Example](PAIR_CN.md)`', result)
-        self.assertIn('````markdown\n[Example](PAIR_CN.md)\n```\n````', result)
-        self.assertIn('    [Indented](PAIR_CN.md)', result)
-        self.assertIn('[ref]: /openppp2/zh/guides/PAIR/ "Title"', result)
-        self.assertIn('<img src="/openppp2/guides/image.svg">', result)
+        result = self.site.rewrite(text, Path('guides/ROUTING_AND_DNS.md'), 'en')
+        self.assertIn('[Routing](/openppp2/zh/guides/ROUTING_AND_DNS/#中文标题)', result)
+        self.assertIn('`[Example](ROUTING_AND_DNS_CN.md)`', result)
+        self.assertIn('````markdown\n[Example](ROUTING_AND_DNS_CN.md)\n```\n````\n', result)
+        self.assertIn('    [Indented](ROUTING_AND_DNS_CN.md)', result)
+        self.assertIn('[ref]: /openppp2/zh/guides/ROUTING_AND_DNS/ "Title"', result)
+        self.assertIn('<img src="https://github.com/Miaocchi/openppp2/blob/main/docs/guides/image.svg">', result)
 
     def test_unicode_heading_ids_and_duplicate_fragments(self):
         result = heading_ids('# 中文标题\n## 中文标题\n## `ppp` 参数！\n')
@@ -127,15 +104,6 @@ class DocsSiteTests(unittest.TestCase):
         self.assertIn('{#中文标题-1}', result)
         self.assertIn('{#ppp-参数}', result)
         self.assertEqual('## Already {#custom}\n', heading_ids('## Already {#custom}\n'))
-
-    def test_exclusion_and_history(self):
-        for path in ('archive/untracked/PRIVATE.md', 'superpowers/plans/AGENT.md', 'build/generated.md', 'AGENTS.md'):
-            self.assertFalse(included(Path(path)))
-            self.assertNotIn(canonical(Path(path)), self.site.sources)
-        rendered = self.site.render(Path('archive/audits/OLD.md'), 'en')
-        self.assertIn('exclude: true', rendered)
-        self.assertIn('Historical material', rendered)
-        self.assertIn('> Status: Historical', rendered)
 
     def test_repeat_preparation_removes_stale_inputs_and_output(self):
         import shutil
@@ -151,7 +119,13 @@ class DocsSiteTests(unittest.TestCase):
         self.site.prepare()
         self.assertFalse(stale_input.exists())
         self.assertFalse(stale_output.exists())
-        self.assertTrue((self.site.work / 'zh/docs/guides/PAIR.md').exists())
+        for language in ('en', 'zh'):
+            pages = self.site.work / language / 'docs'
+            self.assertTrue((pages / 'guides/ROUTING_AND_DNS.md').is_file())
+            for repo_only in ('design/README.md', 'archive/audits/OLD.md',
+                              'guides/INTERNAL.md', 'guides/image.svg',
+                              'reference/PROJECT_INTERFACE_MAP.md'):
+                self.assertFalse((pages / repo_only).exists(), repo_only)
 
     def test_generated_link_checker_covers_base_paths_assets_and_fragments(self):
         site = self.root / 'site'

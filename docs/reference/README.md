@@ -1,31 +1,24 @@
-# Reference
-> Status: Active
-> Type: Reference index
-> Last verified: 2026-10-07
-> Parent index: [Documentation](../README.md)
-> Peer link: [中文](README_CN.md)
+# Configuration
 
-This index covers current, source-backed interfaces in this `openppp2/` tree. Read the task-facing pages first; protocol and native C++ pages describe implementation-coupled internals, not a third-party SDK.
+OPENPPP2 reads a JSON file. If you're setting up your first connection, start with the [minimal server and client examples](../getting-started/CONFIGURE.md). Use the table below to find a field, its default, and which side it applies to.
 
-## Start or configure `ppp`
+## Configuration blocks
 
-- [CLI Reference](CLI_REFERENCE.md) — options, startup order, aliases, and side effects.
-- [Policy CLI guide](../guides/POLICY_CLI.md) — policy check, explain, migration, export, update, and status workflows.
-- [Configuration Model](CONFIGURATION.md) — accepted JSON shape, normalization, and safe configuration practices.
+| JSON keys | Page | What to configure |
+|---|---|---|
+| `client`, `client.server` | [Client](configuration/client.md) | Server URL, client identity, local HTTP/SOCKS5 listeners, reconnection, and port mappings |
+| `server` | [Server](configuration/server.md) | Virtual IPv4/IPv6 addresses, client-to-client traffic, session resumption, and management backend |
+| `tcp`, `udp`, `websocket`, `ip` | [Transport](configuration/transport.md) | Listening addresses and ports, TCP/UDP timeouts, WS/WSS paths, and TLS certificates |
+| `key`, `transport-auth` | [Encryption and authentication](configuration/security.md) | Settings that must match on both sides, encryption keys, and optional connection authentication |
+| `mux` | [Multiplexing](configuration/mux.md) | Scheduling, buffering, retransmission, and forward error correction |
+| `client.policy`, `client.routing`, `dns`, `routing`, `geo-rules` | [Routing and DNS](configuration/routing.md) | Policy v2, legacy split routing, and DNS upstreams; use only one policy format |
+| `p2p`, `vmem`, `virr`, `vbgp`, `telemetry` | [Advanced settings](configuration/advanced.md) | Peer connectivity, file-backed buffers, rule refresh, and telemetry |
+| `concurrent`, `cdn` | [File format and shared settings](CONFIGURATION.md#3-top-level-fields) | Worker threads and extra server TCP ports |
 
-## Diagnose a running process
+## Before starting `ppp`
 
-- [Diagnostics Error System](DIAGNOSTICS_ERROR_SYSTEM.md) — error-state model and observability limits.
-- [Error Codes Reference](ERROR_CODES.md) — catalog authority and lookup rules.
-- [Error Handling API](ERROR_HANDLING_API.md) — internal C++ diagnostics API.
-- [UI Runtime Contract](UI_RUNTIME_CONTRACT.md) — versioned snapshot consumed by repository UI surfaces.
+- [File lookup and defaults](CONFIGURATION.md#1-how-a-configuration-is-loaded) — which file is loaded and what happens when a field is omitted.
+- [Command-line options](CLI_REFERENCE.md) — startup flags, platform restrictions, and settings that override JSON.
+- [Error codes](ERROR_CODES.md) — look up a code reported at startup or during a connection.
 
-## Maintain implementation-coupled boundaries
-
-- [Project Interface Map](PROJECT_INTERFACE_MAP.md) — contract inventory, classifications, and known gaps.
-- [Link-Layer Protocol Guide](LINKLAYER_PROTOCOL.md) — opcode payloads and dispatch boundary.
-- [Packet Formats](PACKET_FORMATS.md) — transport and static-echo packet codecs.
-- [Session and Control-Plane Model](TRANSMISSION_PACK_SESSIONID.md) — handshake values and INFO envelopes.
-- [VMUX Validation and Rollout Gate](VMUX_VALIDATION.md) — experimental scheduler evidence requirements.
-
-When documentation and source disagree, use the source paths named by the relevant page. Current pages are paired English/Chinese; historical material belongs outside this index.
+[简体中文](README_CN.md)

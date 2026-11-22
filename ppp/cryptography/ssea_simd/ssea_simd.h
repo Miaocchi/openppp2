@@ -236,7 +236,7 @@ namespace ssea
             }
             kf = random_next_from_key_scalar(kf);  // key for word 4m+4
 
-            __m128i kv = _mm_set_epi32(ks[3], ks[2], ks[1], ks[0]);
+            __m128i kv = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ks));
             __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i));
             _mm_storeu_si128(reinterpret_cast<__m128i*>(p + i), _mm_xor_si128(v, kv));
         }
@@ -253,15 +253,68 @@ namespace ssea
 #endif
     }
 
+    // floor(2^32 / divisor) estimates the quotient exactly or one low for a
+    // 32-bit dividend. One correction keeps the legacy swap indices unchanged.
+    inline uint32_t shuffle_remainder(uint32_t value, uint32_t divisor, uint64_t reciprocal) noexcept
+    {
+        const auto quotient = static_cast<uint32_t>((value * reciprocal) >> 32);
+        const uint32_t remainder = value - quotient * divisor;
+        return remainder < divisor ? remainder : remainder - divisor;
+    }
+
     /**
      * @brief Shuffles bytes in place using the (i ^ key) % size permutation.
      *        SIMD is NOT applicable (data-dependent random access permutation);
-     *        this is a scalar micro-optimization: power-of-two sizes use AND
-     *        instead of the 32-bit division.
+     *        power-of-two sizes use a mask, other sizes reuse one reciprocal
+     *        instead of dividing at every swap.
      * @param encoded_data Mutable target buffer.
      * @param data_size    Number of bytes.
      * @param key          Permutation key.
      */
+    template <uint32_t N>
+    inline void shuffle_data_fixed(char* encoded_data, uint32_t key) noexcept
+    {
+        int i = 0;
+        for (; i + 16 <= static_cast<int>(N); i += 16)
+        {
+            uint32_t js[16];
+            for (int k = 0; k < 16; k++)
+            {
+                js[k] = (static_cast<uint32_t>(i + k) ^ key) % N;
+            }
+            for (int k = 0; k < 16; k++)
+            {
+                std::swap(encoded_data[i + k], encoded_data[js[k]]);
+            }
+        }
+        for (; i < static_cast<int>(N); i++)
+        {
+            std::swap(encoded_data[i], encoded_data[(static_cast<uint32_t>(i) ^ key) % N]);
+        }
+    }
+
+    template <uint32_t N>
+    inline void unshuffle_data_fixed(char* encoded_data, uint32_t key) noexcept
+    {
+        int i = static_cast<int>(N) - 1;
+        for (; i >= 15; i -= 16)
+        {
+            uint32_t js[16];
+            for (int k = 0; k < 16; k++)
+            {
+                js[k] = (static_cast<uint32_t>(i - k) ^ key) % N;
+            }
+            for (int k = 0; k < 16; k++)
+            {
+                std::swap(encoded_data[i - k], encoded_data[js[k]]);
+            }
+        }
+        for (; i > -1; i--)
+        {
+            std::swap(encoded_data[i], encoded_data[(static_cast<uint32_t>(i) ^ key) % N]);
+        }
+    }
+
     inline void shuffle_data_opt(char* encoded_data, int data_size, uint32_t key) noexcept
     {
         if (nullptr == encoded_data || data_size <= 0)
@@ -269,10 +322,28 @@ namespace ssea
             return;
         }
 
+        if (data_size == 1400)
+        {
+            shuffle_data_fixed<1400>(encoded_data, key);
+            return;
+        }
+
         if (0 == (data_size & (data_size - 1)))   // power of two
         {
             const uint32_t mask = static_cast<uint32_t>(data_size - 1);
-            for (int i = 0; i < data_size; i++)
+            int i = 0;
+            for (; i + 4 <= data_size; i += 4)
+            {
+                const uint32_t j0 = (static_cast<uint32_t>(i + 0) ^ key) & mask;
+                const uint32_t j1 = (static_cast<uint32_t>(i + 1) ^ key) & mask;
+                const uint32_t j2 = (static_cast<uint32_t>(i + 2) ^ key) & mask;
+                const uint32_t j3 = (static_cast<uint32_t>(i + 3) ^ key) & mask;
+                std::swap(encoded_data[i + 0], encoded_data[j0]);
+                std::swap(encoded_data[i + 1], encoded_data[j1]);
+                std::swap(encoded_data[i + 2], encoded_data[j2]);
+                std::swap(encoded_data[i + 3], encoded_data[j3]);
+            }
+            for (; i < data_size; i++)
             {
                 const uint32_t j = (static_cast<uint32_t>(i) ^ key) & mask;
                 std::swap(encoded_data[i], encoded_data[j]);
@@ -280,9 +351,23 @@ namespace ssea
         }
         else
         {
-            for (int i = 0; i < data_size; i++)
+            const auto size = static_cast<uint32_t>(data_size);
+            const uint64_t reciprocal = (uint64_t{1} << 32) / size;
+            int i = 0;
+            for (; i + 4 <= data_size; i += 4)
             {
-                const uint32_t j = (static_cast<uint32_t>(i) ^ key) % static_cast<uint32_t>(data_size);
+                const uint32_t j0 = shuffle_remainder(static_cast<uint32_t>(i + 0) ^ key, size, reciprocal);
+                const uint32_t j1 = shuffle_remainder(static_cast<uint32_t>(i + 1) ^ key, size, reciprocal);
+                const uint32_t j2 = shuffle_remainder(static_cast<uint32_t>(i + 2) ^ key, size, reciprocal);
+                const uint32_t j3 = shuffle_remainder(static_cast<uint32_t>(i + 3) ^ key, size, reciprocal);
+                std::swap(encoded_data[i + 0], encoded_data[j0]);
+                std::swap(encoded_data[i + 1], encoded_data[j1]);
+                std::swap(encoded_data[i + 2], encoded_data[j2]);
+                std::swap(encoded_data[i + 3], encoded_data[j3]);
+            }
+            for (; i < data_size; i++)
+            {
+                const uint32_t j = shuffle_remainder(static_cast<uint32_t>(i) ^ key, size, reciprocal);
                 std::swap(encoded_data[i], encoded_data[j]);
             }
         }
@@ -301,10 +386,28 @@ namespace ssea
             return;
         }
 
+        if (data_size == 1400)
+        {
+            unshuffle_data_fixed<1400>(encoded_data, key);
+            return;
+        }
+
         if (0 == (data_size & (data_size - 1)))
         {
             const uint32_t mask = static_cast<uint32_t>(data_size - 1);
-            for (int i = data_size - 1; i > -1; i--)
+            int i = data_size - 1;
+            for (; i >= 3; i -= 4)
+            {
+                const uint32_t j0 = (static_cast<uint32_t>(i - 0) ^ key) & mask;
+                const uint32_t j1 = (static_cast<uint32_t>(i - 1) ^ key) & mask;
+                const uint32_t j2 = (static_cast<uint32_t>(i - 2) ^ key) & mask;
+                const uint32_t j3 = (static_cast<uint32_t>(i - 3) ^ key) & mask;
+                std::swap(encoded_data[i - 0], encoded_data[j0]);
+                std::swap(encoded_data[i - 1], encoded_data[j1]);
+                std::swap(encoded_data[i - 2], encoded_data[j2]);
+                std::swap(encoded_data[i - 3], encoded_data[j3]);
+            }
+            for (; i > -1; i--)
             {
                 const uint32_t j = (static_cast<uint32_t>(i) ^ key) & mask;
                 std::swap(encoded_data[i], encoded_data[j]);
@@ -312,9 +415,23 @@ namespace ssea
         }
         else
         {
-            for (int i = data_size - 1; i > -1; i--)
+            const auto size = static_cast<uint32_t>(data_size);
+            const uint64_t reciprocal = (uint64_t{1} << 32) / size;
+            int i = data_size - 1;
+            for (; i >= 3; i -= 4)
             {
-                const uint32_t j = (static_cast<uint32_t>(i) ^ key) % static_cast<uint32_t>(data_size);
+                const uint32_t j0 = shuffle_remainder(static_cast<uint32_t>(i - 0) ^ key, size, reciprocal);
+                const uint32_t j1 = shuffle_remainder(static_cast<uint32_t>(i - 1) ^ key, size, reciprocal);
+                const uint32_t j2 = shuffle_remainder(static_cast<uint32_t>(i - 2) ^ key, size, reciprocal);
+                const uint32_t j3 = shuffle_remainder(static_cast<uint32_t>(i - 3) ^ key, size, reciprocal);
+                std::swap(encoded_data[i - 0], encoded_data[j0]);
+                std::swap(encoded_data[i - 1], encoded_data[j1]);
+                std::swap(encoded_data[i - 2], encoded_data[j2]);
+                std::swap(encoded_data[i - 3], encoded_data[j3]);
+            }
+            for (; i > -1; i--)
+            {
+                const uint32_t j = shuffle_remainder(static_cast<uint32_t>(i) ^ key, size, reciprocal);
                 std::swap(encoded_data[i], encoded_data[j]);
             }
         }

@@ -55,7 +55,11 @@ ENDIF()
 # ADD_DEFINITIONS(-DANCIL_FD_BUFFER_STRUCT)
 # ADD_DEFINITIONS(-DCURLINC_CURL)
 # ADD_DEFINITIONS(-DTRANSMISSION_O1)
-OPTION(ENABLE_SYSNAT "Enable SYSNAT kernel-bypass traffic control (Linux only)" OFF)
+SET(ENABLE_SYSNAT_DEFAULT OFF)
+IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+    SET(ENABLE_SYSNAT_DEFAULT ON)
+ENDIF()
+OPTION(ENABLE_SYSNAT "Enable SYSNAT kernel-bypass traffic control (Linux only)" ${ENABLE_SYSNAT_DEFAULT})
 IF(ENABLE_SYSNAT)
     ADD_DEFINITIONS(-DSYSNAT)
 ENDIF()
@@ -175,9 +179,13 @@ IF(NOT MSVC)
     ADD_COMPILE_OPTIONS(-Wno-deprecated-declarations)
 ENDIF()
 
-# When compiling only linux kernel distributions >= 5.10 and later, 
-# You can enable this macro to get the new io_uring asynchronous event driver model support.
-OPTION(ENABLE_IO_URING "Enable io_uring async event driver for Boost.Asio (Linux kernel >= 5.10)" OFF)
+# Linux production builds use io_uring by default. Compatibility builds for
+# kernels before 5.10 must explicitly pass -DENABLE_IO_URING=OFF.
+SET(ENABLE_IO_URING_DEFAULT OFF)
+IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+    SET(ENABLE_IO_URING_DEFAULT ON)
+ENDIF()
+OPTION(ENABLE_IO_URING "Enable io_uring async event driver for Boost.Asio (Linux kernel >= 5.10)" ${ENABLE_IO_URING_DEFAULT})
 IF(ENABLE_IO_URING AND PLATFORM_SYSTEM_LINUX)
     ADD_DEFINITIONS(-DBOOST_ASIO_HAS_IO_URING=1)
     ADD_DEFINITIONS(-DBOOST_ASIO_DISABLE_EPOLL=1)
@@ -193,31 +201,16 @@ ELSE()
     CHECK_CXX_COMPILER_FLAG("-std=c++1z" COMPILER_SUPPORTS_CXX1Z)
 ENDIF()
 
-# AES-NI is safe to compile into x86_64 binaries: the EVP wrapper checks CPUID
-# before attaching the accelerated backend and transparently falls back to
-# OpenSSL when unavailable. Other architectures default off; x86_64 remains
-# explicitly opt-out with -DENABLE_SIMD=OFF for generic builds.
+# Generic builds must not assume AES-NI, AVX, or AVX2.  The optimized
+# production profiles opt in explicitly (see the Linux package workflows).
 SET(ENABLE_SIMD_DEFAULT OFF)
-IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|X86_64|amd64|AMD64)$")
-    SET(ENABLE_SIMD_DEFAULT ON)
-ENDIF()
-IF(MSVC)
-    IF(CMAKE_GENERATOR_PLATFORM MATCHES "^(ARM64|arm64)$"
-        OR CMAKE_VS_PLATFORM_NAME MATCHES "^(ARM64|arm64)$")
-        SET(ENABLE_SIMD_DEFAULT OFF)
-    ELSE()
-        SET(ENABLE_SIMD_DEFAULT ON)
-    ENDIF()
-ENDIF()
 OPTION(ENABLE_SIMD "Enable x86/x64 SIMD AES-NI implementation" ${ENABLE_SIMD_DEFAULT})
 
-# Enable SSEA SIMD acceleration (SSSE3/SSE4.1/SSE4.2/AVX/AVX2) for the
-# ssea-simd codec/transform suite.  Requires ENABLE_SIMD=ON as a prerequisite.
-# When OFF, ssea-simd falls back to SSE2-only kernels at runtime regardless
-# of the CPU's actual capability, because the higher-level intrinsics are
-# gated behind compiler feature macros that are only defined when the
-# corresponding -m flags are passed.
-OPTION(ENABLE_SSEA_SIMD "Enable SSEA SIMD acceleration (SSSE3+AVX2, requires ENABLE_SIMD)" OFF)
+# SSEA's dispatchable implementations are compiled only when the SIMD profile
+# is selected.  Their instruction flags are applied to the two translation
+# units that own the runtime dispatch; they must never leak into the rest of
+# the executable.
+OPTION(ENABLE_SSEA_SIMD "Enable SSSE3+AVX2 SSEA SIMD acceleration (requires ENABLE_SIMD)" ${ENABLE_SIMD_DEFAULT})
 
 OPTION(ENABLE_TESTS "Build unit tests (GTest)" OFF)
 OPTION(ENABLE_XTCP_WINDOWS_TESTS "Build the offline Windows XTCP lifecycle test" OFF)
@@ -230,9 +223,16 @@ OPTION(ENABLE_COVERAGE "Enable LLVM source coverage instrumentation" OFF)
 SET(ENABLE_XTCP_DEFAULT OFF)
 IF(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
     SET(ENABLE_XTCP_DEFAULT ON)
+ELSEIF(ANDROID)
+    SET(ENABLE_XTCP_DEFAULT ON)
+ELSEIF(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8
+    AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "ARM|arm|aarch"
+    AND NOT CMAKE_GENERATOR_PLATFORM MATCHES "ARM|arm")
+    SET(ENABLE_XTCP_DEFAULT ON)
 ENDIF()
-# Linux desktop builds retain their existing default. Windows and Android can
-# opt in explicitly while their platform build paths receive broader coverage.
+# XTCP is compiled into every supported production target. Runtime selection
+# remains explicit (--tcp-stack=xtcp); unsupported Windows ARM/x86 targets
+# retain the native/lwIP-only build.
 OPTION(ENABLE_XTCP "Build with the pinned XTCP userspace TCP/IP stack" ${ENABLE_XTCP_DEFAULT})
 SET(XTCP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third-party/xtcp" CACHE PATH "Path to the pinned XTCP source tree")
 IF(ENABLE_COVERAGE AND NOT MSVC)
@@ -305,40 +305,51 @@ IF(ENABLE_SIMD)
 ENDIF()
 
 IF(__SIMD__)
-    # Add compiler flags per toolchain.
+    # Keep ISA flags off the target-wide compiler command line.  AES and SSEA
+    # contain runtime CPUID dispatch, so only their owning translation units
+    # may be compiled with the corresponding instruction sets.
     IF(MSVC)
+        SET(SIMD_BASE_COMPILE_OPTIONS)
         IF(CMAKE_SIZEOF_VOID_P EQUAL 4)
-            ADD_COMPILE_OPTIONS(/arch:SSE2)
+            SET(SIMD_BASE_COMPILE_OPTIONS /arch:SSE2)
         ENDIF()
+        SET(AES_COMPILE_OPTIONS ${SIMD_BASE_COMPILE_OPTIONS})
+        SET(SSEA_COMPILE_OPTIONS ${SIMD_BASE_COMPILE_OPTIONS})
     ELSE()
-        ADD_COMPILE_OPTIONS(-maes -msse2 -mpclmul)
+        SET(SIMD_BASE_COMPILE_OPTIONS -msse2)
+        SET(AES_COMPILE_OPTIONS -maes -mpclmul ${SIMD_BASE_COMPILE_OPTIONS})
+        SET(SSEA_COMPILE_OPTIONS ${SIMD_BASE_COMPILE_OPTIONS})
     ENDIF()
 
-    # Add the AES_NI compiler macro.
-    ADD_DEFINITIONS(-D__SIMD__)
+    IF(NOT MSVC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8.0)
+        LIST(APPEND AES_COMPILE_OPTIONS -march=westmere -fno-stack-protector)
+        LIST(APPEND SSEA_COMPILE_OPTIONS -march=westmere -fno-stack-protector)
+    ENDIF()
 
-    # SSEA SIMD acceleration: enable the instruction sets needed by the
-    # ssea-simd codec/transform suite so the compiler defines the feature
-    # macros (__SSSE3__, __SSE4_1__, __SSE4_2__, __AVX__, __AVX2__,
-    # __POPCNT__) that gate the higher-level intrinsics.  Without these
-    # flags the runtime CPUID probe detects the level, but the compiled
-    # code for that level does not exist, so dispatch falls back to SSE2.
     IF(ENABLE_SSEA_SIMD)
         IF(NOT MSVC AND PLATFORM_ARCH_X86)
-            ADD_COMPILE_OPTIONS(-mssse3 -msse4.1 -msse4.2 -mpopcnt -mavx -mavx2)
+            LIST(APPEND SSEA_COMPILE_OPTIONS
+                -mssse3 -msse4.1 -msse4.2 -mpopcnt -mavx -mavx2)
         ENDIF()
     ENDIF()
 
-    # Additional options for the old version of GCC.
-    IF(NOT MSVC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8.0)
-        ADD_COMPILE_OPTIONS(-march=westmere)
-        ADD_COMPILE_OPTIONS(-fno-stack-protector)
-    ENDIF()
+    ADD_DEFINITIONS(-D__SIMD__)
 
-    # AES is enabled, the source code of AES/128/256/CFB related to the library needs to be compiled.
-    FILE(GLOB_RECURSE AES_NI_SOURCE_FILES 
-        ${PROJECT_SOURCE_DIR}/common/aesni/impl/*.c 
+    FILE(GLOB_RECURSE AES_NI_SOURCE_FILES
+        ${PROJECT_SOURCE_DIR}/common/aesni/impl/*.c
         ${PROJECT_SOURCE_DIR}/common/aesni/impl/*.cpp)
+    LIST(APPEND AES_NI_SOURCE_FILES
+        ${PROJECT_SOURCE_DIR}/common/aesni/aes.cpp)
+
+    SET_SOURCE_FILES_PROPERTIES(${AES_NI_SOURCE_FILES}
+        PROPERTIES COMPILE_OPTIONS "${AES_COMPILE_OPTIONS}")
+    SET_SOURCE_FILES_PROPERTIES(
+        ${PROJECT_SOURCE_DIR}/ppp/net/native/checksum.cpp
+        PROPERTIES COMPILE_OPTIONS "${SIMD_BASE_COMPILE_OPTIONS}")
+    SET_SOURCE_FILES_PROPERTIES(
+        ${PROJECT_SOURCE_DIR}/ppp/cryptography/ssea.cpp
+        ${PROJECT_SOURCE_DIR}/ppp/transmissions/ITransmission.cpp
+        PROPERTIES COMPILE_OPTIONS "${SSEA_COMPILE_OPTIONS}")
 ENDIF()
 
 # According to the type of operating system to determine whether you need to check whether the compiler supports C/C++17, 

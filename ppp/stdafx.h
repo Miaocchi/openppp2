@@ -401,7 +401,7 @@ static constexpr int                                                        PPP_
 static constexpr int                                                        PPP_MUX_TX_CTRL_BUDGET_FRAMES     = 32;       /* max ctrl frames drained before data per turn */
 static constexpr int                                                        PPP_MUX_FLOW_UNKNOWN_CID_MAX      = 64;       /* unknown-cid budget (P0 drop path) */
 static constexpr int                                                        PPP_MUX_FLOW_MAX_OPEN             = 4096;     /* max open logical flows + pre-open */
-static constexpr int                                                        PPP_MUX_FLOW_SESSION_REORDER_BYTES = 32 << 20; /* 32 MiB session-wide reorder soft cap; >= the session send window */
+static constexpr int                                                        PPP_MUX_FLOW_SESSION_REORDER_BYTES = 64 << 20; /* 64 MiB session-wide reorder soft cap; matches the bounded 64 MiB reliability send window */
 static constexpr int                                                        PPP_MUX_REORDER_HARD_FACTOR     = 2;        /* reorder caps are soft: above cap the delivering carrier is paused (backpressure); only cap*this rejects */
 static constexpr int                                                        PPP_MUX_RX_PAUSE_POLL_MS        = 2;        /* ms a paused carrier's forwarding coroutine sleeps between resume checks */
 static constexpr int                                                        PPP_MUX_RX_PAUSE_MAX_MS         = 200;      /* ms one pause may last before the carrier reads again (the missing frame may be queued on it) */
@@ -411,7 +411,7 @@ static constexpr int                                                        PPP_
 static constexpr int                                                        PPP_MUX_TX_BACKLOG_STALL_TIMEOUT = 8000;    /* ms the data tx queue may stay backlogged before the session is rebuilt (D11 watchdog) */
 static constexpr int                                                        PPP_MUX_TURBO_FACTOR_MAX        = 3;        /* turbo dynamic pool: max multiplier of the --tun-mux base (pool_hard_max = base * this) */
 static constexpr int                                                        PPP_MUX_TURBO_CONTROL_COOLDOWN  = 3000;     /* ms minimum interval between turbo pool grow/shrink steps (hysteresis vs jitter) */
-static constexpr int                                                        PPP_MUX_RELIABILITY_RTX_BYTES   = 32 << 20; /* 32 MiB session-wide retransmit send window (unacked bytes); throughput <= window / RTT */
+static constexpr int                                                        PPP_MUX_RELIABILITY_RTX_BYTES   = 64 << 20; /* 64 MiB session-wide retransmit send window; bounded for three high-BDP carriers */
 static constexpr int                                                        PPP_MUX_RELIABILITY_RTX_MAX_ATTEMPTS = 8;   /* per-frame retransmit attempts before flow/session teardown */
 static constexpr int                                                        PPP_MUX_TX_FLOW_MAX_FRAMES      = 256;      /* per-flow TX queue frame cap (DoS bound, prevents single flow monopolizing session) */
 static constexpr int                                                        PPP_MUX_TX_FLOW_MAX_BYTES       = 1 << 20;  /* 1 MiB per-flow TX queue byte cap */

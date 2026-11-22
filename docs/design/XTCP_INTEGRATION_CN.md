@@ -269,8 +269,9 @@ NDI TSO 仍 default-off；pacing quantum 退款候选未混入本轮；没有启
 
 XTCP 依赖来自已确认授权的内部仓库。许可证不再阻断内部 laboratory 集成。源码通过 `tools/prepare_xtcp.sh` 固定下载并校验，解包目录中的 `.openppp2-xtcp-revision` 必须等于上述 revision。
 
-当前完成的是 **Linux、client、IPv4 TCP、显式 runtime opt-in 的 XTCP runtime**。Linux 原生和交叉 CMake 构建默认启用 XTCP 编译集成；运行时仍必须显式选择 `--tcp-stack=xtcp`，不能把编译集成误认为所有平台的 production runtime。
+当前支持的 Linux、Windows x64 和 Android production target 默认编入 XTCP；运行时仍必须显式选择 `--tcp-stack=xtcp`。所有这些平台使用 `third-party/xtcp` 固定源码和根 CMake 的生产 target 设置。
 
+Windows x86/ARM64、macOS 和 iOS 保持 XTCP-disabled target；不支持的平台显式请求 XTCP 时继续 fail-closed。
 - `PPP_ENABLE_XTCP=1`：固定依赖已编入 artifact；
 - `PPP_XTCP_RUNTIME_WIRED=1`：OpenPPP2 packet、listener、bridge、启动和 teardown 已接线。
 
@@ -278,8 +279,8 @@ XTCP 依赖来自已确认授权的内部仓库。许可证不再阻断内部 la
 
 当前明确不支持：
 
-- 跨平台 production rollout 或通用性能承诺；Linux 默认编译集成仍需按部署矩阵验收；
-- IPv6、UDP、IPv4 分片、iOS；Windows/Android 目前仅 opt-in 构建接入，未完成生产运行验收（见本文开头）；
+- 跨平台 production rollout 或通用性能承诺仍需按部署矩阵验收；默认编译集成不等于运行时默认选择；
+- IPv6、UDP、IPv4 分片、iOS；Windows/Android 的真实生产运行验收仍未完成（见本文开头）；
 - 运行中热切换；
 - MIMT；
 - 多 owner executor；
@@ -3143,3 +3144,31 @@ namespace cleanup 和监控完整性检查通过。共享主机且只有两轮�
 Windows、移动平台与生产网络行为未验证。证据归档在
 `build/private/xtcp-c1fc9d6-validation/`，本任务远端构建目录已清理。
 主仓库没有提交、推送，也没有提交 PR。
+
+### 11.30 UL direct-upload batch 与 gather 的 TUN 对照（2026-11-21）
+
+为验证“同一 AES-CFB 批次加密后一次 carrier write”是否优于默认 gather，
+新增生产路径 `ITransmission::WriteMany`：最多 4 个 payload 先用
+`Ciphertext::EncryptManyTo` 做独立 CFB 链的批量调度，再在长度保持型
+transport cipher 下写入一个连续 frame buffer；失败时回退逐 frame 加密/写入。
+`OPENPPP2_XTCP_DIRECT_UPLOAD_BATCH=4` 显式启用，默认仍为 1（gather）。
+
+测试为单机 Linux network namespace，client TUN → XTCP/TCP carrier → server
+TUN → target iperf3，4 条 TCP 流，10 秒（带完整性检查的轮次为 6 秒），
+同一构建、同一主机、未做 CPU/IRQ 隔离或 GSO 调优；每组前杀掉遗留 ppp 进程。
+每次另传 8 MiB 伪随机数据并在 target 侧做 SHA-256 校验。
+
+| 配置 | 吞吐 (Gbps) | 相对默认 gather |
+| --- | ---: | ---: |
+| 默认 gather（多次） | 0.392 / 0.405 / 0.390 / 0.409 | 1.00× |
+| batch=4 连续 frame（多次） | 0.359 / 0.384 / 0.362 / 0.363 | 0.89–0.95× |
+| batch=2 连续 frame | 0.306 | 0.75× |
+| batch=4 独立 frame（旧路径） | 0.313 | 0.77× |
+
+batch=4 的 P99 约 7.9–8.3 ms，默认 gather 约 7.1–8.0 ms；两者均
+0 retransmit，8 MiB 完整性校验全部通过。结论是同一队列内可合并的
+64 KiB gather frame 仍优于把 4 个独立 CFB 链拼成一个 write：后者减少
+syscall，但保留了 4 条 AES 链、4 个 protocol header 加密和 4 个 frame
+边界，且总写入字节没有减少。因此默认不改变，batch 仅作为
+“相邻 chunk 预算不同、无法 gather”时的可选路径；本机数据不外推到
+多核聚合、生产 NIC 或 Windows 环境。

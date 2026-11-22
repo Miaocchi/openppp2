@@ -276,6 +276,40 @@ void BM_DeltaDecode(benchmark::State& state) {
 }
 BENCHMARK(BM_DeltaDecode)->Arg(64)->Arg(512)->Arg(1400)->Arg(4096)->Arg(16384);
 
+// --- Delta in-place (AVX2) ---
+void BM_DeltaEncodeInplaceAVX2(benchmark::State& state) {
+    const int N = static_cast<int>(state.range(0));
+    std::vector<uint8_t> data(N);
+    fill_pattern(data.data(), N);
+    for (auto _ : state) {
+        int outlen = ssea::delta_encode_inplace_avx2(data.data(), N, kKey);
+        benchmark::DoNotOptimize(outlen);
+    }
+    state.SetBytesProcessed(state.iterations() * N);
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_DeltaEncodeInplaceAVX2)->Arg(64)->Arg(512)->Arg(1400)->Arg(4096)->Arg(16384);
+
+void BM_DeltaDecodeInplaceAVX2(benchmark::State& state) {
+    const int N = static_cast<int>(state.range(0));
+    std::vector<uint8_t> data(N);
+    fill_pattern(data.data(), N);
+    std::unique_ptr<uint8_t[]> encoded;
+    int enclen = ssea::delta_encode_avx2(data.data(), N, kKey, encoded);
+    if (enclen != N || !encoded) {
+        state.SkipWithError("delta_encode failed in setup");
+        return;
+    }
+    std::memcpy(data.data(), encoded.get(), static_cast<size_t>(N));
+    for (auto _ : state) {
+        int outlen = ssea::delta_decode_inplace_avx2(data.data(), N, kKey);
+        benchmark::DoNotOptimize(outlen);
+    }
+    state.SetBytesProcessed(state.iterations() * N);
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_DeltaDecodeInplaceAVX2)->Arg(64)->Arg(512)->Arg(1400)->Arg(4096)->Arg(16384);
+
 // --- Shuffle ---
 void BM_Shuffle(benchmark::State& state) {
     const int N = static_cast<int>(state.range(0));

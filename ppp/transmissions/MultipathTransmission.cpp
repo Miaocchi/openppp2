@@ -1,11 +1,11 @@
 #include <ppp/transmissions/MultipathTransmission.h>
+#include <ppp/configurations/AppConfiguration.h>
+#include <ppp/diagnostics/Telemetry.h>
 #include <ppp/transmissions/ITcpipTransmission.h>
 #include <ppp/transmissions/TransmissionFrameLimits.h>
 
 #include <algorithm>
 #include <cstring>
-#include <functional>
-#include <limits>
 #include <openssl/crypto.h>
 
 namespace ppp::transmissions {
@@ -44,6 +44,24 @@ public:
     AuthenticatedCarrierKind GetAuthenticatedCarrierKind() const noexcept override {
         auto owner = owner_.lock();
         return owner ? owner->GetAuthenticatedCarrierKind() : AuthenticatedCarrierKind::None;
+    }
+
+    // The VMUX/scheduler holds this logical channel, so pacing must be
+    // forwarded to the one raw carrier that actually writes the bytes.
+    bool SupportsPacingRate() const noexcept override {
+        auto owner = owner_.lock();
+        return owner && owner->SupportsPacingRate();
+    }
+
+    std::uint64_t GetPacingRateBytesPerSecond() const noexcept override {
+        auto owner = owner_.lock();
+        return owner ? owner->GetPacingRateBytesPerSecond() : 0;
+    }
+
+    TransmissionPacingResult ApplyPacingRate(std::uint64_t bytes_per_second) noexcept override {
+        auto owner = owner_.lock();
+        return owner ? owner->ApplyPacingRate(bytes_per_second)
+            : TransmissionPacingResult::Unsupported;
     }
 
     AuthenticatedCarrierMethod GetAuthenticatedCarrierMethod() const noexcept override {
@@ -195,11 +213,9 @@ bool MultipathTransmission::StartClientHandshake(YieldContext& y) noexcept {
     if (!SendHandshakeFrame(y, first)) return false;
     std::vector<std::uint8_t> response, unused;
     if (!ReceiveHandshakeFrame(y, response)) return false;
-    {
-        std::lock_guard<std::mutex> lock(secure_mutex_);
-        if (!secure_.ProcessHandshakeMessage(response.data(), response.size(), unused) || !unused.empty()) return false;
-        return secure_.IsReady();
-    }
+    std::lock_guard<std::mutex> lock(secure_mutex_);
+    return secure_.ProcessHandshakeMessage(response.data(), response.size(), unused) &&
+        unused.empty() && secure_.IsReady();
 }
 
 bool MultipathTransmission::StartServerHandshake(YieldContext& y) noexcept {
@@ -322,6 +338,36 @@ bool MultipathTransmission::ReadSecureRecord(YieldContext& y, std::uint8_t& type
     return ReadRecord(y, type, data);
 }
 
+bool MultipathTransmission::ReadAdmissionResponse(YieldContext& y, std::uint8_t& type,
+    std::vector<std::uint8_t>& data) noexcept {
+    if (role_ != SecureRole::NetworkClientInitiator || !ReadSecureRecord(y, type, data)) return false;
+    const bool first = !std::exchange(admission_response_seen_, true);
+    if (type != BinaryFramingOffer) return type != BinaryFramingAck;
+    const auto configuration = GetConfiguration();
+    if (!first || !carrier_ || !configuration || configuration->key.plaintext ||
+        data.size() != 1 || data.front() != BinaryFramingVersion) return false;
+
+    // The matching ACK is the client's last Base94 write. The responder reads
+    // it before emitting its first binary record (the actual admission reply).
+    return WriteSecureRecord(y, BinaryFramingAck, &BinaryFramingVersion, 1) &&
+        carrier_->EnableAuthenticatedMultipathBinaryFraming() &&
+        ReadSecureRecord(y, type, data) && type != BinaryFramingOffer && type != BinaryFramingAck;
+}
+
+bool MultipathTransmission::NegotiateBinaryFramingServer(YieldContext& y) noexcept {
+    const auto configuration = GetConfiguration();
+    if (role_ != SecureRole::NetworkServerResponder || !configuration || !carrier_ || disposed_ ||
+        application_io_started_.load(std::memory_order_acquire) || !IsSecureReady()) return false;
+    if (configuration->key.plaintext || carrier_->IsAuthenticatedMultipathBinaryFramingEnabled()) return true;
+
+    std::uint8_t type = 0;
+    std::vector<std::uint8_t> data;
+    return WriteSecureRecord(y, BinaryFramingOffer, &BinaryFramingVersion, 1) &&
+        ReadSecureRecord(y, type, data) && type == BinaryFramingAck &&
+        data.size() == 1 && data.front() == BinaryFramingVersion &&
+        carrier_->EnableAuthenticatedMultipathBinaryFraming();
+}
+
 bool MultipathTransmission::BeginApplicationIO() noexcept {
     if (reader_active_.load(std::memory_order_acquire)) return false;
     bool expected = false;
@@ -343,7 +389,8 @@ std::shared_ptr<ITransmission> MultipathTransmission::CreateMuxSubchannel() noex
         if (mux_subchannel_created_) return nullptr;
         auto self = std::static_pointer_cast<MultipathTransmission>(shared_from_this());
         auto channel = make_shared_object<MultipathLogicalTransmission>(self, MuxRecord);
-        if (!channel) return nullptr;
+        if (!channel || (carrier_->IsAuthenticatedMultipathBinaryFramingEnabled() &&
+            !channel->EnableAuthenticatedMultipathBinaryFraming())) return nullptr;
         mux_subchannel_ = channel;
         mux_subchannel_created_ = true;
         return channel;
@@ -379,20 +426,7 @@ void MultipathTransmission::ApplicationPump(YieldContext& y) noexcept {
         }
         LogicalChannel* channel = type == ApplicationRecord ? &main_channel_ :
             (type == MuxRecord ? &mux_channel_ : nullptr);
-        if (!channel || plaintext.size() > MaxLogicalBytes) break;
-        YieldContext::Anchor wake;
-        {
-            std::lock_guard<std::mutex> lock(channels_mutex_);
-            if (channel->closed || channel->records.size() >= MaxLogicalRecords ||
-                plaintext.size() > MaxLogicalBytes - channel->queued_bytes) break;
-            const std::size_t record_size = plaintext.size();
-            channel->queued_bytes += record_size;
-            try { channel->records.push_back(std::move(plaintext)); }
-            catch (...) { channel->queued_bytes -= record_size; break; }
-            wake = channel->waiter;
-            channel->waiter = {};
-        }
-        wake.R();
+        if (!channel || !QueueLogicalRecord(y, *channel, std::move(plaintext))) break;
     }
     YieldContext::Anchor main_wake, mux_wake;
     {
@@ -410,9 +444,39 @@ void MultipathTransmission::ApplicationPump(YieldContext& y) noexcept {
     application_pump_stopped_.store(true, std::memory_order_release);
 }
 
+bool MultipathTransmission::QueueLogicalRecord(YieldContext& y, LogicalChannel& channel,
+    std::vector<std::uint8_t>&& plaintext) noexcept {
+    const std::size_t size = plaintext.size();
+    for (;;) {
+        YieldContext::Anchor wake, pause;
+        {
+            std::lock_guard<std::mutex> lock(channels_mutex_);
+            if (channel.closed || disposed_) return false;
+            if (channel.records.size() < MaxLogicalRecords && size <= MaxLogicalBytes - channel.queued_bytes) {
+                try { channel.records.push_back(std::move(plaintext)); }
+                catch (...) { return false; }
+                channel.queued_bytes += size;
+                wake = std::exchange(channel.waiter, {});
+            } else {
+                // Keep just this authenticated record pending. Stopping carrier reads
+                // propagates VMUX's receive pause instead of retiring a healthy link.
+                pause = y.Arm();
+                if (!pause) return false;
+                channel.pump_waiter = pause;
+            }
+        }
+        if (!pause) {
+            wake.R();
+            return true;
+        }
+        ppp::telemetry::Count("multipath.receive.backpressure", 1);
+        if (!y.Suspend(pause)) return false;
+    }
+}
+
 void MultipathTransmission::CloseLogicalChannel(std::uint8_t type) noexcept {
     if (type != MuxRecord) return;
-    YieldContext::Anchor wake;
+    YieldContext::Anchor wake, pump_wake;
     {
         std::lock_guard<std::mutex> lock(channels_mutex_);
         mux_channel_.closed = true;
@@ -423,8 +487,10 @@ void MultipathTransmission::CloseLogicalChannel(std::uint8_t type) noexcept {
         mux_channel_.plaintext_offset = 0;
         wake = mux_channel_.waiter;
         mux_channel_.waiter = {};
+        pump_wake = std::exchange(mux_channel_.pump_waiter, {});
     }
     wake.R();
+    pump_wake.R();
 }
 
 std::shared_ptr<Byte> MultipathTransmission::ReadLogicalBytes(YieldContext& y,
@@ -448,11 +514,14 @@ std::shared_ptr<Byte> MultipathTransmission::ReadLogicalBytes(YieldContext& y,
     for (;;) {
         YieldContext::Anchor anchor = y.Arm();
         if (!anchor) return nullptr;
-        bool wait = false;
+        YieldContext::Anchor pump_wake;
+        bool wait = false, failed = false;
         {
             std::lock_guard<std::mutex> lock(channels_mutex_);
             if (channel.closed || disposed_) return nullptr;
-            while (!channel.records.empty()) {
+            while (!channel.records.empty() &&
+                channel.plaintext.size() - channel.plaintext_offset < static_cast<std::size_t>(length)) {
+                if (!pump_wake) pump_wake = std::exchange(channel.pump_waiter, {});
                 std::vector<std::uint8_t> record = std::move(channel.records.front());
                 channel.records.pop_front();
                 channel.queued_bytes -= record.size();
@@ -462,16 +531,17 @@ std::shared_ptr<Byte> MultipathTransmission::ReadLogicalBytes(YieldContext& y,
                     channel.plaintext_offset = 0;
                 }
                 try { channel.plaintext.insert(channel.plaintext.end(), record.begin(), record.end()); }
-                catch (...) { return nullptr; }
+                catch (...) { failed = true; break; }
             }
-            if (channel.plaintext.size() - channel.plaintext_offset >= static_cast<std::size_t>(length)) {
-                break;
-            } else {
+            if (!failed && channel.plaintext.size() - channel.plaintext_offset < static_cast<std::size_t>(length)) {
                 channel.waiter = anchor;
                 wait = true;
             }
         }
-        if (wait) y.Suspend(anchor);
+        pump_wake.R();
+        if (failed) return nullptr;
+        if (!wait) break;
+        if (!y.Suspend(anchor)) return nullptr;
     }
     auto output = BufferswapAllocator::MakeByteArray(BufferAllocator, length);
     if (!output) return nullptr;
@@ -550,7 +620,7 @@ bool MultipathTransmission::HandshakeServer(YieldContext& y, const Int128& sessi
 
 void MultipathTransmission::Dispose() noexcept {
     if (disposed_.exchange(true, std::memory_order_acq_rel)) return;
-    YieldContext::Anchor main_wake, mux_wake;
+    YieldContext::Anchor main_wake, mux_wake, main_pump_wake, mux_pump_wake;
     {
         std::lock_guard<std::mutex> lock(channels_mutex_);
         main_channel_.closed = true;
@@ -559,9 +629,13 @@ void MultipathTransmission::Dispose() noexcept {
         mux_wake = mux_channel_.waiter;
         main_channel_.waiter = {};
         mux_channel_.waiter = {};
+        main_pump_wake = std::exchange(main_channel_.pump_waiter, {});
+        mux_pump_wake = std::exchange(mux_channel_.pump_waiter, {});
     }
     main_wake.R();
     mux_wake.R();
+    main_pump_wake.R();
+    mux_pump_wake.R();
     {
         std::lock_guard<std::mutex> lock(secure_mutex_);
         psk_.Clear();
@@ -583,6 +657,20 @@ boost::asio::ip::tcp::endpoint MultipathTransmission::GetRemoteEndPoint() noexce
 
 AuthenticatedCarrierKind MultipathTransmission::GetAuthenticatedCarrierKind() const noexcept {
     return carrier_ ? carrier_->GetAuthenticatedCarrierKind() : AuthenticatedCarrierKind::None;
+}
+
+bool MultipathTransmission::SupportsPacingRate() const noexcept {
+    return carrier_ && carrier_->SupportsPacingRate();
+}
+
+std::uint64_t MultipathTransmission::GetPacingRateBytesPerSecond() const noexcept {
+    return carrier_ ? carrier_->GetPacingRateBytesPerSecond() : 0;
+}
+
+TransmissionPacingResult MultipathTransmission::ApplyPacingRate(
+    std::uint64_t bytes_per_second) noexcept {
+    return carrier_ ? carrier_->ApplyPacingRate(bytes_per_second)
+        : TransmissionPacingResult::Unsupported;
 }
 
 bool MultipathTransmission::IsAuthenticatedCarrierBindingActive() const noexcept { return IsSecureReady(); }
@@ -615,50 +703,55 @@ bool MultipathTransmission::WriteLogicalBytes(std::shared_ptr<Byte> packet, int 
         std::lock_guard<std::mutex> lock(channels_mutex_);
         if (mux_channel_.closed || !mux_subchannel_created_) return false;
     }
+    constexpr std::size_t chunk_size = ppp::cryptography::noise::MultipathRecordMaxPlaintext;
     const std::size_t total = static_cast<std::size_t>(packet_length);
-    const std::size_t chunk_size = ppp::cryptography::noise::MultipathRecordMaxPlaintext;
-    auto self = std::static_pointer_cast<MultipathTransmission>(shared_from_this());
-    auto next = std::make_shared<std::function<void(std::size_t)>>();
-    if (!next) return false;
-    *next = [self, packet, offset, total, chunk_size, next, cb, record_type](std::size_t offset_in_packet) noexcept {
-        if (offset_in_packet == std::numeric_limits<std::size_t>::max()) {
-            (*next) = nullptr;
-            cb(false);
-            return;
-        }
-        if (!self || self->disposed_) {
-            (*next) = nullptr;
-            cb(false);
-            return;
-        }
-        if (offset_in_packet >= total) {
-            (*next) = nullptr;
-            cb(true);
-            return;
-        }
-        const std::size_t count = std::min(chunk_size, total - offset_in_packet);
-        const bool accepted = self->SubmitSealedRecord(record_type,
-            reinterpret_cast<const std::uint8_t*>(packet.get() + offset + offset_in_packet), count,
-            [next, offset_in_packet, count](bool ok) noexcept {
-                auto fn = *next;
-                if (!fn) return;
-                if (!ok) {
-                    *next = nullptr;
-                    fn(std::numeric_limits<std::size_t>::max());
-                } else {
-                    fn(offset_in_packet + count);
-                }
-            });
-        if (!accepted) {
-            auto fn = *next;
-            *next = nullptr;
-            if (fn) {
-                if (offset_in_packet == std::numeric_limits<std::size_t>::max()) cb(false);
-                else fn(std::numeric_limits<std::size_t>::max());
+    const auto* data = reinterpret_cast<const std::uint8_t*>(packet.get() + offset);
+    if (total <= chunk_size) return SubmitSealedRecord(record_type, data, total, cb);
+
+    // One logical write is a bounded run of secure records (the caller's frame
+    // limit bounds the run). Sealing and submitting the whole run before
+    // waiting for any completion keeps several records outstanding on the
+    // carrier instead of paying one carrier round trip per 16 KiB fragment.
+    // Wire order is preserved because SubmitSealedRecord seals and enqueues
+    // each record under the same record_write_mutex_ acquisition. The extra
+    // countdown token defers the logical completion until every record has
+    // been submitted and every accepted record has completed exactly once, so
+    // a carrier that completes inline can never re-enter the caller early.
+    struct Pending final {
+        Pending(std::size_t records, const AsynchronousWriteCallback& completion) noexcept
+            : remaining(records + 1), callback(completion) {}
+
+        void Finish(std::size_t count, bool ok) noexcept {
+            if (!ok) failed.store(true, std::memory_order_relaxed);
+            if (remaining.fetch_sub(count, std::memory_order_acq_rel) == count) {
+                callback(!failed.load(std::memory_order_relaxed));
             }
         }
+
+        std::atomic<std::size_t> remaining;
+        std::atomic_bool failed{false};
+        AsynchronousWriteCallback callback;
     };
-    (*next)(0);
+
+    const std::size_t fragments = 1 + (total - 1) / chunk_size;
+    std::shared_ptr<Pending> pending;
+    AsynchronousWriteCallback on_fragment;
+    try {
+        pending = std::make_shared<Pending>(fragments, cb);
+        on_fragment = [pending](bool ok) noexcept { pending->Finish(1, ok); };
+    } catch (...) { return false; }
+
+    std::size_t submitted = 0;
+    while (submitted < fragments) {
+        const std::size_t pos = submitted * chunk_size;
+        const std::size_t count = std::min(chunk_size, total - pos);
+        if (!SubmitSealedRecord(record_type, data + pos, count, on_fragment)) break;
+        ++submitted;
+    }
+
+    // Records never handed to the carrier and the deferred token retire now;
+    // records already accepted still complete once each and decrement the rest.
+    pending->Finish(fragments - submitted + 1, submitted == fragments);
     return true;
 }
 

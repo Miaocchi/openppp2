@@ -2,7 +2,7 @@
 [project]
 site_name = "OPENPPP2"
 site_url = "https://miaocchi.github.io/openppp2/"
-site_description = "OPENPPP2 documentation by task"
+site_description = "Install, configure, and run OPENPPP2"
 repo_url = "https://github.com/Miaocchi/openppp2"
 repo_name = "Miaocchi/openppp2"
 docs_dir = "build/docs-site/en/docs"

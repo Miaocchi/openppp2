@@ -31,9 +31,9 @@ python tools/docs_site.py build
 
 `build` 严格构建两个站点，然后检查生成页面的内部链接及锚点。成品位于 `build/docs-site/site`，中间输入与缓存也保存在 `build/docs-site`。每次构建会清理此工作目录，避免残留已删除页面。可通过 `--site-url https://example.com/project/` 验证其他部署路径。
 
-仅发布 `docs/` 下已纳入 Git 的文件，以及尚未首次提交的本文档站指南。预览新文档前请先加入 Git。各级 `README.md` 映射为目录首页，`NAME.md` 与 `NAME_CN.md` 共用页面路径。未配对文档显示单语言提示并保留原文。构建副本会转换相对 Markdown 链接，显式语言互链可切换语言；跨出 `docs/` 的仓库链接指向 GitHub。代码示例及原始 GitHub 阅读链接保持有效。
+公开站点只发布首页和[构建工具](../../tools/docs_site.py)中 `SECTIONS` 列出的页面。此清单同时决定发布范围和导航顺序。架构、设计、交接、测试和归档资料保留在 GitHub 仓库，不生成站点页面，也不进入站内搜索。指向仓库专用文件的链接会在 GitHub 打开。
 
-归档和历史审计显示历史提示，并排除出搜索。`archive/untracked/`、本地构建目录和代理工作记录完全排除。原始状态及验证日期保持原样。[zensical.toml](../../zensical.toml) 定义主题默认值，构建工具按文档目录生成本地化分类导航。
+公开页面应保持中英文配对。`README.md` 映射为目录首页，`NAME.md` 与 `NAME_CN.md` 在两个站点共用路径。调整导航时保留现有页面路径。[zensical.toml](../../zensical.toml) 定义主题默认值。
 
 ## 发布
 

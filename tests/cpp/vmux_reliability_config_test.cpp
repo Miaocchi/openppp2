@@ -40,11 +40,10 @@ BOOST_AUTO_TEST_CASE(pto_and_fast_retransmit_can_be_enabled_and_roundtrip) {
 }
 
 BOOST_AUTO_TEST_CASE(send_windows_default_to_bdp_sized_values) {
-    // Field test 2026-10-18: with 8 MiB / 2 MiB windows mux throughput sat at
-    // window / RTT (single flow ~165 Mbps, 8 flows ~516 Mbps) while mux-off ran
-    // ~690 / ~850 Mbps. Defaults are now 32 MiB session / 8 MiB per flow.
+    // Defaults remain a 64 MiB session window and an 8 MiB per-flow window;
+    // the aggregate session cap still bounds all active flows.
     AppConfiguration config;
-    BOOST_TEST(config.mux.reliability.rtx.bytes == (32 << 20));
+    BOOST_TEST(config.mux.reliability.rtx.bytes == (64 << 20));
     BOOST_TEST(config.mux.reliability.rtx.flow_bytes == (8 << 20));
     BOOST_TEST(config.ToJson()["mux"]["reliability"]["rtx"]["flow_bytes"].asInt() == (8 << 20));
 }

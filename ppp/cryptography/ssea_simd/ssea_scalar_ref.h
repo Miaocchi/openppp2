@@ -154,25 +154,31 @@ namespace ssea
      */
     inline int random_next_scalar(unsigned int* seed) noexcept
     {
-        unsigned int next = *seed;
-        int result;
+        const uint32_t state = *seed;
 
-        next *= 1103515245;
-        next += 12345;
-        result = (unsigned int)(next / 65536) % 2048;
+        // The three LCG steps are normally a serial multiply chain.  Expand
+        // them with jump-ahead constants so all three multiplies are
+        // independent; the resulting state and folded 31-bit value are
+        // bit-for-bit identical to the iterative form.
+        constexpr uint32_t kMul1 = 1103515245u;
+        constexpr uint32_t kAdd1 = 12345u;
+        constexpr uint32_t kMul2 = 3265436265u;   // kMul1^2
+        constexpr uint32_t kAdd2 = 3554416254u;   // kAdd1 * (kMul1 + 1)
+        constexpr uint32_t kMul3 = 2155723957u;   // kMul1^3
+        constexpr uint32_t kAdd3 = 2802067423u;   // kAdd1 * (kMul1^2 + kMul1 + 1)
 
-        next *= 1103515245;
-        next += 12345;
-        result <<= 10;
-        result ^= (unsigned int)(next / 65536) % 1024;
+        const uint32_t next1 = state * kMul1 + kAdd1;
+        const uint32_t next2 = state * kMul2 + kAdd2;
+        const uint32_t next3 = state * kMul3 + kAdd3;
 
-        next *= 1103515245;
-        next += 12345;
-        result <<= 10;
-        result ^= (unsigned int)(next / 65536) % 1024;
+        // The three folded fields are 11/10/10 bits wide, so the original
+        // shift-and-xor sequence is the same as packing them without overlap.
+        const uint32_t result = (((next1 >> 16) & 0x7FFu) << 20) |
+                                (((next2 >> 16) & 0x3FFu) << 10) |
+                                ((next3 >> 16) & 0x3FFu);
 
-        *seed = next;
-        return result;
+        *seed = next3;
+        return static_cast<int>(result);
     }
 
     inline int random_next_from_key_scalar(int32_t key) noexcept
@@ -287,6 +293,57 @@ namespace ssea
         }
 
         return static_cast<int>(p - output.get());
+    }
+
+    /**
+     * @brief Delta-encodes in place: data[i] = original[i] - original[i-1].
+     *        The original previous byte is kept in a register, so the forward
+     *        overwrite does not corrupt the next input byte.
+     * @param data      Mutable byte sequence (data_size >= 1).
+     * @param data_size Number of bytes.
+     * @param kf        Initial adjustment for the first byte.
+     * @return data_size on success, 0 on failure.
+     */
+    inline int delta_encode_inplace_scalar(uint8_t* data, int data_size, int kf) noexcept
+    {
+        if (nullptr == data || data_size < 1)
+        {
+            return 0;
+        }
+
+        uint8_t previous = static_cast<uint8_t>(kf);
+        for (int i = 0; i < data_size; i++)
+        {
+            const uint8_t current = data[i];
+            data[i] = static_cast<uint8_t>(current - previous);
+            previous = current;
+        }
+        return data_size;
+    }
+
+    /**
+     * @brief Delta-decodes in place: data[i] = encoded[i] + data[i-1].
+     *        The forward loop is already prefix-safe because data[i-1] has
+     *        been decoded before data[i] is overwritten.
+     * @param data      Mutable delta-encoded byte sequence (data_size >= 1).
+     * @param data_size Number of bytes.
+     * @param kf        Initial adjustment used at encode time.
+     * @return data_size on success, 0 on failure.
+     */
+    inline int delta_decode_inplace_scalar(uint8_t* data, int data_size, int kf) noexcept
+    {
+        if (nullptr == data || data_size < 1)
+        {
+            return 0;
+        }
+
+        uint8_t accumulator = static_cast<uint8_t>(kf);
+        for (int i = 0; i < data_size; i++)
+        {
+            accumulator = static_cast<uint8_t>(accumulator + data[i]);
+            data[i] = accumulator;
+        }
+        return data_size;
     }
 
     /**

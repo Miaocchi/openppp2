@@ -1,7 +1,7 @@
 #define BOOST_TEST_MODULE ssea_misaligned_tail_test
 #include <boost/test/included/unit_test.hpp>
 
-#include <ppp/cryptography/ssea_simd/ssea_scalar_ref.h>
+#include <ppp/cryptography/ssea_simd/ssea_simd.h>
 
 #include <array>
 #include <cstdint>
@@ -212,4 +212,26 @@ BOOST_AUTO_TEST_CASE(misaligned_scalar_tails_match_reference_and_golden_output) 
         ssea::masked_xor_scalar, fixed_variants, UINT64_C(0xabdee34998b16395));
     CheckOperation("masked_xor_random_next", kRandomKey, GoldenRandomNext,
         ssea::masked_xor_random_next_scalar, random_variants, UINT64_C(0x9afbc1cfcdf2f5a5));
+}
+
+BOOST_AUTO_TEST_CASE(shuffle_preserves_legacy_wire_order) {
+    for (const int size : {1, 2, 3, 17, 257, 16384, 16405, 32789, 65535, 65536}) {
+        std::vector<char> original(size);
+        uint32_t state = 17;
+        for (char& byte : original) {
+            state = state * 1664525u + 1013904223u;
+            byte = static_cast<char>(state >> 24);
+        }
+        for (const uint32_t key : {0u, 3u, 0x0000ffffu, 0x5a17c3d1u, 0x80000000u, 0xffffffffu}) {
+            BOOST_TEST_CONTEXT("size=" << size << " key=" << key) {
+                auto legacy = original;
+                auto encoded = original;
+                ssea::shuffle_data_scalar(legacy.data(), size, key);
+                ssea::shuffle_data_opt(encoded.data(), size, key);
+                BOOST_TEST(encoded == legacy);
+                ssea::unshuffle_data_opt(legacy.data(), size, key);
+                BOOST_TEST(legacy == original);
+            }
+        }
+    }
 }

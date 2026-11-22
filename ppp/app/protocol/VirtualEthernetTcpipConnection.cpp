@@ -8,6 +8,7 @@
 #include <ppp/diagnostics/DatapathPerfJson.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -60,6 +61,27 @@ namespace ppp {
                             : 1;
                     }();
                     return milliseconds;
+                }
+
+                int DirectUploadBatchSize() noexcept {
+                    // Gather-first is the default: a 64 KiB gathered frame amortizes
+                    // framing better than four independent TCP segments in the TUN
+                    // workload. Batch mode remains available for carriers whose queue
+                    // cannot gather because adjacent chunks have different budgets.
+                    static const int batch = []() noexcept {
+                        const char* value = std::getenv(
+                            "OPENPPP2_XTCP_DIRECT_UPLOAD_BATCH");
+                        if (!value || !*value) {
+                            return 1;
+                        }
+                        char* end = nullptr;
+                        const long parsed = std::strtol(value, &end, 10);
+                        return end && *end == '\0' && parsed >= 1 &&
+                            parsed <= ppp::transmissions::ITransmission::kWriteBatchSize
+                            ? static_cast<int>(parsed)
+                            : 1;
+                    }();
+                    return batch;
                 }
 
                 void AddDirectUploadQueueTelemetry(
@@ -806,6 +828,66 @@ namespace ppp {
                 return transmission->Write(y, packet, packet_length);
             }
 
+            bool VirtualEthernetTcpipConnection::SendBuffersToPeer(YieldContext& y,
+                const std::shared_ptr<XtcpUploadChunk>* chunks, int count) noexcept {
+                if (NULLPTR == chunks || count < 1 ||
+                    count > ITransmission::kWriteBatchSize) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionSendPeerInvalidPayload);
+                    return false;
+                }
+
+                if (NULLPTR == chunks[0] || chunks[0]->bytes.empty()) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionSendPeerInvalidPayload);
+                    return false;
+                }
+
+                if (count == 1) {
+                    return SendBufferToPeer(y, chunks[0]->bytes.data(),
+                        static_cast<int>(chunks[0]->bytes.size()));
+                }
+
+                if (disposed_) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionDisposed);
+                    return false;
+                }
+
+                if (!connected_) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionSendPeerNotConnected);
+                    return false;
+                }
+
+                ITransmissionPtr transmission = transmission_;
+                if (NULLPTR == transmission) {
+                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SessionTransportMissing);
+                    return false;
+                }
+
+                // Plaintext mode has its own base94 splitting contract per payload.
+                if (configuration_->key.plaintext) {
+                    for (int i = 0; i < count; i++) {
+                        if (NULLPTR == chunks[i] || chunks[i]->bytes.empty() ||
+                            !SendBufferToPeer(y, chunks[i]->bytes.data(),
+                                static_cast<int>(chunks[i]->bytes.size()))) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+
+                std::array<const void*, ITransmission::kWriteBatchSize> packets = {};
+                std::array<int, ITransmission::kWriteBatchSize> lengths = {};
+                for (int i = 0; i < count; i++) {
+                    if (NULLPTR == chunks[i] || chunks[i]->bytes.empty()) {
+                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::TcpipConnectionSendPeerInvalidPayload);
+                        return false;
+                    }
+                    packets[i] = chunks[i]->bytes.data();
+                    lengths[i] = static_cast<int>(chunks[i]->bytes.size());
+                }
+
+                return transmission->WriteMany(y, packets.data(), lengths.data(), count);
+            }
+
             /**
              * @brief Forwards one socket-read chunk into transmission.
              * @param buffer Shared receive buffer.
@@ -1334,12 +1416,15 @@ namespace ppp {
                     }
                     std::shared_ptr<ppp::app::runtime::XtcpDirectQueueTelemetry> telemetry;
                 } writer_telemetry_scope(telemetry);
+                const int upload_batch = DirectUploadBatchSize();
+                const bool batch_mode = upload_batch > 1 && !configuration_->key.plaintext;
                 const std::size_t gather_limit = GetDirectUploadGatherBytes(configuration_->key.plaintext);
                 const int gather_wait_ms = DirectUploadGatherWaitMilliseconds();
                 bool gather_waited = false;
                 for (;;) {
-                    std::shared_ptr<XtcpUploadChunk> payload;
-                    std::size_t payload_items = 0;
+                    std::array<std::shared_ptr<XtcpUploadChunk>, ITransmission::kWriteBatchSize> chunks;
+                    std::size_t chunk_count = 0;
+                    std::size_t gathered_items = 0;
                     bool shutdown_send = false;
                     bool wait_for_gather = false;
                     {
@@ -1356,13 +1441,25 @@ namespace ppp {
                         else {
                             const bool queue_can_grow = gather_wait_ms > 0 && !gather_waited &&
                                 direct_send_close_state_ == DirectSendCloseState::Open &&
-                                direct_upload_queue_.ShouldWaitForGather(gather_limit);
+                                (batch_mode
+                                    ? direct_upload_queue_.ShouldWaitForBatch(
+                                        static_cast<std::size_t>(upload_batch))
+                                    : direct_upload_queue_.ShouldWaitForGather(gather_limit));
                             if (queue_can_grow) {
                                 wait_for_gather = true;
                             }
                             else {
                                 gather_waited = false;
-                                (void)direct_upload_queue_.DrainGather(gather_limit, payload, payload_items);
+                                if (batch_mode) {
+                                    (void)direct_upload_queue_.DrainBatch(
+                                        static_cast<std::size_t>(upload_batch),
+                                        chunks.data(), chunk_count);
+                                }
+                                else {
+                                    (void)direct_upload_queue_.DrainGather(
+                                        gather_limit, chunks[0], gathered_items);
+                                    chunk_count = chunks[0] ? 1 : 0;
+                                }
                             }
                         }
                     }
@@ -1373,7 +1470,7 @@ namespace ppp {
                         (void)ppp::coroutines::asio::async_sleep(y, gather_wait_ms);
                         continue;
                     }
-                    if (!payload) {
+                    if (chunk_count == 0) {
                         if (!shutdown_send) {
                             ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
                             return true;
@@ -1420,19 +1517,28 @@ namespace ppp {
                         ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
                         return true;
                     }
-                    const bool sent = SendBufferToPeer(y, payload->bytes.data(),
-                        static_cast<int>(payload->bytes.size()));
+                    const bool sent = batch_mode && chunk_count > 1
+                        ? SendBuffersToPeer(y, chunks.data(), static_cast<int>(chunk_count))
+                        : SendBufferToPeer(y, chunks[0]->bytes.data(),
+                            static_cast<int>(chunks[0]->bytes.size()));
+                    const std::size_t release_items = batch_mode ? 1 : gathered_items;
                     DirectWritableHandler writable;
                     std::size_t completed_bytes = 0;
                     std::size_t completed_items = 0;
                     {
                         std::lock_guard<std::mutex> lock(direct_sync_);
-                        if (direct_upload_queue_.Release(payload->bytes.size(), payload_items, sent,
-                                completed_bytes, completed_items)) {
-                            if (telemetry) {
-                                telemetry->SetBackpressured(false);
+                        for (std::size_t i = 0; i < chunk_count; i++) {
+                            std::size_t released_bytes = 0;
+                            std::size_t released_items = 0;
+                            if (direct_upload_queue_.Release(chunks[i]->bytes.size(), release_items,
+                                    sent, released_bytes, released_items)) {
+                                if (telemetry) {
+                                    telemetry->SetBackpressured(false);
+                                }
+                                writable = direct_writable_handler_;
                             }
-                            writable = direct_writable_handler_;
+                            completed_bytes += released_bytes;
+                            completed_items += released_items;
                         }
                     }
                     if (completed_bytes != 0 || completed_items != 0) {
@@ -1440,14 +1546,21 @@ namespace ppp {
                     }
                     // Write(y) completed. Free the payload/credit before
                     // advertising local capacity to a resumed receiver.
-                    payload.reset();
+                    for (std::size_t i = 0; i < chunk_count; i++) {
+                        chunks[i].reset();
+                    }
                     gather_waited = false;
                     if (!sent) {
                         ppp::telemetry::Count("xtcp.direct.upload_writer_exits", 1);
                         Dispose();
                         return false;
                     }
-                    if (completed_items > 1) {
+                    if (batch_mode && chunk_count > 1) {
+                        ppp::telemetry::Count("xtcp.direct.upload_batch_writes", 1);
+                        ppp::telemetry::Count("xtcp.direct.upload_batch_items", completed_items);
+                        ppp::telemetry::Count("xtcp.direct.upload_batch_bytes", completed_bytes);
+                    }
+                    else if (gathered_items > 1) {
                         ppp::telemetry::Count("xtcp.direct.upload_gathered_writes", 1);
                         ppp::telemetry::Count("xtcp.direct.upload_gathered_items", completed_items);
                         ppp::telemetry::Count("xtcp.direct.upload_gathered_bytes", completed_bytes);

@@ -223,6 +223,33 @@ namespace ppp {
             return true;
         }
 
+        bool EVP::EncryptManyTo(Byte* const* outputs,
+            const int* output_capacities,
+            Byte* const* data,
+            const int* datalens,
+            int count,
+            int* outlens) noexcept {
+            if (count <= 0 || NULLPTR == outputs || NULLPTR == output_capacities ||
+                NULLPTR == data || NULLPTR == datalens || NULLPTR == outlens) {
+                return false;
+            }
+
+            if (_aes.IsAttached()) {
+                return _aes.EncryptManyTo(outputs, output_capacities, data, datalens, count, outlens);
+            }
+
+            for (int i = 0; i < count; i++) {
+                if (!EncryptTo(outputs[i], output_capacities[i], data[i], datalens[i], outlens[i])) {
+                    for (int j = 0; j < count; j++) {
+                        outlens[j] = -1;
+                    }
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         /**
          * @brief Decrypts ciphertext bytes with the selected cipher context.
          * @param allocator Output allocator.

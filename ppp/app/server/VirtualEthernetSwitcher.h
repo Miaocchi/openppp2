@@ -51,6 +51,7 @@ namespace ppp::transmissions { class MultipathTransmission; }
 #include <ppp/app/protocol/VirtualEthernetInformation.h>
 #include <ppp/app/server/IPv4LeasePool.h>
 #include <ppp/app/multipath/Join.h>
+#include <ppp/app/multipath/RuntimeState.h>
 #include <ppp/app/multipath/Session.h>
 #include <ppp/app/multipath/WireProtocol.h>
 #include <ppp/p2p/P2PNatClassifier.h>
@@ -374,6 +375,7 @@ namespace ppp {
             public:
                 /** @brief Gets the global traffic statistics collector. */
                 ITransmissionStatisticsPtr&                             GetStatistics() noexcept        { return statistics_; }
+                ppp::app::multipath::RuntimeState                       GetMultipathRuntimeState() noexcept;
                 /** @brief Gets the local interface IP address used by the switcher. */
                 boost::asio::ip::address                                GetInterfaceIP() noexcept       { return interfaceIP_; }
                 /** @brief Gets the configured DNS upstream UDP endpoint. */

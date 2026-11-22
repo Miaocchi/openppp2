@@ -50,6 +50,22 @@ namespace ppp {
              */
             bool                                                EncryptTo(Byte* output, int output_capacity, Byte* data, int datalen, int& outlen) noexcept;
             /**
+             * @brief Encrypts several independent packets, batching AES-CFB when possible.
+             * @param outputs Destination buffers; each must not overlap its input.
+             * @param output_capacities Destination capacities.
+             * @param data Input plaintext buffers.
+             * @param datalens Input lengths.
+             * @param count Number of packets.
+             * @param outlens Receives one output length per packet.
+             * @return True on success; otherwise false with all outlens set to -1.
+             */
+            bool                                                EncryptManyTo(Byte* const* outputs,
+                                                                              const int* output_capacities,
+                                                                              Byte* const* data,
+                                                                              const int* datalens,
+                                                                              int count,
+                                                                              int* outlens) noexcept;
+            /**
              * @brief Decrypts a ciphertext buffer.
              * @param allocator Target buffer allocator.
              * @param data Input ciphertext bytes.

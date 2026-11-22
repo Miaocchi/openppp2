@@ -15,6 +15,18 @@ BOOST_AUTO_TEST_CASE(ewma_filters_low_application_limited_samples) {
     BOOST_TEST(estimator->GetTelemetry(30).capacity_rate_bytes_per_second == 90000u);
 }
 
+BOOST_AUTO_TEST_CASE(initial_application_limited_sample_does_not_seed_capacity) {
+    for (const auto mode : {PathEstimatorMode::Ewma, PathEstimatorMode::Bbr, PathEstimatorMode::Kcc}) {
+        auto estimator = MakePathEstimator(mode);
+        estimator->OnSample({100, 10000, 0, 100, true}, 10);
+        const auto limited = estimator->GetTelemetry(10);
+        BOOST_TEST(limited.current_rate_bytes_per_second == 10000u);
+        BOOST_TEST(limited.capacity_rate_bytes_per_second == 0u);
+        estimator->OnSample({1000, 10000, 100, 1100, false}, 20);
+        BOOST_TEST(estimator->GetTelemetry(20).capacity_rate_bytes_per_second == 100000u);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(bbr_max_expires_by_delivery_round_not_ack_count) {
     auto estimator = MakePathEstimator(PathEstimatorMode::Bbr);
     estimator->OnSample({1000, 10000, 0, 1000, false}, 10);
@@ -67,6 +79,34 @@ BOOST_AUTO_TEST_CASE(low_application_limited_samples_do_not_reseed_expired_capac
         BOOST_TEST(limited.capacity_rate_bytes_per_second == 0u);
         estimator->OnSample({200, 10000, 1100, 1300, false}, 5102);
         BOOST_TEST(estimator->GetTelemetry(5102).capacity_rate_bytes_per_second == 20000u);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(capacity_freshness_tracks_capacity_sample_not_delivery_sample) {
+    for (const auto mode : {PathEstimatorMode::Ewma, PathEstimatorMode::Bbr, PathEstimatorMode::Kcc}) {
+        auto estimator = MakePathEstimator(mode);
+        estimator->OnSample({1000, 10000, 0, 1000, false}, 100);
+        const auto fresh = estimator->GetTelemetry(200);
+        BOOST_TEST(fresh.current_rate_bytes_per_second != 0u);
+        BOOST_TEST(fresh.capacity_rate_bytes_per_second != 0u);
+        BOOST_TEST(fresh.capacity_updated_ms == 100u);
+
+        // A low application-limited sample refreshes the delivery sample (and
+        // therefore updated_ms) but must not move the capacity timestamp.
+        estimator->OnSample({100, 10000, 1000, 1100, true}, 4901);
+        const auto aged = estimator->GetTelemetry(4901);
+        BOOST_TEST(aged.has_sample);
+        BOOST_TEST(aged.updated_ms == 4901u);
+        BOOST_TEST(aged.capacity_rate_bytes_per_second != 0u);
+        BOOST_TEST(aged.capacity_updated_ms == 100u);
+
+        // At 5101 the delivery sample is only 200 ms old while the capacity
+        // sample is 5001 ms old: capacity must no longer be reported as fresh.
+        const auto stale = estimator->GetTelemetry(5101);
+        BOOST_TEST(stale.has_sample);
+        BOOST_TEST(stale.updated_ms == 4901u);
+        BOOST_TEST(stale.capacity_rate_bytes_per_second == 0u);
+        BOOST_TEST(stale.capacity_updated_ms == 0u);
     }
 }
 

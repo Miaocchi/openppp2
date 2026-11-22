@@ -21,12 +21,31 @@ import time
 import uuid
 import copy
 import re
+from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
+
+TBF_BURST_KB_CHOICES = (128, 256, 512, 1024)
+DEFAULT_TBF_BURST_KB = 128
+CONGESTION_CONTROL_CHOICES = ("bbr", "cubic")
+# IPv4 total length below this is a pure ACK or a small control frame. Bulk
+# data frames are near the 1500-byte veth MTU, so 256 bytes separates them
+# even with TCP timestamps/SACK options.
+ACK_PRIORITY_MAX_IP_BYTES = 256
 
 PROFILES = {
     "independent-12ms-24mbit": {"paths": [(12, 24, 0, 0)] * 2, "shared_mbps": None},
     "shared-12ms-24mbit": {"paths": [(12, 24, 0, 0)] * 2, "shared_mbps": 24},
+    "independent-90-125-180": {
+        "paths": [(90, 100, 0, 0), (125, 200, 25, 0), (180, 300, 0, 0)],
+        "shared_mbps": None,
+        "jitter_distribution": "uniform",
+    },
+    "independent-90-125-180-stable": {
+        "paths": [(90, 100, 0, 0), (125, 200, 0, 0), (180, 300, 0, 0)],
+        "shared_mbps": None,
+    },
     "asymmetric-5-80-200": {"paths": [(5, 100, 0, 0), (80, 40, 8, 0), (200, 20, 20, 0)], "shared_mbps": None},
     "asymmetric-5-80": {"paths": [(5, 100, 0, 0), (80, 40, 8, 0)], "shared_mbps": None},
     "equal-rtt": {"paths": [(30, 50, 0, 0), (30, 50, 0, 0), (30, 50, 0, 0)], "shared_mbps": None},
@@ -89,25 +108,33 @@ def terminate_process_group(process: subprocess.Popen, grace_seconds: float = 3.
         pass
 
 
-def established_path_endpoints(namespace: str) -> set[tuple[str, int]]:
+def established_path_endpoints(namespace: str) -> Counter[tuple[str, int]]:
     output = run(["ip", "netns", "exec", namespace, "ss", "-Htn", "state", "established"], capture=True)
-    endpoints: set[tuple[str, int]] = set()
+    endpoints: Counter[tuple[str, int]] = Counter()
     for line in output.splitlines():
         fields = line.split()
         if len(fields) < 4:
             continue
         host, port = fields[-1].rsplit(":", 1)
         try:
-            endpoints.add((host.strip("[]"), int(port)))
+            endpoints[host.strip("[]"), int(port)] += 1
         except ValueError:
             continue
     return endpoints
 
 
 class Lab:
-    def __init__(self, profile: str):
+    def __init__(self, profile: str, tbf_burst_kb: int = DEFAULT_TBF_BURST_KB,
+                 ack_priority: bool = False, congestion_control: str | None = None):
+        if tbf_burst_kb not in TBF_BURST_KB_CHOICES:
+            raise HarnessError(f"TBF burst must be one of {TBF_BURST_KB_CHOICES} KiB")
+        if congestion_control is not None and congestion_control not in CONGESTION_CONTROL_CHOICES:
+            raise HarnessError(f"congestion control must be one of {CONGESTION_CONTROL_CHOICES}")
         self.profile_name = profile
         self.profile = PROFILES[profile]
+        self.tbf_burst_kb = tbf_burst_kb
+        self.ack_priority = bool(ack_priority)
+        self.congestion_control = congestion_control
         self.specs = self.profile["paths"]
         self.suffix = uuid.uuid4().hex[:8]
         self.names = {key: f"mp{key[0]}{self.suffix}" for key in ("client", "router", "bottleneck", "server")}
@@ -156,8 +183,11 @@ class Lab:
             # Delay and caps are per path before traffic reaches the aggregate link.
             for ns, dev in ((self.names["client"], client), (self.names["router"], router_c),
                             (self.names["router"], router_b), (self.names["bottleneck"], bottle_r)):
-                self._shape(ns, dev, rtt, rate, jitter, loss)
+                self._shape(ns, dev, rtt, rate, jitter, loss,
+                            self.profile.get("jitter_distribution", "normal"),
+                            self.tbf_burst_kb, self.ack_priority)
             self.paths.append({"id": f"path{index}", "rtt_ms": rtt, "jitter_ms": jitter,
+                               "jitter_distribution": self.profile.get("jitter_distribution", "normal"),
                                "loss_percent": loss, "rate_mbps": rate,
                                "client_ip": cip, "server_ip": sip,
                                "client_ns": self.names["client"], "server_ns": self.names["server"],
@@ -174,8 +204,28 @@ class Lab:
                  "via", "10.70.0.1", "dev", "s0"])
         shared = self.profile["shared_mbps"]
         if shared:
-            self._rate(self.names["bottleneck"], "bs0", shared)
-            self._rate(self.names["server"], "s0", shared)
+            self._rate(self.names["bottleneck"], "bs0", shared, 2 * self.tbf_burst_kb)
+            self._rate(self.names["server"], "s0", shared, 2 * self.tbf_burst_kb)
+
+    def apply_congestion_control(self) -> None:
+        """Select the TCP congestion control algorithm inside the fixture.
+
+        net.ipv4.tcp_congestion_control is a per-network-namespace sysctl, so
+        these writes never reach the host. The fixture starts the candidate
+        endpoints after this call, so every transport socket they create uses
+        the selected algorithm. A no-op unless the A/B option was requested.
+        """
+        if self.congestion_control is None:
+            return
+        for role in ("client", "router", "server"):
+            namespace = self.names[role]
+            run(["ip", "netns", "exec", namespace, "sysctl", "-q", "-w",
+                 f"net.ipv4.tcp_congestion_control={self.congestion_control}"])
+            observed = run(["ip", "netns", "exec", namespace, "sysctl", "-n",
+                            "net.ipv4.tcp_congestion_control"], capture=True).strip()
+            if observed != self.congestion_control:
+                raise HarnessError(f"{namespace} tcp_congestion_control readback is {observed!r}, "
+                                   f"expected {self.congestion_control!r}")
 
     def _veth(self, left: str, right: str, left_ns: str, right_ns: str) -> None:
         # Temporary host names are random and never reused for namespace names.
@@ -218,35 +268,102 @@ class Lab:
 
     @staticmethod
     def _shape(ns: str, dev: str, rtt: int, rate: int, jitter: float = 0,
-               loss_percent: float = 0) -> None:
+               loss_percent: float = 0, jitter_distribution: str = "normal",
+               tbf_burst_kb: int = DEFAULT_TBF_BURST_KB,
+               ack_priority: bool = False) -> None:
         # The round trip crosses four shaped path egresses.
-        run(["ip", "netns", "exec", ns, "tc", "qdisc", "replace", "dev", dev,
+        Lab._path_rate(ns, dev, rate, tbf_burst_kb=tbf_burst_kb)
+        if ack_priority:
+            Lab._ack_priority_shape(ns, dev, rtt, jitter, loss_percent, jitter_distribution)
+        else:
+            Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution)
+
+    @staticmethod
+    def _path_rate(ns: str, dev: str, rate: int, action: str = "replace",
+                   tbf_burst_kb: int = DEFAULT_TBF_BURST_KB) -> None:
+        run(["ip", "netns", "exec", ns, "tc", "qdisc", action, "dev", dev,
+             "root", "handle", "1:", "tbf", "rate", f"{rate}mbit",
+             "burst", f"{tbf_burst_kb}kb", "latency", "500ms"])
+
+    @staticmethod
+    def _ack_priority_shape(ns: str, dev: str, rtt: float, jitter: float = 0,
+                            loss_percent: float = 0,
+                            jitter_distribution: str = "normal") -> None:
+        """Keep the TBF cap and path delay, but service small frames first.
+
+        The root TBF still owns the aggregate rate. Its child is a three-band
+        prio qdisc; band 0 holds pure ACKs/small control frames and band 1
+        holds bulk data. Each band has an identical netem so the configured
+        delay/loss stays on every packet. A pure ACK therefore does not wait
+        behind bulk frames that are waiting for TBF tokens on the same egress.
+        Diagnostic A/B only: the default layout remains TBF + one netem.
+        """
+        run(["ip", "netns", "exec", ns, "tc", "qdisc", "add", "dev", dev,
+             "parent", "1:1", "handle", "20:", "prio", "bands", "3",
+             "priomap", *(["1"] * 16)])
+        Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution,
+                   parent="20:1", handle="30:")
+        Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution,
+                   parent="20:2", handle="40:")
+        run(["ip", "netns", "exec", ns, "tc", "filter", "add", "dev", dev,
+             "parent", "20:", "protocol", "ip", "prio", "1", "basic", "match",
+             f"cmp(u16 at 2 layer network mask 0xffff lt {ACK_PRIORITY_MAX_IP_BYTES})",
+             "flowid", "20:1"])
+        run(["ip", "netns", "exec", ns, "tc", "filter", "add", "dev", dev,
+             "parent", "20:", "protocol", "ip", "prio", "2", "u32",
+             "match", "u32", "0", "0", "flowid", "20:2"])
+
+    @staticmethod
+    def _path_rate(ns: str, dev: str, rate: int, action: str = "replace") -> None:
+        run(["ip", "netns", "exec", ns, "tc", "qdisc", action, "dev", dev,
              "root", "handle", "1:", "tbf", "rate", f"{rate}mbit", "burst", "128kb", "latency", "500ms"])
-        Lab._netem(ns, dev, rtt, jitter, loss_percent)
 
     @staticmethod
     def _netem(ns: str, dev: str, rtt: float, jitter: float = 0,
-               loss_percent: float = 0) -> None:
+               loss_percent: float = 0, jitter_distribution: str = "normal",
+               parent: str = "1:1", handle: str = "10:") -> None:
         command = ["ip", "netns", "exec", ns, "tc", "qdisc", "replace", "dev", dev,
-                   "parent", "1:1", "handle", "10:", "netem", "delay", f"{rtt / 4:g}ms"]
+                   "parent", parent, "handle", handle, "netem", "delay", f"{rtt / 4:g}ms"]
         if jitter:
-            command.extend((f"{jitter / 4:g}ms", "distribution", "normal"))
+            command.append(f"{jitter / 4:g}ms")
+            # netem uses uniform jitter when no distribution table is supplied.
+            if jitter_distribution == "normal":
+                command.extend(("distribution", "normal"))
         if loss_percent:
             command.extend(("loss", f"{loss_percent:g}%"))
         command.extend(("limit", "32768"))
         run(command)
 
     @staticmethod
-    def _rate(ns: str, dev: str, rate: int) -> None:
+    def _apply_path_delay(ns: str, dev: str, rtt: float, jitter: float = 0,
+                          loss_percent: float = 0, jitter_distribution: str = "normal",
+                          ack_priority: bool = False) -> None:
+        """Update the delay/loss qdiscs without replacing the root TBF cap."""
+        if ack_priority:
+            for parent, handle in (("20:1", "30:"), ("20:2", "40:")):
+                Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution,
+                           parent=parent, handle=handle)
+        else:
+            Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution)
+
+    @staticmethod
+    def _rate(ns: str, dev: str, rate: int, burst_kb: int = 2 * DEFAULT_TBF_BURST_KB) -> None:
         run(["ip", "netns", "exec", ns, "tc", "qdisc", "replace", "dev", dev,
-             "root", "tbf", "rate", f"{rate}mbit", "burst", "256kb", "latency", "500ms"])
+             "root", "tbf", "rate", f"{rate}mbit", "burst", f"{burst_kb}kb", "latency", "500ms"])
 
     def topology(self) -> dict:
-        return {"schema": 1, "profile": self.profile_name, "namespaces": self.names,
-                "shared_bottleneck_mbps": self.profile["shared_mbps"],
-                "shared_bottleneck_interfaces": ["bottleneck/bs0", "server/s0"] if self.profile["shared_mbps"] else [],
-                "paths": self.paths,
-                "note": "Paths converge on one server-facing link; shared profile caps this aggregate link."}
+        topology = {"schema": 1, "profile": self.profile_name, "namespaces": self.names,
+                    "shared_bottleneck_mbps": self.profile["shared_mbps"],
+                    "shared_bottleneck_interfaces": ["bottleneck/bs0", "server/s0"] if self.profile["shared_mbps"] else [],
+                    "paths": self.paths,
+                    "note": "Paths converge on one server-facing link; shared profile caps this aggregate link."}
+        if self.ack_priority:
+            # Only the non-default mode adds a key, so baseline topology files
+            # stay byte-identical.
+            topology["ack_priority"] = True
+        if self.congestion_control is not None:
+            topology["congestion_control"] = self.congestion_control
+        return topology
 
     def cleanup(self) -> None:
         previous = block_interrupt_signals()
@@ -281,22 +398,33 @@ class Lab:
                     records = json.loads(run(["ip", "netns", "exec", ns, "tc", "-j", "-s", "-d", "qdisc", "show", "dev", dev], capture=True))
                 except json.JSONDecodeError as exc:
                     raise HarnessError(f"invalid qdisc response for {ns}/{dev}") from exc
-                if not any(item.get("kind") == "tbf" for item in records) or not any(item.get("kind") == "netem" for item in records):
-                    raise HarnessError(f"expected tbf and netem qdiscs on {ns}/{dev}")
-                tbf = next(item for item in records if item.get("kind") == "tbf")
-                netem = next(item for item in records if item.get("kind") == "netem")
+                tbf = next((item for item in records if item.get("kind") == "tbf"), None)
+                if tbf is None:
+                    raise HarnessError(f"expected a root tbf qdisc on {ns}/{dev}")
                 expected_rate = path["rate_mbps"] * 1_000_000 / 8
                 if abs(tbf.get("options", {}).get("rate", -1) - expected_rate) > 1:
                     raise HarnessError(f"path rate cap readback mismatch on {ns}/{dev}")
-                options = netem.get("options", {})
-                delay = options.get("delay", {})
-                if abs(delay.get("delay", -1) - path["rtt_ms"] / 4000) > 1e-6:
-                    raise HarnessError(f"netem base delay readback mismatch on {ns}/{dev}")
-                if abs(delay.get("jitter", -1) - path["jitter_ms"] / 4000) > 1e-6:
-                    raise HarnessError(f"netem jitter readback mismatch on {ns}/{dev}")
-                loss = options.get("loss-random", {}).get("loss", 0) * 100
-                if abs(loss - path["loss_percent"]) > 1e-6:
-                    raise HarnessError(f"netem loss readback mismatch on {ns}/{dev}")
+                if self.ack_priority:
+                    if not any(item.get("kind") == "prio" for item in records):
+                        raise HarnessError(f"expected a prio qdisc on {ns}/{dev}")
+                    expected_parents = ("20:1", "20:2")
+                else:
+                    expected_parents = ("1:1",)
+                netems = {item.get("parent"): item for item in records
+                          if item.get("kind") == "netem"}
+                for parent in expected_parents:
+                    netem = netems.get(parent)
+                    if netem is None:
+                        raise HarnessError(f"missing netem qdisc at {parent} on {ns}/{dev}")
+                    options = netem.get("options", {})
+                    delay = options.get("delay", {})
+                    if abs(delay.get("delay", -1) - path["rtt_ms"] / 4000) > 1e-6:
+                        raise HarnessError(f"netem base delay readback mismatch at {parent} on {ns}/{dev}")
+                    if abs(delay.get("jitter", -1) - path["jitter_ms"] / 4000) > 1e-6:
+                        raise HarnessError(f"netem jitter readback mismatch at {parent} on {ns}/{dev}")
+                    loss = options.get("loss-random", {}).get("loss", 0) * 100
+                    if abs(loss - path["loss_percent"]) > 1e-6:
+                        raise HarnessError(f"netem loss readback mismatch at {parent} on {ns}/{dev}")
         if self.profile["shared_mbps"]:
             for ns, dev in ((self.names["bottleneck"], "bs0"), (self.names["server"], "s0")):
                 records = json.loads(run(["ip", "netns", "exec", ns, "tc", "-j", "-s", "-d", "qdisc", "show", "dev", dev], capture=True))
@@ -339,6 +467,10 @@ class Lab:
                 self._root_tbf_bytes(path["router_ns"], path["router_client_if"]),
             ))
         return counters
+
+    def directional_path_bytes(self, direction: str) -> dict[str, int]:
+        ns, dev = ("client_ns", "client_if") if direction == "upload" else ("router_ns", "router_client_if")
+        return {path["id"]: self._root_tbf_bytes(path[ns], path[dev]) for path in self.paths}
 
 
 def validate_result(path: Path, scenario: str, *, min_ratio: float,
@@ -418,7 +550,7 @@ def scenario(args: argparse.Namespace) -> int:
         raise HarnessError("p95 ceiling must be nonnegative")
     if args.max_p99_ms is not None and args.max_p99_ms < 0:
         raise HarnessError("p99 ceiling must be nonnegative")
-    lab = Lab(args.profile)
+    lab = Lab(args.profile, ack_priority=args.ack_priority)
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     output.chmod(0o700)
@@ -471,6 +603,71 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def workspace_evidence(root: Path) -> dict:
+    prefix = ["git", "-C", str(root), "-c", f"safe.directory={root}", "-c", "core.fsmonitor=false"]
+    commands = [
+        ["rev-parse", "--verify", "HEAD"],
+        ["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+        ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-color", "HEAD", "--"],
+    ]
+    try:
+        commit, status, diff = (subprocess.run(prefix + command, check=True, capture_output=True,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}).stdout for command in commands)
+    except (OSError, subprocess.CalledProcessError):
+        return {"available": False}
+    return {"available": True, "head": commit.decode().strip(), "dirty": bool(status),
+            "status_sha256": hashlib.sha256(status).hexdigest(),
+            "tracked_diff_sha256": hashlib.sha256(diff).hexdigest()}
+
+
+def production_six_flow(args: argparse.Namespace) -> int:
+    source = workspace_evidence(Path(__file__).resolve().parents[3])
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, mode=0o700)
+    evidence_path = output / "run-evidence.json"
+    clock = {"unix_ns": time.time_ns(), "monotonic_ns": time.monotonic_ns()}
+    args.evidence = {"schema": 1, "argv": getattr(sys, "orig_argv", [sys.executable, *sys.argv]),
+                     "cwd": os.getcwd(), "workspace": source, "clock_reference": clock,
+                     "profile": args.profile, "executor_concurrency": args.concurrent,
+                     "wire_interval": args.wire_interval,
+                     "qdisc_metrics": args.qdisc_metrics,
+                     "socket_metrics": args.socket_metrics,
+                     "tbf_burst_kb": args.tbf_burst_kb,
+                     "ack_priority": args.ack_priority,
+                     "congestion_control": args.congestion_control,
+                     "candidate_commands": {}, "exit_code": None}
+    evidence_path.write_text(json.dumps(args.evidence, indent=2) + "\n")
+    code = 1
+    try:
+        code = production_smoke(args)
+    except KeyboardInterrupt:
+        code = 130
+        raise
+    finally:
+        summary_errors = {}
+        if any((output / f"{direction}-wire.ndjson").is_file() for direction in ("upload", "download")):
+            try:
+                args.evidence["path_observations"] = record_path_windows(output)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                summary_errors["path_telemetry"] = str(exc)
+        if args.pool_metrics:
+            try:
+                record_pool_events(output, clock)
+            except (OSError, ValueError) as exc:
+                summary_errors["pool_events"] = str(exc)
+        if summary_errors:
+            args.evidence["summary_errors"] = summary_errors
+            if code == 0:
+                print(f"multipath harness error: could not summarize run evidence; inspect {evidence_path}",
+                      file=sys.stderr)
+                code = 1
+        args.evidence["exit_code"] = code
+        evidence_path.write_text(json.dumps(args.evidence, indent=2) + "\n")
+    if code == 0:
+        print(f"PASS: {args.flows} verified flows per selected direction; result={output / 'six-flow-integrity.json'}")
+    return code
+
+
 PAYLOAD = str(Path(__file__).with_name("payload.py").resolve())
 # Server's s0 address. Client namespaces only have /32 routes to the carrier IPs.
 BUSINESS_IP = "10.70.0.2"
@@ -497,60 +694,665 @@ def check_directional_receipts(lab: Lab, children: list[subprocess.Popen], size:
             for tag, name in (("U", "upload"), ("D", "download"))}
 
 
-def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path) -> dict:
+def change_path_load(path: dict, action: str, value: int | None, restore: bool,
+                     tbf_burst_kb: int = DEFAULT_TBF_BURST_KB,
+                     ack_priority: bool = False) -> None:
+    if action == "blackhole":
+        apply_path_impairment(path, "reset" if restore else "blackhole",
+                              ack_priority=ack_priority)
+        return
+    for namespace, interface in ((path["client_ns"], path["client_if"]),
+                                 (path["router_ns"], path["router_client_if"])):
+        if action == "rate":
+            Lab._path_rate(namespace, interface, path["rate_mbps"] if restore else value, "change",
+                           tbf_burst_kb)
+        else:
+            # The two egresses modified here contribute half the path RTT.
+            rtt = path["rtt_ms"] + (0 if restore else 2 * value)
+            Lab._apply_path_delay(namespace, interface, rtt, path["jitter_ms"],
+                                  path["loss_percent"], path["jitter_distribution"],
+                                  ack_priority)
+
+
+QDISC_TBF_COUNTERS = ("bytes", "packets", "drops", "overlimits", "backlog", "qlen")
+QDISC_NETEM_COUNTERS = ("packets", "drops")
+QDISC_QUEUE_COUNTERS = ("qlen", "backlog")
+
+
+def qdisc_counters(record: dict | None, fields: tuple[str, ...]) -> dict:
+    counters = {}
+    if not isinstance(record, dict):
+        return counters
+    for container in (record, record.get("stats64"), record.get("stats")):
+        if not isinstance(container, dict):
+            continue
+        for field in fields:
+            value = container.get(field)
+            if field not in counters and type(value) is int and value >= 0:
+                counters[field] = value
+    return counters
+
+
+def merged_qdisc_counters(records: list[dict], fields: tuple[str, ...]) -> dict:
+    merged: dict[str, int] = {}
+    for record in records:
+        for field, value in qdisc_counters(record, fields).items():
+            merged[field] = merged.get(field, 0) + value
+    return merged
+
+
+def qdisc_metrics_sample(path: dict, directions: tuple[str, ...], sampled_ms: int) -> list[dict]:
+    """Read both path egress qdiscs; failures are recorded, never fatal."""
+    samples = []
+    for role, namespace_key, interface_key in (("client", "client_ns", "client_if"),
+                                                ("router", "router_ns", "router_client_if")):
+        entry = {"path_id": path["id"], "role": role,
+                 "namespace": path[namespace_key], "interface": path[interface_key],
+                 "directions": list(directions), "monotonic_ms": sampled_ms,
+                 "tbf": {}, "netem": {}}
+        try:
+            records = json.loads(run(["ip", "netns", "exec", path[namespace_key], "tc", "-j", "-s",
+                                      "qdisc", "show", "dev", path[interface_key]], capture=True))
+        except (HarnessError, OSError, json.JSONDecodeError) as exc:
+            entry["error"] = str(exc)
+            samples.append(entry)
+            continue
+        if not isinstance(records, list):
+            entry["error"] = "tc qdisc output is not a JSON list"
+            samples.append(entry)
+            continue
+        tbf = next((record for record in records if record.get("kind") == "tbf"), None)
+        prio = next((record for record in records if record.get("kind") == "prio"), None)
+        netems = [record for record in records if record.get("kind") == "netem"]
+        entry["tbf"] = qdisc_counters(tbf, QDISC_TBF_COUNTERS)
+        if len(netems) == 1:
+            entry["netem"] = qdisc_counters(netems[0], QDISC_NETEM_COUNTERS)
+        elif netems:
+            entry["netem"] = merged_qdisc_counters(netems, QDISC_NETEM_COUNTERS)
+        if prio is not None:
+            # Only present in the ACK-priority A/B mode.
+            entry["prio"] = qdisc_counters(prio, QDISC_TBF_COUNTERS)
+        if len(netems) > 1:
+            # Per-band queue depth proves whether ACKs bypass bulk: band 0
+            # (handle 30:, parent 20:1) should stay near empty while band 1
+            # (handle 40:, parent 20:2) holds the TBF backlog.
+            entry["netem_bands"] = [
+                {"parent": record.get("parent"), "handle": record.get("handle"),
+                 "counters": qdisc_counters(record, QDISC_NETEM_COUNTERS),
+                 "queue": qdisc_counters(record, QDISC_QUEUE_COUNTERS)}
+                for record in netems]
+        samples.append(entry)
+    return samples
+
+
+def parse_established_sockets(output: str) -> list[dict]:
+    """Parse `ss -tinm` output, keeping raw and best-effort structured established records."""
+    sockets: list[dict] = []
+    current: dict | None = None
+    for line in output.splitlines():
+        text = line.strip()
+        if not text or text.startswith(("State ", "Recv-Q")):
+            continue
+        if not line[0].isspace():
+            fields = line.split()
+            current = None
+            if not fields or fields[0] != "ESTAB":
+                continue
+            local = fields[3] if len(fields) > 3 else None
+            peer = fields[4] if len(fields) > 4 else None
+            current = {"state": fields[0],
+                       "recv_q": fields[1] if len(fields) > 1 else None,
+                       "send_q": fields[2] if len(fields) > 2 else None,
+                       "local": local, "peer": peer,
+                       "raw": [line], "detail": [], "fields": {}}
+            if local is not None:
+                host, _, port = local.rpartition(":")
+                current["local_address"], current["local_port"] = host.strip("[]"), port
+            if peer is not None:
+                host, _, port = peer.rpartition(":")
+                current["peer_address"], current["peer_port"] = host.strip("[]"), port
+            sockets.append(current)
+            continue
+        if current is None:
+            continue
+        text = line.strip()
+        current["raw"].append(line)
+        current["detail"].append(text)
+        for key, value in re.findall(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*):([^\s]+)", text):
+            current["fields"].setdefault(key, value)
+        for key, value in re.findall(r"(?<!\S)(pacing_rate|delivery_rate)\s+([^\s]+)", text):
+            current["fields"].setdefault(key, value)
+    return sockets
+
+
+def socket_path_id(paths: list[dict], role: str, socket: dict) -> str | None:
+    """Best-effort carrier-path id for one socket from its local/peer addresses.
+
+    Carrier sockets connect one path's client address to its server address.
+    Application or proxy sockets (for example the loopback business stream)
+    do not match and stay unattributed.
+    """
+    local = socket.get("local_address")
+    peer = socket.get("peer_address")
+    if local is None or peer is None:
+        return None
+    for path in paths:
+        expected = ((path.get("client_ip"), path.get("server_ip")) if role == "client"
+                    else (path.get("server_ip"), path.get("client_ip")))
+        if (local, peer) == expected:
+            return path.get("id")
+    return None
+
+
+def socket_metrics_sample(lab: Lab, directions: tuple[str, ...], sampled_ms: int) -> list[dict]:
+    """Read established TCP sockets in both endpoints; failures are recorded, never fatal."""
+    samples = []
+    for role in ("client", "server"):
+        namespace = lab.names[role]
+        entry = {"role": role, "namespace": namespace, "directions": list(directions),
+                 "monotonic_ms": sampled_ms, "command": ["ss", "-tinm"], "sockets": []}
+        try:
+            output = run(["ip", "netns", "exec", namespace, "ss", "-tinm"], capture=True)
+        except (HarnessError, OSError) as exc:
+            entry["error"] = str(exc)
+            samples.append(entry)
+            continue
+        entry["raw"] = output
+        try:
+            sockets = parse_established_sockets(output)
+        except (IndexError, TypeError, ValueError) as exc:
+            entry["error"] = f"ss parse failed: {exc}"
+            sockets = []
+        for socket in sockets:
+            path_id = socket_path_id(lab.paths, role, socket)
+            if path_id is not None:
+                socket["path_id"] = path_id
+        entry["sockets"] = sockets
+        samples.append(entry)
+    return samples
+
+
+def sample_directional_wire(lab: Lab, output: Path, directions: tuple[str, ...],
+                            phase_started: float, send_seconds: int, impairment: dict | None,
+                            wire_interval: int = 6, qdisc_metrics: bool = False,
+                            socket_metrics: bool = False) -> None:
+    # Include the send boundary so the final interval is measurable; consumers
+    # must ignore any partial interval shorter than wire_interval.
+    sample_offsets = set(range(9, send_seconds + 1, wire_interval))
+    faults = {impairment["start"]: False, impairment["stop"]: True} if impairment else {}
+    time.sleep(max(0, phase_started + 3 - time.monotonic()))
+    before = {direction: lab.directional_path_bytes(direction) for direction in directions}
+    started = time.monotonic()
+    with contextlib.ExitStack() as handles:
+        wires = {direction: handles.enter_context((output / f"{direction}-wire.ndjson").open("w"))
+                 for direction in directions}
+        metrics = (handles.enter_context((output / "qdisc-metrics.ndjson").open("a"))
+                   if qdisc_metrics else None)
+        sockets = (handles.enter_context((output / "socket-metrics.ndjson").open("a"))
+                   if socket_metrics else None)
+        for offset in sorted(sample_offsets | faults.keys()):
+            time.sleep(max(0, phase_started + offset - time.monotonic()))
+            after = {direction: lab.directional_path_bytes(direction) for direction in directions}
+            finished = time.monotonic()
+            for direction in directions:
+                deltas = {path: (count - before[direction][path] if count >= before[direction][path] else None)
+                          for path, count in after[direction].items()}
+                print(json.dumps({"start_seconds": started - phase_started,
+                                  "end_seconds": finished - phase_started,
+                                  "start_monotonic_ms": int(started * 1000),
+                                  "end_monotonic_ms": int(finished * 1000),
+                                  "start_tbf_bytes": before[direction],
+                                  "end_tbf_bytes": after[direction],
+                                  "tbf_bytes": deltas,
+                                  "mbps": {path: count * 8 / (finished - started) / 1e6 if count is not None else None
+                                           for path, count in deltas.items()}}),
+                      file=wires[direction], flush=True)
+            started, before = finished, after
+            sampled_ms = int(time.monotonic() * 1000)
+            if metrics is not None:
+                for path in lab.paths:
+                    for sample in qdisc_metrics_sample(path, directions, sampled_ms):
+                        print(json.dumps(sample), file=metrics, flush=True)
+            if sockets is not None:
+                for sample in socket_metrics_sample(lab, directions, sampled_ms):
+                    print(json.dumps(sample), file=sockets, flush=True)
+            if offset in faults:
+                path, action, value = impairment["path"], impairment["action"], impairment["value"]
+                restore = faults[offset]
+                change_started = time.monotonic()
+                change_path_load(path, action, value, restore, lab.tbf_burst_kb,
+                                 lab.ack_priority)
+                with (output / "impairment-events.ndjson").open("a") as events:
+                    print(json.dumps({"directions": directions, "path_id": path["id"], "action": action,
+                                      "value": value, "event": "restored" if restore else "applied",
+                                      "start_monotonic_ms": int(change_started * 1000),
+                                      "end_monotonic_ms": int(time.monotonic() * 1000)}), file=events)
+
+
+def read_stats(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    # The candidate may be appending its next sample while we read.
+    records = [json.loads(line) for line in path.read_text().splitlines(keepends=True)
+               if line.endswith("\n")]
+    return [row for row in records if row.get("type") == "ppp-stats"
+            and type(row.get("monotonic_ms")) is int]
+
+
+def stats_at(records: list[dict], boundary_ms: int) -> dict:
+    if not records:
+        return {}
+    # Samples are emitted asynchronously around the requested boundary. Use
+    # the nearest complete runtime sample rather than silently accepting an
+    # older sample up to two seconds away, which shortens the first window.
+    row = min(records, key=lambda item: abs(item["monotonic_ms"] - boundary_ms))
+    if abs(row["monotonic_ms"] - boundary_ms) <= 1000:
+        return {"sample_ms": row["monotonic_ms"], **row.get("runtime", {}).get("multipath", {})}
+    return {}
+
+
+def path_links(sample: dict, path: str) -> set[tuple[int, int]]:
+    return {(link["link_id"], link["generation"]) for link in sample.get("links", [])
+            if link.get("path_id") == path}
+
+
+def session_matches(first: dict, second: dict) -> bool:
+    session_id = first.get("vmux_session_id")
+    return session_id is not None and session_id == second.get("vmux_session_id")
+
+
+def carrier_counter_deltas(start: dict, end: dict, link_ids: set[int], fields: tuple[str, ...]) -> dict:
+    before = {link["link_id"]: link for link in start.get("links", []) if link["link_id"] in link_ids}
+    after = {link["link_id"]: link for link in end.get("links", []) if link["link_id"] in link_ids}
+    result = dict.fromkeys(fields)
+    if (not link_ids or before.keys() != link_ids or after.keys() != link_ids or
+            any(before[link]["generation"] != after[link]["generation"] for link in link_ids)):
+        return result
+    for field in fields:
+        pairs = [(before[link].get(field), after[link].get(field)) for link in link_ids]
+        if all(type(first) is int and type(last) is int and last >= first for first, last in pairs):
+            result[field] = sum(last - first for first, last in pairs)
+    return result
+
+
+CARRIER_COUNTER_FIELDS = ("tx_bytes", "retransmit_bytes", "retransmit_events",
+                          "scheduler_selection_count", "scheduler_probe_selection_count",
+                          "scheduler_candidate_observation_count")
+CARRIER_STATE_FIELDS = ("queued_bytes", "wire_inflight_bytes", "send_credit_bytes",
+                        "scheduler_last_send_credit_bytes", "scheduler_last_wire_inflight_bytes",
+                        "scheduler_last_queue_bytes",
+                        "scheduler_last_observed_send_credit_bytes",
+                        "scheduler_last_observed_wire_inflight_bytes",
+                        "scheduler_last_observed_queue_bytes")
+
+
+def read_socket_metrics(path: Path) -> list[dict]:
+    """Read complete socket-metrics records, ignoring a partial or malformed line."""
+    if not path.is_file():
+        return []
+    records = []
+    for line in path.read_text().splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and type(row.get("monotonic_ms")) is int:
+            records.append(row)
+    return records
+
+
+def _socket_number(socket: dict, name: str) -> int | None:
+    value = (socket.get("fields") or {}).get(name)
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _socket_header_number(socket: dict, name: str) -> int | None:
+    value = socket.get(name)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _path_socket_state(sample: dict, role: str, path_id: str,
+                       paths: list[dict]) -> dict | None:
+    sockets = []
+    for socket in sample.get("sockets", []):
+        if not isinstance(socket, dict):
+            continue
+        attributed = socket.get("path_id")
+        if attributed is None:
+            attributed = socket_path_id(paths, role, socket)
+        if attributed == path_id:
+            sockets.append(socket)
+    if not sockets:
+        return None
+    state = {"sample_ms": sample["monotonic_ms"], "socket_count": len(sockets),
+             "identities": sorted((socket.get("local"), socket.get("peer"))
+                                  for socket in sockets)}
+    for name in ("notsent", "snd_wnd", "cwnd", "bytes_acked", "bytes_sent"):
+        values = [_socket_number(socket, name) for socket in sockets]
+        if values and all(value is not None for value in values):
+            state[name] = sum(values)
+    for name in ("send_q", "recv_q"):
+        values = [_socket_header_number(socket, name) for socket in sockets]
+        if values and all(value is not None for value in values):
+            state[name] = sum(values)
+    return state
+
+
+def _socket_state_at(records: list[dict], role: str, path_id: str, paths: list[dict],
+                     boundary_ms: int, tolerance_ms: int = 2500) -> dict | None:
+    candidates = [record for record in records
+                  if record.get("role") == role and
+                  abs(record["monotonic_ms"] - boundary_ms) <= tolerance_ms]
+    if not candidates:
+        return None
+    sample = min(candidates, key=lambda record: abs(record["monotonic_ms"] - boundary_ms))
+    return _path_socket_state(sample, role, path_id, paths)
+
+
+def socket_window_alignment(records: list[dict], role: str, path_id: str, paths: list[dict],
+                            start_ms: int, end_ms: int) -> dict:
+    """Align one path's sender-side carrier socket counters to a wire window."""
+    first = _socket_state_at(records, role, path_id, paths, start_ms)
+    last = _socket_state_at(records, role, path_id, paths, end_ms)
+    result = {"role": role, "path_id": path_id, "sample_ms": None, "socket_count": 0,
+              "notsent_bytes": None, "snd_wnd_bytes": None, "cwnd_segments": None,
+              "send_q_bytes": None, "recv_q_bytes": None, "tcp_acked_bytes": None,
+              "tcp_acked_delta_bytes": None, "tcp_sent_delta_bytes": None}
+    if last is None:
+        return result
+    result.update({
+        "sample_ms": last["sample_ms"],
+        "socket_count": last["socket_count"],
+        "notsent_bytes": last.get("notsent"),
+        "snd_wnd_bytes": last.get("snd_wnd"),
+        "cwnd_segments": last.get("cwnd"),
+        "send_q_bytes": last.get("send_q"),
+        "recv_q_bytes": last.get("recv_q"),
+        "tcp_acked_bytes": last.get("bytes_acked"),
+    })
+    if first is not None and first["identities"] == last["identities"]:
+        for source, target in (("bytes_acked", "tcp_acked_delta_bytes"),
+                               ("bytes_sent", "tcp_sent_delta_bytes")):
+            before, after = first.get(source), last.get(source)
+            if type(before) is int and type(after) is int and after >= before:
+                result[target] = after - before
+    return result
+
+
+def path_carrier_snapshot(sample: dict, path_id: str) -> dict:
+    """Aggregate one path's VMUX carrier links at one stats sample.
+
+    Server snapshots may not carry client path tokens. The fixture creates
+    links in path order, so link ids 1..N are a deterministic fallback for
+    download diagnostics only.
+    """
+    links = [link for link in sample.get("links", [])
+             if isinstance(link, dict) and
+             (link.get("path_id") == path_id or
+              (not link.get("path_id") and
+               link.get("link_id") == int(path_id.removeprefix("path"))))]
+    identity = sorted((link.get("link_id"), link.get("generation")) for link in links)
+    values = {}
+    for field in CARRIER_COUNTER_FIELDS + CARRIER_STATE_FIELDS:
+        candidates = [link.get(field) for link in links]
+        if candidates and all(type(value) is int and value >= 0 for value in candidates):
+            values[field] = sum(candidates)
+    return {"identity": identity, "values": values}
+
+
+def _carrier_delta(first: dict, last: dict, field: str) -> int | None:
+    if not first["identity"] or first["identity"] != last["identity"]:
+        return None
+    before, after = first["values"].get(field), last["values"].get(field)
+    if type(before) is int and type(after) is int and after >= before:
+        return after - before
+    return None
+
+
+def vmux_window_alignment(sender_start: dict, sender_end: dict, path_id: str,
+                          sender_role: str) -> dict:
+    """Align VMUX scheduling and write counters for one path and wire window."""
+    first = path_carrier_snapshot(sender_start, path_id)
+    last = path_carrier_snapshot(sender_end, path_id)
+    submitted = _carrier_delta(first, last, "tx_bytes")
+    queued_first = first["values"].get("queued_bytes")
+    queued_last = last["values"].get("queued_bytes")
+    completed = None
+    if (submitted is not None and type(queued_first) is int and type(queued_last) is int):
+        completed = submitted - (queued_last - queued_first)
+    return {
+        "sender": sender_role,
+        "path_id": path_id,
+        "link_ids": sorted({link_id for link_id, _ in last["identity"]}),
+        "stable": bool(first["identity"]) and first["identity"] == last["identity"],
+        "selection_count": _carrier_delta(first, last, "scheduler_selection_count"),
+        "probe_selection_count": _carrier_delta(first, last, "scheduler_probe_selection_count"),
+        "candidate_observation_count": _carrier_delta(first, last, "scheduler_candidate_observation_count"),
+        "send_credit_bytes": last["values"].get("send_credit_bytes"),
+        "wire_inflight_bytes": last["values"].get("wire_inflight_bytes"),
+        "observed_send_credit_bytes": last["values"].get("scheduler_last_observed_send_credit_bytes"),
+        "observed_wire_inflight_bytes": last["values"].get("scheduler_last_observed_wire_inflight_bytes"),
+        "selected_send_credit_bytes": last["values"].get("scheduler_last_send_credit_bytes"),
+        "selected_wire_inflight_bytes": last["values"].get("scheduler_last_wire_inflight_bytes"),
+        "write_submitted_bytes": submitted,
+        "write_completed_bytes": completed,
+        "queued_bytes": queued_last,
+    }
+
+
+def record_path_windows(output: Path) -> dict:
+    client = read_stats(output / "client-stats.ndjson")
+    server = read_stats(output / "server-stats.ndjson")
+    socket_records = read_socket_metrics(output / "socket-metrics.ndjson")
+    topology_paths: list[dict] = []
+    try:
+        topology = json.loads((output / "topology.json").read_text())
+        if isinstance(topology, dict) and isinstance(topology.get("paths"), list):
+            topology_paths = [path for path in topology["paths"] if isinstance(path, dict)]
+    except (OSError, json.JSONDecodeError):
+        pass
+    observations = {}
+    session_ids = set()
+    with (output / "path-telemetry.ndjson").open("w") as report:
+        for direction in ("upload", "download"):
+            wire_file = output / f"{direction}-wire.ndjson"
+            if not wire_file.is_file():
+                continue
+            windows = 0
+            shared_windows = 0
+            carrying_paths = set()
+            max_matched_carriers = {}
+            max_concurrent_matches = 0
+            sender_role = "client" if direction == "upload" else "server"
+            for line in wire_file.read_text().splitlines():
+                wire = json.loads(line)
+                windows += 1
+                start_ms, end_ms = wire["start_monotonic_ms"], wire["end_monotonic_ms"]
+                client_start, client_end = stats_at(client, start_ms), stats_at(client, end_ms)
+                server_start, server_end = stats_at(server, start_ms), stats_at(server, end_ms)
+                shared = (session_matches(client_start, server_start) and session_matches(client_end, server_end)
+                          and session_matches(client_start, client_end))
+                if shared:
+                    shared_windows += 1
+                    session_ids.add(client_end["vmux_session_id"])
+                server_end_ids = {link["link_id"] for link in server_end.get("links", [])}
+                client_pair = (client_start, client_end)
+                server_pair = (server_start, server_end)
+                tx, rx = (client_pair, server_pair) if direction == "upload" else (server_pair, client_pair)
+                paths = {}
+                for path, tbf_delta in wire["tbf_bytes"].items():
+                    first, last = path_links(client_start, path), path_links(client_end, path)
+                    latest_ids = {link_id for link_id, _ in last}
+                    ids = latest_ids if shared and first == last and latest_ids <= server_end_ids else set()
+                    received = carrier_counter_deltas(*rx, ids, ("rx_unique_payload_bytes",))
+                    sent = carrier_counter_deltas(*tx, ids, ("tx_unique_payload_bytes", "retransmit_bytes",
+                                                            "retransmit_events"))
+                    matched = len(latest_ids & server_end_ids) if shared else None
+                    unique = received["rx_unique_payload_bytes"]
+                    if matched is not None:
+                        max_matched_carriers[path] = max(max_matched_carriers.get(path, 0), matched)
+                    if unique:
+                        carrying_paths.add(path)
+                    socket_alignment = socket_window_alignment(
+                        socket_records, sender_role, path, topology_paths, start_ms, end_ms)
+                    paths[path] = {
+                        "tbf_bytes": tbf_delta,
+                        "tbf_start_bytes": (wire.get("start_tbf_bytes") or {}).get(path),
+                        "tbf_end_bytes": (wire.get("end_tbf_bytes") or {}).get(path),
+                        "unique_vmux_payload_bytes": unique,
+                        "matched_carriers": matched,
+                        **sent,
+                        "vmux": vmux_window_alignment(tx[0], tx[1], path, sender_role),
+                        "socket": socket_alignment,
+                        "ack_delivery": {
+                            "role": sender_role,
+                            "vmux_unique_payload_bytes": unique,
+                            "tcp_acked_delta_bytes": socket_alignment["tcp_acked_delta_bytes"],
+                        },
+                    }
+                if shared:
+                    max_concurrent_matches = max(max_concurrent_matches,
+                                                 sum(p["matched_carriers"] for p in paths.values()))
+                print(json.dumps({"direction": direction, "start_monotonic_ms": start_ms,
+                                  "end_monotonic_ms": end_ms, "same_vmux_session": shared,
+                                  "client_start": client_start, "client_end": client_end,
+                                  "server_start": server_start, "server_end": server_end, "paths": paths}),
+                      file=report)
+            observations[direction] = {"windows": windows, "same_session_windows": shared_windows,
+                                       "max_matched_carriers": max_matched_carriers,
+                                       "max_simultaneous_matched_carriers": max_concurrent_matches,
+                                       "paths_with_unique_payload": sorted(carrying_paths)}
+    return {"vmux_session_ids": sorted(session_ids), "directions": observations}
+
+
+def record_pool_events(output: Path, clock: dict) -> None:
+    metric = re.compile(r"\[([^\]]+)\] COUNT \[(mux\.pool\.[\w.]+)\].*? delta=(-?\d+)\b")
+    with (output / "pool-events.ndjson").open("w") as events:
+        for role in ("client", "server"):
+            log_path = output / f"six-flow-0-{role}.log"
+            if not log_path.is_file():
+                continue
+            with log_path.open(errors="replace") as log:
+                for line in log:
+                    match = metric.search(line)
+                    if match is None:
+                        continue
+                    timestamp, name, delta = match.groups()
+                    wall_ns = int(datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f").timestamp() * 1e9)
+                    estimated_ms = (wall_ns - clock["unix_ns"] + clock["monotonic_ns"]) // 1_000_000
+                    print(json.dumps({"role": role, "metric": name, "delta": int(delta),
+                                      "local_wall_time": timestamp, "estimated_monotonic_ms": estimated_ms}),
+                          file=events)
+
+
+def six_flow_impairment(args: argparse.Namespace, selected_paths: list[dict]) -> dict | None:
+    if args.impairment is None:
+        if args.impair_path is not None or args.impair_value is not None:
+            raise HarnessError("--impair-path and --impair-value require --impairment")
+        return None
+    path = next((path for path in selected_paths if path["id"] == args.impair_path), None)
+    if path is None or len(selected_paths) < 2 or not args.fixed_pool:
+        raise HarnessError("impairment requires a selected --impair-path in a fixed pool with multiple paths")
+    start, stop = args.impair_after, args.impair_after + args.impair_for
+    default_duration = 25 if args.direction in ("upload", "bidirectional") else 12
+    if not 3 < start < stop < (args.duration or default_duration):
+        raise HarnessError("impairment must begin after the first wire sample and end before sending ends")
+    value = args.impair_value
+    if args.impairment == "delay" and (value is None or not 0 < value <= 5000):
+        raise HarnessError("delay impairment requires --impair-value of 1..5000 added RTT milliseconds")
+    if args.impairment == "rate" and (value is None or not 0 < value < path["rate_mbps"]):
+        raise HarnessError("rate impairment requires --impair-value below the original path cap in Mbit/s")
+    if args.impairment == "blackhole" and value is not None:
+        raise HarnessError("blackhole impairment takes no --impair-value")
+    return {"path": path, "action": args.impairment, "value": value, "start": start, "stop": stop}
+
+
+def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path,
+                        flow_count: int, duration: int | None, mode: str, impairment: dict | None,
+                        wire_interval: int = 6, qdisc_metrics: bool = False,
+                        socket_metrics: bool = False) -> dict:
     import six_flow as workload
 
-    expected = set(range(workload.FLOWS))
-    directions = {}
-    for direction, idle in (("upload", 6), ("download", 12)):
+    expected = set(range(flow_count))
+    results = {}
+    phases = (("upload", 6), ("download", 12)) if mode == "sequential" else ((mode, 6),)
+    for phase, idle in phases:
+        directions = ("upload", "download") if phase == "bidirectional" else (phase,)
+        send_seconds = duration or max(workload.SECONDS[direction] for direction in directions)
         time.sleep(idle)
-        ready = output / f"{direction}.ready"
+        ready = output / f"{phase}.ready"
         reports = {}
         endpoints = {}
         for role in ("server", "client"):
-            prefix = output / f"{direction}-{role}"
+            prefix = output / f"{phase}-{role}"
             with prefix.with_suffix(".ndjson").open("w") as out, prefix.with_suffix(".log").open("w") as err:
                 endpoints[role] = spawn_owned(children, ["ip", "netns", "exec", lab.names[role],
-                    sys.executable, workload.__file__, role, BUSINESS_IP, "19003", direction, str(ready)],
+                    sys.executable, workload.__file__, role, BUSINESS_IP, "19003", phase, str(ready),
+                    str(flow_count), str(send_seconds)],
                     stdout=out, stderr=err)
             if role == "server":
                 deadline = time.monotonic() + workload.CONNECT_TIMEOUT
                 while not ready.exists():
                     if endpoints[role].poll() is not None or time.monotonic() >= deadline:
-                        raise HarnessError(f"{direction} origin not ready; inspect {prefix}.log")
+                        raise HarnessError(f"{phase} origin not ready; inspect {prefix}.log")
                     time.sleep(.02)
                 ready.unlink()
 
-        # A single deadline for all twelve endpoint workers, not a fresh timeout per wait.
-        deadline = time.monotonic() + workload.SECONDS[direction] + workload.IO_TIMEOUT
+        # One deadline for all endpoint workers.
+        phase_started = time.monotonic()
+        deadline = phase_started + send_seconds + workload.IO_TIMEOUT
+        sample_directional_wire(lab, output, directions, phase_started, send_seconds, impairment,
+                                wire_interval, qdisc_metrics, socket_metrics)
         for role, process in endpoints.items():
             if process.wait(timeout=max(0, deadline - time.monotonic())):
-                raise HarnessError(f"{direction} {role} failed; inspect {output}/{direction}-*.ndjson and *.log")
+                raise HarnessError(f"{phase} {role} failed; inspect {output}/{phase}-*.ndjson and *.log")
             children.remove(process)
-            rows = [json.loads(line) for line in (output / f"{direction}-{role}.ndjson").read_text().splitlines()]
-            if (len(rows) != workload.FLOWS or any(type(r.get("flow")) is not int or "error" in r for r in rows)
+            rows = [json.loads(line) for line in (output / f"{phase}-{role}.ndjson").read_text().splitlines()]
+            if (len(rows) != flow_count or any(type(r.get("flow")) is not int or "error" in r for r in rows)
                     or {r["flow"] for r in rows} != expected):
-                raise HarnessError(f"{direction} {role}: expected six distinct successful flow IDs")
+                raise HarnessError(f"{phase} {role}: expected {flow_count} distinct successful flow IDs")
             reports[role] = {r["flow"]: r for r in rows}
 
-        sender, receiver = ("client", "server") if direction == "upload" else ("server", "client")
-        flows = []
-        for flow in sorted(expected):
-            src, dst = reports[sender][flow], reports[receiver][flow]
-            size, digest = src.get("sent_bytes"), src.get("sent_sha256")
-            if (type(size) is not int or size <= 0 or type(dst.get("received_bytes")) is not int or
-                    size != dst["received_bytes"] or not isinstance(digest, str) or
-                    not re.fullmatch(r"[0-9a-f]{64}", digest) or digest != dst.get("received_sha256") or
-                    src.get("sender_receipt") is not True or dst.get("sender_confirmed") is not True):
-                raise HarnessError(f"{direction} flow {flow}: count, SHA-256 or sender confirmation mismatch")
-            flows.append({**src, **dst})
-        directions[direction] = {"send_seconds": workload.SECONDS[direction], "flows": flows}
+        for direction in directions:
+            sender, receiver = ("client", "server") if direction == "upload" else ("server", "client")
+            flows = []
+            for flow in sorted(expected):
+                src, dst = reports[sender][flow], reports[receiver][flow]
+                if phase == "bidirectional":
+                    src, dst = src.get(direction, {}), dst.get(direction, {})
+                size, digest = src.get("sent_bytes"), src.get("sent_sha256")
+                if (type(size) is not int or size <= 0 or type(dst.get("received_bytes")) is not int or
+                        size != dst["received_bytes"] or not isinstance(digest, str) or
+                        not re.fullmatch(r"[0-9a-f]{64}", digest) or digest != dst.get("received_sha256") or
+                        src.get("sender_receipt") is not True or dst.get("sender_confirmed") is not True or
+                        dst.get("exact_eof") is not True):
+                    raise HarnessError(f"{direction} flow {flow}: count, SHA-256, EOF or receipt mismatch")
+                flows.append({**src, **dst, "flow": flow})
+            verified_bytes = sum(flow["sent_bytes"] for flow in flows)
+            observed_ms = (max(flow["send_end_monotonic_ms"] for flow in flows) -
+                           min(flow["send_start_monotonic_ms"] for flow in flows))
+            results[direction] = {"send_seconds": send_seconds, "observed_send_ms": observed_ms,
+                                  "verified_payload_bytes": verified_bytes,
+                                  "verified_payload_mbps": verified_bytes * 8 / observed_ms / 1000,
+                                  "flows": flows}
     time.sleep(6)
-    return directions
+    return results
 
 
 def production_smoke(args: argparse.Namespace) -> int:
     six_flow_mode = args.command == "six-flow-integrity"
+    fixed_pool = six_flow_mode and args.fixed_pool
+    carriers_per_path = args.carriers_per_path if six_flow_mode else 1
+    if carriers_per_path > 1 and not fixed_pool:
+        raise HarnessError("--carriers-per-path above one requires --fixed-pool")
     binary = Path(args.binary).resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise HarnessError(f"candidate PPP binary is not executable: {binary}")
@@ -561,31 +1363,51 @@ def production_smoke(args: argparse.Namespace) -> int:
     root = Path(__file__).resolve().parents[3]
     compat = root / "tools" / "compat"
     output = Path(args.output).resolve()
-    output.mkdir(parents=True, exist_ok=not six_flow_mode)
-    output.chmod(0o700)
+    if not six_flow_mode:
+        output.mkdir(parents=True, exist_ok=True)
+        output.chmod(0o700)
     run_binary = output / "ppp-candidate"
     shutil.copy2(binary, run_binary)
     binary_sha256 = _sha256_file(run_binary)
     candidate_file = output / "candidate.json"
-    candidate_file.write_text(json.dumps({"source_binary": str(binary),
-                                         "run_binary": str(run_binary),
-                                         "sha256": binary_sha256}, indent=2) + "\n")
+    candidate_identity = {"source_binary": str(binary), "run_binary": str(run_binary), "sha256": binary_sha256}
+    candidate_file.write_text(json.dumps(candidate_identity, indent=2) + "\n")
     candidate_file.chmod(0o600)
-    lab = Lab(args.profile)
+    if six_flow_mode:
+        args.evidence["candidate"] = candidate_identity
+    tbf_burst_kb = args.tbf_burst_kb if six_flow_mode else DEFAULT_TBF_BURST_KB
+    congestion_control = args.congestion_control if six_flow_mode else None
+    lab = Lab(args.profile, tbf_burst_kb, ack_priority=args.ack_priority,
+              congestion_control=congestion_control)
     children: list[subprocess.Popen] = []
     handles = []
     secret_path: Path | None = None
     try:
         lab.setup()
         lab.verify()
+        # Both the sysctl and its readback run before any endpoint starts, so
+        # every candidate transport socket is created with the selected
+        # algorithm. The default (no option) leaves the kernel value untouched.
+        lab.apply_congestion_control()
         topology_path = output / "topology.json"
-        topology_path.write_text(json.dumps(lab.topology(), indent=2) + "\n")
+        topology = lab.topology()
+        if six_flow_mode:
+            topology["executor_concurrency"] = args.concurrent
+            topology["tbf_burst_kb"] = tbf_burst_kb
+        topology_path.write_text(json.dumps(topology, indent=2) + "\n")
+        if six_flow_mode:
+            args.evidence["topology"] = str(topology_path)
         server_template = json.loads((compat / "server.json").read_text())
         client_template = json.loads((compat / "client_proxy.json").read_text())
         for template in (server_template, client_template):
             template["telemetry"].update({"enabled": True, "level": 2, "console-log": True})
             if six_flow_mode:
-                template["mux"] = {"mode": "flow", "turbo": True}
+                template["concurrent"] = args.concurrent
+                template["mux"] = {"mode": "flow", "turbo": not fixed_pool}
+                if args.tcp_turbo:
+                    template["tcp"]["turbo"] = True
+                if args.tcp_cwnd is not None:
+                    template["tcp"]["cwnd"] = args.tcp_cwnd
                 if args.pool_metrics:
                     template["telemetry"].update({"count": True, "console-metric": True})
         echo_port = 19002
@@ -629,11 +1451,12 @@ def production_smoke(args: argparse.Namespace) -> int:
                 }},
             }
             if multipath:
+                connection_count = len(selected_paths) * carriers_per_path
                 client["client"]["multipath"] = {
-                    "enabled": True, "policy": "adaptive", "max_connections": len(selected_paths),
-                    "max_concurrent_connects": len(selected_paths), "resume_grace_ms": 30000,
+                    "enabled": True, "policy": "adaptive", "max_connections": connection_count,
+                    "max_concurrent_connects": min(connection_count, 4), "resume_grace_ms": 30000,
                     "paths": [{"id": p["id"], "transport": "tcp", "connect_host": p["server_ip"],
-                               "port": server_port, "connections": 1} for p in selected_paths],
+                               "port": server_port, "connections": carriers_per_path} for p in selected_paths],
                 }
             else:
                 client["client"].pop("multipath", None)
@@ -646,20 +1469,32 @@ def production_smoke(args: argparse.Namespace) -> int:
             handles.extend((server_log, client_log))
             candidate_args = ["--rt=no"] if six_flow_mode else ([] if multipath else ["--tun-mux=1"])
             candidate_cwd = output if six_flow_mode else None
-            server_process = spawn_owned(children, ["ip", "netns", "exec", lab.names["server"], str(run_binary),
-                "--mode=server", f"--config={server_config}", *candidate_args], stdout=server_log, cwd=candidate_cwd,
-                stderr=subprocess.STDOUT)
+            server_command = ["ip", "netns", "exec", lab.names["server"], str(run_binary),
+                              "--mode=server", f"--config={server_config}", *candidate_args]
+            client_command = ["ip", "netns", "exec", lab.names["client"], str(run_binary),
+                              "--mode=proxy", f"--config={client_config}", "--tun-host=no", "--tun-vnet=no",
+                              *candidate_args, "--proxy-subnet=yes", "--proxy-internet=yes",
+                              "--tun-protect=no", "--tun-route=no"]
+            if six_flow_mode:
+                server_command.append(f"--stats-json={output / 'server-stats.ndjson'}")
+                client_command.append(f"--stats-json={output / 'client-stats.ndjson'}")
+                args.evidence["candidate_commands"] = {"server": server_command, "client": client_command}
+                args.evidence["candidate_logs"] = {"server": server_log.name, "client": client_log.name}
+            server_process = spawn_owned(children, server_command, stdout=server_log, cwd=candidate_cwd,
+                                         stderr=subprocess.STDOUT)
             time.sleep(args.startup_wait)
             if server_process.poll() is not None:
                 raise HarnessError(f"candidate server exited; inspect {output / f'{label}-{repeat}-server.log'}")
-            client_process = spawn_owned(children, ["ip", "netns", "exec", lab.names["client"], str(run_binary),
-                "--mode=proxy", f"--config={client_config}", "--tun-host=no", "--tun-vnet=no",
-                *candidate_args, "--proxy-subnet=yes", "--proxy-internet=yes",
-                "--tun-protect=no", "--tun-route=no"], stdout=client_log, cwd=candidate_cwd,
-                stderr=subprocess.STDOUT)
+            client_process = spawn_owned(children, client_command, stdout=client_log, cwd=candidate_cwd,
+                                         stderr=subprocess.STDOUT)
             # Adaptive starts on the primary. Joining secondary paths is a
             # result of subsequent application demand, not a startup gate.
-            primary = (selected_paths[0]["server_ip"], server_port)
+            required_paths = selected_paths if fixed_pool else selected_paths[:1]
+            required_count = carriers_per_path if fixed_pool else 1
+            def carrier_counts() -> dict[str, int]:
+                sockets = established_path_endpoints(lab.names["client"])
+                return {path["id"]: sockets[path["server_ip"], server_port] for path in required_paths}
+
             deadline = time.monotonic() + args.startup_timeout
             def mux_ready() -> bool:
                 server_text = Path(server_log.name).read_text(errors="replace")
@@ -671,16 +1506,20 @@ def production_smoke(args: argparse.Namespace) -> int:
                     if int(first[1]) != 0x10:  # wire::RecordType::CreateRequest
                         raise HarnessError(f"fresh carrier sent record {first[1]} instead of CreateRequest")
                 client_text = Path(client_log.name).read_text(errors="replace")
-                return all(re.search(r"\[mux\][^\n]* :: link open\b", text)
+                ready_count = len(selected_paths) * carriers_per_path if fixed_pool else 1
+                return all(len(re.findall(r"\[mux\][^\n]* :: link open\b", text)) >= ready_count
                            for text in (client_text, server_text))
             while time.monotonic() < deadline:
-                if mux_ready() and primary in established_path_endpoints(lab.names["client"]):
+                if mux_ready() and all(count == required_count for count in carrier_counts().values()):
                     break
                 if server_process.poll() is not None or client_process.poll() is not None:
                     raise HarnessError(f"candidate PPP process exited; inspect {output}/*.log")
                 time.sleep(0.1)
-            if primary not in established_path_endpoints(lab.names["client"]):
-                raise HarnessError(f"primary carrier readiness timed out for {label} trial {repeat}")
+            counts = carrier_counts()
+            if six_flow_mode:
+                args.evidence["startup_carriers"] = counts
+            if any(count != required_count for count in counts.values()):
+                raise HarnessError(f"required carrier readiness timed out for {label} trial {repeat}: {counts}")
             if not mux_ready():
                 raise HarnessError(f"VMUX link-open readiness timed out for {label} trial {repeat}")
             return server_process, client_process
@@ -691,17 +1530,28 @@ def production_smoke(args: argparse.Namespace) -> int:
                 selected_paths = [path for path in lab.paths if path["id"] == args.single_path]
                 if not selected_paths:
                     raise HarnessError(f"{args.profile} has no path named {args.single_path}")
+            args.evidence["configured_carriers"] = {path["id"]: carriers_per_path for path in selected_paths}
+            impairment = six_flow_impairment(args, selected_paths)
             server_process, client_process = start_trial("six-flow", 0, selected_paths, True)
-            directions = six_flow_acceptance(lab, children, output)
+            directions = six_flow_acceptance(lab, children, output, args.flows, args.duration, args.direction,
+                                             impairment, args.wire_interval, args.qdisc_metrics,
+                                             args.socket_metrics)
             if server_process.poll() is not None or client_process.poll() is not None:
                 raise HarnessError("candidate exited during six-flow acceptance")
             result = {"kind": "production-multipath-six-flow", "profile": args.profile,
                       "candidate": {"path": str(run_binary), "sha256": binary_sha256},
                       "topology": str(topology_path), "paths": [path["id"] for path in selected_paths],
+                      "fixed_pool": fixed_pool,
+                      "tcp_turbo": args.tcp_turbo,
+                      "carriers_per_path": carriers_per_path,
+                      "executor_concurrency": args.concurrent,
+                      "tbf_burst_kb": args.tbf_burst_kb,
+                      "ack_priority": args.ack_priority,
+                      "congestion_control": args.congestion_control,
+                      "direction_mode": args.direction,
                       "directions": directions, "passed": True}
             result_path = output / "six-flow-integrity.json"
             result_path.write_text(json.dumps(result, indent=2) + "\n")
-            print(f"PASS: six verified uploads and six verified downloads; result={result_path}")
             return 0
 
         echo = spawn_owned(children, ["ip", "netns", "exec", lab.names["server"], sys.executable, "-u", "-c",
@@ -902,7 +1752,7 @@ def production_fault_matrix(args: argparse.Namespace) -> int:
     binary_sha256 = _sha256_file(run_binary)
     children: list[subprocess.Popen] = []
     handles = []
-    lab = Lab(args.profile)
+    lab = Lab(args.profile, ack_priority=args.ack_priority)
     secret_path: Path | None = None
     cases = []
     try:
@@ -1065,13 +1915,13 @@ def production_fault_matrix(args: argparse.Namespace) -> int:
                 if len(selected) != len(fault_ids):
                     raise HarnessError(f"{name} selected unknown paths: {fault_ids}")
                 for path in selected:
-                    apply_path_impairment(path, "blackhole")
+                    apply_path_impairment(path, "blackhole", ack_priority=lab.ack_priority)
                 fault_started_at_ms = round(time.time() * 1000)
                 time.sleep(outage_ms / 1000)
                 fault_ended_at_ms = round(time.time() * 1000)
                 counters_fault_end = lab.path_egress_bytes()
                 for path in selected:
-                    apply_path_impairment(path, "reset")
+                    apply_path_impairment(path, "reset", ack_priority=lab.ack_priority)
                 reset_at = time.monotonic()
                 try:
                     stdout, stderr = workload.communicate(timeout=args.timeout)
@@ -1137,7 +1987,7 @@ def production_fault_matrix(args: argparse.Namespace) -> int:
                 return record
             finally:
                 for path in lab.paths:
-                    apply_path_impairment(path, "reset")
+                    apply_path_impairment(path, "reset", ack_priority=lab.ack_priority)
                 stop_session(session)
                 if workload is not None and workload in children:
                     terminate_process_group(workload)
@@ -1192,25 +2042,27 @@ def impairment(args: argparse.Namespace) -> int:
     if len(matches) != 1:
         raise HarnessError(f"unknown path: {args.path}")
     path = matches[0]
+    ack_priority = bool(topology.get("ack_priority", False))
     apply_path_impairment(path, args.action,
-                          float(args.loss.rstrip("%")) if isinstance(args.loss, str) else args.loss)
-    print(f"applied {args.action} to {args.path}; the path TBF rate cap remains configured")
+                          float(args.loss.rstrip("%")) if isinstance(args.loss, str) else args.loss,
+                          ack_priority=ack_priority)
+    print(f"applied {args.action} to {args.path}; the path TBF rate cap remains configured"
+          + ("; ACK-priority bands preserved" if ack_priority else ""))
     return 0
 
 
-def apply_path_impairment(path: dict, action: str, loss_percent: float = 5) -> None:
+def apply_path_impairment(path: dict, action: str, loss_percent: float = 5,
+                          ack_priority: bool = False) -> None:
     if not 0 <= loss_percent <= 100:
         raise HarnessError("loss percentage must be between 0 and 100")
+    loss_by_action = {"reset": path["loss_percent"], "blackhole": 100, "drop": loss_percent}
+    if action not in loss_by_action:
+        raise HarnessError(f"unknown impairment action: {action}")
     for ns, dev in ((path["client_ns"], path["client_if"]),
                     (path["router_ns"], path["router_client_if"])):
-        if action == "reset":
-            Lab._netem(ns, dev, path["rtt_ms"], path["jitter_ms"], path["loss_percent"])
-        elif action == "blackhole":
-            Lab._netem(ns, dev, path["rtt_ms"], path["jitter_ms"], 100)
-        elif action == "drop":
-            Lab._netem(ns, dev, path["rtt_ms"], path["jitter_ms"], loss_percent)
-        else:
-            raise HarnessError(f"unknown impairment action: {action}")
+        Lab._apply_path_delay(ns, dev, path["rtt_ms"], path["jitter_ms"],
+                              loss_by_action[action],
+                              path.get("jitter_distribution", "normal"), ack_priority)
 
 
 def load_owned_topology(path: Path) -> dict:
@@ -1220,6 +2072,8 @@ def load_owned_topology(path: Path) -> dict:
         raise HarnessError(f"cannot read topology: {exc}") from exc
     if not isinstance(topology, dict) or topology.get("schema") != 1 or topology.get("profile") not in PROFILES:
         raise HarnessError("unsupported topology schema or profile")
+    if "ack_priority" in topology and not isinstance(topology["ack_priority"], bool):
+        raise HarnessError("topology ack_priority must be boolean")
     namespaces = topology.get("namespaces")
     if not isinstance(namespaces, dict):
         raise HarnessError("topology namespaces are missing")
@@ -1257,17 +2111,20 @@ def verify_fault_rate_preservation(lab: Lab) -> None:
         return int(record["options"]["rate"])
     expected = [configured_rate(ns, dev) for ns, dev in interfaces]
     try:
-        apply_path_impairment(path, "blackhole")
+        apply_path_impairment(path, "blackhole", ack_priority=lab.ack_priority)
         for (ns, dev), rate in zip(interfaces, expected):
             records = json.loads(run(["ip", "netns", "exec", ns, "tc", "-j", "-d", "qdisc", "show", "dev", dev], capture=True))
             tbf = next((item for item in records if item.get("kind") == "tbf"), None)
-            netem = next((item for item in records if item.get("kind") == "netem"), None)
+            netems = [item for item in records if item.get("kind") == "netem"]
             if not tbf or int(tbf["options"]["rate"]) != rate:
                 raise HarnessError(f"blackhole replacement changed TBF path cap on {ns}/{dev}")
-            if not netem or netem.get("options", {}).get("loss-random", {}).get("loss") != 1:
+            if lab.ack_priority and not any(item.get("kind") == "prio" for item in records):
+                raise HarnessError(f"blackhole replacement dropped the prio qdisc on {ns}/{dev}")
+            if not netems or any(netem.get("options", {}).get("loss-random", {}).get("loss") != 1
+                                 for netem in netems):
                 raise HarnessError(f"blackhole replacement did not install 100% netem loss on {ns}/{dev}")
     finally:
-        apply_path_impairment(path, "reset")
+        apply_path_impairment(path, "reset", ack_priority=lab.ack_priority)
     lab.verify()
 
 
@@ -1290,12 +2147,13 @@ def verify_fault_plan_controls(lab: Lab) -> None:
                     raise HarnessError(f"fault-plan infrastructure case failed: {case}")
         # Grace-expired intentionally leaves links blocked; fixture teardown follows later.
         for path in lab.paths:
-            apply_path_impairment(path, "reset")
+            apply_path_impairment(path, "reset", ack_priority=lab.ack_priority)
         lab.verify()
 
 
 def fault_plan(args: argparse.Namespace) -> int:
     topology = load_owned_topology(Path(args.topology))
+    ack_priority = bool(topology.get("ack_priority", False))
     paths = topology["paths"]
     by_id = {path["id"]: path for path in paths}
     if args.case == "single-path-outage":
@@ -1317,16 +2175,16 @@ def fault_plan(args: argparse.Namespace) -> int:
     started = time.monotonic()
     try:
         for path_id in selected:
-            apply_path_impairment(by_id[path_id], "blackhole")
+            apply_path_impairment(by_id[path_id], "blackhole", ack_priority=ack_priority)
         print(json.dumps({"event": "blackhole", "paths": selected, "elapsed_ms": 0}))
         time.sleep(args.outage_ms / 1000)
     except BaseException:
         for path_id in selected:
-            apply_path_impairment(by_id[path_id], "reset")
+            apply_path_impairment(by_id[path_id], "reset", ack_priority=ack_priority)
         raise
     if not expires:
         for path_id in selected:
-            apply_path_impairment(by_id[path_id], "reset")
+            apply_path_impairment(by_id[path_id], "reset", ack_priority=ack_priority)
         print(json.dumps({"event": "reset", "paths": selected,
                           "elapsed_ms": round((time.monotonic() - started) * 1000)}))
     else:
@@ -1356,6 +2214,9 @@ def main() -> int:
     run_parser.add_argument("--min-ratio", type=float, default=0.8)
     run_parser.add_argument("--max-p95-ms", type=float)
     run_parser.add_argument("--max-p99-ms", type=float)
+    run_parser.add_argument("--ack-priority", action="store_true",
+                            help="diagnostic A/B: small ACK/control frames get strict "
+                                 "priority over bulk on each shaped egress (default: off)")
     run_parser.set_defaults(func=scenario)
     fault_parser = sub.add_parser("impair")
     fault_parser.add_argument("--topology", required=True)
@@ -1383,17 +2244,67 @@ def main() -> int:
     smoke_parser.add_argument("--latency-probes", type=int, default=10)
     smoke_parser.add_argument("--min-throughput-ratio", type=float, default=0.8)
     smoke_parser.add_argument("--max-p99-ratio", type=float, default=2.0)
+    smoke_parser.add_argument("--ack-priority", action="store_true",
+                              help="diagnostic A/B: small ACK/control frames get strict "
+                                   "priority over bulk on each shaped egress (default: off)")
     smoke_parser.set_defaults(func=production_smoke)
     six_parser = sub.add_parser("six-flow-integrity", help="require six concurrent timed streams per direction")
     six_parser.add_argument("--binary", default=str(Path(__file__).resolve().parents[3] / "bin/ppp"))
-    six_parser.add_argument("--profile", choices=("independent-12ms-24mbit", "shared-12ms-24mbit"),
+    six_parser.add_argument("--profile", choices=("independent-12ms-24mbit", "shared-12ms-24mbit",
+                                                  "independent-90-125-180", "independent-90-125-180-stable"),
                             default="independent-12ms-24mbit")
     six_parser.add_argument("--output", required=True, help="new result directory (must not already exist)")
-    six_parser.add_argument("--single-path", choices=("path1", "path2"),
+    six_parser.add_argument("--single-path", choices=("path1", "path2", "path3"),
                             help="cap the authenticated multipath session at one carrier on this path")
     six_parser.add_argument("--pool-metrics", action="store_true",
                             help="record VMUX counters, including pool decisions, in the candidate logs")
-    six_parser.set_defaults(func=production_smoke, startup_timeout=15, startup_wait=1)
+    six_parser.add_argument("--fixed-pool", action="store_true",
+                            help="disable Turbo and wait for all selected carriers before the workload")
+    six_parser.add_argument("--flows", type=int, choices=range(1, 65), default=6, metavar="1..64",
+                            help="number of concurrent logical streams (default: 6)")
+    six_parser.add_argument("--direction", choices=("upload", "download", "sequential", "bidirectional"),
+                            default="sequential", help="bidirectional sends both ways on each stream")
+    six_parser.add_argument("--duration", type=int, choices=range(12, 121), metavar="12..120",
+                            help="send window in seconds for each direction (default: 25 up, 12 down)")
+    six_parser.add_argument("--wire-interval", type=int, choices=range(1, 7), metavar="1..6", default=6,
+                            help="seconds between root TBF wire samples during each direction "
+                                 "(default: 6)")
+    six_parser.add_argument("--tcp-cwnd", type=int, metavar="BYTES",
+                            help="diagnostic TCP send-buffer override for each endpoint")
+    six_parser.add_argument("--qdisc-metrics", action="store_true",
+                            help="also record per-interval TBF/netem qdisc counters in "
+                                 "qdisc-metrics.ndjson (default: off)")
+    six_parser.add_argument("--socket-metrics", action="store_true",
+                            help="also record established TCP socket state from both endpoints in "
+                                 "socket-metrics.ndjson (default: off)")
+    six_parser.add_argument("--tbf-burst-kb", type=int, choices=TBF_BURST_KB_CHOICES,
+                            default=DEFAULT_TBF_BURST_KB, metavar="128|256|512|1024",
+                            help="harness root TBF burst in KiB for per-path egresses; the shared "
+                                 "router/server link uses twice this value (default: 128)")
+    six_parser.add_argument("--ack-priority", action="store_true",
+                            help="diagnostic A/B: insert a size-classified prio qdisc under the "
+                                 "unchanged root TBF so pure ACKs bypass bulk queues (default: off)")
+    six_parser.add_argument("--congestion-control", choices=CONGESTION_CONTROL_CHOICES,
+                            metavar="bbr|cubic",
+                            help="set net.ipv4.tcp_congestion_control inside the fixture's client, "
+                                 "router, and server namespaces after setup verification and before "
+                                 "the endpoints start (default: leave the kernel default untouched)")
+    six_parser.add_argument("--tcp-turbo", action="store_true",
+                            help="enable tcp.turbo on both candidate endpoints")
+    six_parser.add_argument("--carriers-per-path", type=int, choices=(1, 2, 3, 4), default=1,
+                            help="number of TCP carriers on each selected path in a fixed pool")
+    six_parser.add_argument("--concurrent", type=int, choices=range(1, 65), default=1, metavar="1..64",
+                            help="top-level executor worker threads on both candidate endpoints "
+                                 "(default: 1, the compatibility baseline)")
+    six_parser.add_argument("--impairment", choices=("delay", "rate", "blackhole"),
+                            help="temporarily degrade one path during the timed workload")
+    six_parser.add_argument("--impair-path", choices=("path1", "path2", "path3"))
+    six_parser.add_argument("--impair-value", type=int, help="added RTT in ms or reduced cap in Mbit/s")
+    six_parser.add_argument("--impair-after", type=int, default=15,
+                            help="seconds from phase start before applying the impairment (default: 15)")
+    six_parser.add_argument("--impair-for", type=int, default=12,
+                            help="seconds before restoring the path (default: 12)")
+    six_parser.set_defaults(func=production_six_flow, startup_timeout=15, startup_wait=1)
     matrix_parser = sub.add_parser("production-fault-matrix",
                                    help="run persistent application traffic through real path outages")
     matrix_parser.add_argument("--binary", default=str(Path(__file__).resolve().parents[3] / "bin/ppp"))
@@ -1411,13 +2322,19 @@ def main() -> int:
     matrix_parser.add_argument("--timeout", type=float, default=90)
     matrix_parser.add_argument("--startup-timeout", type=float, default=15)
     matrix_parser.add_argument("--startup-wait", type=float, default=2)
+    matrix_parser.add_argument("--ack-priority", action="store_true",
+                               help="diagnostic A/B: small ACK/control frames get strict "
+                                    "priority over bulk on each shaped egress (default: off)")
     matrix_parser.set_defaults(func=production_fault_matrix)
     infra_parser = sub.add_parser("infrastructure-check", help="fixture capability check; not production acceptance")
     infra_parser.add_argument("--profile", choices=PROFILES, default="shared-5-80-200")
+    infra_parser.add_argument("--ack-priority", action="store_true",
+                              help="also verify the ACK-priority qdisc hierarchy and impairment "
+                                   "restore path (default: off)")
     args = parser.parse_args()
     try:
         if args.command == "infrastructure-check":
-            lab = Lab(args.profile)
+            lab = Lab(args.profile, ack_priority=args.ack_priority)
             try:
                 lab.setup()
                 lab.verify()

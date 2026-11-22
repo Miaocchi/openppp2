@@ -30,7 +30,15 @@ The implementation-level platform abstraction is described in [Platform integrat
 
 - **Privileges:** TUN client and server need root or `CAP_NET_ADMIN` and a usable `/dev/net/tun` (map it explicitly in containers). Proxy mode needs neither.
 - **Default adapter name:** `ppp` (change with `--tun=<name>`).
-- **Packages:** on x86_64 prefer `openppp2-linux-amd64-simd.zip`; use `-debian10` on older systems; `-io-uring` variants use io_uring. Other architectures are listed in the [User manual](../getting-started/USER_MANUAL.md).
+- **Production build profiles:** `openppp2-linux-amd64.zip` is the generic
+  compatibility build with XTCP enabled and io_uring, SYSNAT, and SIMD disabled.
+  Use `openppp2-linux-amd64-modern.zip` only on Linux 5.10+ hosts with the required
+  BPF/TC permissions and an x86 CPU supporting AES-NI, SSSE3, SSE4.1/4.2,
+  POPCNT, AVX, and AVX2. The other suffixed packages are explicit feature
+  combinations for diagnostics or deployment-specific compatibility.
+- **Packages:** use the generic package unless the modern profile's kernel,
+  permissions, and CPU requirements are known to hold; `-debian10` additionally
+  targets older glibc. Other architectures are listed in the [User manual](../getting-started/USER_MANUAL.md).
 - **Platform flags:**
 
 | Flag | Default | Meaning |

@@ -65,6 +65,40 @@ namespace ppp {
             return false;
         }
 
+        bool Ciphertext::EncryptManyTo(Byte* const* outputs,
+            const int* output_capacities,
+            Byte* const* data,
+            const int* datalens,
+            int count,
+            int* outlens) noexcept {
+            if (count <= 0 || NULLPTR == outputs || NULLPTR == output_capacities ||
+                NULLPTR == data || NULLPTR == datalens || NULLPTR == outlens) {
+                return false;
+            }
+
+            if (NULLPTR != evp_) {
+                return evp_->EncryptManyTo(outputs, output_capacities, data, datalens, count, outlens);
+            }
+
+            if (NULLPTR != rc4_) {
+                for (int i = 0; i < count; i++) {
+                    if (!rc4_->EncryptTo(outputs[i], output_capacities[i], data[i], datalens[i], outlens[i])) {
+                        for (int j = 0; j < count; j++) {
+                            outlens[j] = -1;
+                        }
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            for (int i = 0; i < count; i++) {
+                outlens[i] = -1;
+            }
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::CryptoAlgorithmUnsupported);
+            return false;
+        }
+
         /**
          * @brief Decrypts data through the initialized backend.
          * @param allocator Output allocator.
