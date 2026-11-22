@@ -260,7 +260,7 @@ public:
     bool DrainBatch(std::size_t max_items, ChunkPtr* chunks, std::size_t& count) noexcept {
         count = 0;
         Pull();
-        if (NULLPTR == chunks || max_items == 0) return false;
+        if (nullptr == chunks || max_items == 0) return false;
         while (!queue_.empty() && count < max_items) {
             chunks[count++] = std::move(queue_.front());
             queue_.pop_front();
