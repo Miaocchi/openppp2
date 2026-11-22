@@ -3381,48 +3381,6 @@ namespace vmux {
         }
     }
 
-    void vmux_net::note_link_rtt(vmux_linklayer& link, uint64_t sample, uint64_t now) noexcept {
-        if (sample == 0) return;
-        link.last_rtt_sample_ms_ = now;
-        if (!link.has_rtt_sample_) {
-            link.srtt_ms_ = link.min_rtt_ms_ = sample;
-            link.rttvar_ms_ = sample / 2;
-            link.has_rtt_sample_ = true;
-            link.last_pressure_sample_ms_ = now;
-            return;
-        }
-
-        const auto variation = link.srtt_ms_ > sample ? link.srtt_ms_ - sample : sample - link.srtt_ms_;
-        link.rttvar_ms_ = (link.rttvar_ms_ * 3 + variation) / 4;
-        link.srtt_ms_ = (link.srtt_ms_ * 7 + sample) / 8;
-        link.min_rtt_ms_ = std::min(link.min_rtt_ms_, sample);
-
-        // One vote per time interval keeps ACK bursts from changing the weight.
-        const auto baseline = link.min_rtt_ms_;
-        const auto interval = std::max<uint64_t>(20, baseline / 2);
-        if (now - link.last_pressure_sample_ms_ < interval) return;
-        link.last_pressure_sample_ms_ = now;
-        const auto queue_delay = link.srtt_ms_ - std::min(link.srtt_ms_, baseline);
-        const bool recent_retry = link.last_retransmit_ms_ != 0 &&
-            now - link.last_retransmit_ms_ <= std::max<uint64_t>(250, baseline * 2);
-        if (recent_retry || queue_delay > std::max<uint64_t>(15, baseline / 3) ||
-            link.rttvar_ms_ > std::max<uint64_t>(10, baseline / 4)) {
-            link.pressure_streak_ = std::min(0, link.pressure_streak_) - 1;
-            if (link.pressure_streak_ <= -2) {
-                link.adaptive_weight_ = std::max(25u, link.adaptive_weight_ - 15);
-                link.pressure_streak_ = 0;
-            }
-        } else if (queue_delay <= std::max<uint64_t>(5, baseline / 6) &&
-            link.rttvar_ms_ <= std::max<uint64_t>(5, baseline / 8)) {
-            link.pressure_streak_ = std::max(0, link.pressure_streak_) + 1;
-            if (link.pressure_streak_ >= 3) {
-                link.adaptive_weight_ = std::min(100u, link.adaptive_weight_ + 15);
-                link.pressure_streak_ = 0;
-            }
-        } else {
-            link.pressure_streak_ = 0;
-        }
-    }
 
     void vmux_net::packet_input_ack(Byte* buffer, int buffer_size, uint64_t now) noexcept {
         if (!reliability_on_) {

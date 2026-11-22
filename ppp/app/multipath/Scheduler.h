@@ -673,29 +673,6 @@ public:
         return window;
     }
 
-    static std::uint64_t AdaptiveFlightCredit(std::uint64_t session_window,
-        std::size_t live_carriers, std::uint64_t bdp, std::uint64_t inflight,
-        unsigned weight, std::uint64_t startup_window, std::uint64_t minimum_window) noexcept {
-        const auto share = session_window / std::max<std::size_t>(1, live_carriers);
-        // Headroom lets the sender discover capacity above its current estimate.
-        const auto target = std::min(share, std::max(startup_window, SaturatingAdd(bdp, bdp)));
-        const auto bounded_weight = std::min(100u, weight);
-        const auto weighted = (target / 100) * bounded_weight +
-            (target % 100) * bounded_weight / 100;
-        const auto limit = std::min(share, std::max(minimum_window, weighted));
-        return limit > inflight ? limit - inflight : 0;
-    }
-
-    // Capacity is usable only while the sample that produced it is fresh.
-    // The RTT/metrics timestamp (updated_ms) is deliberately not reused here:
-    // delivery samples can stay fresh long after the capacity estimate expires.
-    static bool CapacityIsFresh(const PathTelemetry& telemetry,
-                                std::uint64_t now_ms) noexcept {
-        return telemetry.capacity_rate_bytes_per_second != 0 &&
-            telemetry.capacity_updated_ms != 0 &&
-            telemetry.capacity_updated_ms <= now_ms &&
-            now_ms - telemetry.capacity_updated_ms <= MetricsMaxAgeMs;
-    }
 
     // Adapts the control-plane snapshot to the legacy scheduler contract.
     // Callers retain ownership of the carrier id and send-credit policy.
