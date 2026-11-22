@@ -314,6 +314,11 @@ class Lab:
              "match", "u32", "0", "0", "flowid", "20:2"])
 
     @staticmethod
+    def _path_rate(ns: str, dev: str, rate: int, action: str = "replace") -> None:
+        run(["ip", "netns", "exec", ns, "tc", "qdisc", action, "dev", dev,
+             "root", "handle", "1:", "tbf", "rate", f"{rate}mbit", "burst", "128kb", "latency", "500ms"])
+
+    @staticmethod
     def _netem(ns: str, dev: str, rtt: float, jitter: float = 0,
                loss_percent: float = 0, jitter_distribution: str = "normal",
                parent: str = "1:1", handle: str = "10:") -> None:
