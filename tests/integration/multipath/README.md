@@ -140,15 +140,51 @@ workload. Use `--pool-metrics` in all trials to capture pool decisions and
 retransmission counters in the PPP logs. Use a separate output directory for
 each trial.
 
-For a sustained three-carrier trial, select `independent-90-125-180` and
-`--fixed-pool`. The harness waits for all three carrier sockets and records
-directional TBF rates in `upload-wire.ndjson` and `download-wire.ndjson`.
-Use `--duration 48` for a longer send window and `--flows` to vary
-concurrency. In a fixed pool, `--carriers-per-path 2` configures two TCP
-carriers behind each path's existing rate cap. `--tcp-turbo` enables
-TCP_NODELAY on both endpoints. Compare the individual wire rates in the same sample window
-with the configured caps. Application goodput comes from the verified
-stream bytes in `six-flow-integrity.json`.
+#### Three independent paths
+
+`independent-90-125-180-stable` shapes three paths to 100, 200, and 300 Mbit/s
+at 90, 125, and 180 ms RTT. `independent-90-125-180` adds 25 ms of configured
+jitter to path 2. Use `--fixed-pool --carriers-per-path 1` for three total
+carrier sockets. The fixed-pool startup gate checks the configured carrier
+count on each path. `--tcp-turbo` enables TCP_NODELAY on both endpoints.
+
+Use `--direction upload` and `--direction download` for the one-way runs.
+`--direction bidirectional` sends in both directions simultaneously over
+the same six SOCKS streams and checks each direction's count, SHA-256,
+receipt, and EOF. The default `sequential` retains the earlier workload.
+
+```sh
+sudo python3 tests/integration/multipath/run.py six-flow-integrity \
+  --binary ./bin/ppp --profile independent-90-125-180-stable \
+  --fixed-pool --carriers-per-path 1 --direction bidirectional --duration 48 \
+  --pool-metrics --output ./build/private/three-path-stable-01
+```
+
+Repeat with `--single-path path1`, `--single-path path2`, and
+`--single-path path3` to measure the best-single baseline using the same
+workload and profiling options. Use a fresh result directory for each trial.
+For timed degradation, add `--impair-path path2 --impair-after 15
+--impair-for 12` and one of `--impairment delay --impair-value 120`
+(added RTT in ms), `--impairment rate --impair-value 20` (cap in Mbit/s),
+or `--impairment blackhole`. The harness records the start and end of each
+qdisc change in `impairment-events.ndjson`.
+
+`run-evidence.json` records the runner and candidate command arguments,
+checkout commit and dirty-tree fingerprint when available, selected binary
+SHA-256, topology reference, startup carrier counts, and runner exit code.
+Compare the `client-stats.ndjson` and `server-stats.ndjson` link snapshots
+using the VMUX session ID and shared link ID. Each endpoint's local link
+generation tracks changes on that endpoint. `path-telemetry.ndjson` pairs
+the corresponding stats with raw TBF deltas from `upload-wire.ndjson` and
+`download-wire.ndjson` using the host monotonic clock. It reports received
+unique VMUX payload, original sender submissions, and sender retransmits
+separately. A delta is null when matching counter snapshots are absent or a
+link identity changes. The run manifest summarizes matched session IDs,
+carrier counts, and paths with received payload in the available windows.
+`--pool-metrics` keeps pool events in the candidate logs and extracts them
+into `pool-events.ndjson` with an estimated monotonic timestamp. Verified
+workload goodput in `six-flow-integrity.json` uses the application payload
+bytes and the measured send interval.
 
 ### External production scenarios
 

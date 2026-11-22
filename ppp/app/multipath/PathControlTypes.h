@@ -78,6 +78,10 @@ struct PathTelemetry final {
     std::uint64_t updated_ms = 0;
     std::uint64_t current_rate_bytes_per_second = 0;
     std::uint64_t capacity_rate_bytes_per_second = 0;
+    /// Tick of the delivery sample that produced the capacity estimate.
+    /// Zero when no capacity sample is available; independent of updated_ms,
+    /// which tracks the newest sample of any kind.
+    std::uint64_t capacity_updated_ms = 0;
     std::uint64_t min_rtt_ms = 0;
     std::uint64_t srtt_ms = 0;
     std::uint64_t queue_delay_ms = 0;
@@ -88,6 +92,9 @@ struct PathTelemetry final {
     std::uint8_t confidence = 0;
     bool at_capacity = false;
     bool has_sample = false;
+    std::uint64_t jitter_ms = 0;
+    unsigned scheduling_weight = 100;
+    bool app_limited = false;
 };
 
 struct DialData final {};

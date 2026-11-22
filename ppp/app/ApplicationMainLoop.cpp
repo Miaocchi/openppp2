@@ -724,6 +724,10 @@ bool PppApplication::OnTick(uint64_t now) noexcept {
         }
         if (NULLPTR == client) {
             if (NULLPTR != server_ && !server_->IsDisposed()) {
+                if (!stats_json_path_.empty()) {
+                    runtime_lifecycle_.UpdateMultipathState(
+                        runtime.generation, server_->GetMultipathRuntimeState(), now);
+                }
                 const ppp::app::runtime::RuntimeReadiness readiness =
                     ppp::app::runtime::BuildServerRuntimeReadiness(server_->IsRunning());
                 runtime_lifecycle_.UpdateReadiness(runtime.generation, readiness, now);

@@ -35,6 +35,12 @@ public:
         CandidateState state = CandidateState::Active;
         bool probe_eligible = true;
         std::optional<std::uint64_t> probe_budget_bytes;
+        // The VMUX carrier's ACK flight includes outstanding socket writes.
+        // An absent BDP preserves the legacy contract for other callers.
+        std::optional<std::uint64_t> bdp_bytes;
+        std::uint64_t jitter_ms = 0;
+        unsigned scheduling_weight = 100;
+        std::uint64_t generation = 0;
     };
 
     struct Selection final {
@@ -52,6 +58,30 @@ public:
     explicit PathScheduler(std::uint64_t probe_interval_ms = 1000) noexcept
         : probe_interval_ms_(std::max<std::uint64_t>(1,
             std::min<std::uint64_t>(probe_interval_ms, 60000))) {}
+
+    static std::uint64_t AdaptiveFlightCredit(std::uint64_t session_window,
+        std::size_t live_carriers, std::uint64_t bdp, std::uint64_t inflight,
+        unsigned weight, std::uint64_t startup_window, std::uint64_t minimum_window) noexcept {
+        const auto share = session_window / std::max<std::size_t>(1, live_carriers);
+        // Headroom lets the sender discover capacity above its current estimate.
+        const auto target = std::min(share, std::max(startup_window, SaturatingAdd(bdp, bdp)));
+        const auto bounded_weight = std::min(100u, weight);
+        const auto weighted = (target / 100) * bounded_weight +
+            (target % 100) * bounded_weight / 100;
+        const auto limit = std::min(share, std::max(minimum_window, weighted));
+        return limit > inflight ? limit - inflight : 0;
+    }
+
+    // Capacity is usable only while the sample that produced it is fresh.
+    // The RTT/metrics timestamp (updated_ms) is deliberately not reused here:
+    // delivery samples can stay fresh long after the capacity estimate expires.
+    static bool CapacityIsFresh(const PathTelemetry& telemetry,
+                                std::uint64_t now_ms) noexcept {
+        return telemetry.capacity_rate_bytes_per_second != 0 &&
+            telemetry.capacity_updated_ms != 0 &&
+            telemetry.capacity_updated_ms <= now_ms &&
+            now_ms - telemetry.capacity_updated_ms <= MetricsMaxAgeMs;
+    }
 
     // Adapts the control-plane snapshot to the legacy scheduler contract.
     // Callers retain ownership of the carrier id and send-credit policy.
@@ -88,8 +118,9 @@ public:
                 candidate.rtt_ms = snapshot.telemetry.min_rtt_ms;
             }
             if (snapshot.capabilities.payload_delivery_rate) {
-                const auto capacity = snapshot.telemetry.capacity_rate_bytes_per_second;
-                const auto rate = capacity != 0 ? capacity : snapshot.telemetry.current_rate_bytes_per_second;
+                const auto rate = CapacityIsFresh(snapshot.telemetry, now_ms)
+                    ? snapshot.telemetry.capacity_rate_bytes_per_second
+                    : snapshot.telemetry.current_rate_bytes_per_second;
                 if (rate != 0) candidate.throughput_bytes_per_second = rate;
             }
         }
@@ -148,6 +179,7 @@ private:
     struct Tracker final {
         std::uint16_t id = 0;
         std::uint64_t last_selected_ms = 0;
+        std::uint64_t generation = 0;
         bool used = false;
     };
 
@@ -218,9 +250,18 @@ private:
         const std::uint64_t rate = fresh && candidate.throughput_bytes_per_second &&
             *candidate.throughput_bytes_per_second > 0
             ? *candidate.throughput_bytes_per_second : DefaultUnknownThroughputBytesPerSecond;
-        const std::uint64_t queued = SaturatingAdd(candidate.queue_bytes, candidate.unacked_bytes);
+        auto queued = SaturatingAdd(candidate.queue_bytes, candidate.unacked_bytes);
+        std::uint64_t pressure_ms = 0;
+        if (candidate.bdp_bytes && *candidate.bdp_bytes != 0) {
+            const auto bdp = *candidate.bdp_bytes;
+            const auto excess = candidate.unacked_bytes > bdp ? candidate.unacked_bytes - bdp : 0;
+            queued = std::max(candidate.queue_bytes, excess);
+            const auto reduced_weight = 100 - std::min(100u, candidate.scheduling_weight);
+            pressure_ms = SaturatingAdd(candidate.jitter_ms,
+                (rtt / 100) * reduced_weight + (rtt % 100) * reduced_weight / 100);
+        }
         const std::uint64_t bytes = SaturatingAdd(queued, payload_bytes);
-        return SaturatingAdd(SaturatingAdd(rtt, TransferTime(bytes, rate)),
+        return SaturatingAdd(SaturatingAdd(SaturatingAdd(rtt, pressure_ms), TransferTime(bytes, rate)),
             ActivityPenalty(candidate, now_ms));
     }
 
@@ -289,7 +330,7 @@ private:
                 if (!candidate.eligible || !CanCarry(candidate) ||
                     !CanProbe(candidate, payload_bytes) || candidate.id == best->id ||
                     !HasCredit(candidate, payload_bytes)) continue;
-                Tracker* tracker = FindTracker(candidate.id);
+                Tracker* tracker = FindTracker(candidate);
                 if (!tracker || now_ms < tracker->last_selected_ms ||
                     now_ms - tracker->last_selected_ms < probe_interval_ms_) continue;
                 if (!probe_tracker || tracker->last_selected_ms < probe_tracker->last_selected_ms ||
@@ -302,7 +343,7 @@ private:
         }
 
         const Candidate& selected = probe_candidate ? *probe_candidate : *best;
-        Tracker* selected_tracker = FindTracker(selected.id);
+        Tracker* selected_tracker = FindTracker(selected);
         if (selected_tracker) selected_tracker->last_selected_ms = now_ms;
         if (probe_candidate) last_probe_ms_ = now_ms;
         return {Status::Selected, selected.id,
@@ -310,9 +351,10 @@ private:
             probe_candidate != nullptr};
     }
 
-    Tracker* FindTracker(std::uint16_t id) noexcept {
+    Tracker* FindTracker(const Candidate& candidate) noexcept {
         for (Tracker& tracker : trackers_) {
-            if (tracker.used && tracker.id == id) return &tracker;
+            if (tracker.used && tracker.id == candidate.id &&
+                tracker.generation == candidate.generation) return &tracker;
         }
         return nullptr;
     }
@@ -320,11 +362,12 @@ private:
     void EnsureTrackers(const std::vector<Candidate>& candidates,
                         std::uint64_t now_ms) noexcept {
         for (const Candidate& candidate : candidates) {
-            if (FindTracker(candidate.id)) continue;
+            if (FindTracker(candidate)) continue;
             for (Tracker& tracker : trackers_) {
                 if (tracker.used) continue;
                 tracker.id = candidate.id;
                 tracker.last_selected_ms = now_ms;
+                tracker.generation = candidate.generation;
                 tracker.used = true;
                 break;
             }
@@ -335,7 +378,9 @@ private:
         for (Tracker& tracker : trackers_) {
             if (!tracker.used) continue;
             const bool present = std::any_of(candidates.begin(), candidates.end(),
-                [&tracker](const Candidate& candidate) { return candidate.id == tracker.id; });
+                [&tracker](const Candidate& candidate) {
+                    return candidate.id == tracker.id && candidate.generation == tracker.generation;
+                });
             if (!present) tracker = Tracker();
         }
     }
