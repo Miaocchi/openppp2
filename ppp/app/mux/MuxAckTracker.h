@@ -19,6 +19,7 @@
  */
 
 #include <cstddef>
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -278,4 +279,20 @@ inline bool DecodeMuxAckFrame(
     return true;
 }
 
+
+/** Selects up to @p max_blocks sequence spaces after @p cursor, wrapping once. */
+inline void SelectMuxAckBlockIds(const std::vector<std::uint32_t>& ids,
+                                 std::uint32_t cursor,
+                                 std::size_t max_blocks,
+                                 std::vector<std::uint32_t>& selected) {
+    selected.clear();
+    if (ids.empty() || max_blocks == 0) return;
+    const auto start = std::upper_bound(ids.begin(), ids.end(), cursor);
+    const std::size_t offset = static_cast<std::size_t>(start - ids.begin());
+    const std::size_t count = std::min(max_blocks, ids.size());
+    selected.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        selected.emplace_back(ids[(offset + index) % ids.size()]);
+    }
+}
 } // namespace ppp::app::mux

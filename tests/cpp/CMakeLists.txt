@@ -161,6 +161,9 @@ target_link_libraries(websocket_buffered_upgrade_test PRIVATE boost_system Threa
 openppp2_add_cpp_test(xtcp_direct_bridge_policy_test SOURCES xtcp_direct_bridge_policy_test.cpp)
 openppp2_add_cpp_test(vmux_path_estimator_test SOURCES vmux_path_estimator_test.cpp)
 
+openppp2_add_cpp_test(path_pacing_policy_test SOURCES path_pacing_policy_test.cpp)
+set_tests_properties(path_pacing_policy_test PROPERTIES LABELS "multipath;offline")
+
 openppp2_add_cpp_test(xtcp_upload_budget_test SOURCES xtcp_upload_budget_test.cpp)
 target_link_libraries(xtcp_upload_budget_test PRIVATE Threads::Threads)
 openppp2_add_cpp_test(spsc_handoff_test SOURCES spsc_handoff_test.cpp)
@@ -640,6 +643,14 @@ target_link_libraries(multipath_transmission_test PRIVATE
     boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
 set_tests_properties(multipath_transmission_test PROPERTIES
     LABELS "multipath;isolated;security")
+openppp2_add_cpp_test(multipath_path_dialer_test SOURCES
+    multipath_path_dialer_test.cpp
+    ${OPENPPP2_PRODUCTION_WSS_TEST_SOURCES}
+    "${OPENPPP2_ROOT}/ppp/app/multipath/PathDialer.cpp")
+target_link_libraries(multipath_path_dialer_test PRIVATE
+    boost_context Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+set_tests_properties(multipath_path_dialer_test PROPERTIES
+    LABELS "multipath;isolated")
 openppp2_add_cpp_test(transport_auth_lifecycle_test SOURCES
     transport_auth_lifecycle_test.cpp
     ${OPENPPP2_PRODUCTION_WSS_TEST_SOURCES}
@@ -652,6 +663,7 @@ if(ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     foreach(_target transport_auth_configuration_test
                     session_resume_production_wss_lifecycle_test
                     multipath_transmission_test
+                    multipath_path_dialer_test
                     transport_auth_lifecycle_test)
         target_compile_options(${_target} PRIVATE -fno-sanitize=vptr)
     endforeach()

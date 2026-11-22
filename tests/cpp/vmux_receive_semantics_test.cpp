@@ -479,6 +479,26 @@ struct vmux_net_test_access {
         return RunOnStrand(mux, [&]() { return mux.get_link_telemetry(*link, now); });
     }
 
+    static std::uint64_t AdaptiveSendCredit(vmux_net& mux,
+        vmux_net::vmux_linklayer& link,
+        const ppp::app::multipath::PathTelemetry& telemetry,
+        std::size_t live_carriers) {
+        return RunOnStrand(mux, [&]() {
+            return mux.adaptive_send_credit(link, telemetry, live_carriers);
+        });
+    }
+    static bool LinkHasByteCredit(vmux_net& mux, const vmux_net::vmux_linklayer_ptr& link, int len) {
+        return RunOnStrand(mux, [&]() { return mux.link_has_byte_credit(link, len); });
+    }
+
+    static std::size_t MinimumWindowBytes() {
+        return sizeof(vmux_net::vmux_hdr) + vmux_net::max_buffers_size;
+    }
+
+    static std::size_t RtxCapBytes(vmux_net& mux) {
+        return RunOnStrand(mux, [&]() { return mux.rtx_cap_bytes_; });
+    }
+
     static void OnLinkExit(vmux_net& mux, const vmux_net::vmux_linklayer_ptr& link, const char* reason) {
         RunOnStrandVoid(mux, [&]() { mux.on_link_exit(link, reason); });
     }
@@ -489,10 +509,6 @@ struct vmux_net_test_access {
 
     static std::size_t RxLinkCount(vmux_net& mux) {
         return RunOnStrand(mux, [&]() { return mux.rx_links_.size(); });
-    }
-
-    static bool LinkHasByteCredit(const vmux_net::vmux_linklayer_ptr& link, int len) {
-        return vmux_net::link_has_byte_credit(link, len);
     }
 
     static void SetQueuedBytes(const vmux_net::vmux_linklayer_ptr& link, std::size_t n) {
@@ -1612,13 +1628,15 @@ void TestLinkExitClosesWhenLast() {
 }
 
 void TestLinkByteCreditHighWater() {
+    auto mux = MakeMux();
     auto link = vmux::vmux_net_test_access::MakeDeadLink(true);
-    Require(vmux::vmux_net_test_access::LinkHasByteCredit(link, 1024), "idle has credit");
+    vmux::vmux_net_test_access::AttachLink(*mux, link);
+    Require(vmux::vmux_net_test_access::LinkHasByteCredit(*mux, link, 1024), "idle has credit");
     vmux::vmux_net_test_access::SetQueuedBytes(link, static_cast<std::size_t>(PPP_MUX_LINK_BYTE_HIGH_WATER));
-    Require(!vmux::vmux_net_test_access::LinkHasByteCredit(link, 1), "at high water denies");
+    Require(!vmux::vmux_net_test_access::LinkHasByteCredit(*mux, link, 1), "at high water denies");
     vmux::vmux_net_test_access::SetQueuedBytes(link, static_cast<std::size_t>(PPP_MUX_LINK_BYTE_HIGH_WATER) - 16);
-    Require(vmux::vmux_net_test_access::LinkHasByteCredit(link, 16), "exactly fits");
-    Require(!vmux::vmux_net_test_access::LinkHasByteCredit(link, 17), "over denies");
+    Require(vmux::vmux_net_test_access::LinkHasByteCredit(*mux, link, 16), "exactly fits");
+    Require(!vmux::vmux_net_test_access::LinkHasByteCredit(*mux, link, 17), "over denies");
 }
 
 void TestTxFlowDrrPrefersOtherCidAfterQuantum() {
@@ -1845,12 +1863,14 @@ void TestChurnRepairPrecedesFreshDataOnReturnedCredit() {
     Access::AttachLink(*sender, lost);
     Access::AttachLink(*sender, live);
     Access::WithdrawLink(*sender, live);
+    Access::SetQueuedBytes(live, PPP_MUX_LINK_BYTE_HIGH_WATER);
     Require(Access::TrackSentFlow(*sender, cid, 1, 41, 1000, lost->id_), "first DSN was written on lost carrier");
     Require(Access::InjectPush(*receiver, cid, 2, "B", 1, 1010), "buffer next DSN");
     Access::OnLinkExit(*sender, lost, "test");
     Access::EmplaceDataFrameSeq(*sender, cid, 3, 1);
-    Require(Access::PendingRtx(*sender) == 1 && Access::QueuedRx(*skt) == 0, "wait for repair, never skip the gap");
-
+    Require(Access::PendingRtx(*sender) == 1 && Access::QueuedRx(*skt) == 0,
+        "wait for repair, never skip the gap");
+    Access::SetQueuedBytes(live, 0);
     Access::OfferLink(*sender, live);
     Require(Access::ProcessTxAll(*sender), "drain returned credit without waiting for another ACK or PTO");
     DrainContext(sender);
@@ -1992,7 +2012,7 @@ void TestVmuxAckFeedsSchedulerAndPathSnapshot() {
         "scheduler uses the same ACK-driven estimate");
 }
 
-void TestStaleCapacityDoesNotBoostWeightOrBdp() {
+void TestStaleCapacityFallsBackToDeliveryBdp() {
     using namespace ppp::app::multipath;
     using Access = vmux::vmux_net_test_access;
     auto mux = MakeMux();
@@ -2016,7 +2036,12 @@ void TestStaleCapacityDoesNotBoostWeightOrBdp() {
     Require(stale.has_sample, "delivery sample remains fresh while capacity expires");
     Require(stale.capacity_rate_bytes_per_second == 0,
         "expired capacity is not reported as fresh");
-    Require(stale.bdp_bytes == 0, "expired capacity does not seed BDP credit");
+    // A fresh delivery sample still seeds BDP from delivery rate x min RTT
+    // instead of leaving the carrier on the fixed startup window.
+    Require(stale.current_rate_bytes_per_second == 10000,
+        "stale capacity keeps the fresh delivery rate");
+    Require(stale.bdp_bytes == 100,
+        "expired capacity falls back to delivery rate x min RTT");
     Require(stale.scheduling_weight == 50, "expired capacity halves scheduling weight");
 
     link->path_estimator_->OnSample({1000, 10000, 1100, 2100, false}, now);
@@ -2024,6 +2049,103 @@ void TestStaleCapacityDoesNotBoostWeightOrBdp() {
     Require(fresh.capacity_rate_bytes_per_second != 0, "fresh capacity is reported");
     Require(fresh.bdp_bytes != 0, "fresh capacity seeds BDP credit");
     Require(fresh.scheduling_weight == 100, "fresh capacity restores full weight");
+}
+
+void TestStaleCapacityKeepsMeasuredBdpAboveStartupWindow() {
+    using namespace ppp::app::multipath;
+    using Access = vmux::vmux_net_test_access;
+    auto mux = MakeMux();
+    auto link = Access::MakeDeadLink(true);
+    link->id_ = 1;
+    link->path_estimator_ = MakePathEstimator(PathEstimatorMode::Kcc);
+    constexpr std::uint64_t now = 30000;
+    constexpr std::uint64_t min_rtt_ms = 20;
+    // 900000 bytes over the 10 ms sample interval = 90 MB/s.
+    constexpr std::uint64_t stale_delivery_rate = 90000000;
+    link->has_rtt_sample_ = true;
+    link->srtt_ms_ = min_rtt_ms;
+    link->min_rtt_ms_ = min_rtt_ms;
+    link->last_rtt_sample_ms_ = now;
+
+    // Establish a 100 MiB/s capacity, then let it expire while a lower
+    // application-limited burst refreshes only the delivery sample.
+    link->path_estimator_->OnSample({1000000, 10000, 0, 1000000, false}, now - 6001);
+    link->path_estimator_->OnSample({900000, 10000, 1000000, 1900000, true}, now);
+
+    const auto telemetry = Access::LinkTelemetry(*mux, link, now);
+    Require(telemetry.capacity_rate_bytes_per_second == 0,
+        "expired capacity is not reported as fresh");
+    Require(telemetry.current_rate_bytes_per_second == stale_delivery_rate,
+        "delivery sample is the freshest rate evidence");
+    const std::uint64_t expected_bdp = stale_delivery_rate * min_rtt_ms / 1000;
+    Require(telemetry.bdp_bytes == expected_bdp,
+        "stale capacity uses delivery rate x min RTT for BDP");
+    Require(telemetry.bdp_bytes > (std::uint64_t)PPP_MUX_LINK_BYTE_HIGH_WATER,
+        "a measured pipe is not collapsed to the startup window");
+    Require(telemetry.scheduling_weight == 50,
+        "expired capacity still halves scheduling weight");
+    Require(!telemetry.at_capacity, "idle carrier is below the fallback BDP");
+}
+
+void TestFreshCapacityDoesNotBypassAdaptiveFlightCredit() {
+    using namespace ppp::app::multipath;
+    using Access = vmux::vmux_net_test_access;
+    auto mux = MakeMux();
+    auto link = Access::MakeDeadLink(true);
+    link->id_ = 1;
+    Access::AttachLink(*mux, link);
+    Access::SetQueuedBytes(link, 0);
+    Require(link->in_tx_links_, "attached carrier has write credit");
+
+    // A fresh-capacity snapshot whose carrier already holds a full BDP of
+    // flight. The adaptive cap must still bind: returning the local write
+    // high-water here is the bypass that lets small-BDP carriers overrun.
+    PathTelemetry telemetry;
+    telemetry.has_sample = true;
+    telemetry.capacity_rate_bytes_per_second = 10 * 1024 * 1024;
+    telemetry.capacity_updated_ms = 1000;
+    telemetry.min_rtt_ms = 20;
+    telemetry.srtt_ms = 20;
+    telemetry.bdp_bytes = telemetry.capacity_rate_bytes_per_second * telemetry.min_rtt_ms / 1000;
+    telemetry.at_capacity = true;
+    telemetry.wire_inflight_bytes = telemetry.bdp_bytes;
+
+    const auto local_credit =
+        static_cast<std::uint64_t>(PPP_MUX_LINK_BYTE_HIGH_WATER);
+    const auto minimum_window = static_cast<std::uint64_t>(Access::MinimumWindowBytes());
+    const auto rtx_cap = static_cast<std::uint64_t>(Access::RtxCapBytes(*mux));
+    const auto expected = PathScheduler::AdaptiveFlightCredit(
+        rtx_cap, 3, telemetry.bdp_bytes, telemetry.wire_inflight_bytes,
+        telemetry.scheduling_weight, PPP_MUX_LINK_BYTE_HIGH_WATER, minimum_window);
+    Require(expected == telemetry.bdp_bytes / PathScheduler::FlightHeadroomDivisor,
+        "flight credit at a full BDP equals the derived headroom");
+    const auto credit = Access::AdaptiveSendCredit(*mux, *link, telemetry, 3);
+    Require(credit == expected, "fresh capacity still honors adaptive flight credit");
+    Require(credit < local_credit,
+        "local write high-water no longer bypasses the flight cap");
+
+    // Without a measured BDP the startup window still bounds the carrier, and
+    // the local high-water remains an upper bound on any returned credit.
+    PathTelemetry unknown = telemetry;
+    unknown.bdp_bytes = 0;
+    unknown.wire_inflight_bytes = 0;
+    unknown.scheduling_weight = 50;
+    const auto unknown_expected = PathScheduler::AdaptiveFlightCredit(
+        rtx_cap, 3, 0, 0, 50, PPP_MUX_LINK_BYTE_HIGH_WATER, minimum_window);
+    Require(unknown_expected == local_credit,
+        "unknown BDP floors credit at the startup window instead of halving it");
+    Require(Access::AdaptiveSendCredit(*mux, *link, unknown, 3) ==
+        std::min(local_credit, unknown_expected),
+        "unknown BDP keeps startup-based adaptive credit");
+
+    // A single surviving carrier is already bounded by the session window,
+    // and a full local queue reports no credit at all.
+    Require(Access::AdaptiveSendCredit(*mux, *link, telemetry, 1) == local_credit,
+        "single survivor uses the local write budget");
+    Access::SetQueuedBytes(link,
+        static_cast<std::size_t>(PPP_MUX_LINK_BYTE_HIGH_WATER));
+    Require(Access::AdaptiveSendCredit(*mux, *link, telemetry, 3) == 0,
+        "full local queue reports zero credit");
 }
 
 void TestVmuxCompressedAckUsesSendInterval() {
@@ -2085,7 +2207,9 @@ int main() {
         TestLateAckAfterShrinkDoesNotUpdateReplacementLinkMetrics();
         TestPathRuntimeStatsAggregateCarriersByStablePathId();
         TestVmuxAckFeedsSchedulerAndPathSnapshot();
-        TestStaleCapacityDoesNotBoostWeightOrBdp();
+        TestStaleCapacityFallsBackToDeliveryBdp();
+        TestStaleCapacityKeepsMeasuredBdpAboveStartupWindow();
+        TestFreshCapacityDoesNotBypassAdaptiveFlightCredit();
         TestVmuxCompressedAckUsesSendInterval();
         TestTxFlowDrrPrefersOtherCidAfterQuantum();
         TestTxFlowDrrDrainsBytesWithinQuantumBeforeRotating();

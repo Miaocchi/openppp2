@@ -62,6 +62,23 @@ struct RuntimeCarrierState final {
     std::uint64_t confidence = 0;
     bool metrics_known = false;
     bool app_limited = false;
+    std::uint64_t scheduler_selection_count = 0;
+    std::uint64_t scheduler_probe_selection_count = 0;
+    std::uint64_t scheduler_probe_bytes = 0;
+    std::uint64_t scheduler_probe_remaining_bytes = 0;
+    std::uint64_t scheduler_last_selection_sequence = 0;
+    std::uint64_t scheduler_last_payload_bytes = 0;
+    std::uint64_t scheduler_last_send_credit_bytes = 0;
+    std::uint64_t scheduler_last_queue_bytes = 0;
+    std::uint64_t scheduler_last_wire_inflight_bytes = 0;
+    std::uint64_t scheduler_last_probe_budget_bytes = 0;
+    bool scheduler_last_probe = false;
+    std::uint64_t scheduler_candidate_observation_count = 0;
+    std::uint64_t scheduler_last_observation_sequence = 0;
+    std::uint64_t scheduler_last_observed_send_credit_bytes = 0;
+    std::uint64_t scheduler_last_observed_queue_bytes = 0;
+    std::uint64_t scheduler_last_observed_wire_inflight_bytes = 0;
+    std::uint64_t scheduler_last_observed_probe_remaining_bytes = 0;
 
     bool operator==(const RuntimeCarrierState& other) const noexcept {
         return path_id == other.path_id && link_id == other.link_id && generation == other.generation &&
@@ -75,7 +92,24 @@ struct RuntimeCarrierState final {
             delivery_rate_bytes_per_second == other.delivery_rate_bytes_per_second &&
             capacity_rate_bytes_per_second == other.capacity_rate_bytes_per_second &&
             scheduling_weight == other.scheduling_weight && confidence == other.confidence &&
-            metrics_known == other.metrics_known && app_limited == other.app_limited;
+            metrics_known == other.metrics_known && app_limited == other.app_limited &&
+            scheduler_selection_count == other.scheduler_selection_count &&
+            scheduler_probe_selection_count == other.scheduler_probe_selection_count &&
+            scheduler_probe_bytes == other.scheduler_probe_bytes &&
+            scheduler_probe_remaining_bytes == other.scheduler_probe_remaining_bytes &&
+            scheduler_last_selection_sequence == other.scheduler_last_selection_sequence &&
+            scheduler_last_payload_bytes == other.scheduler_last_payload_bytes &&
+            scheduler_last_send_credit_bytes == other.scheduler_last_send_credit_bytes &&
+            scheduler_last_queue_bytes == other.scheduler_last_queue_bytes &&
+            scheduler_last_wire_inflight_bytes == other.scheduler_last_wire_inflight_bytes &&
+            scheduler_last_probe_budget_bytes == other.scheduler_last_probe_budget_bytes &&
+            scheduler_last_probe == other.scheduler_last_probe &&
+            scheduler_candidate_observation_count == other.scheduler_candidate_observation_count &&
+            scheduler_last_observation_sequence == other.scheduler_last_observation_sequence &&
+            scheduler_last_observed_send_credit_bytes == other.scheduler_last_observed_send_credit_bytes &&
+            scheduler_last_observed_queue_bytes == other.scheduler_last_observed_queue_bytes &&
+            scheduler_last_observed_wire_inflight_bytes == other.scheduler_last_observed_wire_inflight_bytes &&
+            scheduler_last_observed_probe_remaining_bytes == other.scheduler_last_observed_probe_remaining_bytes;
     }
 };
 

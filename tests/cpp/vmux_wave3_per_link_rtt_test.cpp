@@ -9,6 +9,8 @@
  * Tests the Wave 3 changes:
  *   - Track() stores link_id; Ack() returns it for per-link RTT attribution
  *   - vmux_linklayer per-link SRTT/RTTVAR/min_rtt fields
+ *   - min_rtt ignores the first (possibly queue-inflated) sample and only
+ *     accepts a later confirmed floor with bounded downward convergence
  *   - schedulable() unified predicate (handshake_complete && !retiring)
  *   - Per-link PTO derivation (QUIC-style SRTT + max(4*RTTVAR, 1), clamped)
  *
@@ -17,9 +19,13 @@
  * that mirrors packet_input_ack's logic.
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
+
+#include <ppp/app/multipath/Scheduler.h>
 
 #include <ppp/app/mux/MuxRetransmitBuffer.h>
 #include <ppp/app/mux/MuxLinkDrainState.h>
@@ -44,11 +50,16 @@ static std::shared_ptr<std::uint8_t> make_buffer(int length, std::uint32_t seed)
 }
 
 /**
- * Mirror of the per-link EWMA update in packet_input_ack.
- * QUIC-style: first sample → srtt=sample, rttvar=sample/2, min_rtt=sample;
- *             subsequent  → rttvar=(rttvar*3+|srtt-sample|)/4,
- *                            srtt=(srtt*7+sample)/8,
- *                            min_rtt=min(min_rtt, sample).
+ * Mirror of the per-link update in note_link_rtt / packet_input_ack.
+ * First sample → srtt=sample, rttvar=sample/2, min_rtt stays unknown(0)
+ *                because the first ACK RTT may be queue-inflated.
+ * Second sample → establishes min_rtt=min(first, second): the candidate
+ *                 minimum of the two readings, so neither an inflated first
+ *                 sample nor a high second sample sets the floor alone.
+ * Later samples → rttvar=(rttvar*3+|srtt-sample|)/4,
+ *                 srtt=(srtt*7+sample)/8, and a lower candidate moves the
+ *                 floor by at most a quarter of the current floor per sample
+ *                 (controlled convergence; a transient low cannot pin it).
  */
 struct LinkPathState {
     uint64_t srtt_ms = 0;
@@ -60,14 +71,18 @@ struct LinkPathState {
         if (!has_sample) {
             srtt_ms = sample_ms;
             rttvar_ms = sample_ms / 2;
-            min_rtt_ms = sample_ms;
             has_sample = true;
         } else {
+            const uint64_t previous_srtt = srtt_ms; // one-sample seed only
             uint64_t diff = (srtt_ms >= sample_ms) ? (srtt_ms - sample_ms) : (sample_ms - srtt_ms);
             rttvar_ms = (rttvar_ms * 3 + diff) / 4;
             srtt_ms = (srtt_ms * 7 + sample_ms) / 8;
-            if (sample_ms < min_rtt_ms) {
-                min_rtt_ms = sample_ms;
+            if (min_rtt_ms == 0) {
+                // Candidate minimum of the two readings seen so far.
+                min_rtt_ms = std::min(sample_ms, previous_srtt);
+            } else if (sample_ms < min_rtt_ms) {
+                const uint64_t step = std::max<std::uint64_t>(1, min_rtt_ms / 4);
+                min_rtt_ms = std::max(sample_ms, min_rtt_ms - step);
             }
         }
     }
@@ -173,17 +188,149 @@ BOOST_AUTO_TEST_CASE(ack_out_link_id_nullptr_is_safe) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Per-link EWMA (QUIC-style SRTT/RTTVAR/min_rtt)
+// 2. Per-link EWMA (SRTT/RTTVAR + confirmed min_rtt)
 // ---------------------------------------------------------------------------
 
-BOOST_AUTO_TEST_CASE(ewma_first_sample_initializes_srtt_rttvar_minrtt) {
+/** Mirror of get_link_telemetry's min-RTT BDP: unknown RTT ⇒ zero BDP. */
+static uint64_t BdpFromMinRtt(uint64_t rate_bytes_per_second,
+    const LinkPathState& state) noexcept {
+    return state.min_rtt_ms != 0
+        ? rate_bytes_per_second * state.min_rtt_ms / 1000 : 0;
+}
+
+BOOST_AUTO_TEST_CASE(ewma_first_sample_seeds_srtt_but_leaves_min_rtt_unknown) {
     LinkPathState state;
     state.update(80);
 
     BOOST_TEST(state.has_sample);
     BOOST_TEST(state.srtt_ms == 80u);
     BOOST_TEST(state.rttvar_ms == 40u);  // 80/2
-    BOOST_TEST(state.min_rtt_ms == 80u);
+    // The first ACK RTT may include startup/reverse-path queueing and must not
+    // become the permanent floor by itself.
+    BOOST_TEST(state.min_rtt_ms == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(first_queued_sample_374_cannot_become_min_rtt_baseline) {
+    LinkPathState state;
+    state.update(374);  // upload path1 first sample, true carrier min is 90 ms.
+
+    BOOST_TEST(state.srtt_ms == 374u);
+    BOOST_TEST(state.rttvar_ms == 187u);
+    BOOST_TEST(state.min_rtt_ms == 0u);
+    // No confirmed floor ⇒ no BDP-derived credit yet (conservative startup).
+    BOOST_TEST(BdpFromMinRtt(13210000u, state) == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(min_rtt_converges_from_first_374_through_122_to_90) {
+    LinkPathState state;
+    state.update(374);
+    BOOST_TEST(state.min_rtt_ms == 0u);
+
+    // Second sample establishes a conservative floor; it cannot remain 374.
+    state.update(122);
+    BOOST_TEST(state.min_rtt_ms == 122u);
+
+    // A genuine lower reading is accepted through bounded convergence rather
+    // than a jump to the raw sample, so one low sample cannot pin the floor.
+    state.update(90);
+    BOOST_TEST(state.min_rtt_ms < 122u);
+    BOOST_TEST(state.min_rtt_ms >= 90u);
+
+    // A second confirming 90 ms sample reaches the true minimum exactly.
+    state.update(90);
+    BOOST_TEST(state.min_rtt_ms == 90u);
+    // Only the floor moves; the SRTT EWMA keeps its own protocol semantics.
+    BOOST_TEST(state.srtt_ms == 282u);
+}
+
+BOOST_AUTO_TEST_CASE(single_transient_low_sample_cannot_pin_min_rtt) {
+    LinkPathState state;
+    state.update(374);
+    state.update(122);   // confirmed floor
+    state.update(1);     // one-off scheduling/timer artifact
+
+    // At most a quarter of the floor is lost: 122 - 122/4 = 92, not 1.
+    BOOST_TEST(state.min_rtt_ms == 92u);
+    state.update(122);
+    BOOST_TEST(state.min_rtt_ms == 92u);
+}
+
+BOOST_AUTO_TEST_CASE(bdp_and_credit_follow_confirmed_floor_not_first_sample) {
+    using Scheduler = ppp::app::multipath::PathScheduler;
+    constexpr uint64_t rate = 13210000u;       // measured path1 capacity B/s
+    constexpr uint64_t mib = 1024u * 1024u;
+    constexpr uint64_t session_window = 64u * mib;
+    constexpr uint64_t startup_window = 256u * 1024u;
+    constexpr uint64_t minimum_window = 256u * 1024u;
+    constexpr std::size_t live_carriers = 3;
+
+    const auto credit_for = [&](const LinkPathState& state) -> uint64_t {
+        const uint64_t bdp = BdpFromMinRtt(rate, state);
+        const std::optional<uint64_t> min_rtt = state.min_rtt_ms != 0
+            ? std::optional<uint64_t>(state.min_rtt_ms) : std::nullopt;
+        const std::optional<uint64_t> observed = state.srtt_ms != 0
+            ? std::optional<uint64_t>(state.srtt_ms) : std::nullopt;
+        return Scheduler::AdaptiveFlightCredit(
+            session_window, live_carriers, bdp, bdp, 100,
+            startup_window, minimum_window, 0, min_rtt, observed);
+    };
+
+    LinkPathState state;
+    // Unknown RTT: both BDP and adaptive credit stay at the startup floor.
+    BOOST_TEST(BdpFromMinRtt(rate, state) == 0u);
+    BOOST_TEST(credit_for(state) == startup_window);
+
+    // The local write-window policy uses the same min-RTT gate: an unknown
+    // floor must not turn a fresh capacity sample into a large queue target.
+    ppp::app::multipath::PathTelemetry telemetry;
+    telemetry.capacity_rate_bytes_per_second = rate;
+    telemetry.capacity_updated_ms = 1000;
+    const auto unknown_window = Scheduler::ComputeLinkWriteWindow(
+        telemetry, 1000, 0, 0, 0);
+    BOOST_TEST(!unknown_window.capacity_known);
+    BOOST_TEST(unknown_window.target_bytes ==
+        Scheduler::LinkWriteHighWaterFloorBytes);
+
+    state.update(374);
+    // First sample alone is still unknown for BDP/credit.
+    BOOST_TEST(BdpFromMinRtt(rate, state) == 0u);
+    BOOST_TEST(credit_for(state) == startup_window);
+    telemetry.min_rtt_ms = state.min_rtt_ms;
+    telemetry.srtt_ms = state.srtt_ms;
+    const auto first_window = Scheduler::ComputeLinkWriteWindow(
+        telemetry, 1000, 0, 0, 0);
+    BOOST_TEST(!first_window.capacity_known);
+    BOOST_TEST(first_window.target_bytes ==
+        Scheduler::LinkWriteHighWaterFloorBytes);
+
+    state.update(122);
+    const uint64_t bdp_122 = rate * 122u / 1000u;
+    const uint64_t bdp_374 = rate * 374u / 1000u;
+    // r61 scale check: the rejected first sample would have sized a ~3.1x
+    // larger BDP than the first confirmed 122 ms floor.
+    BOOST_TEST(bdp_374 > 3u * bdp_122);
+    BOOST_TEST(BdpFromMinRtt(rate, state) == bdp_122);
+    BOOST_TEST(BdpFromMinRtt(rate, state) < bdp_374);
+    telemetry.min_rtt_ms = state.min_rtt_ms;
+    telemetry.srtt_ms = state.srtt_ms;
+    const auto confirmed_window = Scheduler::ComputeLinkWriteWindow(
+        telemetry, 1000, 0, 0, 0);
+    BOOST_TEST(confirmed_window.capacity_known);
+    BOOST_TEST(confirmed_window.target_bytes == bdp_122);
+    const uint64_t credit_122 = credit_for(state);
+    BOOST_TEST(credit_122 >= bdp_122);   // measured flight still credited
+    BOOST_TEST(credit_122 < 2u * bdp_374); // never the stuck first-sample grant
+
+    state.update(90);
+    state.update(90);
+    const uint64_t bdp_90 = rate * 90u / 1000u;
+    BOOST_TEST(state.min_rtt_ms == 90u);
+    BOOST_TEST(BdpFromMinRtt(rate, state) == bdp_90);
+    const uint64_t credit_90 = credit_for(state);
+    BOOST_TEST(credit_90 >= bdp_90);
+    // Credit follows the confirmed lower floor down instead of remaining
+    // pinned to the 122 ms or 374 ms estimate.
+    BOOST_TEST(credit_90 < credit_122);
 }
 
 BOOST_AUTO_TEST_CASE(ewma_subsequent_updates_converge_to_true_rtt) {
@@ -438,6 +585,15 @@ BOOST_AUTO_TEST_CASE(multi_link_rtx_attribution_and_pto_divergence) {
     std::vector<mux::MuxAckRange> ranges2 = {{2, 2}, {4, 4}, {6, 6}};
     std::uint16_t lid2 = 0;
     uint64_t s2 = rtx.Ack(1, 6, ranges2, 1300, 3, 0, fast2, &lid2);
+    if (s2 > 0) {
+        link2_state.update(s2);
+    }
+
+    // One confirmatory sample per link is required before min_rtt is defined
+    // (the first sample may be queue-inflated and is never used alone).
+    if (s1 > 0) {
+        link1_state.update(s1);
+    }
     if (s2 > 0) {
         link2_state.update(s2);
     }

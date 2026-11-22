@@ -632,6 +632,45 @@ namespace ppp {
         }
 
         /**
+         * @brief Reports whether SO_MAX_PACING_RATE exists on this platform.
+         */
+        bool Socket::SupportsMaxPacingRate() noexcept {
+#if defined(__linux__) && defined(SO_MAX_PACING_RATE)
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        /**
+         * @brief Applies (or clears) the Linux TCP wire pacing cap.
+         */
+        bool Socket::SetMaxPacingRate(int fd, uint32_t bytes_per_second) noexcept {
+#if defined(__linux__) && defined(SO_MAX_PACING_RATE)
+            if (-1 == fd) {
+                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketInvalidHandle);
+                return false;
+            }
+
+            // Linux uses ~0U as the "no limit" sentinel. Never forward 0: its
+            // meaning differs across kernels and can program a zero rate.
+            const uint32_t value = bytes_per_second == 0 ? ~0u : bytes_per_second;
+            if (0 == ::setsockopt(fd, SOL_SOCKET, SO_MAX_PACING_RATE,
+                (const char*)&value, sizeof(value))) {
+                return true;
+            }
+
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOptionSetFailed);
+            return false;
+#else
+            (void)fd;
+            (void)bytes_per_second;
+            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOptionSetFailed);
+            return false;
+#endif
+        }
+
+        /**
          * @brief Enables TCP keepalive and optional platform-specific tunables.
          */
         bool Socket::SetKeepAlive(int fd, bool enable, int idle_seconds, int interval_seconds, int probe_count) noexcept {

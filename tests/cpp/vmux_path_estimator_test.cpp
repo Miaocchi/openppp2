@@ -15,6 +15,18 @@ BOOST_AUTO_TEST_CASE(ewma_filters_low_application_limited_samples) {
     BOOST_TEST(estimator->GetTelemetry(30).capacity_rate_bytes_per_second == 90000u);
 }
 
+BOOST_AUTO_TEST_CASE(initial_application_limited_sample_does_not_seed_capacity) {
+    for (const auto mode : {PathEstimatorMode::Ewma, PathEstimatorMode::Bbr, PathEstimatorMode::Kcc}) {
+        auto estimator = MakePathEstimator(mode);
+        estimator->OnSample({100, 10000, 0, 100, true}, 10);
+        const auto limited = estimator->GetTelemetry(10);
+        BOOST_TEST(limited.current_rate_bytes_per_second == 10000u);
+        BOOST_TEST(limited.capacity_rate_bytes_per_second == 0u);
+        estimator->OnSample({1000, 10000, 100, 1100, false}, 20);
+        BOOST_TEST(estimator->GetTelemetry(20).capacity_rate_bytes_per_second == 100000u);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(bbr_max_expires_by_delivery_round_not_ack_count) {
     auto estimator = MakePathEstimator(PathEstimatorMode::Bbr);
     estimator->OnSample({1000, 10000, 0, 1000, false}, 10);

@@ -39,6 +39,15 @@ namespace ppp {
             MultipathNoiseV1,
         };
 
+        /** @brief Outcome of one wire pacing application attempt. */
+        enum class TransmissionPacingResult : std::uint8_t {
+            Unsupported,
+            Applied,
+            Unchanged,
+            Cleared,
+            Failed,
+        };
+
         /** Encodes transport-auth-v1 capability without adding a handshake frame. */
         class TransportAuthHandshakeCapabilityCodec final {
         public:
@@ -103,6 +112,7 @@ namespace ppp {
             friend class ITransmissionBridge;
             /** @brief QoS helper requires direct access to transmission internals. */
             friend class ITransmissionQoS;
+            friend class MultipathTransmission;
 
             /** @brief Deadline timer type used for handshake timeout control (monotonic, immune to wall-clock jumps). */
             typedef boost::asio::steady_timer                                                       DeadlineTimer;
@@ -168,6 +178,8 @@ namespace ppp {
             void                                                                                    MarkServerLoopbackIngress() noexcept { server_loopback_ingress_.store(true, std::memory_order_release); }
             /** @brief Reports conservative server-side loopback ingress provenance. */
             bool                                                                                    IsServerLoopbackIngress() const noexcept { return server_loopback_ingress_.load(std::memory_order_acquire); }
+            /** @brief Reports whether authenticated multipath binary framing is active. */
+            bool                                                                                    IsAuthenticatedMultipathBinaryFramingEnabled() const noexcept { return multipath_binary_framing_.load(std::memory_order_acquire); }
 
         public:
             /** @brief Disposes transmission resources asynchronously. */
@@ -180,6 +192,21 @@ namespace ppp {
             virtual AuthenticatedCarrierKind                                                        GetAuthenticatedCarrierKind() const noexcept { return AuthenticatedCarrierKind::None; }
             /** Returns the wire carrier kind without implying session-recovery eligibility. */
             virtual AuthenticatedCarrierKind                                                        GetTransportCarrierKind() const noexcept { return GetAuthenticatedCarrierKind(); }
+            /**
+             * @brief Reports whether this carrier can enforce a kernel wire pacing rate.
+             * @note Only raw TCP carriers implement it; WS/WSS stay unsupported.
+             */
+            virtual bool                                                                            SupportsPacingRate() const noexcept { return false; }
+            /** @brief Returns the wire pacing rate accepted by the carrier (0 = uncapped). */
+            virtual std::uint64_t                                                                   GetPacingRateBytesPerSecond() const noexcept { return 0; }
+            /**
+             * @brief Applies (or clears, when 0) a wire pacing cap on this carrier.
+             * @note  Pacing is advisory: a rejection must never close the carrier.
+             */
+            virtual TransmissionPacingResult                                                        ApplyPacingRate(std::uint64_t bytes_per_second) noexcept {
+                (void)bytes_per_second;
+                return TransmissionPacingResult::Unsupported;
+            }
             /** @brief Reports whether this carrier can safely half-close its send direction. */
             virtual bool                                                                            SupportsSendHalfClose() const noexcept { return false; }
             /** @brief Half-closes the carrier send direction without closing receive. */
@@ -293,6 +320,9 @@ namespace ppp {
             Int128                                                                                  InternalHandshakeClient(YieldContext& y, bool& mux) noexcept;
             /** @brief Executes core server handshake steps. */
             bool                                                                                    InternalHandshakeServer(YieldContext& y, const Int128& session_id, bool mux) noexcept;
+            /** Called by the multipath adapter at an authenticated admission record boundary. */
+            bool                                                                                    EnableAuthenticatedMultipathBinaryFraming() noexcept;
+            bool                                                                                    UsesBase94OuterFraming() const noexcept;
 
         private:
             /**
@@ -311,6 +341,8 @@ namespace ppp {
             std::atomic_bool                                                                        frame_tn_{false};
             /** @brief Handshake completion state flag storage. */
             std::atomic_bool                                                                        handshaked_{false};
+            /** @brief Negotiated independently of the legacy PPP handshake state. */
+            std::atomic_bool                                                                        multipath_binary_framing_{false};
             /** @brief Validated peer transport-auth-v1 capability state. */
             std::atomic_bool                                                                        peer_supports_transport_auth_v1_{false};
             /** @brief Validated peer transport-auth-v1 policy state. */

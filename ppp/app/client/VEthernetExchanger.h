@@ -1165,7 +1165,7 @@ namespace ppp {
                 std::unique_ptr<udp::ClientDatagramPortManager>                         datagram_manager_;
                 /** @brief Active transport channel; null when not established. */
                 ITransmissionPtr                                                        transmission_;
-                /** @brief Serial executor owning main carrier and resume state mutations. */
+                /** @brief Serial executor owning the main carrier and resume state mutations. */
                 StrandPtr                                                               owner_strand_;
                 /** @brief Exporter-derived root retained across transient carrier loss. */
                 ppp::app::protocol::SessionResumeSecret                                 session_resume_root_;

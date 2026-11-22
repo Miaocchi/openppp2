@@ -18,6 +18,7 @@
 #include <ppp/app/mux/MuxRxBackpressure.h>
 #include <ppp/app/mux/MuxRxQueueLimit.h>
 #include <ppp/app/mux/MuxTxBackpressure.h>
+#include <ppp/app/multipath/PathPacingPolicy.h>
 #include <ppp/app/multipath/Scheduler.h>
 #include <ppp/app/multipath/VmuxPathEstimator.h>
 #include <ppp/app/multipath/PoolController.h>
@@ -96,14 +97,59 @@ namespace vmux {
                     if (path_totals) (path_totals.get()->*field).fetch_add(bytes, std::memory_order_relaxed);
                 }
             };
+            /**
+             * @brief Opt-in latency window counters for the scheduler trace.
+             *
+             * Only mutated when OPENPPP2_MULTIPATH_SCHEDULER_TRACE_JSON opened the
+             * trace writer, so the default data path pays one predictable-branch
+             * test. Writers are the carrier strand (tx completion) and the vmux
+             * strand (rx handler entry/exit) respectively, so every field is a
+             * relaxed atomic. The vmux strand drains the window into each
+             * scheduler-trace record and resets it; a completion that races the
+             * drain is attributed to the next record (telemetry-grade accuracy,
+             * never a correctness input).
+             */
+            struct TraceWindow final {
+                std::atomic<uint64_t> tx_write_count{0};
+                std::atomic<uint64_t> tx_post_wait_us_sum{0};
+                std::atomic<uint64_t> tx_post_wait_us_max{0};
+                std::atomic<uint64_t> tx_write_us_sum{0};
+                std::atomic<uint64_t> tx_write_us_max{0};
+                std::atomic<uint64_t> rx_dispatch_count{0};
+                std::atomic<uint64_t> rx_dispatch_us_sum{0};
+                std::atomic<uint64_t> rx_dispatch_us_max{0};
+                std::atomic<uint64_t> rx_handler_us_sum{0};
+                std::atomic<uint64_t> rx_handler_us_max{0};
+                std::atomic<uint64_t> rx_backpressure_count{0};
+            };
             IMuxTransportPtr                                                        connection;
             std::string                                                             path_id_;
             std::shared_ptr<PathRuntimeCounters>                                    path_runtime_counters_;
+            TraceWindow                                                             trace_window; ///< Scheduler-trace latency window; atomics only touched while tracing.
             uint64_t                                                                generation_ = 0; ///< Session-local carrier attachment generation.
-            uint16_t                                                                id_ = 0; ///< Server-assigned carrier-link id used by MUXON handshake; 0 means unassigned. Protected by syncobj_ (written by the carrier handshake under it).
+            uint16_t                                                                id_ = 0; ///< Server-assigned carrier-link id used by MUXON handshake. 0 means unassigned. Protected by syncobj_ (written by the carrier handshake under it).
             std::atomic<uint64_t>                                                   last_active_{0}; ///< Tick of the most recent inbound frame on this link; turbo's approximate "best link" signal (recency, NOT RTT). Atomic: written by both the vmux strand and the carrier forwarding coroutine.
             size_t                                                                  queued_bytes_ = 0; ///< Outstanding local write bytes (not peer ACK). Strand-affine.
+            uint64_t                                                                write_high_water_bytes_ = 0; ///< Cached adaptive local write window; strand-affine.
+            uint64_t                                                                write_high_water_updated_ms_ = 0; ///< Last adaptive window observation tick.
             uint64_t                                                                total_sent_bytes_ = 0; ///< Lifetime bytes accepted by local write path. Strand-affine.
+            uint64_t                                                                scheduler_selection_count_ = 0;
+            uint64_t                                                                scheduler_probe_selection_count_ = 0;
+            uint64_t                                                                scheduler_probe_bytes_ = 0;
+            uint64_t                                                                scheduler_probe_remaining_bytes_ = 0;
+            uint64_t                                                                scheduler_last_selection_sequence_ = 0;
+            uint64_t                                                                scheduler_last_payload_bytes_ = 0;
+            uint64_t                                                                scheduler_last_send_credit_bytes_ = 0;
+            uint64_t                                                                scheduler_last_queue_bytes_ = 0;
+            uint64_t                                                                scheduler_last_wire_inflight_bytes_ = 0;
+            uint64_t                                                                scheduler_last_probe_budget_bytes_ = 0;
+            bool                                                                    scheduler_last_probe_ = false;
+            uint64_t                                                                scheduler_candidate_observation_count_ = 0;
+            uint64_t                                                                scheduler_last_observation_sequence_ = 0;
+            uint64_t                                                                scheduler_last_observed_send_credit_bytes_ = 0;
+            uint64_t                                                                scheduler_last_observed_queue_bytes_ = 0;
+            uint64_t                                                                scheduler_last_observed_wire_inflight_bytes_ = 0;
+            uint64_t                                                                scheduler_last_observed_probe_remaining_bytes_ = 0;
             ppp::app::mux::MuxLinkDrainState                                        drain_;            ///< Strand-affine in-flight write and retirement state.
             uint64_t                                                                retire_ack_deadline_ = 0; ///< Planned retirement: bound the wait for peer delivery on the mux strand.
             size_t                                                                  retire_unacked_bytes_ = 0; ///< Last outstanding-byte count observed while draining. No new writes after BeginRetire.
@@ -124,6 +170,10 @@ namespace vmux {
             uint64_t delivered_tick_ = 0;
             uint64_t first_delivery_send_tick_ = 0;
             std::unique_ptr<ppp::app::multipath::IPathEstimator> path_estimator_;
+            /** Per-carrier automatic wire pacing (strand-affine, like queued_bytes_). */
+            ppp::app::multipath::PathPacingPolicy pacing_;
+            bool                                                                    pacing_probed_ = false; ///< Carrier pacing capability already queried.
+            bool                                                                    pacing_supported_ = false; ///< Carrier accepted automatic TCP pacing.
             uint64_t last_rtt_sample_ms_ = 0;
             uint64_t last_retransmit_ms_ = 0;
             uint64_t last_stall_check_ms_ = 0;
@@ -237,6 +287,7 @@ namespace vmux {
             fin_write_only = 'W',
 
             max_buffers_size = UINT16_MAX - sizeof(vmux_hdr), ///< Maximum payload bytes per vmux frame.
+            max_frame_size = UINT16_MAX,                      ///< Largest wire frame: header plus maximum payload. One frame is also the admission slack a carrier may cross its byte window by.
             zero_copy_min_payload = 4096,                     ///< Pushes at least this large are sent from the read buffer itself (no copy).
         };
 
@@ -641,6 +692,16 @@ namespace vmux {
 
         /** @brief List a carrier in tx_links_ unless retiring, already listed, or at its in-flight byte budget. */
         void                                                                        tx_link_offer(const vmux_linklayer_ptr& linklayer) noexcept;
+        /**
+         * @brief Re-list every schedulable carrier that currently has window room.
+         * @details Write completions used to be the only re-offer point, so a carrier
+         *          withdrawn while nothing was in flight (a failed carrier post, a
+         *          frame that did not fit the residency line) never came back: no
+         *          completion would ever arrive to re-offer it. Called at drain entry
+         *          so the listed set is a function of current residency, not of
+         *          completion history.
+         */
+        void                                                                        tx_links_reoffer() noexcept;
         /** @brief Remove a carrier from tx_links_ (no-op when not listed). */
         void                                                                        tx_link_withdraw(const vmux_linklayer_ptr& linklayer) noexcept;
         /** @brief Listed carrier with credit for @p length and the least bytes in flight (ties: lower SRTT); null when none. */
@@ -840,8 +901,17 @@ namespace vmux {
         void                                                                        on_link_exit(const vmux_linklayer_ptr& linklayer, const char* reason) noexcept;
         /** @brief Count handshake-complete non-retiring carriers (strand-affine). */
         size_t                                                                      count_live_carriers(const vmux_linklayer_ptr& except = NULLPTR) const noexcept;
-        /** @brief True when the link still has room under the per-link byte high-water. */
-        static bool                                                                 link_has_byte_credit(const vmux_linklayer_ptr& linklayer, int packet_length) noexcept;
+        /**
+         * @brief True when the link still has room under the per-link byte high-water.
+         * @details The window is a residency line, not a fit test. The window is an
+         *          exact number of maximum-size VMUX frames, so requiring the whole
+         *          frame to fit always left 0..frame-1 unusable bytes behind and made
+         *          a healthy carrier look credit-less to the scheduler at every
+         *          window boundary. A carrier below its window therefore admits the
+         *          next frame even when it crosses the line; the crossing is bounded
+         *          by one maximum frame (@ref max_frame_size).
+         */
+        bool                                                                        link_has_byte_credit(const vmux_linklayer_ptr& linklayer, int packet_length) noexcept;
         /** @brief Enqueue one data frame into the per-flow DRR queue (strand-affine). @return false when the per-flow cap rejected it (never silently dropped). */
         bool                                                                        enqueue_flow_tx(uint32_t connection_id, tx_packet&& packet) noexcept;
         /** @brief A data frame could not be queued: fail its completion; true when only the flow (flow_v2) was affected. */
@@ -869,12 +939,15 @@ namespace vmux {
         /** @brief Publish a lock-free runtime snapshot (call on strand or under mutex). */
         void                                                                        publish_runtime_snapshot_locked() noexcept;
         void                                                                        publish_multipath_path_runtime_stats() noexcept;
-        static uint64_t                                                              local_send_credit(const vmux_linklayer& link) noexcept;
-        uint64_t                                                                     adaptive_send_credit(const vmux_linklayer& link,
-            const ppp::app::multipath::PathTelemetry& telemetry, size_t live_carriers) const noexcept;
+        uint64_t                                                                     local_send_credit(vmux_linklayer& link) noexcept;
+        uint64_t                                                                     adaptive_send_credit(vmux_linklayer& link,
+            const ppp::app::multipath::PathTelemetry& telemetry, size_t live_carriers) noexcept;
+        uint64_t                                                                     refresh_link_write_high_water(vmux_linklayer& link, uint64_t now) noexcept;
         void                                                                         collect_stalled_link_retries(uint64_t now) noexcept;
         void                                                                         note_link_rtt(vmux_linklayer& link, uint64_t sample, uint64_t now) noexcept;
         ppp::app::multipath::PathTelemetry                                           get_link_telemetry(const vmux_linklayer& link, uint64_t now) const noexcept;
+        /** @brief Apply or clear this client-role carrier's wire pacing cap from fresh capacity (strand-affine; server carriers stay uncapped). */
+        void                                                                         update_link_pacing(vmux_linklayer& link, uint64_t now) noexcept;
 
         /** @brief Validate and post outgoing connect request command. */
         bool                                                                        connect_require(
@@ -1049,10 +1122,14 @@ namespace vmux {
         uint64_t                                                                    pool_acked_payload_bytes_ = 0; ///< Payload bytes ACKed across all carriers.
         std::atomic<int>                                                            multipath_scheduler_policy_{-1};
         ppp::app::multipath::PathScheduler                                          multipath_scheduler_{10};
+        uint64_t                                                                    scheduler_selection_sequence_ = 0;
         vmux::unordered_map<uint32_t, ppp::app::mux::MuxAckTracker>                 ack_trackers_;      ///< Received-sequence trackers; cid 0 = compat global space (strand-affine).
         uint32_t                                                                    ack_pending_count_ = 0;      ///< Reliable frames received since the last emitted ACK.
         uint64_t                                                                    ack_first_pending_tick_ = 0; ///< Tick the oldest un-ACKed frame arrived (delayed-ACK base).
         uint64_t                                                                    ack_last_sent_tick_ = 0;    ///< Tick the last ACK frame was emitted (suppresses redundant immediate ACKs).
+        vmux::unordered_set<uint32_t>                                               ack_pending_cids_; ///< Sequence spaces not yet included in a successful ACK frame.
+        bool                                                                        ack_partial_pending_ = false; ///< More ACK blocks remain after the last successful frame.
+        uint32_t                                                                    ack_block_cursor_ = 0; ///< Last sequence space included in an ACK frame.
         uint64_t                                                                    srtt_ms_ = 0;              ///< Smoothed RTT estimate in ms (0 = no sample yet).
         uint64_t                                                                    app_tx_idle_since_ms_ = 0;
         std::vector<uint64_t>                                                       rtx_pending_;       ///< Retransmit-buffer keys scheduled for re-send.

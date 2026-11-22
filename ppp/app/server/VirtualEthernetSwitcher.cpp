@@ -2257,6 +2257,23 @@ namespace ppp {
                     ClearSensitivePayload(payload);
                     return ok;
                 };
+                bool binary_framing_negotiated = false;
+                const auto negotiate_binary_framing = [&](const std::string& carrier_id) noexcept {
+                    if (binary_framing_negotiated) return true;
+                    binary_framing_negotiated = true;
+                    const char* const prefix =
+                        ppp::transmissions::MultipathTransmission::BinaryFramingCarrierIdPrefix;
+                    const std::size_t prefix_length =
+                        sizeof(ppp::transmissions::MultipathTransmission::BinaryFramingCarrierIdPrefix) - 1;
+                    if (carrier_id.size() < prefix_length ||
+                        std::memcmp(carrier_id.data(), prefix, prefix_length) != 0) return true;
+                    if (!secured->NegotiateBinaryFramingServer(y)) {
+                        ppp::telemetry::Log(Level::kDebug, "multipath",
+                            "admission failed stage=binary-framing");
+                        return false;
+                    }
+                    return true;
+                };
                 const auto find_entry = [&](const Int128& logical_id) noexcept {
                     SynchronizedObjectScope scope(syncobj_);
                     auto found = multipath_sessions_.find(logical_id);
@@ -2323,6 +2340,7 @@ namespace ppp {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
                         return STATUS_ERROR;
                     }
+                    if (!negotiate_binary_framing(request.carrier_id)) return STATUS_ERROR;
                     logical_id = ClientSessionIdToInt128(request.client_session_id);
                     if (logical_id == 0 || !create_or_find_entry(logical_id, entry)) {
                         CreateResponse rejected;
@@ -2420,6 +2438,7 @@ namespace ppp {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
                         return STATUS_ERROR;
                     }
+                    if (!negotiate_binary_framing(request.carrier_id)) return STATUS_ERROR;
                     logical_id = ClientSessionIdToInt128(request.client_session_id);
                     entry = find_entry(logical_id);
                     QueryResponse response;
@@ -2532,6 +2551,7 @@ namespace ppp {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
                         return STATUS_ERROR;
                     }
+                    if (!negotiate_binary_framing(reserve_request.carrier_id)) return STATUS_ERROR;
                     logical_id = ClientSessionIdToInt128(reserve_request.client_session_id);
                     entry = find_entry(logical_id);
                     if (!entry) return STATUS_ERROR;

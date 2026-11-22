@@ -123,6 +123,29 @@ BOOST_AUTO_TEST_CASE(encode_respects_output_capacity) {
     BOOST_TEST(mux::EncodeMuxAckFrame(&block, 1, tiny, sizeof(tiny), 24) == 0u);
 }
 
+
+BOOST_AUTO_TEST_CASE(ack_block_selection_round_robins_past_wire_block_cap) {
+    std::vector<std::uint32_t> ids;
+    for (std::uint32_t id = 1; id <= 24; ++id) ids.emplace_back(id);
+
+    std::vector<std::uint32_t> selected;
+    mux::SelectMuxAckBlockIds(ids, 0, 8, selected);
+    BOOST_REQUIRE_EQUAL(selected.size(), 8u);
+    BOOST_TEST(selected.front() == 1u);
+    BOOST_TEST(selected.back() == 8u);
+
+    mux::SelectMuxAckBlockIds(ids, selected.back(), 8, selected);
+    BOOST_TEST(selected.front() == 9u);
+    BOOST_TEST(selected.back() == 16u);
+
+    mux::SelectMuxAckBlockIds(ids, selected.back(), 8, selected);
+    BOOST_TEST(selected.front() == 17u);
+    BOOST_TEST(selected.back() == 24u);
+
+    mux::SelectMuxAckBlockIds(ids, selected.back(), 8, selected);
+    BOOST_TEST(selected.front() == 1u);
+    BOOST_TEST(selected.back() == 8u);
+}
 BOOST_AUTO_TEST_CASE(decode_rejects_malformed_payloads) {
     std::vector<mux::MuxAckBlock> decoded;
 

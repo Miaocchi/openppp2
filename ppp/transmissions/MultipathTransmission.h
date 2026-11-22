@@ -25,6 +25,8 @@ public:
     static constexpr std::uint8_t ApplicationRecord = 0;
     static constexpr std::uint8_t ControlRecord = 1;
     static constexpr std::uint8_t MuxRecord = 2;
+    // Legacy peers treat carrier IDs as opaque; only this prefix opts into the upgrade.
+    static constexpr char BinaryFramingCarrierIdPrefix[] = "carrier/b1/";
 
     MultipathTransmission(const std::shared_ptr<ITransmission>& carrier,
         SecureParameters parameters, Secret32&& psk, SecureRole role,
@@ -36,7 +38,7 @@ public:
     static bool ParsePreface(const Byte* data, int length, bool& supported_version,
         ppp::string& key_id, std::size_t& message_offset) noexcept;
 
-    /** Starts the inner Noise exchange using network-role names. */
+    /** Starts the inner Noise exchange using network-role names and legacy framing. */
     bool StartSecureClient(YieldContext& y) noexcept;
     bool StartSecureServer(YieldContext& y) noexcept;
     bool IsSecureReady() const noexcept;
@@ -50,9 +52,14 @@ public:
         const AsynchronousWriteCallback& callback) noexcept;
     bool ReadSecureRecord(YieldContext& y, std::uint8_t& type,
         std::vector<std::uint8_t>& data) noexcept;
+    /** Admission only, before the pump: read a legacy reply or accept a binary offer first. */
+    bool ReadAdmissionResponse(YieldContext& y, std::uint8_t& type,
+        std::vector<std::uint8_t>& data) noexcept;
+    /** Admission only: called by the responder after verifying the opt-in carrier ID. */
+    bool NegotiateBinaryFramingServer(YieldContext& y) noexcept;
     /** Permanently closes the pre-join record read API before attaching VMUX. */
     bool BeginApplicationIO() noexcept;
-    /** Creates an independent VMUX byte stream over this authenticated carrier. */
+    /** Creates an independent VMUX byte stream using the negotiated carrier framing. */
     std::shared_ptr<ITransmission> CreateMuxSubchannel() noexcept;
     bool SetControlRecordHandler(const ControlRecordHandler& handler) noexcept;
     void ClearControlRecordHandler() noexcept;
@@ -63,6 +70,11 @@ public:
     bool ShiftToScheduler() noexcept override { return false; }
     boost::asio::ip::tcp::endpoint GetRemoteEndPoint() noexcept override;
     AuthenticatedCarrierKind GetAuthenticatedCarrierKind() const noexcept override;
+    /** @brief Pacing is only as available as the underlying carrier. */
+    bool SupportsPacingRate() const noexcept override;
+    std::uint64_t GetPacingRateBytesPerSecond() const noexcept override;
+    /** @brief Forwards the cap to the raw carrier; WS/WSS report Unsupported. */
+    TransmissionPacingResult ApplyPacingRate(std::uint64_t bytes_per_second) noexcept override;
     AuthenticatedCarrierMethod GetAuthenticatedCarrierMethod() const noexcept override {
         return AuthenticatedCarrierMethod::MultipathNoiseV1;
     }
@@ -78,6 +90,11 @@ protected:
 
 private:
     friend class MultipathLogicalTransmission;
+    // These record types are reserved for the pre-application framing exchange.
+    static constexpr std::uint8_t BinaryFramingOffer = 3;
+    static constexpr std::uint8_t BinaryFramingAck = 4;
+    static constexpr std::uint8_t BinaryFramingVersion = 1;
+    bool admission_response_seen_ = false; // admission coroutine only
     bool StartClientHandshake(YieldContext& y) noexcept;
     bool StartServerHandshake(YieldContext& y) noexcept;
     bool SendHandshakeFrame(YieldContext& y, const std::vector<std::uint8_t>& message) noexcept;
@@ -99,9 +116,12 @@ private:
         std::vector<std::uint8_t> plaintext;
         std::size_t plaintext_offset = 0;
         YieldContext::Anchor waiter;
+        YieldContext::Anchor pump_waiter;
         bool closed = false;
         bool reading = false;
     };
+    bool QueueLogicalRecord(YieldContext& y, LogicalChannel& channel,
+        std::vector<std::uint8_t>&& plaintext) noexcept;
 
     const std::shared_ptr<ITransmission> carrier_;
     SecureParameters parameters_;

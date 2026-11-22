@@ -185,6 +185,22 @@ namespace ppp {
                     {"capacity_rate_bytes_per_second", &RuntimeCarrierState::capacity_rate_bytes_per_second},
                     {"scheduling_weight", &RuntimeCarrierState::scheduling_weight},
                     {"confidence", &RuntimeCarrierState::confidence},
+                    {"scheduler_selection_count", &RuntimeCarrierState::scheduler_selection_count},
+                    {"scheduler_probe_selection_count", &RuntimeCarrierState::scheduler_probe_selection_count},
+                    {"scheduler_probe_bytes", &RuntimeCarrierState::scheduler_probe_bytes},
+                    {"scheduler_probe_remaining_bytes", &RuntimeCarrierState::scheduler_probe_remaining_bytes},
+                    {"scheduler_last_selection_sequence", &RuntimeCarrierState::scheduler_last_selection_sequence},
+                    {"scheduler_last_payload_bytes", &RuntimeCarrierState::scheduler_last_payload_bytes},
+                    {"scheduler_last_send_credit_bytes", &RuntimeCarrierState::scheduler_last_send_credit_bytes},
+                    {"scheduler_last_queue_bytes", &RuntimeCarrierState::scheduler_last_queue_bytes},
+                    {"scheduler_last_wire_inflight_bytes", &RuntimeCarrierState::scheduler_last_wire_inflight_bytes},
+                    {"scheduler_last_probe_budget_bytes", &RuntimeCarrierState::scheduler_last_probe_budget_bytes},
+                    {"scheduler_candidate_observation_count", &RuntimeCarrierState::scheduler_candidate_observation_count},
+                    {"scheduler_last_observation_sequence", &RuntimeCarrierState::scheduler_last_observation_sequence},
+                    {"scheduler_last_observed_send_credit_bytes", &RuntimeCarrierState::scheduler_last_observed_send_credit_bytes},
+                    {"scheduler_last_observed_queue_bytes", &RuntimeCarrierState::scheduler_last_observed_queue_bytes},
+                    {"scheduler_last_observed_wire_inflight_bytes", &RuntimeCarrierState::scheduler_last_observed_wire_inflight_bytes},
+                    {"scheduler_last_observed_probe_remaining_bytes", &RuntimeCarrierState::scheduler_last_observed_probe_remaining_bytes},
                 };
 
                 inline void WriteRuntimeMultipath(Json::Value& root,
@@ -262,6 +278,7 @@ namespace ppp {
                             }
                             item["metrics_known"] = link.metrics_known;
                             item["app_limited"] = link.app_limited;
+                            item["scheduler_last_probe"] = link.scheduler_last_probe;
                             links.append(std::move(item));
                         }
                         value["links"] = std::move(links);

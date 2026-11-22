@@ -94,6 +94,35 @@ retransmissions are resealed as new records on the target carrier, never
 replayed as ciphertext. This layer has no stream resynchronization: callers
 must read exactly the announced bounded frame before invoking `Open`.
 
+### Optional binary outer framing (version 1)
+
+The multipath adapter keeps the existing Noise prologue and Base94 outer
+framing during Noise and the first admission request. An upgraded initiator
+opts in by using the `carrier/b1/` prefix in its otherwise opaque carrier ID
+in the first Create, Query, or Join (Reserve) request. The full ID remains
+part of the candidate binding. The responder verifies the binding before
+using the prefix.
+
+The responder may then send an encrypted type `0x03` offer with one payload
+byte `0x01`. The initiator replies with encrypted type `0x04` and the same
+payload. The offer and ACK both still use Base94. After writing or verifying
+the ACK, respectively, the initiator and responder use binary outer framing;
+the actual admission reply is the responder's first binary record. The VMUX
+logical subchannel uses the matching framing, avoiding its own Base94 wrapper
+on an upgraded carrier. Noise record encryption and sequence numbers are
+unchanged.
+
+Without an offer in the first reply, the initiator keeps the legacy framing.
+Old peers and `key.plaintext` mode keep Base94. An unexpected or malformed
+offer or ACK during negotiation fails admission rather than reverting midstream.
+
+The adapter bounds each logical receive queue by record count and bytes. If
+the queue fills, the read pump holds only the current authenticated record
+and stops reading the carrier until the consumer makes room. This preserves
+record order (including control records behind the pause) and propagates
+backpressure without closing an otherwise healthy carrier. Disposal wakes
+both the pump and any waiting logical readers.
+
 ## API and lifecycle
 
 `MultipathSecureChannel` does not own a socket or `ITransmission`. The caller

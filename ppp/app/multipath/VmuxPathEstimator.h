@@ -50,7 +50,12 @@ public:
         total_delivered_ = sample.total_delivered;
         latest_ = measured;
         ++sample_count_;
-        const bool low_app_limited = sample.is_app_limited && measured < capacity_;
+        // An application-limited sample cannot establish a capacity model: the
+        // sender may have supplied only a tiny burst before the path was full.
+        // Keep the delivery sample for observability, but wait for a non-limited
+        // sample before granting scheduler capacity.
+        const bool low_app_limited = sample.is_app_limited &&
+            (capacity_ == 0 || measured < capacity_);
         if (!low_app_limited && capacity_ != 0 && now_ms - capacity_updated_ms_ > MetricExpiryMs) {
             ClearModel();
         }

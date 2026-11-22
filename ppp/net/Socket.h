@@ -493,6 +493,22 @@ namespace ppp {
             static bool                                                                                 SetTcpMss(int fd, int mss) noexcept;
 
             /**
+             * @brief Reports whether this build can set a Linux wire pacing cap.
+             * @return true only when SO_MAX_PACING_RATE is available.
+             */
+            static bool                                                                                 SupportsMaxPacingRate() noexcept;
+
+            /**
+             * @brief Applies a Linux TCP wire pacing cap (SO_MAX_PACING_RATE).
+             * @param fd                Connected TCP socket descriptor.
+             * @param bytes_per_second  Wire pacing target in bytes/second; 0 clears the cap
+             *                          (programmed as the kernel's no-limit sentinel).
+             * @return                  true on success; false when unsupported or setsockopt fails.
+             * @note  Failure is advisory: the caller must keep the connection alive.
+             */
+            static bool                                                                                 SetMaxPacingRate(int fd, uint32_t bytes_per_second) noexcept;
+
+            /**
              * @brief Enables/disables and configures TCP keep-alive probes.
              * @param fd               Native socket descriptor.
              * @param enable           true to enable SO_KEEPALIVE; false to disable.

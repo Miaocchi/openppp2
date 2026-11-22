@@ -122,8 +122,8 @@ namespace ppp {
                 std::shared_ptr<Byte> packet = EncryptBinary(transmission, data, datalen, outlen);
                 if (NULLPTR != packet) {
                     AppConfigurationPtr& cfg = transmission->configuration_;
-                    // Base94 needed before handshake or when plaintext mode is forced.
-                    if (!transmission->handshaked_.load(std::memory_order_acquire) || cfg->key.plaintext) {
+                    // The authenticated multipath framing transition is independent of PPP key setup.
+                    if (transmission->UsesBase94OuterFraming()) {
                         packet = base94_encode(transmission, cfg, transmission->BufferAllocator,
                             packet.get(), outlen, cfg->key.kf, outlen);
                     }
@@ -144,7 +144,7 @@ namespace ppp {
             static std::shared_ptr<Byte> Decrypt(ITransmission* transmission, Byte* data, int datalen, int& outlen) noexcept {
                 std::shared_ptr<Byte> packet;
                 AppConfigurationPtr& cfg = transmission->configuration_;
-                if (!transmission->handshaked_.load(std::memory_order_acquire) || cfg->key.plaintext) {
+                if (transmission->UsesBase94OuterFraming()) {
                     // Base94 decode first, then binary decrypt.
                     packet = base94_decode(cfg, transmission->BufferAllocator,
                         data, datalen, cfg->key.kf, outlen);
@@ -176,7 +176,7 @@ namespace ppp {
              */
             static std::shared_ptr<Byte> Read(ITransmission* transmission, YieldContext& y, int& outlen) noexcept {
                 outlen = 0;
-                const bool handshaked = transmission->handshaked_.load(std::memory_order_acquire);
+                const bool base94_outer_framing = transmission->UsesBase94OuterFraming();
                 if (transmission->disposed_.load(std::memory_order_acquire)) {
                     return NULLPTR;
                 }
@@ -191,8 +191,7 @@ namespace ppp {
                 }
 
                 std::shared_ptr<Byte> packet;
-                AppConfigurationPtr& cfg = transmission->configuration_;
-                if (!handshaked || cfg->key.plaintext) {
+                if (base94_outer_framing) {
                     packet = base94_decode(transmission, y, outlen);
                     if (NULLPTR == packet || outlen < 1) {
                         outlen = 0;
@@ -1590,6 +1589,25 @@ namespace ppp {
             }
 
             return ok;
+        }
+
+        /**
+         * @brief Reports whether the Base94 outer envelope still applies.
+         */
+        bool ITransmission::UsesBase94OuterFraming() const noexcept {
+            return configuration_->key.plaintext ||
+                (!handshaked_.load(std::memory_order_acquire) &&
+                 !multipath_binary_framing_.load(std::memory_order_acquire));
+        }
+
+        bool ITransmission::EnableAuthenticatedMultipathBinaryFraming() noexcept {
+            if (disposed_.load(std::memory_order_acquire) || !configuration_ || configuration_->key.plaintext) {
+                return false;
+            }
+            // Admission owns raw I/O until its final Base94 write/read has completed.
+
+            multipath_binary_framing_.store(true, std::memory_order_release);
+            return true;
         }
 
         /**
