@@ -209,6 +209,7 @@ jobs:
             "openppp2-linux-s390x-cross.zip"
             "openppp2-linux-mipsel-cross.zip"
             "openppp2-linux-amd64.zip"
+            "openppp2-linux-amd64-modern.zip"
             "openppp2-linux-amd64-io-uring.zip"
             "openppp2-linux-amd64-simd.zip"
             "openppp2-linux-amd64-tc.zip"
@@ -221,8 +222,8 @@ jobs:
             "openppp2-windows-x64-Release.zip"
             "openppp2-windows-ARM64-Release.zip"
           )
-          if (( ${#required_package_assets[@]} != 32 )); then
-            echo "::error::Release package manifest must contain exactly 32 assets"
+          if (( ${#required_package_assets[@]} != 33 )); then
+            echo "::error::Release package manifest must contain exactly 33 assets"
             exit 1
           fi
           for name in "${required_package_assets[@]}"; do

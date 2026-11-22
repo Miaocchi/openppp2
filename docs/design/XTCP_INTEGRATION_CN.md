@@ -269,8 +269,9 @@ NDI TSO 仍 default-off；pacing quantum 退款候选未混入本轮；没有启
 
 XTCP 依赖来自已确认授权的内部仓库。许可证不再阻断内部 laboratory 集成。源码通过 `tools/prepare_xtcp.sh` 固定下载并校验，解包目录中的 `.openppp2-xtcp-revision` 必须等于上述 revision。
 
-当前完成的是 **Linux、client、IPv4 TCP、显式 runtime opt-in 的 XTCP runtime**。Linux 原生和交叉 CMake 构建默认启用 XTCP 编译集成；运行时仍必须显式选择 `--tcp-stack=xtcp`，不能把编译集成误认为所有平台的 production runtime。
+当前支持的 Linux、Windows x64 和 Android production target 默认编入 XTCP；运行时仍必须显式选择 `--tcp-stack=xtcp`。所有这些平台使用 `third-party/xtcp` 固定源码和根 CMake 的生产 target 设置。
 
+Windows x86/ARM64、macOS 和 iOS 保持 XTCP-disabled target；不支持的平台显式请求 XTCP 时继续 fail-closed。
 - `PPP_ENABLE_XTCP=1`：固定依赖已编入 artifact；
 - `PPP_XTCP_RUNTIME_WIRED=1`：OpenPPP2 packet、listener、bridge、启动和 teardown 已接线。
 
@@ -278,8 +279,8 @@ XTCP 依赖来自已确认授权的内部仓库。许可证不再阻断内部 la
 
 当前明确不支持：
 
-- 跨平台 production rollout 或通用性能承诺；Linux 默认编译集成仍需按部署矩阵验收；
-- IPv6、UDP、IPv4 分片、iOS；Windows/Android 目前仅 opt-in 构建接入，未完成生产运行验收（见本文开头）；
+- 跨平台 production rollout 或通用性能承诺仍需按部署矩阵验收；默认编译集成不等于运行时默认选择；
+- IPv6、UDP、IPv4 分片、iOS；Windows/Android 的真实生产运行验收仍未完成（见本文开头）；
 - 运行中热切换；
 - MIMT；
 - 多 owner executor；

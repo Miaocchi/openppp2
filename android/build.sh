@@ -17,11 +17,12 @@ PPP_help() {
     echo "    ./$PPP_SCRIPT_NAME x64"
     echo "    ./$PPP_SCRIPT_NAME arm"
     echo "    ./$PPP_SCRIPT_NAME arm64"
-    echo "    PPP_ENABLE_XTCP=ON ./$PPP_SCRIPT_NAME arm64"
+    echo "    PPP_ENABLE_XTCP=OFF ./$PPP_SCRIPT_NAME arm64   # compatibility override"
+    echo "    PPP_ENABLE_XTCP=ON  ./$PPP_SCRIPT_NAME arm64   # production default"
 }
 
 PPP_build() {
-    if [[ ("${PPP_ENABLE_XTCP:-OFF}" == "ON" || "${PPP_ENABLE_XTCP:-OFF}" == "1") && "${PPP_XTCP_PREPARED:-0}" != "1" ]]; then
+    if [[ ("${PPP_ENABLE_XTCP:-ON}" == "ON" || "${PPP_ENABLE_XTCP:-ON}" == "1") && "${PPP_XTCP_PREPARED:-0}" != "1" ]]; then
         (cd .. && bash tools/prepare_xtcp.sh)
         PPP_XTCP_PREPARED=1
     fi
@@ -37,7 +38,7 @@ PPP_build() {
         -DANDROID_ABI=$2 \
         -DANDROID_NATIVE_API_LEVEL=21 \
         -DANDROID_STL=c++_static \
-        -DENABLE_XTCP="${PPP_ENABLE_XTCP:-OFF}" \
+        -DENABLE_XTCP="${PPP_ENABLE_XTCP:-ON}" \
         $OTHER_ARGS
     make -j $(lscpu | grep "^CPU(s):" | awk '{print $2}')
     cd ..

@@ -12,7 +12,7 @@ set "CONFIG=Release"
 set "TARGET=all"
 set "BUILD_JOBS=%NUMBER_OF_PROCESSORS%"
 set "SHOW_HELP=0"
-set "ENABLE_XTCP=OFF"
+set "ENABLE_XTCP=ON"
 
 call :parse_args %*
 if errorlevel 1 goto :help
@@ -49,7 +49,7 @@ echo   - Debug/Release are case-insensitive.
 echo   - Output goes to bin\Debug or bin\Release.
 echo   - Build directories are temporary and removed after success.
 echo   - Default behavior is Release all.
-echo   - XTCP is opt-in: append xtcp (requires third-party\xtcp prepared).
+echo   - XTCP is enabled by default for x64 (requires third-party\xtcp prepared); x86/arm64 remain native/lwIP-only.
 echo   - vcpkg discovery prefers environment variables first.
 echo.
 echo vcpkg discovery priority:
@@ -184,8 +184,10 @@ echo VCPKG_ROOT_DIR=%VCPKG_ROOT_DIR%
 echo VCPKG_INSTALLED_DIR=%VCPKG_INSTALLED_DIR%
 
 pushd "%BUILD_DIR%"
-echo Configuring %ARCH% %CONFIG%
-cmake -G Ninja -DCMAKE_BUILD_TYPE=%CONFIG% "-DCMAKE_TOOLCHAIN_FILE=%TOOLCHAIN_FILE%" -DVCPKG_INSTALLED_DIR="%VCPKG_INSTALLED_DIR%" -DVCPKG_TARGET_TRIPLET=%TRIPLET% -DVCPKG_HOST_TRIPLET=x64-windows -DPPP_OUTPUT_DIR=%OUTPUT_DIR% -DENABLE_XTCP=%ENABLE_XTCP% -DCMAKE_CXX_STANDARD=17 "%ROOT_DIR%"
+set "XTCP_FOR_BUILD=%ENABLE_XTCP%"
+if /I not "%ARCH%"=="x64" set "XTCP_FOR_BUILD=OFF"
+echo Configuring %ARCH% %CONFIG% (XTCP=%XTCP_FOR_BUILD%)
+cmake -G Ninja -DCMAKE_BUILD_TYPE=%CONFIG% "-DCMAKE_TOOLCHAIN_FILE=%TOOLCHAIN_FILE%" -DVCPKG_INSTALLED_DIR="%VCPKG_INSTALLED_DIR%" -DVCPKG_TARGET_TRIPLET=%TRIPLET% -DVCPKG_HOST_TRIPLET=x64-windows -DPPP_OUTPUT_DIR=%OUTPUT_DIR% -DENABLE_XTCP=%XTCP_FOR_BUILD% -DCMAKE_CXX_STANDARD=17 "%ROOT_DIR%"
 if errorlevel 1 (
     popd
     exit /b 1

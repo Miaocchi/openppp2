@@ -254,11 +254,13 @@ All of these options default to `OFF`:
 | `ENABLE_VMUX_RECEIVE_SEMANTICS_TEST` | Builds and registers the root-linked VMUX receive-semantics test. |
 | `ENABLE_ASAN`, `ENABLE_UBSAN` | Enable diagnostic sanitizer flags in the root project; not production build modes. |
 
-Production build options have platform-specific defaults: Linux builds, including cross-compilation,
-enable `ENABLE_XTCP` by default and require `bash tools/prepare_xtcp.sh` before configuration; Android,
-macOS, and Windows default it off and pass an explicit value in their workflows.
-`ENABLE_SIMD` defaults on for x86/x64 and off for ARM/Android. Windows MSBuild accepts
-`/p:OpenPPP2EnableSimd=false` to remove `__SIMD__`.
+Production build options are explicit by profile. Linux generic builds keep
+`ENABLE_XTCP=ON` but disable `ENABLE_IO_URING`, `ENABLE_SYSNAT`, `ENABLE_SIMD`,
+and `ENABLE_SSEA_SIMD`; the `-modern` Linux package enables all five and
+requires Linux 5.10+, BPF/TC permissions, and a CPU supporting the selected
+SIMD levels.
+Android, macOS, and Windows pass their platform-specific values explicitly.
+Windows MSBuild accepts `/p:OpenPPP2EnableSimd=false` to remove `__SIMD__`.
 
 ## CI coverage today
 

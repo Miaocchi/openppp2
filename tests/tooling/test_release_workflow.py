@@ -46,7 +46,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("files: release-assets/*", self.workflow)
         self.assertIn("fail_on_unmatched_files: true", self.workflow)
 
-    def test_release_requires_exact_32_asset_matrix(self):
+    def test_release_requires_exact_33_asset_matrix(self):
         start = self.workflow.index("required_package_assets=(")
         end = self.workflow.index("\n          )", start)
         manifest = self.workflow[start:end]
@@ -72,7 +72,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         expected.extend(
             f"openppp2-linux-amd64{suffix}.zip"
             for suffix in (
-                "", "-io-uring", "-simd", "-tc", "-tc-io-uring",
+                "", "-modern", "-io-uring", "-simd", "-tc", "-tc-io-uring",
                 "-tc-simd", "-io-uring-simd", "-tc-io-uring-simd",
                 "-debian10", "-asan",
             )
@@ -82,9 +82,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "openppp2-windows-ARM64-Release.zip",
         ))
 
-        self.assertEqual(len(expected), 32)
+        self.assertEqual(len(expected), 33)
         self.assertEqual(actual, expected)
-        self.assertIn("exactly 32 assets", self.workflow)
+        self.assertIn("exactly 33 assets", self.workflow)
         self.assertIn("Required release package is missing or empty", self.workflow)
         self.assertIn("Expected exactly ${#required_package_assets[@]} package assets", self.workflow)
 

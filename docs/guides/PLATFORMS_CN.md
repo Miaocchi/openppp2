@@ -30,7 +30,12 @@
 
 - **权限：** TUN 客户端和服务端需要 root 或 `CAP_NET_ADMIN`，并且 `/dev/net/tun` 可用（容器里需额外映射）。代理模式不需要。
 - **默认网卡名：** `ppp`（`--tun=<名称>` 修改）。
-- **安装包：** x86_64 推荐 `openppp2-linux-amd64-simd.zip`；旧系统用 `-debian10`；`-io-uring` 变体使用 io_uring。其他架构见 [用户手册](../getting-started/USER_MANUAL_CN.md)。
+- **生产构建档位：** `openppp2-linux-amd64.zip` 是通用兼容包，保留 XTCP，关闭
+  io_uring、SYSNAT 和 SIMD。只有在 Linux 5.10+、具备所需 BPF/TC
+  权限且 x86 CPU 支持 AES-NI、SSSE3、SSE4.1/4.2、POPCNT、AVX、AVX2 时，
+  才使用 `openppp2-linux-amd64-modern.zip`。其他后缀包是面向特定环境的显式组合。
+- **安装包：** 不确定内核、权限或 CPU 条件时使用通用包；`-debian10` 另外面向较旧
+  glibc。其他架构见[用户手册](../getting-started/USER_MANUAL_CN.md)。
 - **专用参数：**
 
 | 参数 | 默认 | 说明 |

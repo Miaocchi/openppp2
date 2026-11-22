@@ -139,9 +139,10 @@ previously stalled flows now compete (retransmissions rise from about 90-106k
 to about 152k in the one-shard cell); P16/P64 DL, GSO-on and the stall
 campaign have not been re-run with 0036. See XTCP_INTEGRATION_CN.md §11.186.
 
-XTCP is opt-in on Windows and Android. Linux desktop retains its current
-default. All platforms use the pinned source in `third-party/xtcp` and the
-same production target settings from the root CMake build (revision
+XTCP is compiled into supported Linux, Windows x64 and Android production
+targets by default. Runtime selection remains explicit (`--tcp-stack=xtcp`),
+and all platforms use the pinned source in `third-party/xtcp` with the same
+production target settings from the root CMake build (revision
 `c9dd5601384201b396b1b6599c6c868097da5dcf`). The verified archive SHA256 is
 `6a9988d5bf5a039bd9bd0d0c7162e33afc1c60013af10f73abc82d0dc82b2631`.
 
@@ -1265,5 +1266,6 @@ only a loopback connection to the in-process TCP stack. Remote TCP connections
 are established by the existing client forwarding layer, which calls the
 `VpnService.protect` bridge before connecting.
 
-Both Windows and Android default to XTCP disabled. Linux desktop behavior and
-its existing default are unchanged.
+Windows x86/ARM64, macOS and iOS remain XTCP-disabled targets. Linux desktop,
+Windows x64 and Android use the compile-time default above; runtime selection
+is still explicit and unsupported platforms fail closed.
