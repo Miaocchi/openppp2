@@ -1,6 +1,6 @@
 # Multiplexing
 
-Use `mux` to choose how the tunnel schedules and buffers logical streams. Set the connection count with the client flag [`--tun-mux`](../CLI_REFERENCE.md); it defaults to `0` (off). There is no connection-count JSON field.
+`mux` controls logical-flow scheduling and buffering inside one tunnel session. It does not configure multipath entries; see client [`client.multipath`](client.md#clientmultipath) and server [`server.multipath`](server.md#multipath) for that. Set the MUX connection count with the client flag [`--tun-mux`](../CLI_REFERENCE.md); it defaults to `0` (off), and there is no MUX connection-count JSON field.
 
 These JSON snippets show the structure, not a complete configuration. Example values are not defaults.
 

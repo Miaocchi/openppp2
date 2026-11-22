@@ -151,8 +151,84 @@ sudo ./ppp --mode=client --config=./client.json
 - `websocket.host` **必须是域名**，写 IP 会导致 WS 和 WSS 监听都被关闭。
 - 只要 WS（比如由 Nginx 终结 TLS）就不写 `wss` 和 `ssl`。
 - 需要指定连接 IP（CDN 优选 IP 等）时写成 `wss://vpn.example.com[203.0.113.10]:443/tun`。
+### 5.2 配置多路径（多入口 / 多链路）
 
-### 5.2 其他常见需求
+多路径和 `mux` 不是一回事：`mux` 只负责一个隧道会话内的逻辑流调度；多路径由 `client.multipath.paths` 打开多条到同一服务端会话的承载链路。每个 path 都必须能从客户端访问服务端的一个 TCP、WS 或 WSS 监听。要使用多路径，客户端和服务端都必须启用 `multipath`，并配置同一个 `transport-auth` 活跃密钥。
+
+下面是两个入口都指向同一服务端的最小结构。`vpn-a.example.com`、`vpn-b.example.com` 应替换为实际可达、最好经过不同网络路径的地址；它们可以是同一服务端的不同公网 IP、端口或 CDN 入口。
+
+服务端：
+
+```json
+{
+  "transport-auth": {
+    "keys": [
+      { "id": "multipath", "state": "active", "secret-file": "/etc/ppp/multipath.hex" }
+    ]
+  },
+  "tcp": { "listen": { "port": 20000 } },
+  "server": {
+    "multipath": {
+      "enabled": true,
+      "resume_grace_ms": 30000,
+      "max_connections": 4,
+      "max_sessions": 1024
+    }
+  }
+}
+```
+
+客户端：
+
+```json
+{
+  "transport-auth": {
+    "keys": [
+      { "id": "multipath", "state": "active", "secret-file": "/etc/ppp/multipath.hex" }
+    ]
+  },
+  "client": {
+    "server": "tcp://vpn-a.example.com:20000/",
+    "multipath": {
+      "enabled": true,
+      "policy": "adaptive",
+      "max_connections": 4,
+      "max_concurrent_connects": 2,
+      "resume_grace_ms": 30000,
+      "paths": [
+        {
+          "id": "entry-a",
+          "transport": "tcp",
+          "connect_host": "vpn-a.example.com",
+          "port": 20000,
+          "connections": 2
+        },
+        {
+          "id": "entry-b",
+          "transport": "tcp",
+          "connect_host": "vpn-b.example.com",
+          "port": 20000,
+          "connections": 2
+        }
+      ]
+    }
+  }
+}
+```
+
+配置要点：
+
+- `transport-auth.keys[].secret-file` 必须在两端存在、内容相同且为 32 字节密钥；必须恰好有一个 `active` key。多路径开启时缺少活跃传输认证密钥会导致配置加载失败。
+- `client.multipath.max_connections` 是客户端所有 paths 的连接总上限；每个 path 的 `connections` 之和不能超过它。客户端最多配置 8 个 path，每个 path 的 `connections` 为 `1..32`。
+- `adaptive` 会根据链路状态选择并分配业务流量；`failover` 优先使用一条链路，只有不可用时才切换到其他链路。一般需要同时利用多条链路时用 `adaptive`。
+- `max_concurrent_connects` 只限制启动时同时拨号的 path 数，不改变最终连接总数。服务端 `server.multipath.max_connections` 应不小于客户端总连接数；`max_sessions` 是服务端并发多路径会话上限。
+- TCP path 只填写 `id`、`transport`、`connect_host`、`port`、`connections`。WS/WSS path 还要把 `ws_path` 写成服务端 `websocket.path`；WSS 必须填写 `tls_server_name`，`http_host` 用于 HTTP Host，省略时默认使用 `connect_host`。
+- 多路径不等于自动创建监听端口，也不等于自动发现线路。先为每个入口配置 DNS / 防火墙 / 反向代理，再把入口写进 `paths`。服务端仍需按普通方式配置相应的 `tcp.listen` 或 `websocket.listen`。
+
+启动前先用单路径确认 `client.server` 能连接，再加入第二个 path。连接后可查看运行统计中的 path ID 和 carrier 数，确认每条 path 都有承载流量；仅看到多个 TCP 连接不能证明业务流量已经聚合。
+
+
+### 5.3 其他常见需求
 
 | 我想要…… | 加 / 改什么 | 详细说明 |
 |---|---|---|
@@ -164,7 +240,7 @@ sudo ./ppp --mode=client --config=./client.json
 | 把客户端内网服务发布到服务器端口 | `client.mappings`（服务端需 `server.mapping: true`） | 同上 |
 | 给客户端分配 IPv6 | 服务端 `server.ipv6` | [IPv6 客户端分配](../guides/IPV6_CN.md) |
 | 接入管理后台 | 服务端 `server.backend`、`server.backend-key` | [管理后端](../guides/MANAGEMENT_BACKEND_CN.md) |
-| 多链路加速 | 客户端命令行 `--tun-mux=4`；调度模式 `mux.mode` | [配置参考 · mux](../reference/CONFIGURATION_CN.md) |
+| 多链路加速 | `client.multipath`（多入口 / 多承载）；逻辑流调度另看 `mux.mode` | [多路径配置参考](../reference/configuration/client_CN.md#multipath) · [配置参考 · mux](../reference/CONFIGURATION_CN.md) |
 | 额外的连接认证 | 两端 `transport-auth` + `server/client.transport-auth.enabled` | [配置参考 · transport-auth](../reference/CONFIGURATION_CN.md) |
 
 ## 6. 常见错误

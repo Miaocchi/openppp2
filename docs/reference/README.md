@@ -6,8 +6,8 @@ OPENPPP2 reads a JSON file. If you're setting up your first connection, start wi
 
 | JSON keys | Page | What to configure |
 |---|---|---|
-| `client`, `client.server` | [Client](configuration/client.md) | Server URL, client identity, local HTTP/SOCKS5 listeners, reconnection, and port mappings |
-| `server` | [Server](configuration/server.md) | Virtual IPv4/IPv6 addresses, client-to-client traffic, session resumption, and management backend |
+| `client`, `client.server`, `client.multipath` | [Client](configuration/client.md) | Server URL, client identity, local HTTP/SOCKS5 listeners, reconnection, port mappings, and multi-entry carriers |
+| `server`, `server.multipath` | [Server](configuration/server.md) | Virtual IPv4/IPv6 addresses, client-to-client traffic, session resumption, multipath limits, and management backend |
 | `tcp`, `udp`, `websocket`, `ip` | [Transport](configuration/transport.md) | Listening addresses and ports, TCP/UDP timeouts, WS/WSS paths, and TLS certificates |
 | `key`, `transport-auth` | [Encryption and authentication](configuration/security.md) | Settings that must match on both sides, encryption keys, and optional connection authentication |
 | `mux` | [Multiplexing](configuration/mux.md) | Scheduling, buffering, retransmission, and forward error correction |

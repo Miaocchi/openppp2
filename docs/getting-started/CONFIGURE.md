@@ -151,8 +151,84 @@ Change the client to:
 - `websocket.host` **must be a domain name**; an IP disables both the WS and WSS listeners.
 - For WS only (e.g. Nginx terminates TLS), omit `wss` and `ssl`.
 - To pin the connect IP (e.g. a preferred CDN IP), write `wss://vpn.example.com[203.0.113.10]:443/tun`.
+### 5.2 Configure multipath (multiple entries / carriers)
 
-### 5.2 Other common goals
+Multipath is different from `mux`: `mux` schedules logical flows inside one tunnel session, while `client.multipath.paths` opens multiple carriers into the same server session. Every path must reach a TCP, WS, or WSS listener on the server. Enable `multipath` on both peers and configure the same active `transport-auth` key.
+
+The following is the minimum shape for two entries into the same server. Replace `vpn-a.example.com` and `vpn-b.example.com` with reachable addresses that preferably use different network paths. They may be different public IPs, ports, or CDN entries for the same server.
+
+Server:
+
+```json
+{
+  "transport-auth": {
+    "keys": [
+      { "id": "multipath", "state": "active", "secret-file": "/etc/ppp/multipath.hex" }
+    ]
+  },
+  "tcp": { "listen": { "port": 20000 } },
+  "server": {
+    "multipath": {
+      "enabled": true,
+      "resume_grace_ms": 30000,
+      "max_connections": 4,
+      "max_sessions": 1024
+    }
+  }
+}
+```
+
+Client:
+
+```json
+{
+  "transport-auth": {
+    "keys": [
+      { "id": "multipath", "state": "active", "secret-file": "/etc/ppp/multipath.hex" }
+    ]
+  },
+  "client": {
+    "server": "tcp://vpn-a.example.com:20000/",
+    "multipath": {
+      "enabled": true,
+      "policy": "adaptive",
+      "max_connections": 4,
+      "max_concurrent_connects": 2,
+      "resume_grace_ms": 30000,
+      "paths": [
+        {
+          "id": "entry-a",
+          "transport": "tcp",
+          "connect_host": "vpn-a.example.com",
+          "port": 20000,
+          "connections": 2
+        },
+        {
+          "id": "entry-b",
+          "transport": "tcp",
+          "connect_host": "vpn-b.example.com",
+          "port": 20000,
+          "connections": 2
+        }
+      ]
+    }
+  }
+}
+```
+
+Configuration rules:
+
+- `transport-auth.keys[].secret-file` must exist on both peers, contain the same 32-byte secret, and have exactly one `active` key. Enabling multipath without an active transport-auth key makes configuration loading fail.
+- `client.multipath.max_connections` caps all carriers across all paths; the sum of each path's `connections` must not exceed it. A client may configure up to 8 paths, with `connections` from `1..32` per path.
+- `adaptive` selects and distributes traffic according to carrier state; `failover` prefers one carrier and switches only when it becomes unavailable. Use `adaptive` when multiple links should carry traffic concurrently.
+- `max_concurrent_connects` limits startup dialing concurrency; it does not change the final carrier count. Set `server.multipath.max_connections` at least as high as the client's total; `max_sessions` caps concurrent multipath sessions on the server.
+- A TCP path uses only `id`, `transport`, `connect_host`, `port`, and `connections`. For WS/WSS, set `ws_path` to the server's `websocket.path`; WSS requires `tls_server_name`. `http_host` is the HTTP Host value and defaults to `connect_host` when omitted.
+- Multipath does not create listeners or discover routes automatically. Configure DNS, firewalls, and reverse proxies for each entry first, then list them in `paths`. The server still needs the corresponding `tcp.listen` or `websocket.listen` configuration.
+
+First verify that `client.server` works with one path, then add the second path. After connecting, inspect runtime statistics for path IDs and carrier counts; multiple TCP sockets alone do not prove that application traffic is aggregated.
+
+
+### 5.3 Other common goals
 
 | I want to… | Add / change | Details |
 |---|---|---|
@@ -164,7 +240,7 @@ Change the client to:
 | Publish a client LAN service on a server port | `client.mappings` (server needs `server.mapping: true`) | Same |
 | Assign IPv6 to clients | Server `server.ipv6` | [IPv6 client assignment](../guides/IPV6.md) |
 | Connect a management backend | Server `server.backend`, `server.backend-key` | [Management backend](../guides/MANAGEMENT_BACKEND.md) |
-| Multi-link acceleration | Client flag `--tun-mux=4`; scheduler `mux.mode` | [Configuration · mux](../reference/CONFIGURATION.md) |
+| Multi-link acceleration | `client.multipath` (multiple entries / carriers); see `mux.mode` separately for logical-flow scheduling | [Multipath reference](../reference/configuration/client.md#multipath) · [Configuration · mux](../reference/CONFIGURATION.md) |
 | Extra connection authentication | `transport-auth` on both sides + `server/client.transport-auth.enabled` | [Configuration · transport-auth](../reference/CONFIGURATION.md) |
 
 ## 6. Common mistakes

@@ -6,8 +6,8 @@ OPENPPP2 使用 JSON 配置。第一次连接，建议先照着[最小服务端�
 
 | JSON 字段 | 专题 | 可以查到什么 |
 |---|---|---|
-| `client`、`client.server` | [客户端](configuration/client_CN.md) | 服务器 URL、客户端身份、本地 HTTP/SOCKS5 监听、重连、端口映射 |
-| `server` | [服务端](configuration/server_CN.md) | 虚拟 IPv4/IPv6 地址分配、客户端互通、会话恢复、管理后端 |
+| `client`、`client.server`、`client.multipath` | [客户端](configuration/client_CN.md) | 服务器 URL、客户端身份、本地 HTTP/SOCKS5 监听、重连、端口映射、多入口多承载 |
+| `server`、`server.multipath` | [服务端](configuration/server_CN.md) | 虚拟 IPv4/IPv6 地址分配、客户端互通、会话恢复、多路径会话上限、管理后端 |
 | `tcp`、`udp`、`websocket`、`ip` | [连接与传输](configuration/transport_CN.md) | 监听地址与端口、TCP/UDP 超时、WS/WSS 路径和 TLS 证书 |
 | `key`、`transport-auth` | [加密与认证](configuration/security_CN.md) | 两端必须一致的设置、加密密钥、可选的传输层连接认证 |
 | `mux` | [多路复用](configuration/mux_CN.md) | 调度、缓冲、重传和前向纠错 |

@@ -27,6 +27,12 @@
     },
     "peer-routing": { "enabled": false, "distribute": true, "allowed-routes": [] },
     "session_resume": { "enabled": false, "grace_ms": 60000 },
+    "multipath": {
+      "enabled": false,
+      "resume_grace_ms": 30000,
+      "max_connections": 32,
+      "max_sessions": 1024
+    },
     "transport-auth": { "enabled": false }
   }
 }
@@ -147,3 +153,33 @@
 **类型：**bool · **省略时：**`false`
 
 见[传输认证](security_CN.md#transport-auth)。
+
+### `multipath`
+
+**类型：**object · **省略时：**关闭
+
+服务端多路径会话准入和资源上限。客户端启用 `client.multipath` 时，服务端也必须启用此块，并配置同一个 `transport-auth` 活跃密钥。
+
+#### `server.multipath.enabled`
+
+**类型：**bool · **省略时：**`false`
+
+允许多路径客户端创建和加入会话。启用时必须存在有效的 `transport-auth` 活跃密钥。
+
+#### `server.multipath.resume_grace_ms`
+
+**类型：**int（毫秒） · **省略时：**`30000`
+
+所有 carrier 暂时断开后保留多路径会话的宽限期，范围 `1000..30000`。
+
+#### `server.multipath.max_connections`
+
+**类型：**int · **省略时：**`32`
+
+每个多路径会话允许的 carrier 总数上限，范围 `1..32`。应不小于客户端 `client.multipath.max_connections`。
+
+#### `server.multipath.max_sessions`
+
+**类型：**int · **省略时：**`1024`
+
+服务端同时保留的多路径会话数上限，范围 `1..65535`。

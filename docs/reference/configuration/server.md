@@ -27,6 +27,12 @@ These JSON snippets show the structure, not a complete configuration. Example va
     },
     "peer-routing": { "enabled": false, "distribute": true, "allowed-routes": [] },
     "session_resume": { "enabled": false, "grace_ms": 60000 },
+    "multipath": {
+      "enabled": false,
+      "resume_grace_ms": 30000,
+      "max_connections": 32,
+      "max_sessions": 1024
+    },
     "transport-auth": { "enabled": false }
   }
 }
@@ -141,6 +147,36 @@ Allow a dropped session to resume within the grace period.
 **Type:** int (ms) · **If omitted:** `60000`
 
 Grace period, clamped to `1000..3600000`.
+
+### `multipath`
+
+**Type:** object · **If omitted:** disabled
+
+Server admission and resource limits for multipath sessions. When the client enables `client.multipath`, the server must enable this block and configure the same active `transport-auth` key.
+
+#### `server.multipath.enabled`
+
+**Type:** bool · **If omitted:** `false`
+
+Allow multipath clients to create and join sessions. An active `transport-auth` key is required when enabled.
+
+#### `server.multipath.resume_grace_ms`
+
+**Type:** int (ms) · **If omitted:** `30000`
+
+Grace period for keeping a multipath session after all carriers temporarily disappear, `1000..30000`.
+
+#### `server.multipath.max_connections`
+
+**Type:** int · **If omitted:** `32`
+
+Maximum carriers per multipath session, `1..32`. Set it at least as high as the client's `client.multipath.max_connections`.
+
+#### `server.multipath.max_sessions`
+
+**Type:** int · **If omitted:** `1024`
+
+Maximum number of multipath sessions retained concurrently on the server, `1..65535`.
 
 ### `transport-auth.enabled`
 

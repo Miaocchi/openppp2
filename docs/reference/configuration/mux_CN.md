@@ -1,6 +1,6 @@
 # 多路复用
 
-`mux` 控制隧道中逻辑流的调度与缓冲。连接数由客户端参数 [`--tun-mux`](../CLI_REFERENCE_CN.md) 设置，默认为 `0`（关闭）；JSON 中没有连接数字段。
+`mux` 只控制单个隧道会话内的逻辑流调度与缓冲。它不配置多路径入口；多路径请看客户端的 [`client.multipath`](client_CN.md#clientmultipath) 和服务端的 [`server.multipath`](server_CN.md#multipath)。连接数由客户端参数 [`--tun-mux`](../CLI_REFERENCE_CN.md) 设置，默认为 `0`（关闭）；JSON 中没有 MUX 连接数字段。
 
 以下 JSON 只展示字段结构，不是可直接启动的配置。示例值不代表省略字段时的行为。
 

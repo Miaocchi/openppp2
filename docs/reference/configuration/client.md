@@ -19,6 +19,14 @@ These JSON snippets show the structure, not a complete configuration. Example va
     "reconnections": { "timeout": 5, "max_delay": 15, "jitter_percent": 20 },
     "session_resume": { "enabled": false },
     "transport-auth": { "enabled": false },
+    "multipath": {
+      "enabled": false,
+      "policy": "adaptive",
+      "max_connections": 8,
+      "max_concurrent_connects": 4,
+      "resume_grace_ms": 30000,
+      "paths": []
+    },
     "mappings": [],
     "routes": [],
     "peer-routes": [],
@@ -110,6 +118,67 @@ Request session resumption (the server must enable it too).
 **Type:** bool · **If omitted:** `false`
 
 See [transport authentication](security.md#transport-auth).
+
+### `multipath`
+
+**Type:** object · **If omitted:** disabled
+
+Client multi-entry, multi-carrier configuration. When enabled, the server must also set `server.multipath.enabled: true`, and both peers must have the same active `transport-auth` key.
+
+Example:
+
+```json
+"multipath": {
+  "enabled": true,
+  "policy": "adaptive",
+  "max_connections": 4,
+  "max_concurrent_connects": 2,
+  "resume_grace_ms": 30000,
+  "paths": [
+    { "id": "entry-a", "transport": "tcp", "connect_host": "vpn-a.example.com", "port": 20000, "connections": 2 },
+    { "id": "entry-b", "transport": "tcp", "connect_host": "vpn-b.example.com", "port": 20000, "connections": 2 }
+  ]
+}
+```
+
+#### `multipath.enabled`
+
+**Type:** bool · **If omitted:** `false`
+
+Enable the client multipath session. When enabled, `paths` must contain at least one entry.
+
+#### `multipath.policy`
+
+**Type:** string · **If omitted:** `adaptive`
+
+`adaptive` selects carriers in parallel according to link state; `failover` prefers one carrier and switches only when it becomes unavailable.
+
+#### `multipath.max_connections`
+
+**Type:** int · **If omitted:** `8`
+
+Total carrier limit across all paths, `1..32`; the sum of all `paths[].connections` must not exceed it.
+
+#### `multipath.max_concurrent_connects`
+
+**Type:** int · **If omitted:** `4`
+
+Number of paths dialed concurrently during startup, `1..8`; it does not change the final carrier count.
+
+#### `multipath.resume_grace_ms`
+
+**Type:** int (ms) · **If omitted:** `30000`
+
+Grace period for keeping the session after all carriers temporarily disappear, `1000..30000`. The server must allow multipath recovery too.
+
+#### `multipath.paths[]`
+
+**Type:** array · **If omitted:** empty · **Limit:** 8 entries
+
+Each entry is one server endpoint. `id` must be unique; `transport` is `tcp`, `ws`, or `wss`; `connect_host` and `port` are the actual dial address; `connections` is the number of carriers for that endpoint, `1..32`.
+
+WS/WSS may also set `http_host` and `ws_path`; WSS requires `tls_server_name`. `ws_path` should exactly match the server's `websocket.path`. TCP paths must not set WebSocket/TLS fields.
+
 
 ### `mappings[]`
 

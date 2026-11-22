@@ -19,6 +19,14 @@
     "reconnections": { "timeout": 5, "max_delay": 15, "jitter_percent": 20 },
     "session_resume": { "enabled": false },
     "transport-auth": { "enabled": false },
+    "multipath": {
+      "enabled": false,
+      "policy": "adaptive",
+      "max_connections": 8,
+      "max_concurrent_connects": 4,
+      "resume_grace_ms": 30000,
+      "paths": []
+    },
     "mappings": [],
     "routes": [],
     "peer-routes": [],
@@ -110,6 +118,67 @@ SOCKS5 认证。
 **类型：**bool · **省略时：**`false`
 
 见[传输认证](security_CN.md#transport-auth)。
+
+### `multipath`
+
+**类型：**object · **省略时：**关闭
+
+客户端多入口、多承载连接配置。启用后必须同时满足服务端 `server.multipath.enabled: true`，并且两端都有同一个 `transport-auth` 活跃密钥。
+
+结构示例：
+
+```json
+"multipath": {
+  "enabled": true,
+  "policy": "adaptive",
+  "max_connections": 4,
+  "max_concurrent_connects": 2,
+  "resume_grace_ms": 30000,
+  "paths": [
+    { "id": "entry-a", "transport": "tcp", "connect_host": "vpn-a.example.com", "port": 20000, "connections": 2 },
+    { "id": "entry-b", "transport": "tcp", "connect_host": "vpn-b.example.com", "port": 20000, "connections": 2 }
+  ]
+}
+```
+
+#### `multipath.enabled`
+
+**类型：**bool · **省略时：**`false`
+
+启用客户端多路径会话。启用时 `paths` 至少包含一个条目。
+
+#### `multipath.policy`
+
+**类型：**string · **省略时：**`adaptive`
+
+`adaptive` 按链路状态并行选择承载；`failover` 优先使用一条承载，仅在不可用时切换。
+
+#### `multipath.max_connections`
+
+**类型：**int · **省略时：**`8`
+
+所有 path 的 carrier 总数上限，范围 `1..32`；所有 `paths[].connections` 之和不能超过它。
+
+#### `multipath.max_concurrent_connects`
+
+**类型：**int · **省略时：**`4`
+
+启动阶段同时拨号的 path 数，范围 `1..8`；不改变最终 carrier 总数。
+
+#### `multipath.resume_grace_ms`
+
+**类型：**int（毫秒） · **省略时：**`30000`
+
+所有承载暂时断开后保留会话的宽限期，范围 `1000..30000`。服务端也必须允许多路径恢复。
+
+#### `multipath.paths[]`
+
+**类型：**array · **省略时：**空 · **上限：**8 个
+
+每个条目代表一个服务端入口。`id` 必须唯一；`transport` 为 `tcp`、`ws` 或 `wss`；`connect_host` 和 `port` 是实际拨号地址；`connections` 为该入口创建的 carrier 数，范围 `1..32`。
+
+WS/WSS 还可设置 `http_host` 和 `ws_path`；WSS 必须设置 `tls_server_name`。`ws_path` 应与服务端 `websocket.path` 完全一致。TCP path 不得填写这些 WebSocket/TLS 字段。
+
 
 ### `mappings[]`
 
