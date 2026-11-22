@@ -195,6 +195,94 @@ namespace aesni {
         }
     }
 
+    // Encrypts up to four independent CFB packets in lockstep. Each lane keeps
+    // its own ciphertext feedback, while the four AES block chains are issued
+    // together so AESENC latency is shared. The first packet of every group is
+    // a normal CFB encryption; every later block uses the previous ciphertext
+    // of that same packet, so the wire bytes match per-packet encryption.
+    void aes256_cfb_encrypt_batch(uint8_t* const* ciphertexts,
+        const uint8_t* const* plaintexts,
+        const int* lengths,
+        int count,
+        const uint8_t* iv,
+        const __m128i* round_key) noexcept {
+        if (count <= 0) {
+            return;
+        }
+
+        if (count == 1) {
+            aes256_cfb_encrypt(ciphertexts[0], plaintexts[0],
+                static_cast<size_t>(lengths[0]), iv, round_key);
+            return;
+        }
+
+        const __m128i initial = _mm_loadu_si128(reinterpret_cast<const __m128i*>(iv));
+        for (int base = 0; base < count; base += 4) {
+            const int lane_count = std::min(4, count - base);
+            uint8_t* out[4] = {NULLPTR, NULLPTR, NULLPTR, NULLPTR};
+            const uint8_t* in[4] = {NULLPTR, NULLPTR, NULLPTR, NULLPTR};
+            size_t blocks[4] = {0, 0, 0, 0};
+            size_t remaining[4] = {0, 0, 0, 0};
+            __m128i feedback[4] = {initial, initial, initial, initial};
+
+            size_t max_blocks = 0;
+            for (int lane = 0; lane < lane_count; lane++) {
+                out[lane] = ciphertexts[base + lane];
+                in[lane] = plaintexts[base + lane];
+                const size_t len = static_cast<size_t>(lengths[base + lane]);
+                blocks[lane] = len / 16;
+                remaining[lane] = len % 16;
+                if (blocks[lane] > max_blocks) {
+                    max_blocks = blocks[lane];
+                }
+            }
+
+            for (size_t block = 0; block < max_blocks; block++) {
+                __m128i b0 = feedback[0];
+                __m128i b1 = feedback[1];
+                __m128i b2 = feedback[2];
+                __m128i b3 = feedback[3];
+                aes256_encrypt_blocks4(b0, b1, b2, b3, round_key);
+
+                __m128i keystream[4] = {b0, b1, b2, b3};
+                for (int lane = 0; lane < lane_count; lane++) {
+                    if (block >= blocks[lane]) {
+                        continue;
+                    }
+
+                    const __m128i plain = _mm_loadu_si128(reinterpret_cast<const __m128i*>(
+                        in[lane] + block * 16));
+                    const __m128i cipher = _mm_xor_si128(plain, keystream[lane]);
+                    _mm_storeu_si128(reinterpret_cast<__m128i*>(out[lane] + block * 16), cipher);
+                    feedback[lane] = cipher;
+                }
+            }
+
+            // The final partial block of each packet is independent of every
+            // other lane's tail, so its AES block is also scheduled four-way.
+            __m128i t0 = feedback[0];
+            __m128i t1 = feedback[1];
+            __m128i t2 = feedback[2];
+            __m128i t3 = feedback[3];
+            aes256_encrypt_blocks4(t0, t1, t2, t3, round_key);
+            __m128i tail_keystream[4] = {t0, t1, t2, t3};
+
+            for (int lane = 0; lane < lane_count; lane++) {
+                const size_t tail = remaining[lane];
+                if (tail == 0) {
+                    continue;
+                }
+
+                const uint8_t* src = in[lane] + blocks[lane] * 16;
+                uint8_t* dst = out[lane] + blocks[lane] * 16;
+                const uint8_t* ks = reinterpret_cast<const uint8_t*>(&tail_keystream[lane]);
+                for (size_t i = 0; i < tail; i++) {
+                    dst[i] = static_cast<uint8_t>(src[i] ^ ks[i]);
+                }
+            }
+        }
+    }
+
     // AES-256-CFB Decryption
     void aes256_cfb_decrypt(uint8_t* plaintext, const uint8_t* ciphertext, size_t len, const uint8_t* iv, const __m128i* round_key) noexcept {
         __m128i feedback = _mm_loadu_si128((const __m128i*)iv); // Initialize feedback register

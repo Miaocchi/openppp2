@@ -3143,3 +3143,31 @@ namespace cleanup 和监控完整性检查通过。共享主机且只有两轮�
 Windows、移动平台与生产网络行为未验证。证据归档在
 `build/private/xtcp-c1fc9d6-validation/`，本任务远端构建目录已清理。
 主仓库没有提交、推送，也没有提交 PR。
+
+### 11.30 UL direct-upload batch 与 gather 的 TUN 对照（2026-11-21）
+
+为验证“同一 AES-CFB 批次加密后一次 carrier write”是否优于默认 gather，
+新增生产路径 `ITransmission::WriteMany`：最多 4 个 payload 先用
+`Ciphertext::EncryptManyTo` 做独立 CFB 链的批量调度，再在长度保持型
+transport cipher 下写入一个连续 frame buffer；失败时回退逐 frame 加密/写入。
+`OPENPPP2_XTCP_DIRECT_UPLOAD_BATCH=4` 显式启用，默认仍为 1（gather）。
+
+测试为单机 Linux network namespace，client TUN → XTCP/TCP carrier → server
+TUN → target iperf3，4 条 TCP 流，10 秒（带完整性检查的轮次为 6 秒），
+同一构建、同一主机、未做 CPU/IRQ 隔离或 GSO 调优；每组前杀掉遗留 ppp 进程。
+每次另传 8 MiB 伪随机数据并在 target 侧做 SHA-256 校验。
+
+| 配置 | 吞吐 (Gbps) | 相对默认 gather |
+| --- | ---: | ---: |
+| 默认 gather（多次） | 0.392 / 0.405 / 0.390 / 0.409 | 1.00× |
+| batch=4 连续 frame（多次） | 0.359 / 0.384 / 0.362 / 0.363 | 0.89–0.95× |
+| batch=2 连续 frame | 0.306 | 0.75× |
+| batch=4 独立 frame（旧路径） | 0.313 | 0.77× |
+
+batch=4 的 P99 约 7.9–8.3 ms，默认 gather 约 7.1–8.0 ms；两者均
+0 retransmit，8 MiB 完整性校验全部通过。结论是同一队列内可合并的
+64 KiB gather frame 仍优于把 4 个独立 CFB 链拼成一个 write：后者减少
+syscall，但保留了 4 条 AES 链、4 个 protocol header 加密和 4 个 frame
+边界，且总写入字节没有减少。因此默认不改变，batch 仅作为
+“相邻 chunk 预算不同、无法 gather”时的可选路径；本机数据不外推到
+多核聚合、生产 NIC 或 Windows 环境。

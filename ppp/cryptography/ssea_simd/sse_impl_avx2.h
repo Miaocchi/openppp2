@@ -318,27 +318,24 @@ namespace ssea
     }
 
     /**
-     * @brief Delta-encodes a byte sequence (AVX2 level), 32 bytes/round.
-     *        Per-lane vpslldq with cross-lane previous-byte injection.
-     * @param data      Input bytes (data_size >= 1).
-     * @param data_size Number of input bytes.
+     * @brief Delta-encodes from a source range into a destination range.
+     *        Loads the 32-byte block before storing, so in == out is safe.
+     * @param in        Input bytes (data_size >= 1).
+     * @param out       Destination bytes; may alias @p in.
+     * @param data_size Number of bytes.
      * @param kf        Initial adjustment for the first byte.
-     * @param output    [out] Encoded buffer (allocated with +16 slack).
      * @return data_size on success, 0 on failure.
      */
-    inline int delta_encode_avx2(const void* data, int data_size, int kf, std::unique_ptr<uint8_t[]>& output) noexcept
+    inline int delta_encode_avx2_impl(const uint8_t* in, uint8_t* out, int data_size, int kf) noexcept
     {
 #if defined(SSEA_AVX2)
-        const uint8_t* in = static_cast<const uint8_t*>(data);
-        if (nullptr == in || data_size < 1)
+        if (nullptr == in || nullptr == out || data_size < 1)
         {
             return 0;
         }
 
-        output = std::make_unique<uint8_t[]>(data_size + 16);
-        uint8_t* out = output.get();
-
         int i = 0;
+        uint8_t prev_byte = static_cast<uint8_t>(kf);
         __m128i prev_last = _mm_cvtsi32_si128(kf);   // in[-1] == kf (low byte)
         prev_last = _mm_and_si128(prev_last, _mm_set_epi32(0, 0, 0, 0xFF));
         for (; i + 32 <= data_size; i += 32)
@@ -355,38 +352,31 @@ namespace ssea
 
             __m256i prev = _mm256_inserti128_si256(_mm256_castsi128_si256(prev0), prev1, 1);
             __m256i o = _mm256_sub_epi8(a, prev);
+            const uint8_t last = static_cast<uint8_t>(_mm_cvtsi128_si32(_mm_srli_si128(x1, 15)));
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + i), o);
 
             prev_last = _mm_srli_si128(x1, 15);                    // in[i+31]
+            prev_byte = last;
         }
 
-        uint8_t prev_byte = (i > 0) ? in[i - 1] : static_cast<uint8_t>(kf);
         for (; i < data_size; i++)
         {
-            out[i] = static_cast<uint8_t>(in[i] - prev_byte);
-            prev_byte = in[i];
+            const uint8_t current = in[i];
+            out[i] = static_cast<uint8_t>(current - prev_byte);
+            prev_byte = current;
         }
 
         return data_size;
 #else
-        (void)data;
+        (void)in;
+        (void)out;
         (void)data_size;
         (void)kf;
-        (void)output;
         return 0;
 #endif
     }
 
-    /**
-     * @brief Delta-decodes a byte sequence (AVX2 level), 32 bytes/round.
-     *        Per-lane parallel prefix sum + cross-lane carry propagation.
-     * @param data      Delta-encoded bytes (data_size >= 1).
-     * @param data_size Number of input bytes.
-     * @param kf        Initial adjustment used at encode time.
-     * @param output    [out] Decoded buffer (allocated with +16 slack).
-     * @return data_size on success, 0 on failure.
-     */
-    inline int delta_decode_avx2(const void* data, int data_size, int kf, std::unique_ptr<uint8_t[]>& output) noexcept
+    inline int delta_encode_avx2(const void* data, int data_size, int kf, std::unique_ptr<uint8_t[]>& output) noexcept
     {
 #if defined(SSEA_AVX2)
         const uint8_t* in = static_cast<const uint8_t*>(data);
@@ -396,7 +386,37 @@ namespace ssea
         }
 
         output = std::make_unique<uint8_t[]>(data_size + 16);
-        uint8_t* out = output.get();
+        return delta_encode_avx2_impl(in, output.get(), data_size, kf);
+#else
+        (void)data;
+        (void)data_size;
+        (void)kf;
+        (void)output;
+        return 0;
+#endif
+    }
+
+    inline int delta_encode_inplace_avx2(uint8_t* data, int data_size, int kf) noexcept
+    {
+        return delta_encode_avx2_impl(data, data, data_size, kf);
+    }
+
+    /**
+     * @brief Delta-decodes from a source range into a destination range.
+     *        Loads the block before storing, so in == out is safe.
+     * @param in        Delta-encoded bytes (data_size >= 1).
+     * @param out       Destination bytes; may alias @p in.
+     * @param data_size Number of bytes.
+     * @param kf        Initial adjustment used at encode time.
+     * @return data_size on success, 0 on failure.
+     */
+    inline int delta_decode_avx2_impl(const uint8_t* in, uint8_t* out, int data_size, int kf) noexcept
+    {
+#if defined(SSEA_AVX2)
+        if (nullptr == in || nullptr == out || data_size < 1)
+        {
+            return 0;
+        }
 
         int i = 0;
         uint8_t acc = static_cast<uint8_t>(kf);
@@ -433,12 +453,37 @@ namespace ssea
 
         return data_size;
 #else
+        (void)in;
+        (void)out;
+        (void)data_size;
+        (void)kf;
+        return 0;
+#endif
+    }
+
+    inline int delta_decode_avx2(const void* data, int data_size, int kf, std::unique_ptr<uint8_t[]>& output) noexcept
+    {
+#if defined(SSEA_AVX2)
+        const uint8_t* in = static_cast<const uint8_t*>(data);
+        if (nullptr == in || data_size < 1)
+        {
+            return 0;
+        }
+
+        output = std::make_unique<uint8_t[]>(data_size + 16);
+        return delta_decode_avx2_impl(in, output.get(), data_size, kf);
+#else
         (void)data;
         (void)data_size;
         (void)kf;
         (void)output;
         return 0;
 #endif
+    }
+
+    inline int delta_decode_inplace_avx2(uint8_t* data, int data_size, int kf) noexcept
+    {
+        return delta_decode_avx2_impl(data, data, data_size, kf);
     }
 
     /**
@@ -521,7 +566,7 @@ namespace ssea
             }
             kf = random_next_from_key_scalar(kf);  // key for word i+32
 
-            __m256i kv = _mm256_set_epi32(ks[7], ks[6], ks[5], ks[4], ks[3], ks[2], ks[1], ks[0]);
+            __m256i kv = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ks));
             __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + i));
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(p + i), _mm256_xor_si256(v, kv));
         }

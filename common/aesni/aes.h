@@ -28,7 +28,20 @@ namespace aesni {
         std::shared_ptr<ppp::Byte>          Decrypt(const std::shared_ptr<ppp::threading::BufferswapAllocator>& allocator, ppp::Byte* data, int datalen, int& outlen) noexcept { return Process(allocator, data, datalen, outlen, false); } 
         /** @brief Encrypts @p datalen bytes into caller-owned @p output (at least @p datalen bytes, not overlapping @p data). */
         bool                                EncryptTo(ppp::Byte* output, const ppp::Byte* data, int datalen) noexcept { return ProcessTo(output, data, datalen, true); }
-        /** @brief Decrypts @p datalen bytes into @p output; @p output may equal @p data (in-place), otherwise must not overlap it. */
+        /**
+         * @brief Encrypts several independent CFB packets with interleaved AES rounds.
+         * @details Each packet uses the same key/IV as a separate EncryptTo() call,
+         *          but independent packet feedback chains are scheduled together so
+         *          AESENC latency is hidden. CFB ciphertext bytes are unchanged.
+         *          Falls back to a per-packet loop for non-CFB AES modes.
+         */
+        bool                                EncryptManyTo(ppp::Byte* const* outputs,
+                                                          const int* output_capacities,
+                                                          ppp::Byte* const* data,
+                                                          const int* datalens,
+                                                          int count,
+                                                          int* outlens) noexcept;
+        /** @brief Decrypts @p datalen bytes into caller-owned @p output; @p output may equal @p data (in-place), otherwise must not overlap it. */
         bool                                DecryptTo(ppp::Byte* output, const ppp::Byte* data, int datalen) noexcept { return ProcessTo(output, data, datalen, false); }
 
     private:        
