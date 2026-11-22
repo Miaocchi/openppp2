@@ -39,7 +39,7 @@ namespace ppp {
                     return true;
                 }
 
-                const std::shared_ptr<SslvWebSocket> ssl_websocket = ssl_websocket_;
+                const std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&ssl_websocket_);
                 if (NULLPTR == ssl_websocket) {
                     return true;
                 }
@@ -70,12 +70,13 @@ namespace ppp {
                 std::size_t output_length) noexcept {
                 std::lock_guard<std::mutex> lock(exporter_mutex_);
                 if (disposed_ || !tls_handshake_complete_.load(std::memory_order_acquire) ||
-                    !strand_ || !strand_->running_in_this_thread() || !ssl_websocket_) {
+                    !strand_ || !strand_->running_in_this_thread() || NULLPTR == std::atomic_load(&ssl_websocket_)) {
                     return false;
                 }
 
+                std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&ssl_websocket_);
                 return ppp::ssl::ExportTlsSessionKey(
-                    ssl_websocket_->next_layer().native_handle(),
+                    ssl_websocket->next_layer().native_handle(),
                     label,
                     context,
                     context_length,

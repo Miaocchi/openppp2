@@ -68,7 +68,7 @@ namespace ppp {
              * @return Native SSL handle when available; otherwise nullptr.
              */
             SSL* AsyncSslvWebSocket::GetSslHandle() noexcept {
-                SslvWebSocketPtr& ssl_websocket = GetSslSocket();
+                std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&GetSslSocket());
                 if (NULLPTR == ssl_websocket) {
                     return ppp::diagnostics::SetLastError<SSL*>(ppp::diagnostics::ErrorCode::RuntimeStateTransitionInvalid);
                 }

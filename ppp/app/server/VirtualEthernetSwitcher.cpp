@@ -3455,15 +3455,15 @@ namespace ppp {
 
                     ITransmissionPtr owner = exchanger->GetTransmission();
                     if (NULLPTR != owner) {
-                        std::shared_ptr<ITransmissionStatistics> left = owner->Statistics;
-                        std::shared_ptr<ITransmissionStatistics> reft = transmission->Statistics;
+                        std::shared_ptr<ITransmissionStatistics> left = std::atomic_load(&owner->Statistics);
+                        std::shared_ptr<ITransmissionStatistics> reft = std::atomic_load(&transmission->Statistics);
                         if (left != reft) {
                             if (NULLPTR != reft) {
                                 left->IncomingTraffic += reft->IncomingTraffic;
                                 left->OutgoingTraffic += reft->OutgoingTraffic;
                             }
 
-                            transmission->Statistics = left;
+                            std::atomic_store(&transmission->Statistics, left);
                         }
                     }
                 }
@@ -4848,7 +4848,7 @@ namespace ppp {
                     transmission->MarkServerLoopbackIngress();
                 }
 
-                transmission->Statistics = NewStatistics();
+                std::atomic_store(&transmission->Statistics, NewStatistics());
                 return transmission;
             }
 

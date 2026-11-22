@@ -21,7 +21,7 @@ namespace ppp {
              * @return true if the handshake succeeds; otherwise false.
              */
             bool AsyncSslvWebSocket::PerformWebSocketHandshake(bool handshaked_client, YieldContext& y) noexcept {
-                SslvWebSocketPtr& ssl_websocket = GetSslSocket();
+                std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&GetSslSocket());
                 if (NULLPTR == ssl_websocket) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolFrameInvalid);
                     return false;

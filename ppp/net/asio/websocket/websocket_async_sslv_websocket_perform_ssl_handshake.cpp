@@ -26,7 +26,7 @@ namespace ppp {
                  * The captured shared reference keeps the owner alive while suspended.
                  */
                 const std::shared_ptr<Reference> reference = GetReference();
-                const SslvWebSocketPtr& ssl_websocket = GetSslSocket();
+                const std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&GetSslSocket());
                 if (NULLPTR == ssl_websocket) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
                     return false;

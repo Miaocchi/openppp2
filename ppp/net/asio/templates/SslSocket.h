@@ -102,8 +102,8 @@ namespace ppp {
                             return false;
                         }
 
-                        ssl_socket_ = make_shared_object<SslSocket>(std::move(*tcpSocket), *ssl_context_);
-                        if (!ssl_socket_) {
+                        std::atomic_store(&ssl_socket_, make_shared_object<SslSocket>(std::move(*tcpSocket), *ssl_context_));
+                        if (!std::atomic_load(&ssl_socket_)) {
                             return false;
                         }
 

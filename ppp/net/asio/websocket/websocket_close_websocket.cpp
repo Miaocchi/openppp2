@@ -29,17 +29,16 @@ namespace ppp {
                 auto self = shared_from_this();
                 ppp::threading::Executors::ContextPtr context = context_;
                 ppp::threading::Executors::StrandPtr strand = strand_;
+                disposed_.store(true, std::memory_order_release);
 
                 /**
-                 * @brief Posts close logic to executor to preserve strand affinity.
+                 * Cancel pending Beast operations by closing only the underlying
+                 * socket. Calling websocket::async_close while an async read is
+                 * active mutates Beast stream state concurrently with that read.
                  */
                 ppp::threading::Executors::Post(context, strand,
-                    [self, this, context, strand]() noexcept {
-                        disposed_ = true;
-                        websocket_.async_close(boost::beast::websocket::close_code::normal,
-                            [self, this](const boost::system::error_code& ec_) noexcept {
-                                Socket::Closesocket(websocket_.next_layer());
-                            });
+                    [self, this]() noexcept {
+                        Socket::Closesocket(websocket_.next_layer());
                     });
             }
 

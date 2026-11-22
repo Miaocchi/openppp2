@@ -1703,7 +1703,7 @@ namespace ppp {
             disposed_.store(true, std::memory_order_release);
             handshaked_.store(false, std::memory_order_release);
             QoS.reset();
-            Statistics.reset();
+            std::atomic_store(&Statistics, std::shared_ptr<ITransmissionStatistics>());
             if (NULLPTR != t) {
                 Socket::Cancel(*t);
             }

@@ -5,7 +5,7 @@
 #include <ppp/net/Ipep.h>
 #include <ppp/net/Socket.h>
 #include <ppp/diagnostics/Error.h>
-
+#include <boost/asio/bind_executor.hpp>
 #include <ppp/threading/Executors.h>
 #include <ppp/coroutines/asio/asio.h>
 
@@ -115,42 +115,49 @@ namespace ppp {
                 const std::shared_ptr<websocket> self = shared_from_this();
                 const std::shared_ptr<Byte> payload = message.buffer;
                 const AsynchronousWriteCallback cb = message.cb;
-                websocket_.async_write(boost::asio::buffer(payload.get(), message.length),
-                    [self, this, payload, cb](const boost::system::error_code& ec, size_t sz) noexcept {
-                        bool ok = boost::system::errc::success == ec;
-                        if (false == ok) {
-                            if (boost::asio::error::operation_aborted != ec &&
-                                boost::beast::websocket::error::closed != ec &&
-                                boost::asio::error::eof != ec)
+                const ppp::threading::Executors::StrandPtr strand = strand_;
+                auto complete = [self, this, payload, cb](const boost::system::error_code& ec, size_t sz) noexcept {
+                    bool ok = boost::system::errc::success == ec;
+                    if (false == ok) {
+                        if (boost::asio::error::operation_aborted != ec &&
+                            boost::beast::websocket::error::closed != ec &&
+                            boost::asio::error::eof != ec)
+                        {
+                            if (boost::asio::error::timed_out == ec) {
+                                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketTimeout);
+                            }
+                            elif (boost::asio::error::connection_reset == ec ||
+                                  boost::asio::error::connection_aborted == ec ||
+                                  boost::asio::error::not_connected == ec)
                             {
-                                if (boost::asio::error::timed_out == ec) {
-                                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketTimeout);
-                                }
-                                elif (boost::asio::error::connection_reset == ec ||
-                                      boost::asio::error::connection_aborted == ec ||
-                                      boost::asio::error::not_connected == ec)
-                                {
-                                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
-                                }
-                                elif (boost::asio::error::invalid_argument == ec) {
-                                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
-                                }
-                                elif (boost::beast::websocket::make_error_code(boost::beast::websocket::error::closed).category() == ec.category()) {
-                                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::WebSocketWriteFailed);
-                                }
-                                else {
-                                    ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketWriteFailed);
-                                }
+                                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
+                            }
+                            elif (boost::asio::error::invalid_argument == ec) {
+                                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolEncodeFailed);
+                            }
+                            elif (boost::beast::websocket::make_error_code(boost::beast::websocket::error::closed).category() == ec.category()) {
+                                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::WebSocketWriteFailed);
+                            }
+                            else {
+                                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketWriteFailed);
                             }
                         }
+                    }
 
-                        if (NULLPTR != cb) {
-                            cb(ok); /* b is boost::system::errc::success. */
-                        }
+                    if (NULLPTR != cb) {
+                        cb(ok); /* b is boost::system::errc::success. */
+                    }
 
-                        /* Drains the next queued write; keeps at most one async_write in flight. */
-                        DoWriteAsync();
-                    });
+                    /* Drains the next queued write; keeps at most one async_write in flight. */
+                    DoWriteAsync();
+                };
+                if (strand) {
+                    websocket_.async_write(boost::asio::buffer(payload.get(), message.length),
+                        boost::asio::bind_executor(*strand, std::move(complete)));
+                }
+                else {
+                    websocket_.async_write(boost::asio::buffer(payload.get(), message.length), std::move(complete));
+                }
             }
         }
     }

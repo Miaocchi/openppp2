@@ -3,7 +3,7 @@
 #include <ppp/diagnostics/Error.h>
 #include <ppp/threading/Executors.h>
 
-#include <boost/asio/ssl/error.hpp>
+#include <boost/asio/bind_executor.hpp>
 
 /**
  * @file websocket_ssl_read_websocket.cpp
@@ -32,7 +32,7 @@ namespace ppp {
                     return false;
                 }
 
-                const std::shared_ptr<SslvWebSocket> ssl_websocket = ssl_websocket_;
+                const std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&ssl_websocket_);
                 if (NULLPTR == ssl_websocket || !ssl_websocket->is_open()) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
                     return false;
@@ -50,13 +50,19 @@ namespace ppp {
                 }
 
                 bool ok = ppp::threading::Executors::Post(context, strand,
-                    [ssl_websocket, buffer, offset, length, anchor, &read_ok, &read_ec]() noexcept {
-                        boost::asio::async_read(*ssl_websocket, boost::asio::buffer((Byte*)buffer + offset, length),
-                            [anchor, length, &read_ok, &read_ec](const boost::system::error_code& ec, std::size_t sz) noexcept {
-                                read_ec = ec;
-                                read_ok = boost::system::errc::success == ec && static_cast<std::size_t>(length) == sz;
-                                anchor.R();
-                            });
+                    [ssl_websocket, buffer, offset, length, anchor, &read_ok, &read_ec, strand]() noexcept {
+                        auto complete = [anchor, length, &read_ok, &read_ec](const boost::system::error_code& ec, std::size_t sz) noexcept {
+                            read_ec = ec;
+                            read_ok = boost::system::errc::success == ec && static_cast<std::size_t>(length) == sz;
+                            anchor.R();
+                        };
+                        if (strand) {
+                            boost::asio::async_read(*ssl_websocket, boost::asio::buffer((Byte*)buffer + offset, length),
+                                boost::asio::bind_executor(*strand, std::move(complete)));
+                        }
+                        else {
+                            boost::asio::async_read(*ssl_websocket, boost::asio::buffer((Byte*)buffer + offset, length), std::move(complete));
+                        }
                     });
 
                 if (false == ok) {

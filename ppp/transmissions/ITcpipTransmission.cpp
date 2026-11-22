@@ -446,7 +446,7 @@ namespace ppp {
                 return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SocketReadFailed, NULLPTR);
             }
 
-            std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;
+            std::shared_ptr<ITransmissionStatistics> statistics = std::atomic_load(&this->Statistics);
             if (statistics) {
                 statistics->AddIncomingTraffic(length);
             }
@@ -521,7 +521,7 @@ namespace ppp {
                         bool ok = ec == boost::system::errc::success;
                         if (ok) {
                             ppp::diagnostics::datapath_perf::RecordCarrierSend((int)sz, send_scope.Elapsed());
-                            std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;
+                            std::shared_ptr<ITransmissionStatistics> statistics = std::atomic_load(&this->Statistics);
                             if (statistics) {
                                 statistics->AddOutgoingTraffic(packet_length);
                             }

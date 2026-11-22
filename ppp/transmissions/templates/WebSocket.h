@@ -115,7 +115,7 @@ namespace ppp {
                     if (!UpgradeOnly(false, y)) {
                         return 0;
                     }
-                    
+
                     return ITransmission::HandshakeClient(y, mux);
                 }
                 /** @brief Performs websocket server handshake then transmission-level handshake. */
@@ -152,10 +152,10 @@ namespace ppp {
                     std::shared_ptr<IWebsocket> socket = std::atomic_load(&socket_);
                     if (socket) {
                         auto self = shared_from_this();
-                        auto complete_do_write_async_callback = 
+                        auto complete_do_write_async_callback =
                             [self, this, cb, socket, packet, packet_length](bool ok) noexcept {
                                 if (ok) {
-                                    std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;
+                                    std::shared_ptr<ITransmissionStatistics> statistics = std::atomic_load(&this->Statistics);
                                     if (statistics) {
                                         statistics->AddOutgoingTraffic(packet_length);
                                     }
@@ -289,7 +289,7 @@ namespace ppp {
                         return NULLPTR;
                     }
 
-                    std::shared_ptr<ITransmissionStatistics> statistics = this->Statistics;
+                    std::shared_ptr<ITransmissionStatistics> statistics = std::atomic_load(&this->Statistics);
                     if (statistics) {
                         statistics->AddIncomingTraffic(length);
                     }

@@ -4,7 +4,7 @@
 
 #include <ppp/IDisposable.h>
 #include <ppp/threading/Executors.h>
-
+#include <boost/asio/bind_executor.hpp>
 /**
  * @file websocket_ssl_write_websocket.cpp
  * @brief Implements asynchronous write dispatch for SSL WebSocket sessions.
@@ -37,7 +37,7 @@ namespace ppp {
                     return false;
                 }
 
-                const std::shared_ptr<SslvWebSocket> ssl_websocket = ssl_websocket_;
+                const std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&ssl_websocket_);
                 if (NULLPTR == ssl_websocket || !ssl_websocket->is_open()) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
                     return false;
@@ -113,9 +113,10 @@ namespace ppp {
                     }
 
                     const std::shared_ptr<sslwebsocket> self = shared_from_this();
-                    const std::shared_ptr<SslvWebSocket> ssl_websocket = ssl_websocket_;
+                    const std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&ssl_websocket_);
                     const std::shared_ptr<Byte> payload = message.buffer;
                     const AsynchronousWriteCallback cb = message.cb;
+                    const ppp::threading::Executors::StrandPtr strand = strand_;
                     if (NULLPTR == ssl_websocket) {
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
                         if (NULLPTR != cb) {
@@ -126,23 +127,29 @@ namespace ppp {
 
                     // Dispose() moves ssl_websocket_ out, so self alone does not own the stream;
                     // keep it alive until the write completes.
-                    ssl_websocket->async_write(boost::asio::buffer(payload.get(), message.length),
-                        [self, this, ssl_websocket, payload, cb](const boost::system::error_code& ec, size_t sz) noexcept {
-                            bool ok = ec == boost::system::errc::success;
-                            if (false == ok &&
-                                boost::asio::error::operation_aborted != ec &&
-                                boost::beast::websocket::error::closed != ec)
-                            {
-                                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::WebSocketWriteFailed);
-                            }
+                    auto complete = [self, this, ssl_websocket, payload, cb](const boost::system::error_code& ec, size_t sz) noexcept {
+                        bool ok = ec == boost::system::errc::success;
+                        if (false == ok &&
+                            boost::asio::error::operation_aborted != ec &&
+                            boost::beast::websocket::error::closed != ec)
+                        {
+                            ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::WebSocketWriteFailed);
+                        }
 
-                            if (NULLPTR != cb) {
-                                cb(ok); /* b is boost::system::errc::success. */
-                            }
+                        if (NULLPTR != cb) {
+                            cb(ok); /* b is boost::system::errc::success. */
+                        }
 
-                            /* Drains the next queued write; keeps at most one async_write in flight. */
-                            DoWriteAsync();
-                        });
+                        /* Drains the next queued write; keeps at most one async_write in flight. */
+                        DoWriteAsync();
+                    };
+                    if (strand) {
+                        ssl_websocket->async_write(boost::asio::buffer(payload.get(), message.length),
+                            boost::asio::bind_executor(*strand, std::move(complete)));
+                    }
+                    else {
+                        ssl_websocket->async_write(boost::asio::buffer(payload.get(), message.length), std::move(complete));
+                    }
                     return;
                 }
             }

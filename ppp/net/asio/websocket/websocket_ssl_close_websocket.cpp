@@ -17,8 +17,9 @@ namespace ppp {
                 auto self = shared_from_this();
                 ppp::threading::Executors::Post(context_, strand_, [self, this]() noexcept {
                     std::lock_guard<std::mutex> lock(exporter_mutex_);
-                    if (ssl_websocket_) {
-                        Socket::Closesocket(ssl_websocket_->next_layer().next_layer());
+                    std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&ssl_websocket_);
+                    if (ssl_websocket) {
+                        Socket::Closesocket(ssl_websocket->next_layer().next_layer());
                     }
                     if (socket_native_) { Socket::Closesocket(*socket_native_); }
                 });
@@ -32,45 +33,21 @@ namespace ppp {
                 auto self = shared_from_this();
                 ppp::threading::Executors::ContextPtr context = context_;
                 ppp::threading::Executors::StrandPtr strand = strand_;
+                disposed_.store(true, std::memory_order_release);
 
                 /**
-                 * @brief Performs asynchronous websocket close and TLS shutdown in order.
+                 * Cancel pending Beast/TLS operations by closing only the
+                 * underlying TCP socket. async_close changes Beast stream state
+                 * and races with an in-flight async read on another worker.
                  */
                 ppp::threading::Executors::Post(context, strand,
-                    [self, this, context, strand]() noexcept {
-                        std::shared_ptr<SslvWebSocket> ssl_websocket;
-                        {
-                            std::lock_guard<std::mutex> lock(exporter_mutex_);
-                            tls_handshake_complete_.store(false, std::memory_order_release);
-                            ssl_websocket = std::move(ssl_websocket_);
-                            disposed_ = true;
-                        }
-
-                        if (NULLPTR != ssl_websocket) {
-                            ssl_websocket->async_close(boost::beast::websocket::close_code::normal,
-                                [self, this, ssl_websocket](const boost::system::error_code& ec_) noexcept {
-                                    if (ec_ &&
-                                        boost::asio::error::operation_aborted != ec_ &&
-                                        boost::beast::websocket::error::closed != ec_)
-                                    {
-                                        ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::WebSocketWriteFailed);
-                                    }
-
-                                    sslwebsocket::SslvTcpSocket& ssl_socket = ssl_websocket->next_layer();
-                                    ssl_socket.async_shutdown(
-                                        [self, this, ssl_websocket, &ssl_socket](const boost::system::error_code& ec_) noexcept {
-                                            if (ec_ &&
-                                                boost::asio::error::operation_aborted != ec_ &&
-                                                boost::asio::error::eof != ec_ &&
-                                                boost::asio::ssl::error::stream_truncated != ec_)
-                                            {
-                                                ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketReadFailed);
-                                            }
-
-                                            Socket::Closesocket(ssl_socket.next_layer());
-                                        });
-                                    return true;
-                                });
+                    [self, this]() noexcept {
+                        std::lock_guard<std::mutex> lock(exporter_mutex_);
+                        tls_handshake_complete_.store(false, std::memory_order_release);
+                        std::shared_ptr<SslvWebSocket> ssl_websocket =
+                            std::atomic_load(&ssl_websocket_);
+                        if (ssl_websocket) {
+                            Socket::Closesocket(ssl_websocket->next_layer().next_layer());
                         }
                     });
             }
@@ -83,7 +60,7 @@ namespace ppp {
                 std::lock_guard<std::mutex> lock(exporter_mutex_);
                 const bool exporter_ready = tls_handshake_complete_.exchange(
                     false, std::memory_order_acq_rel);
-                std::shared_ptr<SslvWebSocket> ssl_websocket = ssl_websocket_;
+                std::shared_ptr<SslvWebSocket> ssl_websocket = std::atomic_load(&ssl_websocket_);
                 if (NULLPTR == ssl_websocket) {
                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketDisconnected);
                     return false;

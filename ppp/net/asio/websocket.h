@@ -120,10 +120,8 @@ namespace ppp {
                 virtual bool                                                    Read(const void* buffer, int offset, int length, YieldContext& y) noexcept;
 
             private:
-                struct {
-                    bool                                                        disposed_ : 1;
-                    bool                                                        binary_   : 7;
-                };
+                std::atomic_bool                                                disposed_{false};
+                bool                                                             binary_;
                 ppp::threading::Executors::ContextPtr                           context_;
                 ppp::threading::Executors::StrandPtr                            strand_;
                 AsioWebSocket                                                   websocket_;
@@ -158,7 +156,7 @@ namespace ppp {
             class sslwebsocket : public std::enable_shared_from_this<sslwebsocket> {
                 friend class                                                    AcceptWebSocket;
                 friend class                                                    AcceptSslvWebSocket;
-                
+
             public:
                 /** @brief Underlying TCP socket type. */
                 typedef boost::asio::ip::tcp::socket                            AsioTcpSocket;
@@ -289,11 +287,8 @@ namespace ppp {
                  */
                 virtual bool                                                    Read(const void* buffer, int offset, int length, YieldContext& y) noexcept;
 
-            private:
-                struct {
-                    bool                                                        disposed_ : 1;
-                    bool                                                        binary_   : 7;
-                };
+                std::atomic_bool                                                disposed_{false};
+                bool                                                             binary_;
                 ppp::threading::Executors::ContextPtr                           context_;
                 ppp::threading::Executors::StrandPtr                            strand_;
                 std::shared_ptr<boost::asio::ssl::context>                      ssl_context_;

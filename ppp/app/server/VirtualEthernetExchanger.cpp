@@ -404,7 +404,7 @@ namespace ppp {
                 for (;;) {
                     ITransmissionPtr transmission = GetTransmission();
                     if (NULLPTR != transmission) {
-                        std::shared_ptr<ITransmissionStatistics> statistics = transmission->Statistics;
+                        std::shared_ptr<ITransmissionStatistics> statistics = std::atomic_load(&transmission->Statistics);
                         if (NULLPTR != statistics) {
                             statistics_ = statistics;
                             break;
@@ -459,7 +459,7 @@ namespace ppp {
                 std::lock_guard<std::mutex> lock(carrier_mutex_);
                 if (transmission_ != nullptr && transmission_ != transmission) return false;
                 transmission_ = transmission;
-                if (NULLPTR != statistics_) transmission->Statistics = statistics_;
+                if (NULLPTR != statistics_) std::atomic_store(&transmission->Statistics, statistics_);
                 datagram_manager_->RebindTransmission(transmission);
                 return true;
             }
@@ -683,7 +683,7 @@ namespace ppp {
                                     reservation_token, prepare_now,
                                     kResumePublishGraceMs)) {
                                 resume_replacement_echo_ = std::move(replacement_echo);
-                                resume_replacement_statistics_ = transmission->Statistics;
+                                resume_replacement_statistics_ = std::atomic_load(&transmission->Statistics);
                                 committed = std::move(prepared_committed);
                                 prepared = true;
                             }
@@ -730,7 +730,7 @@ namespace ppp {
                                         resume_replacement_statistics_->OutgoingTraffic.load());
                                 }
                                 if (NULLPTR != statistics_) {
-                                    transmission->Statistics = statistics_;
+                                    std::atomic_store(&transmission->Statistics, statistics_);
                                 }
 
                                 datagram_manager_->RebindTransmission(transmission);
@@ -2285,7 +2285,7 @@ socket->send_to(boost::asio::buffer(packet.get(), packet_length), redirectEP,
                     return false;
                 }
 
-                ITransmissionStatisticsPtr statistics = transmission->Statistics;
+                ITransmissionStatisticsPtr statistics = std::atomic_load(&transmission->Statistics);
                 if (NULLPTR == statistics) {
                     return false;
                 }

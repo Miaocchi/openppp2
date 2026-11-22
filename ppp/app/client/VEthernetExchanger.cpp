@@ -1366,7 +1366,7 @@ namespace ppp {
 
                 if (NULLPTR != transmission) {
                     transmission->QoS = switcher_->GetQoS();
-                    transmission->Statistics = switcher_->GetStatistics();
+                    std::atomic_store(&transmission->Statistics, switcher_->GetStatistics());
                     ppp::telemetry::Log(Level::kDebug, "client_exchanger", "transmission created: protocol=%d role=%s",
                         (int)protocol_type,
                         TransmissionRoleName(role));
