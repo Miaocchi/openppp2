@@ -113,6 +113,7 @@ jobs:
             -DCMAKE_CXX_FLAGS="$CPP_FLAGS" \
             -DTHIRD_PARTY_LIBRARY_DIR="$TP" \
             -DENABLE_XTCP=ON \
+            -DENABLE_SYSNAT=OFF \
             -DENABLE_IO_URING=OFF
           make -j$(nproc)
 
