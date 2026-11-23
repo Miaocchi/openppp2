@@ -27,7 +27,7 @@ The file must be strict JSON (no comments, no trailing commas).
 | `websocket` | ✔ | — | Server listeners only; the client's WS path is part of the `client.server` URL |
 | `ip` `cdn` `server` | ✔ | partly | `server.ipv4-pool` in a client config opts in to requesting an assigned address |
 | `client` `dns` `routing` `geo-rules` `virr` `vbgp` | — | ✔ | |
-| `p2p` | ✔ | ✔ | |
+| `p2p` | ✔ | ✔ | [P2P peer connections](configuration/p2p.md) |
 | `transport-auth` | ✔ | ✔ | Enabled by `server.transport-auth.enabled` / `client.transport-auth.enabled` |
 
 ## 3. Top-level fields
@@ -59,6 +59,7 @@ The former all-in-one reference is now split into these sections. Old section li
 | <a id="13-clientrouting--split-routing-rules-legacy-policy"></a>`client.routing` | [Legacy split routing](configuration/routing.md#clientrouting) |
 | <a id="14-clientpolicy--policy-v2"></a>`client.policy` | [Policy v2](configuration/routing.md#clientpolicy) |
 | <a id="15-legacy-client-dns-and-rule-fields-dns--routing--geo-rules"></a>`dns`, `routing`, `geo-rules` | [Legacy DNS and rule fields](configuration/routing.md#legacy-dns-and-rule-fields) |
-| <a id="16-other-blocks"></a>`p2p`, `vmem`, `virr`, `vbgp`, `telemetry` | [Advanced settings](configuration/advanced.md) |
+| `p2p` | [P2P peer connections](configuration/p2p.md) |
+| <a id="16-other-blocks"></a>`vmem`, `virr`, `vbgp`, `telemetry` | [Buffers, rule updates, and telemetry](configuration/advanced.md) |
 | <a id="17-server-address-clientserver-format"></a>`client.server` | [Server address format](configuration/client.md#server-address) |
 | <a id="xtcp-runtime-tuning"></a>XTCP | [XTCP runtime tuning](configuration/transport.md#xtcp-runtime-tuning) |
