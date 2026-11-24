@@ -1,19 +1,32 @@
 # Configuration
 
-OPENPPP2 reads a JSON file. If you're setting up your first connection, start with the [minimal server and client examples](../getting-started/CONFIGURE.md). Use the table below to find a field, its default, and which side it applies to.
+OPENPPP2 reads a JSON file. If you're setting up your first connection, follow [Getting started](../getting-started/README.md). To change a working configuration, find the topic below by task or JSON key.
 
-## Configuration blocks
+<a id="configuration-blocks"></a>
+
+## Configure the server and client
 
 | JSON keys | Page | What to configure |
 |---|---|---|
+| `concurrent`, `cdn` | [File format and shared settings](CONFIGURATION.md#3-top-level-fields) | Worker threads and extra server TCP ports |
 | `client`, `client.server`, `client.multipath` | [Client](configuration/client.md) | Server URL, client identity, local HTTP/SOCKS5 listeners, reconnection, port mappings, and multi-entry carriers |
 | `server`, `server.multipath` | [Server](configuration/server.md) | Virtual IPv4/IPv6 addresses, client-to-client traffic, session resumption, multipath limits, and management backend |
 | `tcp`, `udp`, `websocket`, `ip` | [Transport](configuration/transport.md) | Listening addresses and ports, TCP/UDP timeouts, WS/WSS paths, and TLS certificates |
 | `key`, `transport-auth` | [Encryption and authentication](configuration/security.md) | Settings that must match on both sides, encryption keys, and optional connection authentication |
-| `mux` | [Multiplexing](configuration/mux.md) | Scheduling, buffering, retransmission, and forward error correction |
+
+## Choose a traffic path
+
+| JSON keys | Page | What to configure |
+|---|---|---|
+| `p2p` | [P2P peer connections](configuration/p2p.md) | Direct connections between virtual-subnet peers, STUN address discovery, heartbeats and relay fallback |
 | `client.policy`, `client.routing`, `dns`, `routing`, `geo-rules` | [Routing and DNS](configuration/routing.md) | Policy v2, legacy split routing, and DNS upstreams; use only one policy format |
-| `p2p`, `vmem`, `virr`, `vbgp`, `telemetry` | [Advanced settings](configuration/advanced.md) | Peer connectivity, file-backed buffers, rule refresh, and telemetry |
-| `concurrent`, `cdn` | [File format and shared settings](CONFIGURATION.md#3-top-level-fields) | Worker threads and extra server TCP ports |
+
+## Tune and diagnose
+
+| JSON keys | Page | What to configure |
+|---|---|---|
+| `mux` | [Multiplexing](configuration/mux.md) | Scheduling, buffering, retransmission, and forward error correction |
+| `vmem`, `virr`, `vbgp`, `telemetry` | [Buffers, rule updates, and telemetry](configuration/advanced.md) | File-backed buffers, rule refresh, and telemetry |
 
 ## Before starting `ppp`
 
