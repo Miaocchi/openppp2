@@ -173,6 +173,93 @@ static bool SameManagedIPv6Configuration(
         left.AssignedIPv6Dns2 == right.AssignedIPv6Dns2;
 }
 
+/**
+ * @brief Returns whether an INFO envelope carries an IPv6 provisioning update.
+ *
+ * P2P control offers and status messages are deliberately partial envelopes:
+ * they carry only the P2P fields and must not revoke the already-installed
+ * tunnel lease. An explicit status (including rejection/failure) remains an
+ * update and is therefore allowed to clear the managed address.
+ */
+static bool HasIPv6ProvisioningUpdate(
+    const ppp::app::protocol::VirtualEthernetInformationExtensions& extensions) noexcept {
+    return extensions.AssignedIPv6Mode !=
+            ppp::app::protocol::VirtualEthernetInformationExtensions::IPv6Mode_None ||
+        extensions.AssignedIPv6AddressPrefixLength != 0 ||
+        extensions.AssignedIPv6Flags != 0 ||
+        extensions.AssignedIPv6Address.is_v6() ||
+        extensions.AssignedIPv6Gateway.is_v6() ||
+        extensions.AssignedIPv6RoutePrefix.is_v6() ||
+        extensions.AssignedIPv6RoutePrefixLength != 0 ||
+        extensions.AssignedIPv6Dns1.is_v6() ||
+        extensions.AssignedIPv6Dns2.is_v6() ||
+        extensions.IPv6StatusCode !=
+            ppp::app::protocol::VirtualEthernetInformationExtensions::IPv6Status_None ||
+        extensions.RequestedIPv6Address.is_v6() ||
+        !extensions.IPv6StatusMessage.empty();
+}
+
+/**
+ * @brief Carries the active IPv6 lease through partial control-plane INFO.
+ *
+ * The server sends P2P offers independently from the address assignment. A
+ * P2P-only envelope has no IPv6 provisioning fields, so replacing the cached
+ * extensions with it would make the client tear down a healthy lease.
+ */
+static void PreserveIPv6LeaseWhenOmitted(
+    const ppp::app::protocol::VirtualEthernetInformationExtensions& previous,
+    ppp::app::protocol::VirtualEthernetInformationExtensions& current) noexcept {
+    if (!HasIPv6ProvisioningUpdate(current) && HasManagedIPv6Assignment(previous)) {
+        current.AssignedIPv6Mode = previous.AssignedIPv6Mode;
+        current.AssignedIPv6AddressPrefixLength = previous.AssignedIPv6AddressPrefixLength;
+        current.AssignedIPv6Flags = previous.AssignedIPv6Flags;
+        current.AssignedIPv6Address = previous.AssignedIPv6Address;
+        current.AssignedIPv6Gateway = previous.AssignedIPv6Gateway;
+        current.AssignedIPv6RoutePrefix = previous.AssignedIPv6RoutePrefix;
+        current.AssignedIPv6RoutePrefixLength = previous.AssignedIPv6RoutePrefixLength;
+        current.AssignedIPv6Dns1 = previous.AssignedIPv6Dns1;
+        current.AssignedIPv6Dns2 = previous.AssignedIPv6Dns2;
+        current.IPv6StatusCode = previous.IPv6StatusCode;
+        current.RequestedIPv6Address = previous.RequestedIPv6Address;
+        current.IPv6StatusMessage = previous.IPv6StatusMessage;
+    }
+}
+
+/** @brief Returns whether an INFO envelope carries an IPv4 provisioning update. */
+static bool HasIPv4ProvisioningUpdate(
+    const ppp::app::protocol::VirtualEthernetInformationExtensions& extensions) noexcept {
+    return extensions.ClientIPv4Req.HasAny() || extensions.ClientIPv4Assign.HasAny();
+}
+
+/**
+ * @brief Carries the active IPv4 lease through partial control-plane INFO.
+ *
+ * IPv4 and IPv6 assignment responses are independent. A control message may
+ * update one family while omitting the other, so an omitted IPv4 assignment
+ * must not be interpreted as a revocation of the installed lease.
+ */
+static void PreserveIPv4LeaseWhenOmitted(
+    const ppp::app::protocol::VirtualEthernetInformationExtensions& previous,
+    ppp::app::protocol::VirtualEthernetInformationExtensions& current) noexcept {
+    if (!HasIPv4ProvisioningUpdate(current) &&
+        (previous.ClientIPv4Req.HasAny() || previous.ClientIPv4Assign.HasAny())) {
+        current.ClientIPv4Req = previous.ClientIPv4Req;
+        current.ClientIPv4Assign = previous.ClientIPv4Assign;
+    }
+}
+
+/** @brief Carries session metadata through control-only INFO envelopes. */
+static void PreserveClientExitIPWhenOmitted(
+    const ppp::app::protocol::VirtualEthernetInformationExtensions& previous,
+    ppp::app::protocol::VirtualEthernetInformationExtensions& current) noexcept {
+    if (current.ClientExitIP.is_unspecified() && !previous.ClientExitIP.is_unspecified() &&
+        (current.P2P.HasAny() || current.TransportAuth.HasAny() ||
+            current.SessionResume.HasAny() || current.PeerRouteAnnounce.HasAny() ||
+            current.PeerRouteTable.HasAny())) {
+        current.ClientExitIP = previous.ClientExitIP;
+    }
+}
+
 namespace {
 #if defined(_WIN32)
 using NetworkDnsSnapshot = ppp::win32::network::NetworkDnsSnapshot;
@@ -1260,21 +1347,25 @@ namespace ppp {
                     return false;
                 }
 
+                VirtualEthernetInformationExtensions effective_extensions = extensions;
+                PreserveIPv6LeaseWhenOmitted(*information_extensions_, effective_extensions);
+                PreserveIPv4LeaseWhenOmitted(*information_extensions_, effective_extensions);
+                PreserveClientExitIPWhenOmitted(*information_extensions_, effective_extensions);
 
 #if !defined(_ANDROID) && !defined(_IPHONE)
                 bool previous_assignment = HasManagedIPv6Assignment(*information_extensions_);
-                bool current_assignment = HasManagedIPv6Assignment(extensions);
-                if (address_manager_->Ipv6Applied() && (!previous_assignment || !current_assignment || !SameManagedIPv6Configuration(*information_extensions_, extensions))) {
+                bool current_assignment = HasManagedIPv6Assignment(effective_extensions);
+                if (address_manager_->Ipv6Applied() && (!previous_assignment || !current_assignment || !SameManagedIPv6Configuration(*information_extensions_, effective_extensions))) {
                     RestoreAssignedIPv6();
                 }
 
-                *information_extensions_ = extensions;
+                *information_extensions_ = effective_extensions;
 
                 if (NULLPTR != dns_controller_) {
-                    dns_controller_->OnSessionInfo(extensions, HasManagedIPv6Assignment(extensions));
+                    dns_controller_->OnSessionInfo(effective_extensions, HasManagedIPv6Assignment(effective_extensions));
                 }
 
-                bool valid_ipv6_assignment = HasManagedIPv6Assignment(extensions);
+                bool valid_ipv6_assignment = HasManagedIPv6Assignment(effective_extensions);
                 if (!valid_ipv6_assignment) {
                     if (address_manager_->Ipv6Applied()) {
                         RestoreAssignedIPv6();
@@ -1287,22 +1378,23 @@ namespace ppp {
                 }
 
                 if (valid_ipv6_assignment &&
-                    (extensions.AssignedIPv6Mode == VirtualEthernetInformationExtensions::IPv6Mode_Nat66 ||
-                        extensions.AssignedIPv6Mode == VirtualEthernetInformationExtensions::IPv6Mode_Gua) &&
+                    (effective_extensions.AssignedIPv6Mode == VirtualEthernetInformationExtensions::IPv6Mode_Nat66 ||
+                        effective_extensions.AssignedIPv6Mode == VirtualEthernetInformationExtensions::IPv6Mode_Gua) &&
                     !address_manager_->Ipv6Applied()) {
-                    ApplyAssignedIPv6(extensions);
+                    ApplyAssignedIPv6(effective_extensions);
                 }
 
                 // The in-process subnet stack has no OS adapter: a server-assigned IPv4 readdresses
                 // the in-process adapter and stack instead.
                 if (proxy_subnet_userspace_) {
-                    const auto& ipv4 = extensions.ClientIPv4Assign;
+                    const auto& ipv4 = effective_extensions.ClientIPv4Assign;
                     std::shared_ptr<ppp::tap::ITap> tap = GetTap();
                     boost::system::error_code address_error;
                     boost::system::error_code mask_error;
                     const boost::asio::ip::address address = StringToAddress(ipv4.address.data(), address_error);
                     const boost::asio::ip::address mask = StringToAddress(ipv4.mask.data(), mask_error);
-                    if (ipv4.enabled && ipv4.accepted && NULLPTR != tap && !address_error && !mask_error &&
+                    if (HasIPv4ProvisioningUpdate(extensions) && ipv4.enabled && ipv4.accepted &&
+                        NULLPTR != tap && !address_error && !mask_error &&
                         address.is_v4() && mask.is_v4()) {
                         tap->IPAddress = htonl(address.to_v4().to_uint());
                         tap->SubmaskAddress = htonl(mask.to_v4().to_uint());
@@ -1316,10 +1408,10 @@ namespace ppp {
                 }
                 // Apply server-assigned IPv4 address to TAP interface.
                 else {
-                    const auto& ipv4 = extensions.ClientIPv4Assign;
+                    const auto& ipv4 = effective_extensions.ClientIPv4Assign;
                     if (ipv4.enabled && ipv4.accepted) {
                         if (!address_manager_->Ipv4Applied()) {
-                            ApplyAssignedIPv4(extensions);
+                            ApplyAssignedIPv4(effective_extensions);
                         }
                     }
                     elif (address_manager_->Ipv4Applied()) {
@@ -1327,10 +1419,10 @@ namespace ppp {
                     }
                 }
 #else
-                *information_extensions_ = extensions;
+                *information_extensions_ = effective_extensions;
 
                 if (NULLPTR != dns_controller_) {
-                    dns_controller_->OnSessionInfo(extensions, HasManagedIPv6Assignment(extensions));
+                    dns_controller_->OnSessionInfo(effective_extensions, HasManagedIPv6Assignment(effective_extensions));
                 }
 #endif
 
@@ -1338,8 +1430,9 @@ namespace ppp {
                 // The assignment is stored in information_extensions_ (already saved above)
                 // and logged here for telemetry.  TAP application of the assigned IPv4
                 // address is intentionally deferred to a future phase.
-                if (extensions.ClientIPv4Assign.enabled) {
-                    const auto& ipv4 = extensions.ClientIPv4Assign;
+                const auto& stored_extensions = *information_extensions_;
+                if (stored_extensions.ClientIPv4Assign.enabled) {
+                    const auto& ipv4 = stored_extensions.ClientIPv4Assign;
                     if (ipv4.accepted) {
                         ppp::telemetry::Count("client.ipv4.assigned", 1);
                         ppp::telemetry::Log(Level::kInfo, "client", "ipv4 assigned: %s/%s gw=%s (mode=%s conflict=%d)",
@@ -1353,8 +1446,8 @@ namespace ppp {
                     }
                 }
 
-                if (extensions.P2P.HasAny()) {
-                    const auto& p2p = extensions.P2P;
+                if (stored_extensions.P2P.HasAny()) {
+                    const auto& p2p = stored_extensions.P2P;
                     ppp::telemetry::Log(Level::kInfo, "p2p", "control action=%s mode=%s peer=%s candidates=%zu reason=%s",
                         p2p.action.c_str(),
                         p2p.mode.c_str(),
@@ -1364,14 +1457,14 @@ namespace ppp {
                     ppp::telemetry::Count("p2p.control", 1);
                 }
 
-                if (extensions.PeerRouteTable.HasAny()) {
-                    dynamic_peer_routes_ = extensions.PeerRouteTable.routes;
-                    ApplyPeerPrefixRoutes(extensions);
+                if (stored_extensions.PeerRouteTable.HasAny()) {
+                    dynamic_peer_routes_ = stored_extensions.PeerRouteTable.routes;
+                    ApplyPeerPrefixRoutes(stored_extensions);
                 }
                 elif (configuration_ && !(configuration_->client.routing.configured
                         ? configuration_->client.routing.peer_routes
                         : configuration_->client.peer_routes).empty()) {
-                    ApplyPeerPrefixRoutes(extensions);
+                    ApplyPeerPrefixRoutes(stored_extensions);
                 }
 
                 std::shared_ptr<ppp::transmissions::ITransmissionQoS> qos = qos_;
