@@ -831,11 +831,8 @@ void trace_flow_open(const boost::asio::ip::tcp::socket& socket, std::uint32_t c
             // Server carriers carry no path id; the diagnostic oracle may name
             // them by the peer address instead.
             if (ITransmissionPtr transmission = link.connection->GetTransmission()) {
-                boost::system::error_code ec;
-                const auto peer = transmission->GetRemoteEndPoint().address().to_string(ec);
-                if (!ec) {
-                    oracle = configured_pacing_oracle_bytes_per_second(peer);
-                }
+                const auto peer = transmission->GetRemoteEndPoint().address().to_string();
+                oracle = configured_pacing_oracle_bytes_per_second(peer);
             }
         }
         if (oracle != 0) {
