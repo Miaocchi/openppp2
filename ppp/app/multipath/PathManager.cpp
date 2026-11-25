@@ -1,6 +1,7 @@
 #include <ppp/app/multipath/PathManager.h>
 
 #include <algorithm>
+#include <array>
 #include <limits>
 
 namespace ppp::app::multipath {
@@ -70,14 +71,43 @@ namespace ppp::app::multipath {
         }
     }
 
-    bool PathManager::BeginAttempt(std::uint64_t now_ms, Attempt& attempt) noexcept {
+    bool PathManager::BeginAttempt(std::uint64_t now_ms, Attempt& attempt, bool prefer_unused_path,
+        std::optional<std::uint16_t> preferred_path) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         attempt = Attempt();
         if (!running_ || active_attempts_ >= static_cast<std::size_t>(configuration_.max_concurrent_connects)) {
             return false;
         }
 
-        for (std::size_t i = 0; i < slots_.size(); ++i) {
+        std::size_t first = 0;
+        const auto ready = [now_ms](const SlotSnapshot& slot) {
+            return slot.state == State::Waiting ||
+                (slot.state == State::Backoff && slot.retry_at_ms <= now_ms);
+        };
+        if (preferred_path) {
+            const auto slot = std::find_if(slots_.begin(), slots_.end(), [&](const Slot& candidate) {
+                return candidate.snapshot.path_index == *preferred_path && ready(candidate.snapshot);
+            });
+            if (slot != slots_.end()) first = static_cast<std::size_t>(slot - slots_.begin());
+        }
+        if (prefer_unused_path) {
+            std::array<bool, ppp::configurations::MultipathConfiguration::MaxPaths> in_use{};
+            for (const auto& slot : slots_) {
+                const auto state = slot.snapshot.state;
+                if (state == State::Connecting || state == State::Authenticating || state == State::Joined) {
+                    in_use[slot.snapshot.path_index] = true;
+                }
+            }
+            for (std::size_t i = 0; i < slots_.size(); ++i) {
+                const auto& slot = slots_[i].snapshot;
+                if (!in_use[slot.path_index] && ready(slot)) {
+                    first = i;
+                    break;
+                }
+            }
+        }
+        for (std::size_t offset = 0; offset < slots_.size(); ++offset) {
+            const std::size_t i = (first + offset) % slots_.size();
             Slot& slot = slots_[i];
             if (!slot.control) continue;
             const PathControlSnapshot control = slot.control->Snapshot();

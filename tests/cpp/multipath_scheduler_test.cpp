@@ -2,6 +2,7 @@
 #include <boost/test/included/unit_test.hpp>
 
 #include <ppp/app/multipath/Scheduler.h>
+#include <ppp/app/multipath/RuntimeState.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -29,6 +30,35 @@ Candidate Measured(std::uint16_t id, std::uint64_t rtt_ms,
     c.metrics_updated_ms = now_ms;
     return c;
 }
+}
+
+BOOST_AUTO_TEST_CASE(credit_fallback_is_counted_when_all_preferred_carriers_are_exhausted) {
+    Scheduler scheduler;
+    mp::IntentRuntimeStats stats;
+    std::vector<Candidate> candidates{
+        Measured(1, 50, 1024 * 1024, 1000),
+        Measured(2, 50, 1024 * 1024, 1000),
+        Measured(3, 155, 1024 * 1024, 1000),
+    };
+    candidates[0].send_credit_bytes = 0;
+    candidates[1].send_credit_bytes = 0;
+    candidates[2].eligible = false;
+    const auto preferred = scheduler.Select(Scheduler::Policy::Adaptive, candidates, 1000, 1200);
+    BOOST_TEST(IsStatus(preferred.status, Scheduler::Status::Backpressure));
+    BOOST_TEST(!stats.RecordCreditFallback(true, false));
+    BOOST_TEST(stats.credit_fallback_count == 0u);
+
+    candidates[0].eligible = false;
+    candidates[1].eligible = false;
+    candidates[2].eligible = true;
+    const auto alternate = scheduler.Select(Scheduler::Policy::Adaptive, candidates, 1000, 1200);
+    BOOST_TEST(IsStatus(alternate.status, Scheduler::Status::Selected));
+    BOOST_TEST(alternate.carrier_id == 3u);
+    BOOST_TEST(stats.RecordCreditFallback(
+        preferred.status == Scheduler::Status::Backpressure,
+        alternate.status == Scheduler::Status::Selected));
+    BOOST_TEST(!stats.RecordCreditFallback(false, true));
+    BOOST_TEST(stats.credit_fallback_count == 1u);
 }
 
 BOOST_AUTO_TEST_CASE(adaptive_prefers_lower_arrival_time_across_heterogeneous_rtts) {

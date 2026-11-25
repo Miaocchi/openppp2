@@ -49,6 +49,35 @@ BOOST_AUTO_TEST_CASE(attempts_are_bounded_by_concurrency_and_connection_budget) 
     BOOST_TEST(manager.JoinedCarriers() == 4u);
 }
 
+BOOST_AUTO_TEST_CASE(lazy_pool_can_cover_each_path_before_opening_additional_slots) {
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(MakeConfig(3, 4, 12, 4)));
+    mp::PathManager::Attempt attempts[4];
+    for (auto& attempt : attempts) BOOST_REQUIRE(manager.BeginAttempt(10, attempt, true));
+    BOOST_TEST(attempts[0].path_index == 0u);
+    BOOST_TEST(attempts[1].path_index == 1u);
+    BOOST_TEST(attempts[2].path_index == 2u);
+    BOOST_TEST(attempts[3].path_index == 0u);
+    for (const auto& attempt : attempts) BOOST_REQUIRE(manager.MarkJoined(attempt));
+    BOOST_TEST(manager.JoinedCarriers() == 4u);
+}
+
+BOOST_AUTO_TEST_CASE(pool_trial_can_dial_the_path_carrying_demand) {
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(MakeConfig(3, 2, 6, 4)));
+    mp::PathManager::Attempt attempt;
+    for (uint16_t path = 0; path < 3; ++path) {
+        BOOST_REQUIRE(manager.BeginAttempt(10, attempt, true, 2));
+        BOOST_TEST(attempt.path_index == path);
+        BOOST_REQUIRE(manager.MarkJoined(attempt));
+    }
+    BOOST_REQUIRE(manager.BeginAttempt(10, attempt, true, 2));
+    BOOST_TEST(attempt.path_index == 2u);
+    BOOST_REQUIRE(manager.MarkJoined(attempt));
+    BOOST_REQUIRE(manager.BeginAttempt(10, attempt, true, 2));
+    BOOST_TEST(attempt.path_index != 2u);
+}
+
 BOOST_AUTO_TEST_CASE(partial_path_failure_does_not_withdraw_joined_carrier) {
     mp::PathManager manager;
     BOOST_REQUIRE(manager.Start(MakeConfig(2, 1, 2, 2)));

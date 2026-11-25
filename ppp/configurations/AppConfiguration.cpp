@@ -526,6 +526,13 @@ namespace ppp {
             config.mux.tx.ctrl.budget_frames = PPP_MUX_TX_CTRL_BUDGET_FRAMES;
             config.mux.debug.key = "";
             config.mux.debug.set_mode = "";
+            config.mux.intent.enabled = false;
+            config.mux.intent.mode = "auto";
+            config.mux.intent.window_ms = 250;
+            config.mux.intent.min_samples = 16 * 1024;
+            config.mux.intent.hysteresis = 20;
+            config.mux.intent.hold_ms = 5000;
+            config.mux.intent.rules.clear();
             config.mux.reliability.enabled = true;
             config.mux.reliability.rtx.bytes = PPP_MUX_RELIABILITY_RTX_BYTES;
             config.mux.reliability.rtx.flow_bytes = PPP_MUX_RTX_FLOW_MAX_BYTES;
@@ -978,6 +985,44 @@ namespace ppp {
             config.mux.mode = NormalizeMuxMode(config.mux.mode, &config._mux_mode_diagnostic);
             config.mux.debug.key = LTrim(RTrim(config.mux.debug.key));
             config.mux.debug.set_mode = LTrim(RTrim(config.mux.debug.set_mode));
+
+            if (config.mux.intent.mode != "auto" &&
+                config.mux.intent.mode != "rules" &&
+                config.mux.intent.mode != "behavior") {
+                config.mux.intent.mode = "auto";
+            }
+            if (config.mux.intent.window_ms < 50 || config.mux.intent.window_ms > 5000) {
+                config.mux.intent.window_ms = 250;
+            }
+            if (config.mux.intent.min_samples < 1024 || config.mux.intent.min_samples > (16 * 1024 * 1024)) {
+                config.mux.intent.min_samples = 16 * 1024;
+            }
+            if (config.mux.intent.hysteresis < 0 || config.mux.intent.hysteresis > 100) {
+                config.mux.intent.hysteresis = 20;
+            }
+            if (config.mux.intent.hold_ms < 0 || config.mux.intent.hold_ms > 60000) {
+                config.mux.intent.hold_ms = 5000;
+            }
+            for (auto rule = config.mux.intent.rules.begin(); rule != config.mux.intent.rules.end();) {
+                if (rule->intent != "latency" && rule->intent != "bandwidth") {
+                    rule = config.mux.intent.rules.erase(rule);
+                    continue;
+                }
+                for (auto port = rule->ports.begin(); port != rule->ports.end();) {
+                    if (*port < 1 || *port > 65535) {
+                        port = rule->ports.erase(port);
+                    }
+                    else {
+                        ++port;
+                    }
+                }
+                if (rule->ports.empty()) {
+                    rule = config.mux.intent.rules.erase(rule);
+                }
+                else {
+                    ++rule;
+                }
+            }
 
             if (config.mux.flow.reorder.bytes <= 0) {
                 config.mux.flow.reorder.bytes = PPP_MUX_FLOW_REORDER_BYTES;
@@ -2126,6 +2171,31 @@ namespace ppp {
             config.mux.congestions = JsonAuxiliary::AsInt(json["mux"]["congestions"], -1);
             config.mux.mode = JsonAuxiliary::AsValue<ppp::string>(json["mux"]["mode"]);
             config.mux.turbo = JsonAuxiliary::AsValue<bool>(json["mux"]["turbo"]);
+            const Json::Value& intent = json["mux"]["intent"];
+            AssignBoolIfPresent(config.mux.intent.enabled, intent["enabled"]);
+            if (intent["mode"].isString()) {
+                config.mux.intent.mode = intent["mode"].asString();
+            }
+            AssignIfPresent(config.mux.intent.window_ms, intent["window_ms"]);
+            AssignIfPresent(config.mux.intent.min_samples, intent["min_samples"]);
+            AssignIfPresent(config.mux.intent.hysteresis, intent["hysteresis"]);
+            AssignIfPresent(config.mux.intent.hold_ms, intent["hold_ms"]);
+            if (intent["rules"].isArray()) {
+                config.mux.intent.rules.clear();
+                for (const Json::Value& item : intent["rules"]) {
+                    if (!item.isObject() || !item["intent"].isString() || !item["ports"].isArray()) {
+                        continue;
+                    }
+                    decltype(config.mux.intent.rules)::value_type rule;
+                    rule.intent = item["intent"].asString();
+                    for (const Json::Value& port : item["ports"]) {
+                        if (port.isInt()) {
+                            rule.ports.emplace_back(port.asInt());
+                        }
+                    }
+                    config.mux.intent.rules.emplace_back(std::move(rule));
+                }
+            }
             config.mux.flow.reorder.bytes = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["reorder"]["bytes"]);
             config.mux.flow.reorder.timeout = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["reorder"]["timeout"]);
             config.mux.flow.session_reorder.bytes = JsonAuxiliary::AsValue<int>(json["mux"]["flow"]["session_reorder"]["bytes"]);
@@ -2569,6 +2639,24 @@ namespace ppp {
             mux["congestions"] = config.mux.congestions;
             mux["mode"] = config.mux.mode;
             mux["turbo"] = config.mux.turbo;
+            mux["intent"]["enabled"] = config.mux.intent.enabled;
+            mux["intent"]["mode"] = config.mux.intent.mode;
+            mux["intent"]["window_ms"] = config.mux.intent.window_ms;
+            mux["intent"]["min_samples"] = config.mux.intent.min_samples;
+            mux["intent"]["hysteresis"] = config.mux.intent.hysteresis;
+            mux["intent"]["hold_ms"] = config.mux.intent.hold_ms;
+            Json::Value intent_rules(Json::arrayValue);
+            for (const auto& rule : config.mux.intent.rules) {
+                Json::Value item(Json::objectValue);
+                item["intent"] = rule.intent;
+                Json::Value ports(Json::arrayValue);
+                for (int port : rule.ports) {
+                    ports.append(port);
+                }
+                item["ports"] = std::move(ports);
+                intent_rules.append(std::move(item));
+            }
+            mux["intent"]["rules"] = std::move(intent_rules);
             mux["flow"]["reorder"]["bytes"] = config.mux.flow.reorder.bytes;
             mux["flow"]["reorder"]["timeout"] = config.mux.flow.reorder.timeout;
             mux["flow"]["session_reorder"]["bytes"] = config.mux.flow.session_reorder.bytes;

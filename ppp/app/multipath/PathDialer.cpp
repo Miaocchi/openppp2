@@ -234,7 +234,8 @@ namespace ppp::app::multipath {
             ppp::net::Socket::SetWindowSizeIfNotZero(
                 socket->native_handle(), configuration->tcp.cwnd, configuration->tcp.rwnd);
             ppp::net::Socket::AdjustSocketOptional(*socket,
-                endpoint.address().is_v4(), configuration->tcp.fast_open, configuration->tcp.turbo);
+                endpoint.address().is_v4(), configuration->tcp.fast_open,
+                configuration->tcp.turbo || configuration->mux.intent.enabled);
 
             if ((protect && !protect(socket, endpoint, y)) || !attempt->IsActive()) {
                 ppp::net::Socket::Closesocket(socket);

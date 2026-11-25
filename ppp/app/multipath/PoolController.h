@@ -12,6 +12,7 @@ struct PoolSample final {
     unsigned live = 0, occupied = 0, floor = 1, limit = 1;
     bool reliable = false, pressure = false, idle = false;
     bool trial_attached = false, trial_ready = false;
+    bool reprobe_after_idle = false;
 };
 
 enum class PoolAction { Hold, Dial, Keep, Reject, Inconclusive, Shrink };
@@ -21,6 +22,19 @@ public:
     void DialFailed(std::uint64_t now) noexcept { Finish(now, Cooldown); }
 
     PoolAction Step(const PoolSample& s) noexcept {
+        if (s.reprobe_after_idle) {
+            if (s.idle) {
+                if (idle_since_ == 0) idle_since_ = s.now;
+            } else {
+                // A completed idle interval separates independent demands.
+                // A rejected trial from the earlier load cannot describe the
+                // capacity needed by the next one.
+                if (idle_since_ != 0 && s.now - idle_since_ >= IdleShrinkMs) {
+                    next_ = std::min(next_, s.now);
+                }
+                idle_since_ = 0;
+            }
+        }
         if (phase_ == Phase::Dial || phase_ == Phase::Warm || phase_ == Phase::Measure) {
             // Only the requested attach may change membership inside a paired window.
             if (s.now - requested_ >= TrialTimeout || s.topology != before_.topology +
@@ -51,7 +65,7 @@ public:
             }
             return PoolAction::Hold;
         }
-        if (s.now < next_ || !s.live || s.occupied != s.live) {
+        if ((s.now < next_ && !(s.reprobe_after_idle && s.idle)) || !s.live || s.occupied != s.live) {
             phase_ = Phase::Idle;
             return PoolAction::Hold;
         }
@@ -77,16 +91,17 @@ public:
             if (phase_ != Phase::Low || mark_.topology != s.topology || mark_.offered != s.offered) {
                 mark_ = s;
                 phase_ = Phase::Low;
-            } else if (s.now - mark_.now >= 5000) return Complete(s.now, PoolAction::Shrink);
+            } else if (s.now - mark_.now >= IdleShrinkMs) return Complete(s.now, PoolAction::Shrink);
         } else phase_ = Phase::Idle;
         return PoolAction::Hold;
     }
 
 private:
     enum class Phase { Idle, Baseline, Dial, Warm, Measure, Low } phase_ = Phase::Idle;
-    static constexpr std::uint64_t Cooldown = 3000, TrialTimeout = 60000;
+    static constexpr std::uint64_t Cooldown = 3000, TrialTimeout = 60000, IdleShrinkMs = 5000;
     PoolSample before_, mark_;
     std::uint64_t next_ = 0, requested_ = 0, window_ = 0;
+    std::uint64_t idle_since_ = 0;
     double base_offer_ = 0, base_rate_ = 0, base_cost_ = 0;
 
     static double Rate(std::uint64_t end, std::uint64_t begin, std::uint64_t ms) noexcept {

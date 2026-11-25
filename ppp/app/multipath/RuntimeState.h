@@ -113,6 +113,26 @@ struct RuntimeCarrierState final {
     }
 };
 
+struct IntentRuntimeStats final {
+    std::uint64_t latency = 0;
+    std::uint64_t bandwidth = 0;
+    std::uint64_t unknown = 0;
+    std::uint64_t intent_flip_count = 0;
+    std::uint64_t credit_fallback_count = 0;
+
+    bool RecordCreditFallback(bool preferred_out_of_credit, bool alternate_selected) noexcept {
+        if (!preferred_out_of_credit || !alternate_selected) return false;
+        ++credit_fallback_count;
+        return true;
+    }
+
+    bool operator==(const IntentRuntimeStats& other) const noexcept {
+        return latency == other.latency && bandwidth == other.bandwidth &&
+            unknown == other.unknown && intent_flip_count == other.intent_flip_count &&
+            credit_fallback_count == other.credit_fallback_count;
+    }
+};
+
 struct RuntimeState final {
     bool enabled = false;
     std::string policy;
@@ -125,13 +145,15 @@ struct RuntimeState final {
     std::optional<std::uint64_t> reorder_buffered_bytes;
     std::vector<RuntimePathState> paths;
     std::vector<RuntimeCarrierState> links;
+    IntentRuntimeStats intent;
 
     bool operator==(const RuntimeState& other) const noexcept {
         return enabled == other.enabled && policy == other.policy && state == other.state &&
             active_paths == other.active_paths && remaining_grace_ms == other.remaining_grace_ms &&
             vmux_session_id == other.vmux_session_id && reorder_events == other.reorder_events &&
             reorder_buffered_bytes == other.reorder_buffered_bytes &&
-            capabilities == other.capabilities && paths == other.paths && links == other.links;
+            capabilities == other.capabilities && paths == other.paths && links == other.links &&
+            intent == other.intent;
     }
 };
 
