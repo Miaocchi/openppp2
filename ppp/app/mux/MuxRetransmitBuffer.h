@@ -140,6 +140,7 @@ public:
      * @p collect_fast is false, holes are neither reported nor marked.
      * If supplied, @p cumulative_payload accumulates newly acknowledged payload
      * bytes across calls, saturating at UINT64_MAX regardless of carrier attribution.
+     * If supplied, @p acknowledged_keys receives the keys released by this ACK.
      * @return RTT sample in ms from the first newly-acked entry that was never
      *         retransmitted (Karn's rule); 0 when no usable sample exists.
      */
@@ -155,8 +156,10 @@ public:
         std::unordered_map<std::uint16_t, std::size_t>* out_link_acked_bytes = nullptr,
         std::unordered_map<std::uint16_t, MuxAckDelivery>* out_deliveries = nullptr,
         std::uint64_t* cumulative_payload = nullptr,
-        bool collect_fast = true) {
+        bool collect_fast = true,
+        std::vector<std::uint64_t>* acknowledged_keys = nullptr) {
         std::uint64_t rtt_sample = 0;
+        std::vector<std::uint64_t> acked;
         if (nullptr != out_link_id) {
             *out_link_id = 0;
         }
@@ -213,6 +216,7 @@ public:
                 *cumulative_payload = entry.payload_bytes > UINT64_MAX - *cumulative_payload
                     ? UINT64_MAX : *cumulative_payload + entry.payload_bytes;
             }
+            if (acknowledged_keys) acked.push_back(it->first);
             ReleaseLinkBytes(it->second.last_link_id, static_cast<std::size_t>(it->second.length));
             bytes_ -= static_cast<std::size_t>(it->second.length);
             flow->second.bytes -= static_cast<std::size_t>(entry.length);
@@ -232,6 +236,7 @@ public:
             *accepted++ = *candidate;
         }
         fast_candidates.erase(accepted, fast_candidates.end());
+        if (acknowledged_keys) acknowledged_keys->swap(acked);
         if (flow->second.bytes == 0) cid_flight_.erase(flow);
         return rtt_sample;
     }

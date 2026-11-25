@@ -75,18 +75,55 @@ namespace ppp::app::multipath {
     }
 
     bool PathManager::BeginAttempt(std::uint64_t now_ms, Attempt& attempt, bool pool_trial) noexcept {
+        return BeginAttempt(now_ms, attempt, pool_trial, false, std::nullopt);
+    }
+
+    bool PathManager::BeginAttempt(std::uint64_t now_ms, Attempt& attempt, bool prefer_unused_path,
+        std::optional<std::uint16_t> preferred_path) noexcept {
+        return BeginAttempt(now_ms, attempt, false, prefer_unused_path, preferred_path);
+    }
+
+    bool PathManager::BeginAttempt(std::uint64_t now_ms, Attempt& attempt, bool pool_trial,
+        bool prefer_unused_path, std::optional<std::uint16_t> preferred_path) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         attempt = Attempt();
         if (!running_ || active_attempts_ >= static_cast<std::size_t>(configuration_.max_concurrent_connects)) {
             return false;
         }
 
+        const auto ready = [now_ms](const SlotSnapshot& slot) {
+            return slot.state == State::Waiting ||
+                (slot.state == State::Backoff && slot.retry_at_ms <= now_ms);
+        };
+        std::size_t first = 0;
+        if (preferred_path) {
+            const auto slot = std::find_if(slots_.begin(), slots_.end(), [&](const Slot& candidate) {
+                return candidate.snapshot.path_index == *preferred_path && ready(candidate.snapshot);
+            });
+            if (slot != slots_.end()) first = static_cast<std::size_t>(slot - slots_.begin());
+        }
+        if (prefer_unused_path) {
+            std::array<bool, ppp::configurations::MultipathConfiguration::MaxPaths> in_use{};
+            for (const auto& slot : slots_) {
+                const auto state = slot.snapshot.state;
+                if (state == State::Connecting || state == State::Authenticating || state == State::Joined) {
+                    in_use[slot.snapshot.path_index] = true;
+                }
+            }
+            for (std::size_t i = 0; i < slots_.size(); ++i) {
+                const auto& slot = slots_[i].snapshot;
+                if (!in_use[slot.path_index] && ready(slot)) {
+                    first = i;
+                    break;
+                }
+            }
+        }
+
         using Configuration = ppp::configurations::MultipathConfiguration;
-        std::array<std::size_t, Configuration::MaxConnections> order;
+        std::array<std::size_t, Configuration::MaxConnections> order{};
         const auto end = order.begin() + slots_.size();
         std::iota(order.begin(), end, 0u);
-        const bool rotate = pool_trial && configuration_.policy == "adaptive";
-        if (rotate) {
+        if (pool_trial && configuration_.policy == "adaptive" && !configuration_.paths.empty()) {
             std::array<unsigned, Configuration::MaxPaths> occupied{};
             for (const auto& slot : slots_) {
                 const State state = slot.snapshot.state;
@@ -94,8 +131,6 @@ namespace ppp::app::multipath {
                     ++occupied[slot.snapshot.path_index];
                 }
             }
-            // A rejected trial returns its slot to Waiting. Rotate ties so it
-            // cannot prevent another uncovered path from being measured.
             const auto path_count = configuration_.paths.size();
             const auto rank = [&](std::size_t slot) {
                 const auto path = slots_[slot].snapshot.path_index;
@@ -104,23 +139,22 @@ namespace ppp::app::multipath {
             };
             std::sort(order.begin(), end, [&](std::size_t a, std::size_t b) { return rank(a) < rank(b); });
         }
+        if (first != 0) {
+            auto it = std::find(order.begin(), end, first);
+            if (it != end) std::rotate(order.begin(), it, end);
+        }
 
         for (auto cursor = order.begin(); cursor != end; ++cursor) {
-            const auto i = *cursor;
+            const std::size_t i = *cursor;
             Slot& slot = slots_[i];
             if (!slot.control) continue;
             const PathControlSnapshot control = slot.control->Snapshot();
-            if (control.state != PathState::Disabled && control.state != PathState::Backoff) {
-                continue;
-            }
-            if (control.state == PathState::Backoff && control.retry_at_ms > now_ms) {
-                continue;
-            }
+            if (control.state != PathState::Disabled && control.state != PathState::Backoff) continue;
+            if (control.state == PathState::Backoff && control.retry_at_ms > now_ms) continue;
 
             const std::uint32_t previous_attempt_generation = slot.attempt_generation;
             ++slot.attempt_generation;
             ++active_attempts_;
-
             PathTransition transition;
             const bool armed = control.state == PathState::Backoff
                 ? ApplyControlEvent(slot, PathEvent::RetryDue,
@@ -130,13 +164,11 @@ namespace ppp::app::multipath {
             const std::uint64_t control_generation = slot.control->Snapshot().generation;
             if (!armed || !transition.accepted ||
                 !ApplyControlEvent(slot, PathEvent::DialStarted, now_ms,
-                    control_generation, transition) ||
-                !transition.accepted) {
+                    control_generation, transition) || !transition.accepted) {
                 slot.attempt_generation = previous_attempt_generation;
                 --active_attempts_;
                 continue;
             }
-
             slot.snapshot.generation = generation_;
             ProjectSlot(slot);
             attempt.slot_generation = slot.attempt_generation;
@@ -144,7 +176,9 @@ namespace ppp::app::multipath {
             attempt.slot = static_cast<std::uint16_t>(i);
             attempt.path_index = slot.snapshot.path_index;
             attempt.valid = true;
-            if (rotate) next_trial_path_ = (attempt.path_index + 1) % configuration_.paths.size();
+            if (pool_trial && configuration_.paths.size() > 0) {
+                next_trial_path_ = (slot.snapshot.path_index + 1) % configuration_.paths.size();
+            }
             return true;
         }
         return false;

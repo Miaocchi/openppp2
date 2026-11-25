@@ -400,6 +400,7 @@ namespace vmux {
         }
 
         host_and_port_string.append(":" + vmux_to_string(port));
+        mux_->seed_flow_intent(connection_id_, host, port);
         if (!mux_->post(vmux_net::cmd_syn, host_and_port_string.data(), (int)host_and_port_string.size(), connection_id_)) {
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTaskPostFailed);
             return false;
@@ -531,6 +532,9 @@ namespace vmux {
             return false;
         }
         if (peer_eof_ || payload_size <= 0 || !payload) return false;
+
+        mux_->observe_flow_intent(connection_id_, static_cast<std::size_t>(payload_size),
+            static_cast<std::size_t>(payload_size), false);
 
         std::shared_ptr<Byte> buffer;
         // Hard cap: a peer ignoring XOFF must not grow the queue without bound.
@@ -1012,6 +1016,9 @@ namespace vmux {
                             // length, so keeping a mostly empty max-size buffer would let
                             // real memory exceed the window by up to 16x.
                             const int payload = static_cast<int>(bytes_transferred);
+                            mux_->observe_flow_intent(connection_id_,
+                                static_cast<std::size_t>(payload),
+                                static_cast<std::size_t>(payload), true);
                             const bool zero_copy = ppp::app::mux::MuxPushIsZeroCopy(payload, read_length, vmux_net::zero_copy_min_payload);
                             bool forwarding = zero_copy
                                 ? mux_->post_frame(vmux_net::cmd_push, frame, payload, connection_id_, status_.tx_acceleration_, on_posted)

@@ -1,6 +1,6 @@
 # Multiplexing
 
-`mux` controls logical-flow scheduling and buffering inside one tunnel session. It does not configure multipath entries; see client [`client.multipath`](client.md#multipath) and server [`server.multipath`](server.md#multipath) for that. Set the MUX connection count with the client flag [`--tun-mux`](../CLI_REFERENCE.md); it defaults to `0` (off), and there is no MUX connection-count JSON field.
+`mux` controls logical-flow scheduling and buffering inside one tunnel session. It does not configure multipath entries; see client [`client.multipath`](client.md#multipath) and server [`server.multipath`](server.md#multipath) for that. For a single path, set the MUX connection count with the client flag [`--tun-mux`](../CLI_REFERENCE.md); it defaults to `0` (off), and multipath sessions use the configured path slots and `client.multipath.max_connections` instead.
 
 These JSON snippets show the structure, not a complete configuration. Example values are not defaults.
 
@@ -15,8 +15,17 @@ These JSON snippets show the structure, not a complete configuration. Example va
     "inactive": { "timeout": 60 },
     "keep-alived": [0, 0],
     "congestions": 134217728,
+    "intent": {
+      "enabled": false,
+      "mode": "auto",
+      "window_ms": 250,
+      "min_samples": 16384,
+      "hysteresis": 20,
+      "hold_ms": 5000,
+      "rules": []
+    },
     "flow": {
-      "reorder": { "bytes": 8388608, "timeout": 400 },
+      "reorder": { "bytes": 67108864, "timeout": 400 },
       "session_reorder": { "bytes": 33554432 },
       "max_open": 4096,
       "unknown_cid": { "max": 64 }
@@ -74,9 +83,17 @@ Keepalive range; negatives become 0.
 
 Congestion window budget; `0` = unlimited; negatives or positives below 1 MiB fall back to the default.
 
+### `intent`
+
+TCP intent routing is off by default. To enable both directions on an existing multipath deployment, add `"intent": { "enabled": true }` to the `mux` object on both endpoints. A new multipath deployment also needs client and server multipath enabled and a matching active transport authentication key. Enabling intent requests `flow_v2` during negotiation. Cross-carrier intent routing takes effect when the peers negotiate it.
+
+The default `auto` mode applies the first matching destination-port rule and uses observed traffic behavior for unmatched connections. Rules are optional. Use `behavior` for behavior alone or `rules` for explicit port assignments. Each rule contains an `intent` of `latency` or `bandwidth` and a `ports` array. Classification locks for the connection lifetime. Small frames from an `unknown` flow prefer the lowest-RTT path.
+
+The three-path acceptance topology uses IDs `path1` for the low-latency link, `path2` for bulk fallback and `path3` for preferred bulk traffic. With three or more carriers the bulk scheduler looks up the literal path IDs `path3` and `path2`. Check `client.multipath.paths[].id` before enabling intent. Bulk frames can remain queued if both groups are missing. Both endpoints in the acceptance topology enable `tcp.turbo` (TCP_NODELAY) for latency measurements. The defaults above specify the sampling window in milliseconds, the sample threshold in bytes, hysteresis as a percentage and the bulk retry interval in milliseconds (`hold_ms`). Runtime snapshots expose classification totals, `intent_flip_count` and `credit_fallback_count` under `multipath.intent`.
+
 ### `flow.reorder.bytes`
 
-**Type:** int · **If omitted:** `8388608`
+**Type:** int · **If omitted:** `67108864`
 
 Per-connection reorder buffer soft cap: above it the delivering carrier is paused (backpressure); only twice the cap resets the connection.
 

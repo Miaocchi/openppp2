@@ -33,6 +33,9 @@ namespace vmux {
         constexpr std::uint64_t PathPacingWireRatioMinPayloadBytes = 256 * 1024;
         /** Fixed-point scale for the measured framing ratio (wire per payload). */
         constexpr std::uint64_t PathPacingWireRatioPermille = 1000;
+        constexpr Byte IntentPathProbeMarker = 'I';
+        constexpr Byte IntentPathProbeRequest = 'P';
+        constexpr Byte IntentPathProbeResponse = 'A';
 
         /**
          * Diagnostic only: OPENPPP2_VMUX_PACING_ORACLE="path1=97000000,path2=..."
@@ -78,14 +81,14 @@ namespace vmux {
             return Mode::Ewma;
         }
 
-        struct SchedulerTraceWriter final {
+        struct TraceWriter final {
             bool enabled = false;
             std::mutex mutex;
             std::ofstream output;
 
-            SchedulerTraceWriter() noexcept {
+            explicit TraceWriter(const char* variable) noexcept {
                 try {
-                    const char* path = std::getenv("OPENPPP2_MULTIPATH_SCHEDULER_TRACE_JSON");
+                    const char* path = std::getenv(variable);
                     if (path && *path) {
                         output.open(path, std::ios::out | std::ios::app);
                         enabled = static_cast<bool>(output);
@@ -95,8 +98,13 @@ namespace vmux {
             }
         };
 
-        SchedulerTraceWriter& scheduler_trace_writer() noexcept {
-            static SchedulerTraceWriter writer;
+        TraceWriter& scheduler_trace_writer() noexcept {
+            static TraceWriter writer("OPENPPP2_MULTIPATH_SCHEDULER_TRACE_JSON");
+            return writer;
+        }
+
+        TraceWriter& flow_trace_writer() noexcept {
+            static TraceWriter writer("OPENPPP2_MULTIPATH_FLOW_TRACE_JSON");
             return writer;
         }
 
@@ -109,6 +117,14 @@ namespace vmux {
             case Status::InvalidInput: return "invalid_input";
             }
             return "unknown";
+        }
+
+        const char* tcp_intent_name(ppp::app::mux::TcpIntent intent) noexcept {
+            switch (intent) {
+            case ppp::app::mux::TcpIntent::Latency: return "latency";
+            case ppp::app::mux::TcpIntent::Bandwidth: return "bandwidth";
+            default: return "unknown";
+            }
         }
 
         /** @brief Microsecond monotonic clock used only while the scheduler trace is open. */
@@ -193,6 +209,45 @@ namespace vmux {
             if (!writer.enabled) return {};
             return {&writer, session.load(std::memory_order_relaxed),
                 ack ? packet_timing_ack_id(feedback, length) : 0, cid, seq, carrier, server, ack, retry};
+        }
+
+void trace_flow_open(const boost::asio::ip::tcp::socket& socket, std::uint32_t cid,
+                             int destination_port) noexcept {
+            auto& writer = flow_trace_writer();
+            if (!writer.enabled) return;
+            try {
+                boost::system::error_code error;
+                const auto peer = socket.remote_endpoint(error);
+                if (error) return;
+                std::lock_guard<std::mutex> lock(writer.mutex);
+                writer.output << "{\"event\":\"open\",\"monotonic_us\":" << trace_now_us()
+                              << ",\"cid\":" << cid << ",\"peer_port\":" << peer.port()
+                              << ",\"destination_port\":" << destination_port << "}" << std::endl;
+            }
+            catch (...) {}
+        }
+
+        void trace_flow_delivery(std::uint32_t cid, const std::string& path, int bytes) noexcept {
+            auto& writer = flow_trace_writer();
+            if (!writer.enabled) return;
+            try {
+                std::lock_guard<std::mutex> lock(writer.mutex);
+                writer.output << "{\"event\":\"delivery\",\"monotonic_us\":" << trace_now_us()
+                              << ",\"cid\":" << cid << ",\"path_id\":" << Json::valueToQuotedString(path.c_str())
+                              << ",\"bytes\":" << bytes << "}" << std::endl;
+            }
+            catch (...) {}
+        }
+
+        void trace_flow_classification(std::uint32_t cid, ppp::app::mux::TcpIntent intent) noexcept {
+            auto& writer = flow_trace_writer();
+            if (!writer.enabled) return;
+            try {
+                std::lock_guard<std::mutex> lock(writer.mutex);
+                writer.output << "{\"event\":\"intent\",\"cid\":" << cid
+                              << ",\"intent\":\"" << tcp_intent_name(intent) << "\"}" << std::endl;
+            }
+            catch (...) {}
         }
 
         /** @brief Relaxed atomic max; writers are concurrent carrier strands while tracing. */
@@ -317,6 +372,7 @@ namespace vmux {
         void write_scheduler_trace(std::uint64_t session_id, std::uint64_t sequence,
                                    std::uint64_t now, int length, bool new_payload,
                                    std::uint16_t avoid_link,
+                                   ppp::app::mux::TcpIntent intent,
                                    const ppp::app::multipath::PathScheduler::Selection& selected,
                                    const std::vector<ppp::app::multipath::PathScheduler::Candidate>& candidates,
                                    const std::vector<SchedulerTraceLinkSample>& link_samples,
@@ -338,6 +394,7 @@ namespace vmux {
                     << ",\"payload_bytes\":" << (length < 0 ? 0 : length)
                     << ",\"new_payload\":" << (new_payload ? "true" : "false")
                     << ",\"avoid_link\":" << avoid_link
+                    << ",\"intent\":\"" << tcp_intent_name(intent) << "\""
                     << ",\"status\":\"" << scheduler_status_name(selected.status) << "\""
                     << ",\"selected_link_id\":" << selected.carrier_id
                     << ",\"selected_probe\":" << (selected.probe ? "true" : "false")
@@ -358,6 +415,7 @@ namespace vmux {
                     const auto& candidate = candidates[index];
                     const auto diagnostic = scheduler.GetProbeDiagnostics(candidate);
                     writer.output << "{\"link_id\":" << candidate.id
+                        << ",\"path_id\":\"" << candidate.path_id << "\""
                         << ",\"generation\":" << candidate.generation
                         << ",\"eligible\":" << (candidate.eligible ? "true" : "false")
                         << ",\"state\":" << static_cast<unsigned>(candidate.state)
@@ -611,7 +669,7 @@ namespace vmux {
                 peer_reliability,
                 local_fec,
                 peer_fec,
-                peer_requests_flow_v2);
+                peer_requests_flow_v2 || intent_routing_enabled());
             runtime_state_ = state;
             publish_runtime_snapshot_locked();
         }
@@ -879,6 +937,7 @@ namespace vmux {
             snapshot.session_id = multipath_runtime_session_id_.load(std::memory_order_acquire);
             snapshot.reorder_events = reorder_events_;
             snapshot.reorder_buffered_bytes = session_reorder_bytes_;
+            snapshot.intent = intent_runtime_stats_;
             snapshot.paths.reserve(path_runtime_counters_.size());
             snapshot.links.reserve(rx_links_.size());
             for (const auto& item : path_runtime_counters_) {
@@ -1120,6 +1179,100 @@ namespace vmux {
         }
     }
 
+    void vmux_net::set_intent_config(const ppp::app::mux::TcpIntentConfig& config) noexcept {
+        // Configuration is latched before flows are created. Existing flow
+        // classifiers intentionally keep their original policy for the
+        // lifetime of the logical connection.
+        intent_config_ = config;
+        intent_routing_enabled_.store(config.enabled, std::memory_order_release);
+    }
+
+    void vmux_net::set_intent_rules(
+        const std::vector<ppp::app::mux::TcpIntentRule>& rules) noexcept {
+        try {
+            intent_rules_ = rules;
+        }
+        catch (...) {
+            intent_rules_.clear();
+        }
+    }
+
+    void vmux_net::seed_flow_intent(uint32_t connection_id,
+        const template_string& host, int port) noexcept {
+        if (!intent_routing_enabled() || connection_id == 0) return;
+        try {
+            ppp::app::mux::TcpIntentClassifier classifier(intent_config_);
+            classifier.Seed(std::string(host.data(), host.size()),
+                static_cast<std::uint16_t>(std::max(0, port)), intent_rules_);
+            flow_intents_[connection_id] = classifier.Intent();
+            intent_classifiers_.insert_or_assign(connection_id, std::move(classifier));
+            if (flow_intents_[connection_id] != ppp::app::mux::TcpIntent::Unknown) {
+                account_flow_intent(connection_id, flow_intents_[connection_id]);
+            }
+        }
+        catch (...) {
+            flow_intents_[connection_id] = ppp::app::mux::TcpIntent::Unknown;
+        }
+    }
+
+    void vmux_net::observe_flow_intent(uint32_t connection_id, std::size_t bytes,
+        std::size_t chunk_bytes, bool outbound) noexcept {
+        if (!intent_routing_enabled() || connection_id == 0) return;
+        auto it = intent_classifiers_.find(connection_id);
+        if (it == intent_classifiers_.end()) return;
+        const auto before = it->second.Intent();
+        const auto result = it->second.Observe(now_tick(), bytes, chunk_bytes, outbound);
+        flow_intents_[connection_id] = result.intent;
+        if (result.changed && result.intent != before) {
+            ppp::telemetry::Log(ppp::telemetry::Level::kInfo, "mux",
+                "intent classified cid=%u intent=%s bytes=%llu duration_ms=%llu",
+                static_cast<unsigned>(connection_id), tcp_intent_name(result.intent),
+                static_cast<unsigned long long>(result.sample_bytes),
+                static_cast<unsigned long long>(result.sample_duration_ms));
+            if (before != ppp::app::mux::TcpIntent::Unknown &&
+                result.intent != ppp::app::mux::TcpIntent::Unknown && before != result.intent) {
+                ++intent_runtime_stats_.intent_flip_count;
+                ppp::telemetry::Count("mux.intent.flip", 1);
+            }
+            if (result.intent != ppp::app::mux::TcpIntent::Unknown) {
+                account_flow_intent(connection_id, result.intent);
+            }
+        }
+    }
+
+    void vmux_net::account_flow_intent(uint32_t connection_id,
+        ppp::app::mux::TcpIntent intent) noexcept {
+        if (connection_id == 0 || intent_accounted_flows_.find(connection_id) !=
+            intent_accounted_flows_.end()) return;
+        try {
+            if (!intent_accounted_flows_.insert(connection_id).second) return;
+            const char* metric = "mux.intent.unknown";
+            switch (intent) {
+            case ppp::app::mux::TcpIntent::Latency:
+                ++intent_runtime_stats_.latency;
+                metric = "mux.intent.latency";
+                break;
+            case ppp::app::mux::TcpIntent::Bandwidth:
+                ++intent_runtime_stats_.bandwidth;
+                metric = "mux.intent.bandwidth";
+                break;
+            default:
+                ++intent_runtime_stats_.unknown;
+                break;
+            }
+            ppp::telemetry::Count(metric, 1);
+            trace_flow_classification(connection_id, intent);
+        }
+        catch (...) {
+            intent_accounted_flows_.erase(connection_id);
+        }
+    }
+
+    ppp::app::mux::TcpIntent vmux_net::flow_intent(uint32_t connection_id) const noexcept {
+        auto it = flow_intents_.find(connection_id);
+        return it == flow_intents_.end() ? ppp::app::mux::TcpIntent::Unknown : it->second;
+    }
+
     vmux_net::tx_completion_ptr vmux_net::make_tx_completion(const PostInternalAsynchronousCallback& callback) noexcept {
         if (NULLPTR == callback) {
             return NULLPTR;
@@ -1164,6 +1317,9 @@ namespace vmux {
         {
             std::lock_guard<std::mutex> scope(tx_completion_mutex_);
             pending_tx_completions_.erase(completion);
+            if (completion->retained_payload_key != 0) {
+                pending_payload_tx_completions_.erase(completion->retained_payload_key);
+            }
         }
         completion->Finish(successed);
     }
@@ -1184,6 +1340,7 @@ namespace vmux {
             std::lock_guard<std::mutex> scope(tx_completion_mutex_);
             completions.assign(pending_tx_completions_.begin(), pending_tx_completions_.end());
             pending_tx_completions_.clear();
+            pending_payload_tx_completions_.clear();
         }
         finish_tx_completions(completions, false);
     }
@@ -1198,6 +1355,7 @@ namespace vmux {
             close_requested_ = true;
             completions.assign(pending_tx_completions_.begin(), pending_tx_completions_.end());
             pending_tx_completions_.clear();
+            pending_payload_tx_completions_.clear();
         }
         finish_tx_completions(completions, false);
         return true;
@@ -1583,7 +1741,8 @@ namespace vmux {
     }
 
     vmux_net::vmux_linklayer_ptr vmux_net::tx_link_pick(
-        int length, bool new_payload, uint16_t avoid_link) noexcept {
+        int length, bool new_payload, uint16_t avoid_link,
+        ppp::app::mux::TcpIntent intent) noexcept {
         const int multipath_policy = multipath_scheduler_policy_.load(std::memory_order_acquire);
         if (multipath_policy >= 0) {
             using Scheduler = ppp::app::multipath::PathScheduler;
@@ -1597,6 +1756,8 @@ namespace vmux {
                 ++live_carriers;
             }
             const bool adaptive_payload = multipath_policy == 0 && reliability_on_ && new_payload;
+            const bool large_latency_payload = intent_routing_enabled() && ordering_mode_ == ordering_flow_v2 &&
+                reliability_on_ && intent == ppp::app::mux::TcpIntent::Latency && length > 4096;
             const auto now = now_tick();
             const auto scheduler_sequence = ++scheduler_selection_sequence_;
             const bool trace_enabled = scheduler_trace_writer().enabled;
@@ -1643,12 +1804,20 @@ namespace vmux {
                 // automatic kernel pacing cap; it never changes scheduling.
                 control_snapshot.capabilities.pacing = link->pacing_supported_;
 
-                const auto send_credit = adaptive_payload
-                    ? adaptive_send_credit(*link, telemetry, live_carriers, length) : local_send_credit(*link, length);
+                auto send_credit = intent == ppp::app::mux::TcpIntent::Latency
+                    ? local_send_credit(*link, length)
+                    : adaptive_payload
+                        ? adaptive_send_credit(*link, telemetry, live_carriers, length)
+                        : local_send_credit(*link, length);
+                if (large_latency_payload) {
+                    const auto limit = static_cast<std::uint64_t>(PPP_MUX_LINK_BYTE_HIGH_WATER);
+                    send_credit = std::min(send_credit, limit - std::min(limit, telemetry.wire_inflight_bytes));
+                }
                 Scheduler::Candidate candidate = Scheduler::ProjectCandidate(link->id_,
                     control_snapshot, now, send_credit, link->id_ == preferred);
-                // Failover waits for a temporarily busy primary. A frame
-                // exceeding that link's empty logical queue must use a backup.
+                candidate.path_id = link->path_id_;
+                candidate.intent_probe_rtt_ms = link->intent_path_probe_.RecentRttMs(now);
+                candidate.intent_probe_timed_out = link->intent_path_probe_.TimedOut(now, link->last_delivery_ack_ms_);
                 if (base_.acceleration_ && multipath_policy == 1 &&
                     send_credit < static_cast<uint64_t>(length) &&
                     !can_route_write(*link, static_cast<uint64_t>(length))) {
@@ -1668,10 +1837,272 @@ namespace vmux {
                     link->last_active_.load(std::memory_order_acquire));
                 candidates.emplace_back(std::move(candidate));
             }
+            // Keep the complete candidate vector so the scheduler's fairness,
+            // probe and generation trackers remain valid across intent epochs.
+            // Intent routing only narrows eligibility for the current pick.
+            // Cross-carrier intent pools require independent per-flow DSNs.
+            // Legacy compat ordering has one session-global sequence space and
+            // would turn a low-latency/bulk split into session-wide HoL.
+            // Keep the first small application payloads on the lowest-RTT
+            // group while behavior sampling is still unknown. Restrict this
+            // to data frames so ACK/FIN/control traffic keeps the normal
+            // credit scheduler and cannot starve a narrow carrier.
+            const bool small_unknown_latency = intent_routing_enabled() &&
+                ordering_mode_ == ordering_flow_v2 && new_payload &&
+                intent == ppp::app::mux::TcpIntent::Unknown &&
+                length > 0 && length <= 4096;
+            const ppp::app::mux::TcpIntent policy_intent =
+                small_unknown_latency ? ppp::app::mux::TcpIntent::Latency : intent;
+            const bool intent_filter = intent_routing_enabled() &&
+                ordering_mode_ == ordering_flow_v2 &&
+                policy_intent != ppp::app::mux::TcpIntent::Unknown;
+            if (intent_routing_enabled() && ordering_mode_ == ordering_flow_v2 &&
+                std::any_of(candidates.begin(), candidates.end(), [](const Scheduler::Candidate& candidate) {
+                    return candidate.eligible && !candidate.intent_probe_timed_out;
+                })) {
+                for (auto& candidate : candidates) {
+                    if (candidate.intent_probe_timed_out) candidate.eligible = false;
+                }
+            }
+            std::vector<bool> base_eligibility;
+            std::vector<std::string> latency_groups;
+            const std::size_t group_width = std::max<std::size_t>(1, candidates.size() / 3);
+            const auto group_name = [&](std::size_t index) {
+                if (!candidates[index].path_id.empty()) return candidates[index].path_id;
+                return std::string("path") + std::to_string(index / group_width + 1);
+            };
+            const auto latency_rtt = [](const Scheduler::Candidate& candidate) noexcept {
+                if (candidate.intent_probe_rtt_ms != 0) return candidate.intent_probe_rtt_ms;
+                return candidate.min_rtt_ms.value_or(candidate.rtt_ms.value_or(500));
+            };
+            bool bandwidth_preferred_warming = false;
+            std::uint16_t alternate_latency_reserve = 0;
+            if (intent_filter) {
+                const bool latency = policy_intent == ppp::app::mux::TcpIntent::Latency;
+                base_eligibility.resize(candidates.size());
+                std::vector<std::size_t> eligible;
+                eligible.reserve(candidates.size());
+                for (std::size_t i = 0; i < candidates.size(); ++i) {
+                    base_eligibility[i] = candidates[i].eligible;
+                    if (candidates[i].eligible) eligible.emplace_back(i);
+                }
+                if (latency) {
+                    std::stable_sort(eligible.begin(), eligible.end(), [&](std::size_t a, std::size_t b) {
+                        const auto left = latency_rtt(candidates[a]);
+                        const auto right = latency_rtt(candidates[b]);
+                        return left == right ? group_name(a) < group_name(b) : left < right;
+                    });
+                    for (const auto index : eligible) {
+                        const auto group = group_name(index);
+                        if (std::find(latency_groups.begin(), latency_groups.end(), group) == latency_groups.end()) {
+                            latency_groups.emplace_back(group);
+                        }
+                    }
+                    eligible.erase(std::remove_if(eligible.begin(), eligible.end(), [&](std::size_t index) {
+                        return group_name(index) != latency_groups.front();
+                    }), eligible.end());
+                }
+                // At startup the high-capacity group may have no data sample.
+                // Keep that group as the bulk default while it is warming.
+                else if (candidates.size() >= 3) {
+                    const auto rate = [](const Scheduler::Candidate& c) noexcept {
+                        if (c.capacity_known && c.throughput_bytes_per_second) {
+                            return *c.throughput_bytes_per_second;
+                        }
+                        return c.delivery_rate_bytes_per_second.value_or(
+                            c.throughput_bytes_per_second.value_or(0));
+                    };
+                    auto group_rate = [&](const std::string& group) noexcept {
+                        std::uint64_t best = 0;
+                        for (const auto index : eligible) {
+                            if (group_name(index) == group) {
+                                best = std::max(best, rate(candidates[index]));
+                            }
+                        }
+                        return best;
+                    };
+                    const auto group_sent_bytes = [&](const std::string& group) noexcept {
+                        std::uint64_t total = 0;
+                        for (const auto index : eligible) {
+                            if (group_name(index) == group) {
+                                total = std::max(total, candidates[index].sent_payload_bytes);
+                            }
+                        }
+                        return total;
+                    };
+                    std::string preferred_group = "path3";
+                    const auto preferred_rate = group_rate(preferred_group);
+                    const auto alternate_rate = group_rate("path2");
+                    constexpr std::uint64_t min_mature_rate = 256 * 1024;
+                    const bool preferred_available = std::any_of(eligible.begin(), eligible.end(),
+                        [&](std::size_t index) { return group_name(index) == preferred_group; });
+                    std::size_t alternate_carriers = 0;
+                    for (const auto index : eligible) {
+                        if (group_name(index) != "path2") continue;
+                        ++alternate_carriers;
+                        alternate_latency_reserve = std::max(alternate_latency_reserve, candidates[index].id);
+                    }
+                    const bool alternate_available = alternate_carriers != 0;
+                    // Keep a stable, independent RTT hedge off the bulk TCP
+                    // send queue during fallback. A single survivor must
+                    // continue servicing both intents.
+                    if (alternate_carriers < 2) alternate_latency_reserve = 0;
+                    const bool saturated = preferred_available && std::none_of(
+                        eligible.begin(), eligible.end(), [&](std::size_t index) {
+                            const auto& candidate = candidates[index];
+                            return group_name(index) == preferred_group &&
+                                (candidate.unacked_bytes == 0 || !candidate.min_rtt_ms || !candidate.rtt_ms ||
+                                 *candidate.rtt_ms / 3 < *candidate.min_rtt_ms);
+                        });
+                    const bool preferred_sampled = group_sent_bytes(preferred_group) >= (4u << 20);
+                    const bool rate_collapsed = preferred_rate >= min_mature_rate && alternate_rate / 2 > preferred_rate;
+                    // After the hold, give the preferred path a probe interval
+                    // to measure its new load. A drained carrier can still have
+                    // a high EWMA from its previous flight.
+                    constexpr auto probe_interval = ppp::app::mux::MuxIntentPathProbe::IntervalMs;
+                    const bool first_demotion = bandwidth_reprobe_after_ms_ == 0;
+                    const bool probe_complete = first_demotion || now >= bandwidth_reprobe_after_ms_ + probe_interval;
+                    const bool pressured = alternate_available && preferred_sampled && probe_complete &&
+                        (saturated || (first_demotion && rate_collapsed));
+                    // A single ACK or an initial rate sample can be distorted
+                    // by startup or carrier reordering. The first demotion
+                    // requires a full interval of pressure. Later recovery
+                    // already has its own bounded probe before switching.
+                    if (!pressured) {
+                        bandwidth_pressure_since_ms_ = 0;
+                    }
+                    else if (!first_demotion || (bandwidth_pressure_since_ms_ != 0 &&
+                            now - bandwidth_pressure_since_ms_ >= probe_interval)) {
+                        bandwidth_reprobe_after_ms_ = now + intent_config_.hold_ms;
+                        bandwidth_pressure_since_ms_ = 0;
+                        ppp::telemetry::Count(saturated ? "mux.intent.bandwidth_queue_hold" :
+                            "mux.intent.bandwidth_rate_hold", 1);
+                    }
+                    else if (bandwidth_pressure_since_ms_ == 0) {
+                        bandwidth_pressure_since_ms_ = now;
+                    }
+                    if (alternate_available && now < bandwidth_reprobe_after_ms_) {
+                        preferred_group = "path2";
+                    }
+                    else if (alternate_available && !probe_complete) {
+                        // Sample the recovering path without immediately
+                        // refilling its old bulk queue. Remaining traffic can
+                        // use the alternate until a fresh probe interval ends.
+                        constexpr uint64_t trial_window = PPP_MUX_LINK_BYTE_HIGH_WATER;
+                        for (const auto index : eligible) {
+                            if (group_name(index) != preferred_group) continue;
+                            auto& candidate = candidates[index];
+                            const auto room = trial_window - std::min(trial_window, candidate.unacked_bytes);
+                            candidate.send_credit_bytes = std::min(candidate.send_credit_bytes.value_or(0), room);
+                        }
+                    }
+                    bandwidth_preferred_warming = preferred_group == "path3" &&
+                        preferred_available && preferred_rate < min_mature_rate && probe_complete;
+                    eligible.erase(std::remove_if(eligible.begin(), eligible.end(), [&](std::size_t index) {
+                        return group_name(index) != preferred_group || candidates[index].id == alternate_latency_reserve;
+                    }), eligible.end());
+                }
+                // Keep latency traffic on its preferred path until every
+                // carrier in the group has exhausted its credit.
+                const std::size_t keep = latency ? eligible.size() : std::min<std::size_t>(eligible.size(), 2);
+                std::sort(eligible.begin(), eligible.end(), [&](std::size_t left, std::size_t right) {
+                    const auto& a = candidates[left];
+                    const auto& b = candidates[right];
+                    if (policy_intent == ppp::app::mux::TcpIntent::Latency) {
+                        const auto as = latency_rtt(a);
+                        const auto bs = latency_rtt(b);
+                        if (as != bs) return as < bs;
+                    }
+                    else {
+                        const auto rate = [](const Scheduler::Candidate& c) noexcept {
+                            if (c.capacity_known && c.throughput_bytes_per_second) {
+                                return *c.throughput_bytes_per_second;
+                            }
+                            return c.delivery_rate_bytes_per_second.value_or(
+                                c.throughput_bytes_per_second.value_or(0));
+                        };
+                        const auto ar = rate(a);
+                        const auto br = rate(b);
+                        if (ar != br) return ar > br;
+                        const auto ac = a.send_credit_bytes.value_or(0);
+                        const auto bc = b.send_credit_bytes.value_or(0);
+                        if (ac != bc) return ac > bc;
+                    }
+                    // At startup several carriers can have identical unknown
+                    // measurements.  Keep latency flows on the first carrier
+                    // group, while bandwidth flows start on the later carrier
+                    // group.  Using the reverse stable id tie-break for bulk
+                    // traffic prevents a narrow first path from filling the
+                    // flow-v2 reorder window before its capacity sample is
+                    // available.  Once measurements are fresh, the rate/RTT
+                    // comparisons above determine the order.
+                    return policy_intent == ppp::app::mux::TcpIntent::Bandwidth
+                        ? a.id > b.id : a.id < b.id;
+                });
+                std::vector<bool> keep_link(candidates.size(), false);
+                for (std::size_t i = 0; i < std::min(keep, eligible.size()); ++i) {
+                    keep_link[eligible[i]] = true;
+                }
+                for (std::size_t i = 0; i < candidates.size(); ++i) {
+                    candidates[i].eligible = candidates[i].eligible && keep_link[i];
+                }
+            }
+
             multipath_scheduler_.SetProbeDiagnosticsEnabled(trace_enabled);
-            const auto selected = multipath_scheduler_.Select(multipath_policy == 1
+            auto selected = multipath_scheduler_.Select(multipath_policy == 1
                 ? Scheduler::Policy::Failover : Scheduler::Policy::Adaptive,
                 candidates, now, static_cast<std::uint64_t>(std::max(0, length)));
+            if (intent_filter && selected.status != Scheduler::Status::Selected) {
+                const bool preferred_out_of_credit = selected.status == Scheduler::Status::Backpressure;
+                // A stale metric or a concurrent carrier retirement must never
+                // strand a classified flow. Try the remaining intent groups
+                // in order, and leave the frame queued when every group is
+                // out of credit. Opening the complete candidate set here
+                // would turn a credit fallback into cross-intent leakage.
+                if (policy_intent == ppp::app::mux::TcpIntent::Latency) {
+                    for (std::size_t rank = 1; rank < latency_groups.size(); ++rank) {
+                        for (std::size_t i = 0; i < candidates.size(); ++i) {
+                            candidates[i].eligible = base_eligibility[i] && group_name(i) == latency_groups[rank];
+                        }
+                        selected = multipath_scheduler_.Select(multipath_policy == 1
+                            ? Scheduler::Policy::Failover : Scheduler::Policy::Adaptive,
+                            candidates, now, static_cast<std::uint64_t>(std::max(0, length)));
+                        if (selected.status == Scheduler::Status::Selected) break;
+                    }
+                }
+                else if (candidates.size() >= 3) {
+                    // Keep normal bandwidth fallback on the middle path. The
+                    // low-latency path is reserved for latency flows while
+                    // any higher-capacity path remains live. Falling back to
+                    // path1 here can consume its entire flight credit and
+                    // make a subsequent web request migrate to a high-RTT
+                    // path merely because the bulk flow arrived first.
+                    if (!bandwidth_preferred_warming) {
+                        for (std::size_t i = 0; i < candidates.size(); ++i) {
+                            candidates[i].eligible = base_eligibility[i] && group_name(i) == "path2" &&
+                                candidates[i].id != alternate_latency_reserve;
+                        }
+                        selected = multipath_scheduler_.Select(multipath_policy == 1
+                            ? Scheduler::Policy::Failover : Scheduler::Policy::Adaptive,
+                            candidates, now, static_cast<std::uint64_t>(std::max(0, length)));
+                    }
+                }
+                if (selected.status != Scheduler::Status::Selected && candidates.size() < 3) {
+                    for (std::size_t i = 0; i < candidates.size(); ++i) {
+                        candidates[i].eligible = base_eligibility[i];
+                    }
+                }
+                ppp::telemetry::Count("mux.intent.fallback", 1);
+                if (selected.status != Scheduler::Status::Selected && candidates.size() < 3) {
+                    selected = multipath_scheduler_.Select(multipath_policy == 1
+                        ? Scheduler::Policy::Failover : Scheduler::Policy::Adaptive,
+                        candidates, now, static_cast<std::uint64_t>(std::max(0, length)));
+                }
+                if (intent_runtime_stats_.RecordCreditFallback(preferred_out_of_credit,
+                        selected.status == Scheduler::Status::Selected)) {
+                    ppp::telemetry::Count("mux.intent.credit_fallback", 1);
+                }
+            }
             for (const auto& candidate : candidates) {
                 for (const auto& link : rx_links_) {
                     if (!link || link->id_ != candidate.id) continue;
@@ -1688,7 +2119,7 @@ namespace vmux {
             }
             write_scheduler_trace(
                 multipath_runtime_session_id_.load(std::memory_order_acquire),
-                scheduler_sequence, now, length, new_payload, avoid_link,
+                scheduler_sequence, now, length, new_payload, avoid_link, intent,
                 selected, candidates, trace_links,
                 static_cast<std::uint64_t>(session_reorder_bytes_),
                 reorder_events_,
@@ -1779,6 +2210,22 @@ namespace vmux {
             tx_link_withdraw(linklayer);
         }
         return true;
+    }
+
+    bool vmux_net::send_intent_path_probe(const vmux_linklayer_ptr& linklayer, Byte kind, uint32_t token) noexcept {
+        constexpr int length = sizeof(vmux_hdr) + 2;
+        if (!is_linklayer_active(linklayer) || !link_has_byte_credit(linklayer, length)) return false;
+        auto buffer = make_byte_array(length);
+        if (!buffer) return false;
+        auto* header = reinterpret_cast<vmux_hdr*>(buffer.get());
+        header->cmd = cmd_keep_alived;
+        header->seq = htonl(0);
+        header->connection_id = htonl(token);
+        auto* payload = reinterpret_cast<Byte*>(header + 1);
+        payload[0] = IntentPathProbeMarker;
+        payload[1] = kind;
+        tx_packet packet{buffer, length, {}};
+        return tx_send_on(linklayer, packet);
     }
 
     void vmux_net::on_link_exit(const vmux_linklayer_ptr& linklayer, const char* reason) noexcept {
@@ -1949,7 +2396,7 @@ namespace vmux {
         return it != tx_flows_.end() && it->second.rtx_parked;
     }
 
-    bool vmux_net::drr_pop_next(tx_packet& out) noexcept {
+    bool vmux_net::drr_pop_next(tx_packet& out, bool interactive_only) noexcept {
         if (active_tx_flows_.empty()) {
             return false;
         }
@@ -1984,6 +2431,21 @@ namespace vmux {
             }
 
             flow_tx_context& fx = it->second;
+            if (interactive_only) {
+                const auto& head = fx.queue.front();
+                const bool interactive = head.length >= static_cast<int>(sizeof(vmux_hdr)) &&
+                    head.length <= 4096 && head.buffer &&
+                    reinterpret_cast<const vmux_hdr*>(head.buffer.get())->cmd == cmd_push &&
+                    flow_intent(cid) != ppp::app::mux::TcpIntent::Bandwidth;
+                const bool repair_in_this_flow = interactive &&
+                    std::any_of(rtx_pending_.begin(), rtx_pending_.end(), [cid](uint64_t key) {
+                        return ppp::app::mux::MuxRetransmitBuffer::KeyCid(key) == cid;
+                    });
+                if (!interactive || repair_in_this_flow) {
+                    active_tx_flows_.emplace_back(cid);
+                    continue;
+                }
+            }
             if (fx.quantum_due) {
                 fx.deficit += static_cast<int64_t>(q);
                 fx.quantum_due = false;
@@ -2268,6 +2730,23 @@ namespace vmux {
                     linklayer->queued_bytes_ = 0;
                 }
 
+                if (!ok && completion && completion->retained_payload_key != 0) {
+                    if (!base_.disposed_.load(std::memory_order_acquire) && !close_requested()) {
+                        on_link_exit(linklayer, "write_failed");
+                    }
+                    // The bounded retransmit window already owns this PUSH.
+                    // Closing the application stream here would discard later
+                    // bytes even if another carrier delivers the original DSN.
+                    const auto socket = get_connection(ppp::app::mux::MuxRetransmitBuffer::KeyCid(
+                        completion->retained_payload_key));
+                    const bool accepted = !close_requested() && socket && !socket->status_.fin_;
+                    if (accepted) {
+                        ppp::telemetry::Count("mux.rtx.write_recovered", 1);
+                    }
+                    self->finish_tx_completion(completion, accepted);
+                    return;
+                }
+
                 self->finish_tx_completion(completion, ok);
 
                 // Teardown guard: a send may complete after the session has been
@@ -2322,16 +2801,27 @@ namespace vmux {
         // Reliability: retain a copy for retransmission and fold data frames
         // into the running FEC parity group once the frame is on the wire.
         if (queued) {
+            const Byte cmd = reinterpret_cast<const vmux_hdr*>(packet.get())->cmd;
             if (const auto& counters = linklayer->path_runtime_counters_) {
                 using Counters = vmux_linklayer::PathRuntimeCounters;
                 counters->Add(&Counters::tx_bytes, static_cast<uint64_t>(packet_length));
-                if (!retransmission && reinterpret_cast<const vmux_hdr*>(packet.get())->cmd == cmd_push) {
+                if (!retransmission && cmd == cmd_push) {
                     counters->Add(&Counters::tx_unique_payload_bytes,
                         static_cast<uint64_t>(packet_length) - sizeof(vmux_hdr));
                 }
             }
             const uint64_t sent_now = now_tick();
             if (track_sent_frame(packet, packet_length, sent_now, linklayer->id_, linklayer.get())) {
+                if (completion && ordering_mode_ == ordering_flow_v2 && cmd == cmd_push) {
+                    const auto* header = reinterpret_cast<const vmux_hdr*>(packet.get());
+                    const auto key = ppp::app::mux::MuxRetransmitBuffer::Key(
+                        ntohl(header->connection_id), ntohl(header->seq));
+                    std::lock_guard<std::mutex> scope(tx_completion_mutex_);
+                    completion->retained_payload_key = key;
+                    if (pending_tx_completions_.find(completion) != pending_tx_completions_.end()) {
+                        pending_payload_tx_completions_.emplace(key, completion);
+                    }
+                }
                 fec_note_sent(packet, packet_length, sent_now);
             }
         }
@@ -2450,7 +2940,13 @@ namespace vmux {
                     // Automatic per-carrier TCP pacing: also runs while idle so
                     // an expired capacity sample clears the kernel cap.
                     for (const vmux_linklayer_ptr& link : rx_links_) {
-                        if (link) update_link_pacing(*link, now);
+                        if (!link) continue;
+                        update_link_pacing(*link, now);
+                        if (!reliability_on_ && base_.established_ && ordering_mode_ == ordering_flow_v2 &&
+                            intent_routing_enabled() && link->intent_path_probe_.Due(now) &&
+                            send_intent_path_probe(link, IntentPathProbeRequest, static_cast<uint32_t>(now))) {
+                            link->intent_path_probe_.Sent(now);
+                        }
                     }
                     publish_multipath_path_runtime_stats();
 
@@ -2686,9 +3182,21 @@ namespace vmux {
         vmux_skt_ptr skt = get_connection(connection_id);
         if (NULLPTR != skt) {
             if (skt->input(owner, buffer, buffer_size)) {
+                if (get_pool_path_floor() > 0 &&
+                    flow_intent(connection_id) == ppp::app::mux::TcpIntent::Bandwidth) {
+                    pool_received_bulk_bytes_ += static_cast<uint64_t>(buffer_size);
+                }
                 if (source) {
                     using Counters = vmux_linklayer::PathRuntimeCounters;
                     source->Add(&Counters::rx_unique_payload_bytes, static_cast<uint64_t>(buffer_size));
+                    if (flow_trace_writer().enabled) {
+                        const auto path = std::find_if(path_runtime_counters_.begin(),
+                            path_runtime_counters_.end(), [&](const auto& entry) {
+                                return source->path_totals == entry.second;
+                            });
+                        trace_flow_delivery(connection_id, path == path_runtime_counters_.end()
+                            ? std::string{} : path->first, buffer_size);
+                    }
                 }
                 skt->active(now);
             }
@@ -2741,8 +3249,13 @@ namespace vmux {
             }
         }
         elif(cmd == cmd_syn_ok) {
+            intent_opening_frames_.erase(connection_id);
             vmux_skt_ptr skt = get_connection(connection_id);
             if (NULLPTR != skt) {
+                if (intent_routing_enabled() && ordering_mode_ == ordering_flow_v2 &&
+                    skt->is_connected() && buffer_size > 0 && buffer[0] == 'A') {
+                    return true; // The same connection opening was retried on a surviving carrier.
+                }
                 bool successed = false;
                 if (buffer_size > 0) {
                     const Byte err = static_cast<Byte>(*buffer);
@@ -3106,6 +3619,18 @@ namespace vmux {
 
         // Control frames are not gated by any per-flow DSN; handle them inline.
         if (is_session_control(cmd) || is_connection_control(cmd) || is_reliability_control(cmd)) {
+            if (linklayer && cmd == cmd_keep_alived && length == static_cast<int>(sizeof(vmux_hdr)) + 2) {
+                const auto* payload = reinterpret_cast<const Byte*>(h + 1);
+                if (payload[0] == IntentPathProbeMarker) {
+                    const uint32_t token = ntohl(h->connection_id);
+                    if (payload[1] == IntentPathProbeRequest) {
+                        send_intent_path_probe(linklayer, IntentPathProbeResponse, token);
+                    }
+                    else if (payload[1] == IntentPathProbeResponse) {
+                        linklayer->intent_path_probe_.Acknowledge(token, now);
+                    }
+                }
+            }
             if (!packet_input(cmd, (Byte*)h, length, now, owner)) {
                 ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::ProtocolPacketActionInvalid);
                 return false;
@@ -3124,6 +3649,11 @@ namespace vmux {
 
         uint32_t cid = ntohl(h->connection_id);
         uint32_t seq = ntohl(h->seq);
+        auto opening = intent_opening_frames_.find(cid);
+        if (opening != intent_opening_frames_.end() &&
+            reinterpret_cast<const vmux_hdr*>(opening->second.packet.buffer.get())->cmd == cmd_syn_ok) {
+            intent_opening_frames_.erase(opening);
+        }
 
         flow_rx_context* fxp = try_get_or_create_flow(cid);
         if (NULLPTR == fxp) {
@@ -3377,6 +3907,12 @@ namespace vmux {
             }
             rtx_max_attempts_ = (rtx_attempts > 0) ? (uint32_t)rtx_attempts : (uint32_t)PPP_MUX_RELIABILITY_RTX_MAX_ATTEMPTS;
             ack_delay_ms_ = (ack_delay > 0) ? (uint64_t)ack_delay : (uint64_t)PPP_MUX_RELIABILITY_ACK_DELAY;
+            // Intent routing uses the latency path for feedback as well as
+            // request payloads. Avoid adding the normal delayed-ACK interval
+            // to every short interactive exchange when that policy is active.
+            if (intent_routing_enabled()) {
+                ack_delay_ms_ = std::min<std::uint64_t>(ack_delay_ms_, 2);
+            }
             reliability_gap_timeout_ms_ = (gap_timeout > 0) ? (uint64_t)gap_timeout : (uint64_t)PPP_MUX_RELIABILITY_GAP_TIMEOUT;
 
             // Carriers are reliable byte streams: a frame is only lost when its
@@ -3643,6 +4179,7 @@ namespace vmux {
         const size_t rtx_bytes_before = rtx_.bytes();
         std::unordered_map<uint16_t, ppp::app::mux::MuxAckDelivery> ack_deliveries;
         std::unordered_map<uint16_t, ppp::app::mux::MuxAckDelivery> block_deliveries;
+        tx_completion_list acknowledged_completions;
         for (const ppp::app::mux::MuxAckBlock& block : blocks) {
             const uint32_t key_cid = (ordering_mode_ == ordering_compat) ? 0u : block.connection_id;
             std::vector<uint64_t> candidates;
@@ -3650,9 +4187,21 @@ namespace vmux {
             // Heterogeneous RTT can create DSN gaps without loss.
             const uint64_t fast_time_threshold = srtt_ms_ != 0
                 ? std::max<uint64_t>(srtt_ms_ / 4, 1) : 0;
+            std::vector<uint64_t> acknowledged;
             const uint64_t sample = rtx_.Ack(key_cid, block.largest, block.ranges, now,
                 (uint32_t)PPP_MUX_FAST_RETX_THRESHOLD, fast_time_threshold, candidates,
-                &ack_link_id, nullptr, &block_deliveries, &pool_acked_payload_bytes_, rtx_fast_on_);
+                &ack_link_id, nullptr, &block_deliveries, &pool_acked_payload_bytes_, rtx_fast_on_,
+                ordering_mode_ == ordering_flow_v2 ? &acknowledged : nullptr);
+            if (!acknowledged.empty()) {
+                std::lock_guard<std::mutex> scope(tx_completion_mutex_);
+                for (const auto key : acknowledged) {
+                    auto retained = pending_payload_tx_completions_.extract(key);
+                    if (!retained.empty()) {
+                        pending_tx_completions_.erase(retained.mapped());
+                        acknowledged_completions.emplace_back(std::move(retained.mapped()));
+                    }
+                }
+            }
             if (auto skt = get_connection(key_cid); skt && skt->local_fin_sent_) {
                 skt->maybe_finish_stream();
             }
@@ -3702,6 +4251,7 @@ namespace vmux {
             if (delivery.sent_tick <= now) note_link_rtt(*link, now - delivery.sent_tick, now);
             link->delivered_payload_bytes_ += delivery.bytes;
             link->delivered_tick_ = now;
+            link->last_delivery_ack_ms_ = now;
             if (!stamp.valid || stamp.delivered_tick > now || delivery.sent_tick < stamp.first_sent_tick ||
                 stamp.prior_delivered >= link->delivered_payload_bytes_) continue;
             link->first_delivery_send_tick_ = std::max(link->first_delivery_send_tick_, delivery.sent_tick);
@@ -3736,6 +4286,12 @@ namespace vmux {
         }
         if (app_tx_idle_since_ms_ == 0 && tx_data_frames_ == 0 && rtx_.bytes() == 0) {
             app_tx_idle_since_ms_ = now;
+        }
+        if (!acknowledged_completions.empty()) {
+            // Once the peer acknowledges the DSN, a pending local write on
+            // the old carrier no longer needs to hold the origin read pump.
+            ppp::telemetry::Count("mux.rtx.ack_write_recovered", acknowledged_completions.size());
+            finish_tx_completions(acknowledged_completions, true);
         }
     }
 
@@ -3839,10 +4395,19 @@ namespace vmux {
             // A transient drain of the DRR queue can happen under backpressure.
             // Require an observed idle gap with no unacknowledged work.
             const auto idle_gap = std::max<uint64_t>(10, link->min_rtt_ms_ / 4);
-            const bool app_limited = app_tx_idle_since_ms_ != 0 &&
+            // A classified latency flow is app-limited even when another
+            // flow is still draining the session. Charging its sparse request
+            // bursts as a capacity sample would turn a 15 Mbps path into a
+            // 15 KB/s pacing target and inflate the next request's RTT.
+            const auto flow_intent_for_stamp = flow_intent(cid);
+            const bool intent_app_limited = intent_routing_enabled() &&
+                (flow_intent_for_stamp == ppp::app::mux::TcpIntent::Latency ||
+                 (flow_intent_for_stamp == ppp::app::mux::TcpIntent::Unknown &&
+                  payload_bytes <= 4096));
+            const bool app_limited = intent_app_limited || (app_tx_idle_since_ms_ != 0 &&
                 now - app_tx_idle_since_ms_ >= idle_gap &&
                 tx_data_frames_ == 0 && rtx_.bytes() == 0 &&
-                link->queued_bytes_ <= static_cast<size_t>(packet_length);
+                link->queued_bytes_ <= static_cast<size_t>(packet_length));
             app_tx_idle_since_ms_ = 0;
             stamp = {link->delivered_payload_bytes_, link->delivered_tick_,
                 link->first_delivery_send_tick_, app_limited, true};
@@ -3879,7 +4444,7 @@ namespace vmux {
             return;
         }
 
-        // A dead carrier is the one real loss case on reliable carriers: every
+        // Once a carrier stops delivering, every
         // unacked frame last written to it is re-sent on the survivors with its
         // original sequence (the receiver deduplicates anything that did land).
         const size_t before = rtx_pending_.size();
@@ -3960,15 +4525,19 @@ namespace vmux {
                     }
                 }
             }
-            vmux_linklayer_ptr chosen = tx_link_pick(entry->length, false, avoid_link);
+            const uint32_t entry_cid = ppp::app::mux::MuxRetransmitBuffer::KeyCid(key);
+            auto intent = flow_intent(entry_cid);
+            if (intent_routing_enabled() && intent == ppp::app::mux::TcpIntent::Unknown &&
+                entry->length <= 4096) {
+                intent = ppp::app::mux::TcpIntent::Latency;
+            }
+            vmux_linklayer_ptr chosen = tx_link_pick(entry->length, false, avoid_link, intent);
             if (!chosen && avoid_link != 0 && base_.acceleration_) {
-                // Avoiding a stalled path is a preference. If it is the only
-                // one sized for this retransmission, allow it to repair the gap.
                 const bool alternative_fits = std::any_of(rx_links_.begin(), rx_links_.end(), [&](const auto& link) {
                     return is_linklayer_active(link) && link->id_ != avoid_link &&
                         empty_queue_fit(*link, entry->length) == ppp::transmissions::TransmissionFrameFit::Guaranteed;
                 });
-                if (!alternative_fits) chosen = tx_link_pick(entry->length, false);
+                if (!alternative_fits) chosen = tx_link_pick(entry->length, false, 0, intent);
             }
             if (NULLPTR == chosen || !chosen->schedulable()) {
                 break; // Reserve the next credit for this hole, not a later, smaller frame.
@@ -4052,6 +4621,7 @@ namespace vmux {
 
         for (const auto& link : rx_links_) {
             if (!is_linklayer_active(link) || link->id_ == 0 || rtx_.LinkBytes(link->id_) == 0) continue;
+            if (link->intent_path_probe_.TimedOut(now, link->last_delivery_ack_ms_)) continue;
             const auto start = std::max(link->last_rtt_sample_ms_, link->first_delivery_send_tick_);
             const auto threshold = std::max<uint64_t>(1500, 4 * current_pto(link));
             if (start == 0 || now - start < threshold ||
@@ -4076,6 +4646,79 @@ namespace vmux {
         }
     }
 
+    void vmux_net::recover_intent_path_timeouts(uint64_t now) noexcept {
+        if (!intent_routing_enabled() || ordering_mode_ != ordering_flow_v2) return;
+        const bool reachable = std::any_of(rx_links_.begin(), rx_links_.end(), [&](const auto& link) {
+            return is_linklayer_active(link) && link->intent_path_probe_.RttMs() != 0 &&
+                !link->intent_path_probe_.TimedOut(now, link->last_delivery_ack_ms_);
+        });
+        if (!reachable) return;
+
+        bool replay_ack = false;
+        for (const auto& link : rx_links_) {
+            if (is_linklayer_active(link) && link->intent_path_probe_.ConsumeTimeout(now, link->last_delivery_ack_ms_)) {
+                reinject_link_inflight(link, now);
+                replay_ack = true;
+            }
+        }
+        if (replay_ack) {
+            // A credit-releasing cumulative ACK may have gone into the failed
+            // carrier before the probe expired. Reassert the receive ranges on
+            // a survivor even if the peer has no remaining credit to send data.
+            for (const auto& [cid, tracker] : ack_trackers_) {
+                ack_pending_cids_.insert(cid);
+            }
+            ack_pending_count_ = static_cast<uint32_t>(ack_pending_cids_.size());
+            ack_first_pending_tick_ = now;
+            maybe_send_ack(now, true);
+        }
+
+        for (auto& [cid, opening] : intent_opening_frames_) {
+            const auto opening_carrier_id = opening.carrier_id;
+            const auto original = std::find_if(rx_links_.begin(), rx_links_.end(), [&](const auto& link) {
+                return is_linklayer_active(link) && link->id_ == opening_carrier_id;
+            });
+            if (original != rx_links_.end() &&
+                !(*original)->intent_path_probe_.TimedOut(now, (*original)->last_delivery_ack_ms_)) continue;
+            auto link = tx_link_pick(opening.packet.length, false, opening.carrier_id,
+                ppp::app::mux::TcpIntent::Latency);
+            if (!link) continue;
+            tx_packet retry{opening.packet, {}};
+            if (tx_send_on(link, retry)) {
+                opening.carrier_id = link->id_;
+                ppp::telemetry::Count("mux.intent.open_retry", 1);
+            }
+        }
+
+        // The dialing endpoint can replace a carrier left in TCP backoff.
+        // Keep the old socket for transient stalls and only restart it while
+        // a confirmed carrier on a distinct path can hold the VMUX session.
+        if (link_exit_callback_) {
+            const auto failed = std::find_if(rx_links_.begin(), rx_links_.end(), [&](const auto& link) {
+                // The primary VMUX subchannel shares the control socket.
+                // Its probe may trigger repair, but replacing it would also
+                // disconnect the proxy listener from its control session.
+                if (!is_linklayer_active(link) || link->pool_primary_ || link->path_id_.empty() ||
+                    !link->intent_path_probe_.ShouldReplace(now, link->last_delivery_ack_ms_, true)) return false;
+                bool sibling = false;
+                bool alternate = false;
+                for (const auto& peer : rx_links_) {
+                    if (peer == link || !is_linklayer_active(peer) || peer->path_id_.empty() ||
+                        peer->intent_path_probe_.RttMs() == 0 ||
+                        peer->intent_path_probe_.TimedOut(now, peer->last_delivery_ack_ms_)) continue;
+                    if (peer->path_id_ == link->path_id_) sibling = true;
+                    else alternate = true;
+                }
+                return alternate && link->intent_path_probe_.ShouldReplace(now, link->last_delivery_ack_ms_, sibling);
+            });
+            if (failed != rx_links_.end()) {
+                const auto link = *failed;
+                ppp::telemetry::Count("mux.intent.carrier_restart", 1);
+                on_link_exit(link, "sustained intent path timeout");
+            }
+        }
+    }
+
     void vmux_net::reliability_tick() noexcept {
         if (base_.disposed_.load(std::memory_order_acquire) || NULLPTR == reliability_timer_) {
             return;
@@ -4083,6 +4726,15 @@ namespace vmux {
 
         const uint64_t now = now_tick();
         if (base_.established_ && reliability_on_) {
+            if (intent_routing_enabled() && ordering_mode_ == ordering_flow_v2) {
+                for (const auto& link : rx_links_) {
+                    if (link && link->intent_path_probe_.Due(now) &&
+                        send_intent_path_probe(link, IntentPathProbeRequest, static_cast<uint32_t>(now))) {
+                        link->intent_path_probe_.Sent(now);
+                    }
+                }
+            }
+            recover_intent_path_timeouts(now);
             maybe_send_ack(now, false);
 
             collect_stalled_link_retries(now);
@@ -4142,6 +4794,7 @@ namespace vmux {
     }
 
     void vmux_net::release_flow_reliability_state(uint32_t connection_id) noexcept {
+        intent_opening_frames_.erase(connection_id);
         if (ordering_mode_ == ordering_flow_v2) {
             rtx_.EraseCid(connection_id);
             ack_trackers_.erase(connection_id);
@@ -4412,6 +5065,20 @@ namespace vmux {
             return false;
         }
 
+        const bool retry_open = intent_routing_enabled() && ordering_mode_ == ordering_flow_v2 && reliability_on_;
+        if (retry_open) {
+            const auto& opened = intent_remote_open_ids_.ranges();
+            if (std::any_of(opened.begin(), opened.end(), [connection_id](const auto& range) {
+                return range.start <= connection_id && connection_id <= range.end;
+            })) {
+                // An original SYN can arrive from a restored carrier after the
+                // retried connection already completed and released its socket.
+                skt.reset();
+                ppp::telemetry::Count("mux.rx.syn.duplicate", 1);
+                return true;
+            }
+        }
+
         if (max_open_flows_ > 0 && skts_.size() >= max_open_flows_) {
             ppp::telemetry::Count("mux.rx.flow.max_open", 1);
             ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::VmuxNetProcessRxConnectingIdConflict);
@@ -4438,9 +5105,31 @@ namespace vmux {
             return false;
         }
 
+        if (retry_open) {
+            // Peer CIDs are sequential and never reused. Merge adjacent IDs
+            // to remember recent opens with bounded per-session memory.
+            intent_remote_open_ids_.Add(connection_id, PPP_MUX_FLOW_MAX_CONTEXTS);
+        }
         skt->self_weak_ = skt;
         skts_[connection_id] = skt;
-        return skt->accept(template_string(host, host_size));
+        const template_string target(host, host_size);
+        template_string rule_host = target;
+        int rule_port = 0;
+        const auto separator = target.rfind(':');
+        if (separator != template_string::npos && separator + 1 < target.size()) {
+            const char* port_text = target.c_str() + separator + 1;
+            char* end = nullptr;
+            const long parsed = std::strtol(port_text, &end, 10);
+            if (end != port_text && *end == '\0' && parsed > 0 && parsed <= UINT16_MAX) {
+                rule_port = static_cast<int>(parsed);
+                rule_host = target.substr(0, separator);
+                if (rule_host.size() >= 2 && rule_host.front() == '[' && rule_host.back() == ']') {
+                    rule_host = rule_host.substr(1, rule_host.size() - 2);
+                }
+            }
+        }
+        seed_flow_intent(connection_id, rule_host, rule_port);
+        return skt->accept(target);
     }
 
     /** @brief Generates a non-zero session-local connection identifier.
@@ -4513,6 +5202,10 @@ namespace vmux {
             if (tail != endl) {
                 skt = tail->second;
                 if (skt.get() == refer_pointer) {
+                    auto intent = flow_intents_.find(connection_id);
+                    if (intent != flow_intents_.end()) {
+                        account_flow_intent(connection_id, intent->second);
+                    }
                     skts_.erase(tail);
                     if (auto it = flows_.find(connection_id); it != flows_.end()) {
                         note_flow_unbuffered(it->second.flow_reorder_.buffered_bytes());
@@ -4521,6 +5214,9 @@ namespace vmux {
                         rx_maybe_resume();
                     }
                     tx_flow_seq_.erase(connection_id);    // drop per-flow send DSN counter (flow v2)
+                    intent_classifiers_.erase(connection_id);
+                    flow_intents_.erase(connection_id);
+                    intent_accounted_flows_.erase(connection_id);
                     release_flow_reliability_state(connection_id); // free RTX/FEC state for this cid
                     // Locally generated terminal FIN and earlier numbered frames
                     // must leave in order even after the socket is gone.
@@ -4583,7 +5279,14 @@ namespace vmux {
         }
 
         vmux_hdr* h = (vmux_hdr*)packet.get();
-        if (h->cmd == cmd_push) pool_offered_bytes_ += packet_length - sizeof(vmux_hdr);
+        if (h->cmd == cmd_push) {
+            const auto payload = static_cast<uint64_t>(packet_length - sizeof(vmux_hdr));
+            pool_offered_bytes_ += payload;
+            if (get_pool_path_floor() > 0 &&
+                flow_intent(ntohl(h->connection_id)) == ppp::app::mux::TcpIntent::Bandwidth) {
+                pool_offered_bulk_bytes_ += payload;
+            }
+        }
         bool prioritize_ctrl = false;
         bool defer_seq = false; // compat: global sequence assigned when the frame is sent
         if (is_reliability_control(h->cmd)) {
@@ -4771,10 +5474,10 @@ namespace vmux {
     }
 
     /** @brief Drains queued packets across free links using per-flow byte DRR. */
-    bool vmux_net::process_tx_compat_packets() noexcept {
+    bool vmux_net::process_tx_compat_packets(bool interactive_only) noexcept {
         while (!tx_links_.empty() && tx_data_frames_ > 0) {
             tx_packet nexting_packet;
-            if (!drr_pop_next(nexting_packet)) {
+            if (!drr_pop_next(nexting_packet, interactive_only)) {
                 break;
             }
             if (tx_rtx_window_hold(nexting_packet)) {
@@ -4784,15 +5487,86 @@ namespace vmux {
             const bool new_payload = nexting_packet.buffer &&
                 nexting_packet.length > static_cast<int>(sizeof(vmux_hdr)) &&
                 reinterpret_cast<const vmux_hdr*>(nexting_packet.buffer.get())->cmd == cmd_push;
-            vmux_linklayer_ptr linklayer = tx_link_pick(nexting_packet.length, new_payload);
+            const uint32_t cid = peek_connection_id(nexting_packet.buffer, nexting_packet.length);
+            const auto intent = flow_intent(cid);
+            vmux_linklayer_ptr linklayer = tx_link_pick(nexting_packet.length, new_payload, 0, intent);
             if (NULLPTR == linklayer) {
+                const bool bulk_head = nexting_packet.length > 4096 || intent == ppp::app::mux::TcpIntent::Bandwidth;
                 drr_requeue_front(std::move(nexting_packet));
+                // A large frame can exhaust its own pool's credit while a
+                // separate flow still has an idle interactive carrier.
+                if (bulk_head && !interactive_only && active_tx_flows_.size() > 1 && intent_routing_enabled() &&
+                    ordering_mode_ == ordering_flow_v2 && multipath_scheduler_policy_.load(std::memory_order_acquire) >= 0) {
+                    return process_tx_compat_packets(true);
+                }
                 break; // An ACK or local write completion returns credit.
             }
 
             if (!tx_send_on(linklayer, nexting_packet)) {
                 drr_requeue_front(std::move(nexting_packet));
                 continue; // the refusing carrier was withdrawn
+            }
+            if (interactive_only && rtx_pending_.empty()) {
+                ppp::telemetry::Count("mux.intent.interactive_credit_bypass", 1);
+            }
+
+            // A small request or response can wait for a carrier TCP retry
+            // after one lost segment. Hedge on a second carrier and a comparable
+            // independent path without adding more traffic to a bulk queue.
+            if (intent_routing_enabled() && ordering_mode_ == ordering_flow_v2 && reliability_on_ &&
+                new_payload && nexting_packet.length <= 4096 &&
+                intent != ppp::app::mux::TcpIntent::Bandwidth && !linklayer->path_id_.empty()) {
+                const auto rtt = linklayer->intent_path_probe_.MinRttMs();
+                vmux_linklayer_ptr same_path, alternate_path;
+                uint64_t backup_rtt = 0;
+                const auto backlog = [&](const vmux_linklayer_ptr& link) {
+                    return link->queued_bytes_ + rtx_.LinkBytes(link->id_);
+                };
+                const auto can_copy = [&](const vmux_linklayer_ptr& peer) {
+                    return peer != linklayer && is_linklayer_active(peer) && !peer->path_id_.empty() &&
+                        link_has_byte_credit(peer, nexting_packet.length);
+                };
+                const auto comparable_rtt = [&](const vmux_linklayer_ptr& peer) -> uint64_t {
+                    // Select the redundant path by its propagation RTT. A
+                    // lost probe can briefly inflate the primary RTT enough
+                    // to admit a slow path while hiding the faster backup.
+                    const auto peer_rtt = peer->intent_path_probe_.MinRttMs();
+                    return peer_rtt <= 2 * rtt ? peer_rtt : 0;
+                };
+                for (const auto& peer : rx_links_) {
+                    if (!can_copy(peer)) continue;
+                    if (peer->path_id_ == linklayer->path_id_) {
+                        if (!same_path || backlog(peer) < backlog(same_path)) same_path = peer;
+                        continue;
+                    }
+                    const auto peer_rtt = comparable_rtt(peer);
+                    if (!peer_rtt) continue;
+                    if (alternate_path && peer->path_id_ == alternate_path->path_id_) {
+                        // A comparable RTT can hide bulk already queued in a
+                        // carrier's socket. Send a copy on the freer sibling.
+                        if (backlog(peer) < backlog(alternate_path)) alternate_path = peer;
+                        backup_rtt = std::min(backup_rtt, peer_rtt);
+                    }
+                    else if (!alternate_path || peer_rtt < backup_rtt) {
+                        alternate_path = peer;
+                        backup_rtt = peer_rtt;
+                    }
+                }
+                vmux_linklayer_ptr idle_alternate;
+                if (alternate_path) {
+                    for (const auto& peer : rx_links_) {
+                        if (peer != alternate_path && can_copy(peer) && peer->path_id_ == alternate_path->path_id_ &&
+                            backlog(peer) == 0 && comparable_rtt(peer)) {
+                            idle_alternate = peer;
+                            break;
+                        }
+                    }
+                }
+                for (const auto& copy : {same_path, alternate_path, idle_alternate}) {
+                    if (copy && underlyin_sent(copy, nexting_packet.buffer, nexting_packet.length, {}, true)) {
+                        ppp::telemetry::Count("mux.intent.latency_copy", 1);
+                    }
+                }
             }
         }
 
@@ -4933,9 +5707,15 @@ namespace vmux {
 
             // Prefer the round-robin target when it currently has send credit;
             // otherwise use any free link so a busy target does not stall output.
-            vmux_linklayer_ptr linklayer = select_striped_linklayer();
+            const uint32_t cid = peek_connection_id(nexting_packet.buffer, nexting_packet.length);
+            const auto intent = flow_intent(cid);
+            vmux_linklayer_ptr linklayer =
+                (intent_routing_enabled() && ordering_mode_ == ordering_flow_v2 &&
+                    intent != ppp::app::mux::TcpIntent::Unknown)
+                    ? tx_link_pick(nexting_packet.length, false, 0, intent)
+                    : select_striped_linklayer();
             if (NULLPTR == linklayer || !linklayer->in_tx_links_ || !link_has_byte_credit(linklayer, nexting_packet.length)) {
-                linklayer = tx_link_pick(nexting_packet.length);
+                linklayer = tx_link_pick(nexting_packet.length, false, 0, intent);
             }
             if (NULLPTR == linklayer) {
                 drr_requeue_front(std::move(nexting_packet));
@@ -4962,8 +5742,13 @@ namespace vmux {
         // bulk data. Budget the drain so a ctrl flood cannot starve data for an
         // entire turn.
         size_t budget = tx_ctrl_budget_frames_ > 0 ? tx_ctrl_budget_frames_ : (size_t)PPP_MUX_TX_CTRL_BUDGET_FRAMES;
+        const auto control_intent = intent_routing_enabled() &&
+            ordering_mode_ == ordering_flow_v2
+            ? ppp::app::mux::TcpIntent::Latency
+            : ppp::app::mux::TcpIntent::Unknown;
         while (!tx_ctrl_queue_.empty() && budget > 0) {
-            vmux_linklayer_ptr linklayer = tx_link_pick(tx_ctrl_queue_.front().length, false);
+            vmux_linklayer_ptr linklayer = tx_link_pick(tx_ctrl_queue_.front().length,
+                false, 0, control_intent);
             if (NULLPTR == linklayer) {
                 return true; // no credit right now; a completion will re-drive us.
             }
@@ -4980,6 +5765,13 @@ namespace vmux {
                 ppp::telemetry::Count("mux.tx.ctrl.send_failed", 1);
                 tx_ctrl_queue_.emplace_front(std::move(nexting_packet));
                 continue;
+            }
+            if (intent_routing_enabled() && reliability_on_) {
+                const auto* header = reinterpret_cast<const vmux_hdr*>(nexting_packet.buffer.get());
+                if (header->cmd == cmd_syn || header->cmd == cmd_syn_ok) {
+                    const auto cid = ntohl(header->connection_id);
+                    intent_opening_frames_.insert_or_assign(cid, IntentOpeningFrame{nexting_packet, linklayer->id_});
+                }
             }
             --budget;
         }
@@ -5012,7 +5804,15 @@ namespace vmux {
         if (!rtx_pending_.empty()) {
             retransmit_pending(now_tick());
             if (base_.disposed_.load(std::memory_order_acquire)) return false;
-            if (!rtx_pending_.empty()) return true;
+            if (!rtx_pending_.empty()) {
+                // A bulk repair waiting for its own path credit must leave
+                // the interactive path usable by independent flow-v2 DSNs.
+                if (intent_routing_enabled() && ordering_mode_ == ordering_flow_v2 &&
+                    multipath_scheduler_policy_.load(std::memory_order_acquire) >= 0) {
+                    return process_tx_compat_packets(true);
+                }
+                return true;
+            }
         }
 
         if (multipath_scheduler_policy_.load(std::memory_order_acquire) >= 0) {
@@ -5345,7 +6145,7 @@ namespace vmux {
                 }
             }
 
-            if (live <= get_pool_floor() && (!trial || trial->schedulable())) {
+            if (live <= std::max(get_pool_floor(), get_pool_path_floor()) && (!trial || trial->schedulable())) {
                 return false;
             }
 
@@ -5359,6 +6159,12 @@ namespace vmux {
             uint64_t best_score = 0;
             for (const vmux_linklayer_ptr& l : rx_links_) {
                 if (!l || l->pool_primary_ || (trial ? (l != trial || l->drain_.retiring()) : !l->schedulable())) {
+                    continue;
+                }
+                if (get_pool_path_floor() > 0 && !l->path_id_.empty() &&
+                    std::none_of(rx_links_.begin(), rx_links_.end(), [&](const auto& peer) {
+                        return peer != l && peer && peer->schedulable() && peer->path_id_ == l->path_id_;
+                    })) {
                     continue;
                 }
 
@@ -5502,7 +6308,7 @@ namespace vmux {
             (!is_pool_lazy() && (!turbo_ || multipath_scheduler_policy_.load() >= 0))) return;
         PoolSample s;
         s.now = now;
-        s.floor = get_pool_floor();
+        s.floor = std::max(get_pool_floor(), get_pool_path_floor());
         s.limit = get_pool_hard_max();
         s.reliable = reliability_on_;
         s.offered = pool_offered_bytes_;
@@ -5511,6 +6317,20 @@ namespace vmux {
         s.pressure = tx_data_bytes_total_ != 0 && (s.reliable ||
             tx_data_frames_ >= std::max<size_t>(1, tx_queue_high_water_ / 2));
         s.idle = tx_data_frames_ == 0 && (!s.reliable || rtx_.bytes() == 0);
+        if (get_pool_path_floor() > 0) {
+            const auto delivered = pool_received_bulk_bytes_ - pool_previous_received_bulk_bytes_;
+            pool_previous_received_bulk_bytes_ = pool_received_bulk_bytes_;
+            const auto bulk_flows = std::count_if(flow_intents_.begin(), flow_intents_.end(),
+                [](const auto& flow) { return flow.second == ppp::app::mux::TcpIntent::Bandwidth; });
+            // The client dials new carriers for traffic in either direction.
+            // Count observed downloads as demand and compare their delivered
+            // rate before and during the same bounded trial used for uploads.
+            s.offered = pool_offered_bulk_bytes_ + pool_received_bulk_bytes_;
+            s.acked += pool_received_bulk_bytes_;
+            s.pressure = bulk_flows > 0 && (s.pressure || (bulk_flows > 1 && delivered >= (1u << 20)));
+            s.idle = bulk_flows == 0;
+            s.reprobe_after_idle = true;
+        }
         {
             SynchronizationObjectScope __SCOPE__(syncobj_);
             s.topology = pool_topology_;
@@ -5540,6 +6360,19 @@ namespace vmux {
         switch (const auto action = pool_controller_.Step(s); action) {
         case PoolAction::Hold: return;
         case PoolAction::Dial:
+            if (get_pool_path_floor() > 0) {
+                std::uint64_t most_payload = 0;
+                pool_trial_path_.clear();
+                for (const auto& [path, counters] : path_runtime_counters_) {
+                    if (!counters) continue;
+                    const auto payload = counters->rx_unique_payload_bytes.load(std::memory_order_relaxed) +
+                        counters->tx_unique_payload_bytes.load(std::memory_order_relaxed);
+                    if (payload > most_payload) {
+                        most_payload = payload;
+                        pool_trial_path_ = path;
+                    }
+                }
+            }
             pool_token_ = ++pool_next_token_;
             pool_dial_in_flight_ = pool_token_;
             ppp::telemetry::Count("mux.pool.dial.requested", 1);
@@ -5551,7 +6384,16 @@ namespace vmux {
             break;
         case PoolAction::Reject:
         case PoolAction::Inconclusive:
-            if (s.trial_attached) retire_linklayer_runtime(pool_trial_link_);
+            if (s.trial_attached) {
+                // Local send residency cannot reveal in-flight downloads on
+                // the peer. Keep the trial until the receiving workload is
+                // idle so shrinking cannot truncate its remote TCP queue.
+                if (get_pool_path_floor() > 0 && !s.idle && s.trial_ready) {
+                    pool_target_.store(static_cast<uint16_t>(s.live), std::memory_order_release);
+                } else {
+                    retire_linklayer_runtime(pool_trial_link_);
+                }
+            }
             ppp::telemetry::Count(action == PoolAction::Reject ? "mux.pool.gain.reject" : "mux.pool.gain.unknown", 1);
             break;
         case PoolAction::Shrink:
@@ -5966,6 +6808,8 @@ namespace vmux {
             skt->self_weak_ = skt;
             skt->tx_socket_ = sk;
             skts_[connection_id] = skt;
+            seed_flow_intent(connection_id, host, port);
+            trace_flow_open(*sk, connection_id, port);
             break;
         }
 

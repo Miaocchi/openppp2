@@ -389,7 +389,7 @@ static constexpr int                                                        PPP_
 static constexpr int                                                        PPP_MUX_INACTIVE_TIMEOUT        = 60;
 static constexpr int                                                        PPP_MUX_MIN_CONGESTIONS         = 1 << 20;
 static constexpr int                                                        PPP_MUX_DEFAULT_CONGESTIONS     = 128 << 20; /* 134217728 */
-static constexpr int                                                        PPP_MUX_FLOW_REORDER_BYTES      = 8 << 20;  /* 8 MiB per-connection reorder soft cap (flow v2); >= the per-flow send window, or reordering across carriers resets flows */
+static constexpr int                                                        PPP_MUX_FLOW_REORDER_BYTES      = 64 << 20; /* 64 MiB per-connection reorder soft cap (flow v2); heterogeneous carrier RTT/throughput can place more than one send window ahead of a narrow path */
 static constexpr int                                                        PPP_MUX_FLOW_REORDER_TIMEOUT    = 400;      /* gap wait timeout in ms (flow v2); near link RTT to bound stuck->self-heal */
 static constexpr int                                                        PPP_MUX_TX_FLOW_QUANTUM_BYTES  = 16 << 10; /* soft per-flow drain quantum before yielding to another cid (reduced from 64K to bound per-visit latency under Elephant+Mice) */
 static constexpr int                                                        PPP_MUX_TX_FLOW_MAX_VISIT_FRAMES = 8;      /* max frames popped from a single flow per DRR visit (prevents one flow monopolizing a drain turn) */

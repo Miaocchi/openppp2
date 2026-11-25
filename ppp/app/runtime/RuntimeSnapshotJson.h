@@ -205,6 +205,14 @@ namespace ppp {
 
                 inline void WriteRuntimeMultipath(Json::Value& root,
                     const ppp::app::multipath::RuntimeState& state) noexcept {
+                    const auto write_intent = [](Json::Value& object,
+                        const ppp::app::multipath::IntentRuntimeStats& intent) noexcept {
+                        object["latency"] = Json::UInt64(intent.latency);
+                        object["bandwidth"] = Json::UInt64(intent.bandwidth);
+                        object["unknown"] = Json::UInt64(intent.unknown);
+                        object["intent_flip_count"] = Json::UInt64(intent.intent_flip_count);
+                        object["credit_fallback_count"] = Json::UInt64(intent.credit_fallback_count);
+                    };
                     Json::Value value(Json::objectValue);
                     value["enabled"] = state.enabled;
                     value["policy"] = ToRuntimeJsonString(
@@ -283,6 +291,9 @@ namespace ppp {
                         }
                         value["links"] = std::move(links);
                     }
+                    Json::Value intent(Json::objectValue);
+                    write_intent(intent, state.intent);
+                    value["intent"] = std::move(intent);
                     root["multipath"] = std::move(value);
                 }
 
@@ -385,6 +396,24 @@ namespace ppp {
                             if (link.generation == 0 || std::any_of(state.links.begin(), state.links.end(),
                                 [&link](const auto& prior) { return prior.link_id == link.link_id; })) return false;
                             state.links.emplace_back(std::move(link));
+                        }
+                    }
+                    if (value.isMember("intent")) {
+                        const Json::Value& intent = value["intent"];
+                        if (!intent.isObject()) return false;
+                        const auto read_counter = [&intent](const char* name,
+                            std::uint64_t& output) noexcept {
+                            if (!intent.isMember(name)) return true;
+                            if (!intent[name].isUInt64()) return false;
+                            output = intent[name].asUInt64();
+                            return true;
+                        };
+                        if (!read_counter("latency", state.intent.latency) ||
+                            !read_counter("bandwidth", state.intent.bandwidth) ||
+                            !read_counter("unknown", state.intent.unknown) ||
+                            !read_counter("intent_flip_count", state.intent.intent_flip_count) ||
+                            !read_counter("credit_fallback_count", state.intent.credit_fallback_count)) {
+                            return false;
                         }
                     }
                     if (state.enabled && state.paths.empty() && !state.vmux_session_id) return false;

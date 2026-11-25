@@ -107,6 +107,35 @@ namespace ppp {
                     return SOCKS_ERR_ER;
                 }
 
+                static bool ReadSocksGreeting(boost::asio::ip::tcp::socket& socket,
+                    boost::asio::mutable_buffer buffer, ppp::coroutines::YieldContext& y) noexcept {
+                    const auto anchor = y.Arm();
+                    if (!anchor) return false;
+
+                    boost::system::error_code error;
+                    std::size_t received = 0;
+                    const bool posted = ppp::coroutines::asio::PostIfRunning(socket.get_executor(),
+                        [&socket, buffer, anchor, &error, &received]() noexcept {
+                            boost::asio::async_read(socket, buffer,
+                                [anchor, &error, &received](const boost::system::error_code& ec, std::size_t bytes) noexcept {
+                                    error = ec;
+                                    received = bytes;
+                                    anchor.R();
+                                });
+                        });
+                    if (!posted || !y.Suspend(anchor)) return false;
+                    if (!error && received == buffer.size()) return true;
+
+                    boost::system::error_code endpoint_error;
+                    const auto endpoint = socket.remote_endpoint(endpoint_error);
+                    ppp::telemetry::Log(ppp::telemetry::Level::kDebug, "socks",
+                        "method read failed peer_port=%u error=%d category=%s received=%u requested=%u",
+                        static_cast<unsigned>(endpoint_error ? 0 : endpoint.port()),
+                        error.value(), error.category().name(), static_cast<unsigned>(received),
+                        static_cast<unsigned>(buffer.size()));
+                    return false;
+                }
+
                 static bool PublishSocketWriteFailure(const std::shared_ptr<boost::asio::ip::tcp::socket>& socket) noexcept {
                     if (NULLPTR == socket) {
                         return ppp::diagnostics::SetLastError(ppp::diagnostics::ErrorCode::SessionTransportMissing);
@@ -458,7 +487,7 @@ namespace ppp {
                     }
 
                     Byte data[256];
-                    if (!ppp::coroutines::asio::async_read(*socket, boost::asio::buffer(data, 2), y)) {
+                    if (!ReadSocksGreeting(*socket, boost::asio::buffer(data, 2), y)) {
                         return PublishSocketReadFailure(socket);
                     }
 
@@ -489,7 +518,7 @@ namespace ppp {
                         return SOCKS_ERR_NO;
                     }
 
-                    if (!ppp::coroutines::asio::async_read(*socket, boost::asio::buffer(data, nmethod), y)) {
+                    if (!ReadSocksGreeting(*socket, boost::asio::buffer(data, nmethod), y)) {
                         return PublishSocketReadFailure(socket);
                     }
 

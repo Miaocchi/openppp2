@@ -213,6 +213,7 @@ namespace ppp {
                     std::uint64_t                                        connection_generation = 0;
                     bool                                                  failover = false;
                     bool                                                  resume = false;
+                    bool                                                  notify_carrier_leave = true;
                 };
                 struct MultipathSessionEntry final {
                     ~MultipathSessionEntry() noexcept;

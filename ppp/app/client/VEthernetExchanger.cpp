@@ -18,6 +18,7 @@
 #include <ppp/app/protocol/TransportAuthNegotiation.h>
 #include <ppp/app/mux/MuxTransportAdapter.h>
 #include <ppp/app/mux/MuxCoordinator.h>
+#include <ppp/app/mux/TcpIntentClassifier.h>
 #include <ppp/app/P2PCandidateAdapter.h>
 #include <ppp/diagnostics/LinkTelemetry.h>
 #include <ppp/coroutines/asio/asio.h>
@@ -1401,7 +1402,9 @@ namespace ppp {
                 }
 
                 Socket::SetWindowSizeIfNotZero(socket->native_handle(), configuration->tcp.cwnd, configuration->tcp.rwnd);
-                Socket::AdjustSocketOptional(*socket, protocol == boost::asio::ip::tcp::v4(), configuration->tcp.fast_open, configuration->tcp.turbo);
+                Socket::AdjustSocketOptional(*socket, protocol == boost::asio::ip::tcp::v4(),
+                    configuration->tcp.fast_open,
+                    configuration->tcp.turbo || configuration->mux.intent.enabled);
                 return socket;
             }
 
@@ -1792,11 +1795,19 @@ namespace ppp {
                 if (!multipath_paths_.GetPath(path_slot.path_index, path)) return nullptr;
 
                 std::array<std::uint8_t, 16> random_id{};
-                const auto make_id = [&random_id](const char* prefix, std::string& output) noexcept {
+                const auto make_id = [&random_id, &path](const char* prefix, std::string& output) noexcept {
                     if (RAND_bytes(random_id.data(), static_cast<int>(random_id.size())) != 1) return false;
                     static constexpr char hex[] = "0123456789abcdef";
                     try {
                         output.assign(prefix);
+                        if (std::string_view(prefix).rfind("carrier/", 0) == 0) {
+                            // Carry the configured path identity in the
+                            // carrier admission id so the server-side VMUX
+                            // preserves the same path partition for flow-v2
+                            // scheduling. The framing prefix remains intact.
+                            output.append(path.id);
+                            output.push_back('/');
+                        }
                         output.reserve(output.size() + random_id.size() * 2);
                         for (std::uint8_t value : random_id) {
                             output.push_back(hex[value >> 4]);
@@ -3228,6 +3239,29 @@ namespace ppp {
                         if (NULLPTR == mux) {
                             break;
                         }
+                        {
+                            ppp::app::mux::TcpIntentConfig intent;
+                            intent.enabled = configuration->mux.intent.enabled;
+                            intent.mode = configuration->mux.intent.mode;
+                            intent.window_ms = static_cast<std::uint64_t>(std::max(1, configuration->mux.intent.window_ms));
+                            intent.min_samples = static_cast<std::size_t>(std::max(1, configuration->mux.intent.min_samples));
+                            intent.hysteresis = static_cast<double>(configuration->mux.intent.hysteresis) / 100.0;
+                            intent.hold_ms = static_cast<std::uint64_t>(std::max(0, configuration->mux.intent.hold_ms));
+                            std::vector<ppp::app::mux::TcpIntentRule> rules;
+                            for (const auto& configured : configuration->mux.intent.rules) {
+                                const auto intent_value = configured.intent == "latency"
+                                    ? ppp::app::mux::TcpIntent::Latency
+                                    : configured.intent == "bandwidth"
+                                        ? ppp::app::mux::TcpIntent::Bandwidth
+                                        : ppp::app::mux::TcpIntent::Unknown;
+                                for (const int port : configured.ports) {
+                                    if (port < 1 || port > 65535 || intent_value == ppp::app::mux::TcpIntent::Unknown) continue;
+                                    rules.push_back({intent_value, static_cast<std::uint16_t>(port), static_cast<std::uint16_t>(port), {}});
+                                }
+                            }
+                            mux->set_intent_config(intent);
+                            mux->set_intent_rules(rules);
+                        }
                         const bool multipath_enabled = configuration->client.multipath.enabled;
                         std::weak_ptr<VEthernetExchanger> weak_self =
                             std::static_pointer_cast<VEthernetExchanger>(shared_from_this());
@@ -3336,7 +3370,7 @@ namespace ppp {
                                 uint16_t max_connections = mux->get_max_connections();
                                 // Advertise FLOW_V2 as an implementation capability, independent
                                 // of the current scheduler preset. Whether it is *used* is decided
-                                // later by mode_requires_flow_v2 + peer intersection.
+                                // later by the scheduler/intent request and peer intersection.
                                 Byte ordering_caps = (Byte)vmux::vmux_net::ordering_caps_flow_v2;
                                 ordering_caps |= (Byte)vmux::vmux_net::ordering_caps_write_fin;
                                 // Separately ask for flow_v2 when this client's own preset needs
@@ -3345,6 +3379,7 @@ namespace ppp {
                                 // under this client's multi-link competition.
                                 if (NULLPTR != configuration &&
                                     (configuration->client.multipath.enabled ||
+                                     configuration->mux.intent.enabled ||
                                      vmux::vmux_net::mode_requires_flow_v2(
                                          mux->get_mode(), configuration->mux.turbo))) {
                                     ordering_caps |= (Byte)vmux::vmux_net::ordering_caps_flow_v2_request;
@@ -3540,6 +3575,17 @@ namespace ppp {
                             // JoinedCarriers includes the primary independently of its mux channel.
                             const int child_limit = token ? 1 : std::max(0,
                                 static_cast<int>(mux->get_pool_target()) - static_cast<int>(multipath_paths_.JoinedCarriers()));
+                            std::optional<uint16_t> preferred_path;
+                            if (token && !mux->get_pool_trial_path().empty()) {
+                                for (uint16_t index = 0; index < ppp::configurations::MultipathConfiguration::MaxPaths; ++index) {
+                                    ppp::configurations::MultipathConfiguration::Path path;
+                                    if (!multipath_paths_.GetPath(index, path)) break;
+                                    if (std::string_view(path.id.data(), path.id.size()) == mux->get_pool_trial_path()) {
+                                        preferred_path = index;
+                                        break;
+                                    }
+                                }
+                            }
                             for (int i = 0; i < child_limit; ++i) {
                                 if (disposed_.load(std::memory_order_acquire) ||
                                     !mux_coordinator_->IsCurrent(mux) || mux->is_disposed()) break;
@@ -3555,7 +3601,8 @@ namespace ppp {
                                     break;
                                 }
                                 ppp::app::multipath::PathManager::Attempt path_slot;
-                                if (!multipath_paths_.BeginAttempt(Executors::GetTickCount(), path_slot, token != 0)) break;
+                                if (!multipath_paths_.BeginAttempt(Executors::GetTickCount(), path_slot,
+                                    token != 0, mux->get_pool_path_floor() != 0, preferred_path)) break;
                                 multipath_paths_.MarkAuthenticating(path_slot);
                                 std::shared_ptr<ppp::app::multipath::PathAttempt> path_attempt;
                                 ITransmissionPtr transmission = OpenMultipathCarrier(
@@ -4005,6 +4052,7 @@ namespace ppp {
                         state.reorder_events = mux_stats.reorder_events;
                         state.reorder_buffered_bytes = mux_stats.reorder_buffered_bytes;
                     }
+                    state.intent = mux_stats.intent;
                     state.links = std::move(mux_stats.links);
                     for (const auto& mux_path : mux_stats.paths) {
                         auto found = std::find_if(state.paths.begin(), state.paths.end(),
@@ -4263,6 +4311,10 @@ namespace ppp {
                                 if (configuration->client.multipath.enabled &&
                                     configuration->client.multipath.policy == "adaptive" && configuration->mux.turbo &&
                                     (ordering_caps & vmux::vmux_net::ordering_caps_lazy_pool) != 0) {
+                                    if (configuration->mux.intent.enabled) {
+                                        mux->set_pool_path_floor(static_cast<uint16_t>(
+                                            configuration->client.multipath.paths.size()));
+                                    }
                                     mux->enable_lazy_pool();
                                 }
                             }

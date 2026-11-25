@@ -11,6 +11,7 @@
 #include <ppp/app/mux/MuxFlowContextAdmission.h>
 #include <ppp/app/mux/IMuxTransport.h>
 #include <ppp/app/mux/MuxLinkDrainState.h>
+#include <ppp/app/mux/MuxIntentPathProbe.h>
 #include <ppp/app/mux/MuxRuntimeState.h>
 #include <ppp/app/mux/MuxAckTracker.h>
 #include <ppp/app/mux/MuxRetransmitBuffer.h>
@@ -18,6 +19,7 @@
 #include <ppp/app/mux/MuxRxBackpressure.h>
 #include <ppp/app/mux/MuxRxQueueLimit.h>
 #include <ppp/app/mux/MuxTxBackpressure.h>
+#include <ppp/app/mux/TcpIntentClassifier.h>
 #include <ppp/app/multipath/PathPacingPolicy.h>
 #include <ppp/app/multipath/Scheduler.h>
 #include <ppp/app/multipath/VmuxPathEstimator.h>
@@ -61,6 +63,7 @@ namespace vmux {
             uint64_t reorder_buffered_bytes = 0;
             std::vector<MultipathPathRuntimeStats> paths;
             std::vector<ppp::app::multipath::RuntimeCarrierState> links;
+            ppp::app::multipath::IntentRuntimeStats intent;
         };
 
         /** @brief Callback used when an async connect attempt finishes. */
@@ -176,6 +179,8 @@ namespace vmux {
             bool                                                                    pacing_probed_ = false; ///< Carrier pacing capability already queried.
             bool                                                                    pacing_supported_ = false; ///< Carrier accepted automatic TCP pacing.
             uint64_t last_rtt_sample_ms_ = 0;
+            uint64_t last_delivery_ack_ms_ = 0;
+            ppp::app::mux::MuxIntentPathProbe intent_path_probe_;
             uint64_t last_retransmit_ms_ = 0;
             uint64_t last_stall_check_ms_ = 0;
             uint64_t last_pressure_sample_ms_ = 0;
@@ -321,6 +326,10 @@ namespace vmux {
                 }
             }
 
+            // Bound after the RTX window accepts a reliable PUSH. The original
+            // write may finish after this DSN has already reached the peer.
+            uint64_t                                                                retained_payload_key = 0;
+
         private:
             std::mutex                                                              mutex_;
             bool                                                                    finished_ = false;
@@ -394,6 +403,7 @@ namespace vmux {
         typedef vmux::unordered_map<uint32_t, vmux_skt_ptr>                         vmux_skt_map;
         typedef vmux::unordered_map<uint32_t, flow_rx_context>                      vmux_flow_map;
         typedef vmux::unordered_map<uint32_t, flow_tx_context>                      vmux_tx_flow_map;
+        typedef vmux::unordered_map<uint32_t, ppp::app::mux::TcpIntentClassifier>   vmux_intent_map;
         typedef vmux::list<uint32_t>                                                vmux_tx_active_list;
     public:
         enum mux_mode {
@@ -456,6 +466,12 @@ namespace vmux {
             status_.pool_hard_max = status_.max_connections;
             pool_lazy_.store(true, std::memory_order_release);
         }
+        void set_pool_path_floor(uint16_t count) noexcept {
+            pool_path_floor_.store(std::min(count, status_.max_connections), std::memory_order_release);
+        }
+        uint16_t get_pool_path_floor() noexcept {
+            return is_pool_lazy() ? pool_path_floor_.load(std::memory_order_acquire) : 0;
+        }
         /** @brief Latch before establishment; return only the supported bit for the MUX reply. */
         Byte                                                                        apply_write_fin_cap(Byte peer_caps) noexcept {
             write_fin_on_ = (peer_caps & ordering_caps_write_fin) != 0;
@@ -469,8 +485,10 @@ namespace vmux {
         void set_pool_grow_callback(PoolGrowCallback cb) noexcept { pool_grow_ = std::move(cb); }
         uint16_t get_pool_target() noexcept {
             const auto target = pool_target_.load(std::memory_order_acquire);
-            return target ? target : get_pool_floor();
+            return std::max({target, get_pool_path_floor(), get_pool_floor()});
         }
+        // Read on the mux strand when opening the current pool trial.
+        const std::string& get_pool_trial_path() const noexcept { return pool_trial_path_; }
         // Completion endpoints run on the mux strand; expired requests may not attach.
         bool add_pool_trial_linklayer(const IMuxTransportPtr& transport, vmux_linklayer_ptr& link,
             const vmux_native_add_linklayer_after_success_before_callback& cb, uint64_t token) noexcept;
@@ -562,6 +580,19 @@ namespace vmux {
             multipath_scheduler_policy_.store(enabled ? (failover ? 1 : 0) : -1,
                 std::memory_order_release);
         }
+        /** Enable the opt-in TCP intent classifier and path policy. */
+        void                                                                        set_intent_config(const ppp::app::mux::TcpIntentConfig& config) noexcept;
+        /** Replace the destination rules used by subsequently opened flows. */
+        void                                                                        set_intent_rules(const std::vector<ppp::app::mux::TcpIntentRule>& rules) noexcept;
+        bool                                                                        intent_routing_enabled() const noexcept {
+            return intent_routing_enabled_.load(std::memory_order_acquire);
+        }
+        /** Seed a flow classifier from its destination metadata. Strand-affine. */
+        void                                                                        seed_flow_intent(uint32_t connection_id, const template_string& host, int port) noexcept;
+        /** Observe one bounded local TCP read/write event. Strand-affine. */
+        void                                                                        observe_flow_intent(uint32_t connection_id, std::size_t bytes,
+            std::size_t chunk_bytes, bool outbound) noexcept;
+        ppp::app::mux::TcpIntent                                                   flow_intent(uint32_t connection_id) const noexcept;
         uint32_t                                                                    get_carrier_resume_remaining_ms() noexcept {
             const std::uint64_t deadline = carrier_resume_deadline_ms_.load(std::memory_order_acquire);
             const std::uint64_t now = now_tick();
@@ -706,9 +737,11 @@ namespace vmux {
         /** @brief Remove a carrier from tx_links_ (no-op when not listed). */
         void                                                                        tx_link_withdraw(const vmux_linklayer_ptr& linklayer) noexcept;
         /** @brief Listed carrier with credit for @p length and the least bytes in flight (ties: lower SRTT); null when none. */
-        vmux_linklayer_ptr                                                          tx_link_pick(int length, bool new_payload = false, uint16_t avoid_link = 0) noexcept;
+        vmux_linklayer_ptr                                                          tx_link_pick(int length, bool new_payload = false, uint16_t avoid_link = 0,
+            ppp::app::mux::TcpIntent intent = ppp::app::mux::TcpIntent::Unknown) noexcept;
         /** @brief Hand one queued frame to a carrier (assigning a deferred compat sequence first); keeps the carrier listed while it has room. */
         bool                                                                        tx_send_on(const vmux_linklayer_ptr& linklayer, tx_packet& packet) noexcept;
+        bool                                                                        send_intent_path_probe(const vmux_linklayer_ptr& linklayer, Byte kind, uint32_t token) noexcept;
         /** @brief Assign the deferred compat global sequence of a frame that is about to be sent. */
         void                                                                        tx_assign_seq(tx_packet& packet) noexcept;
         /** @brief Send packet to one specific underlying link-layer endpoint. */
@@ -857,7 +890,7 @@ namespace vmux {
         static uint32_t                                                             peek_connection_id(const std::shared_ptr<Byte>& packet, int packet_length) noexcept;
 
         /** @brief Drain queued transmit packets using the legacy scheduler. */
-        bool                                                                        process_tx_compat_packets() noexcept;
+        bool                                                                        process_tx_compat_packets(bool interactive_only = false) noexcept;
         /** @brief Drain the high-priority control-frame queue first (flow v2).
          *  @return false on a hard send failure, true otherwise.
          *  @details Control frames (syn/syn_ok/acceleration/keep_alived/mux_mode_set)
@@ -913,7 +946,7 @@ namespace vmux {
         /** @brief Total queued data bytes across all per-flow TX queues. */
         size_t                                                                      tx_data_bytes() const noexcept;
         /** @brief Pop next data frame via deficit round-robin; false if none/credit. */
-        bool                                                                        drr_pop_next(tx_packet& out) noexcept;
+        bool                                                                        drr_pop_next(tx_packet& out, bool interactive_only = false) noexcept;
         /** @brief Return a frame to the front of its flow queue (send failed). */
         void                                                                        drr_requeue_front(tx_packet&& packet) noexcept;
         /** @brief Return a frame to its flow queue and park the flow off the DRR ring until an ACK frees retransmit-window bytes. */
@@ -933,11 +966,14 @@ namespace vmux {
         void                                                                        publish_multipath_path_runtime_stats() noexcept;
         uint64_t                                                                     available_write_credit(vmux_linklayer& link, uint64_t frame_bytes) noexcept;
         bool                                                                         can_route_write(const vmux_linklayer& link, uint64_t frame_bytes) noexcept;
+        void                                                                        account_flow_intent(uint32_t connection_id,
+            ppp::app::mux::TcpIntent intent) noexcept;
         uint64_t                                                                     local_send_credit(vmux_linklayer& link, uint64_t frame_bytes = 0) noexcept;
         uint64_t                                                                     adaptive_send_credit(vmux_linklayer& link,
             const ppp::app::multipath::PathTelemetry& telemetry, size_t live_carriers, uint64_t frame_bytes = 0) noexcept;
         uint64_t                                                                     refresh_link_write_high_water(vmux_linklayer& link, uint64_t now) noexcept;
         void                                                                         collect_stalled_link_retries(uint64_t now) noexcept;
+        void                                                                         recover_intent_path_timeouts(uint64_t now) noexcept;
         void                                                                         note_link_rtt(vmux_linklayer& link, uint64_t sample, uint64_t now) noexcept;
         ppp::app::multipath::PathTelemetry                                           get_link_telemetry(const vmux_linklayer& link, uint64_t now) const noexcept;
         /** @brief Apply or clear this client-role carrier's wire pacing cap from fresh capacity (strand-affine; server carriers stay uncapped). */
@@ -1021,6 +1057,7 @@ namespace vmux {
          */
         mutable std::mutex                                                          tx_completion_mutex_;
         vmux::unordered_set<tx_completion_ptr>                                      pending_tx_completions_; ///< O(1) register/finish (was a list scanned on every completed frame).
+        vmux::unordered_map<uint64_t, tx_completion_ptr>                              pending_payload_tx_completions_;
         bool                                                                        close_requested_ = false;
         mutable std::mutex                                                          runtime_state_mutex_; ///< Guards runtime_state_ writes; prefer strand.
         ppp::app::mux::MuxRuntimeState                                               runtime_state_;       ///< Authoritative runtime facts.
@@ -1031,6 +1068,11 @@ namespace vmux {
         StrandPtr                                                                   strand_;            ///< Serialized strand for vmux event loop.
 
         vmux_tx_flow_map                                                            tx_flows_;          ///< connection_id -> per-flow TX queue + DRR deficit (strand-affine).
+        vmux_intent_map                                                             intent_classifiers_; ///< connection_id -> bounded TCP intent classifier.
+        vmux::unordered_map<uint32_t, ppp::app::mux::TcpIntent>                    flow_intents_;      ///< Sticky intent by logical connection.
+        ppp::app::mux::TcpIntentConfig                                               intent_config_;
+        std::vector<ppp::app::mux::TcpIntentRule>                                   intent_rules_;
+        std::atomic<bool>                                                           intent_routing_enabled_{false};
         vmux_tx_active_list                                                         active_tx_flows_;   ///< RR ring of cids with non-empty TX queues (strand-affine).
         vmux_tx_active_list                                                         tx_rtx_parked_flows_; ///< cids held off the ring by the retransmit send window; resumed on ACK (strand-affine).
         size_t                                                                      tx_data_frames_ = 0; ///< Aggregate data frame count across tx_flows_ (for high-water / turbo).
@@ -1072,12 +1114,25 @@ namespace vmux {
         uint64_t pool_next_token_ = 0, pool_token_ = 0, pool_topology_ = 0;
         uint64_t pool_dial_in_flight_ = 0; // May outlive the evaluation deadline; never overlap dials.
         uint64_t pool_offered_bytes_ = 0, pool_retransmitted_bytes_ = 0;
+        uint64_t pool_offered_bulk_bytes_ = 0;
+        uint64_t pool_received_bulk_bytes_ = 0;
+        uint64_t pool_previous_received_bulk_bytes_ = 0;
+        std::string pool_trial_path_;
         std::atomic<uint16_t> pool_target_{0}; // A trial is not a committed replenishment target.
+        std::atomic<uint16_t> pool_path_floor_{0};
 
         vmux_linklayer_vector                                                       rx_links_;          ///< All link-layer endpoints available for inbound.
         vmux_linklayer_list                                                         tx_links_;          ///< Link-layer endpoints ordered by transmit usage.
         vmux::unordered_map<std::string, std::shared_ptr<vmux_linklayer::PathRuntimeCounters>> path_runtime_counters_;
         std::shared_ptr<const MultipathRuntimeStats>                                multipath_path_runtime_snapshot_;
+        ppp::app::multipath::IntentRuntimeStats                                      intent_runtime_stats_;
+        vmux::unordered_set<uint32_t>                                                intent_accounted_flows_;
+        struct IntentOpeningFrame {
+            rx_packet packet;
+            uint16_t carrier_id = 0;
+        };
+        vmux::unordered_map<uint32_t, IntentOpeningFrame>                            intent_opening_frames_;
+        ppp::app::mux::MuxAckTracker                                                intent_remote_open_ids_;
         std::atomic<uint64_t>                                                       multipath_runtime_session_id_{0};
         uint64_t                                                                    next_carrier_generation_ = 0;
         std::atomic<bool>                                                           carrier_resume_enabled_{false};
@@ -1117,6 +1172,8 @@ namespace vmux {
         std::atomic<int>                                                            multipath_scheduler_policy_{-1};
         ppp::app::multipath::PathScheduler                                          multipath_scheduler_{10};
         uint64_t                                                                    scheduler_selection_sequence_ = 0;
+        uint64_t                                                                    bandwidth_reprobe_after_ms_ = 0;
+        uint64_t                                                                    bandwidth_pressure_since_ms_ = 0;
         vmux::unordered_map<uint32_t, ppp::app::mux::MuxAckTracker>                 ack_trackers_;      ///< Received-sequence trackers; cid 0 = compat global space (strand-affine).
         uint32_t                                                                    ack_pending_count_ = 0;      ///< Reliable frames received since the last emitted ACK.
         uint64_t                                                                    ack_first_pending_tick_ = 0; ///< Tick the oldest un-ACKed frame arrived (delayed-ACK base).

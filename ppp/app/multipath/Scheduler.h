@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "PathControlTypes.h"
@@ -32,6 +33,12 @@ public:
         std::uint64_t sent_payload_bytes = 0;
         std::optional<std::uint64_t> send_credit_bytes;
         std::optional<std::uint64_t> rtt_ms;
+        // Stable RTT floor used by latency intent routing. The current SRTT
+        // includes transient queueing and can remain elevated after a bulk
+        // burst has moved elsewhere.
+        std::optional<std::uint64_t> min_rtt_ms;
+        std::uint64_t intent_probe_rtt_ms = 0;
+        bool intent_probe_timed_out = false;
         std::optional<std::uint64_t> delivery_rate_bytes_per_second;
         std::optional<std::uint64_t> throughput_bytes_per_second;
         std::uint64_t last_active_ms = 0;
@@ -49,6 +56,9 @@ public:
         std::uint64_t jitter_ms = 0;
         unsigned scheduling_weight = 100;
         std::uint64_t generation = 0;
+        // Stable topology identity when the transport exposes one. The
+        // scheduler keeps this optional so legacy callers remain id-only.
+        std::string path_id;
     };
 
     struct Selection final {
@@ -729,6 +739,9 @@ public:
             now_ms - snapshot.telemetry.updated_ms <= MetricsMaxAgeMs &&
             snapshot.telemetry.confidence > 0;
         if (fresh) {
+            if (snapshot.telemetry.min_rtt_ms != 0) {
+                candidate.min_rtt_ms = snapshot.telemetry.min_rtt_ms;
+            }
             if (snapshot.telemetry.srtt_ms != 0) {
                 candidate.rtt_ms = snapshot.telemetry.srtt_ms;
             } else if (snapshot.telemetry.min_rtt_ms != 0) {

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 namespace ppp::app::multipath {
@@ -47,6 +48,10 @@ namespace ppp::app::multipath {
         bool Start(const ppp::configurations::MultipathConfiguration& configuration) noexcept;
         void Stop() noexcept;
         bool BeginAttempt(std::uint64_t now_ms, Attempt& attempt, bool pool_trial = false) noexcept;
+        bool BeginAttempt(std::uint64_t now_ms, Attempt& attempt, bool prefer_unused_path,
+                          std::optional<std::uint16_t> preferred_path) noexcept;
+        bool BeginAttempt(std::uint64_t now_ms, Attempt& attempt, bool pool_trial,
+                          bool prefer_unused_path, std::optional<std::uint16_t> preferred_path) noexcept;
         bool MarkAuthenticating(const Attempt& attempt) noexcept;
         bool MarkJoined(const Attempt& attempt, const std::shared_ptr<void>& lifetime = nullptr) noexcept;
         bool Fail(const Attempt& attempt, std::uint64_t now_ms, Failure failure) noexcept;

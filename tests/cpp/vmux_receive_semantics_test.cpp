@@ -452,6 +452,17 @@ struct vmux_net_test_access {
         });
     }
 
+    static vmux_net::vmux_linklayer_ptr AttachLabeledTransport(vmux_net& mux,
+        const ppp::app::mux::IMuxTransportPtr& transport, std::uint16_t id) {
+        return RunOnStrand(mux, [&]() -> vmux_net::vmux_linklayer_ptr {
+            vmux_net::vmux_linklayer_ptr link;
+            if (!mux.attach_linklayer_locked(transport, link)) return {};
+            link->id_ = id;
+            link->handshake_complete_ = true;
+            return link;
+        });
+    }
+
     static void PublishPathRuntimeStats(
         vmux_net& mux,
         const std::string& path_id,
@@ -590,8 +601,9 @@ struct vmux_net_test_access {
         RunOnStrandVoid(mux, [&]() { mux.tx_link_withdraw(link); });
     }
 
-    static vmux_net::vmux_linklayer_ptr PickLink(vmux_net& mux, int len) {
-        return RunOnStrand(mux, [&]() { return mux.tx_link_pick(len); });
+    static vmux_net::vmux_linklayer_ptr PickLink(vmux_net& mux, int len,
+        ppp::app::mux::TcpIntent intent = ppp::app::mux::TcpIntent::Unknown) {
+        return RunOnStrand(mux, [&]() { return mux.tx_link_pick(len, false, 0, intent); });
     }
 
     static bool TrackOutstanding(vmux_net& mux, std::uint16_t id, int bytes) {
@@ -623,6 +635,7 @@ struct vmux_net_test_access {
         return RunOnStrand(mux, [&]() {
             std::vector<std::uint8_t> payload(static_cast<std::size_t>(payload_len), 'p');
             return mux.post_internal(vmux_net::cmd_push, payload.data(), payload_len, cid, false, callback);
+
         });
     }
 
@@ -716,6 +729,40 @@ struct vmux_net_test_access {
         RunOnStrandVoid(mux, [&]() {
             mux.rtx_max_attempts_ = attempts;
             mux.srtt_ms_ = srtt;
+        });
+    }
+
+    static void SetFlowIntent(vmux_net& mux, std::uint32_t cid, ppp::app::mux::TcpIntent intent) {
+        RunOnStrandVoid(mux, [&]() { mux.flow_intents_[cid] = intent; });
+    }
+
+    static void SetBandwidthTrialStart(vmux_net& mux, std::uint64_t tick) {
+        RunOnStrandVoid(mux, [&]() { mux.bandwidth_reprobe_after_ms_ = tick; });
+    }
+
+    static void SetBandwidthPressureSince(vmux_net& mux, std::uint64_t tick) {
+        RunOnStrandVoid(mux, [&]() { mux.bandwidth_pressure_since_ms_ = tick; });
+    }
+
+    static void PostOpeningAndAck(vmux_net& mux, std::uint32_t cid) {
+        RunOnStrandVoid(mux, [&]() {
+            const char host[] = "127.0.0.1:80";
+            vmux_net::PostInternalAsynchronousCallback none;
+            if (!mux.post_internal(vmux_net::cmd_syn, host, sizeof(host) - 1, cid, false, none)) {
+                throw std::runtime_error("post SYN");
+            }
+            const auto now = mux.now_tick();
+            mux.note_ack_pending(cid + 1, 1, now);
+            mux.maybe_send_ack(now, true);
+        });
+    }
+
+    static void RecoverIntentTimeout(vmux_net& mux, const vmux_net::vmux_linklayer_ptr& link,
+        std::uint64_t elapsed_ms = 0) {
+        RunOnStrandVoid(mux, [&]() {
+            const auto now = mux.now_tick();
+            link->intent_path_probe_.Sent(now - 1000);
+            mux.recover_intent_path_timeouts(now + elapsed_ms);
         });
     }
 
@@ -1848,15 +1895,105 @@ void TestPausedCarrierExitReleasesPause() {
 class SchedulerTestTransport final : public ppp::app::mux::IMuxTransport {
 public:
     bool linked = true;
+    std::string path_id;
     ITransmissionPtr transmission;
     bool IsLinked() noexcept override { return linked; }
     ContextPtr GetContext() noexcept override { return {}; }
     StrandPtr GetStrand() noexcept override { return {}; }
     ITransmissionPtr GetTransmission() noexcept override { return transmission; }
+    const std::string& GetPathId() noexcept override { return path_id; }
     ppp::Int128 GetId() noexcept override { return 0; }
     void Update() noexcept override {}
     void Dispose() noexcept override { linked = false; }
 };
+
+void TestIntentBandwidthFallbackReservesPrimaryLatencyPath() {
+    using Access = vmux::vmux_net_test_access;
+    using ppp::app::mux::TcpIntent;
+    auto mux = MakeMux();
+    Access::ConfigureFlowV2(*mux, 65536, 1000);
+    Access::EnableFlowReliability(*mux);
+    ppp::app::mux::TcpIntentConfig config;
+    config.enabled = true;
+    mux->set_intent_config(config);
+    mux->set_multipath_scheduler_policy(true, false);
+    const auto attach = [&](std::uint16_t id, const char* path, std::uint64_t rtt) {
+        auto transport = std::make_shared<SchedulerTestTransport>();
+        transport->path_id = path;
+        auto link = Access::AttachLabeledTransport(*mux, transport, id);
+        Require(link && link->path_id_ == path, "use path identity from the carrier being attached");
+        const auto tick = ppp::threading::Executors::GetTickCount() - 1500;
+        link->intent_path_probe_.Sent(tick);
+        Require(link->intent_path_probe_.Acknowledge(static_cast<std::uint32_t>(tick), tick + rtt),
+            "sample the attached path");
+        return link;
+    };
+    const auto primary = attach(1, "path1", 50);
+    const auto alternate = attach(2, "path2", 80);
+    const auto bulk = attach(3, "path3", 155);
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Bandwidth) == bulk, "bulk starts on the bulk path");
+    bulk->has_rtt_sample_ = true;
+    bulk->min_rtt_ms_ = 155;
+    bulk->srtt_ms_ = 512;
+    bulk->last_rtt_sample_ms_ = ppp::threading::Executors::GetTickCount();
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Bandwidth) == bulk,
+        "an inflated RTT on an empty bulk carrier must not postpone its next trial");
+    Require(Access::TrackOutstanding(*mux, bulk->id_, PPP_MUX_LINK_BYTE_HIGH_WATER),
+        "record in-flight data for the saturated bulk carrier");
+    bulk->path_runtime_counters_->tx_unique_payload_bytes.store(5u << 20, std::memory_order_relaxed);
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Bandwidth) == bulk,
+        "initial RTT pressure does not immediately demote the preferred path");
+    Access::SetBandwidthPressureSince(*mux, ppp::threading::Executors::GetTickCount() -
+        ppp::app::mux::MuxIntentPathProbe::IntervalMs);
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Bandwidth) == alternate,
+        "pressure through a probe interval demotes a congested preferred path");
+    Access::SetBandwidthTrialStart(*mux, ppp::threading::Executors::GetTickCount() -
+        ppp::app::mux::MuxIntentPathProbe::IntervalMs);
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Bandwidth) == alternate,
+        "renewed pressure after a bounded recovery trial immediately returns bulk to the alternate path");
+    Access::SetBandwidthTrialStart(*mux, 0);
+    bulk->intent_path_probe_.Sent(ppp::threading::Executors::GetTickCount() - 700);
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Bandwidth) == alternate, "bulk fallback uses the child path");
+    Require(Access::TrackOutstanding(*mux, primary->id_, PPP_MUX_LINK_BYTE_HIGH_WATER),
+        "large frames filled the peer-ACK window of the primary latency path");
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Latency) == alternate,
+        "a phase-shifted latency flow can use another path without changing its classification");
+    Require(Access::PickLink(*mux, 512, TcpIntent::Latency) == primary, "primary remains free for latency");
+
+    const auto now = ppp::threading::Executors::GetTickCount();
+    bulk->intent_path_probe_.Sent(now - 155);
+    Require(bulk->intent_path_probe_.Acknowledge(static_cast<std::uint32_t>(now - 155), now),
+        "the bulk path has a fresh RTT sample again");
+    bulk->srtt_ms_ = 155;
+    Require(Access::TrackOutstanding(*mux, bulk->id_, PPP_MUX_LINK_BYTE_HIGH_WATER),
+        "the recovering bulk path has filled its trial window");
+    Access::SetBandwidthTrialStart(*mux, now);
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Bandwidth) == alternate,
+        "a depleted trial window leaves the alternate bandwidth path usable");
+    Access::SetBandwidthTrialStart(*mux, now - ppp::app::mux::MuxIntentPathProbe::IntervalMs);
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Bandwidth) == bulk,
+        "the preferred path resumes full scheduling after a healthy trial");
+
+    const auto spare = attach(4, "path2", 80);
+    const auto expire_probe = [now](const auto& link, uint64_t rtt) {
+        auto& probe = link->intent_path_probe_;
+        probe = {};
+        const auto sent = now - 1500;
+        probe.Sent(sent);
+        Require(probe.Acknowledge(static_cast<std::uint32_t>(sent), sent + rtt), "sample before loss");
+        probe.Sent(now - 700);
+    };
+    expire_probe(bulk, 155);
+    Access::SetQueuedBytes(alternate, 16 * PPP_MUX_LINK_BYTE_HIGH_WATER);
+    Require(!Access::PickLink(*mux, 16384, TcpIntent::Bandwidth),
+        "busy bulk fallback keeps the last spare on its path for latency");
+    expire_probe(primary, 50);
+    Require(Access::PickLink(*mux, 512, TcpIntent::Latency) == spare,
+        "interactive traffic can use the spare when its preferred path fails");
+    expire_probe(alternate, 80);
+    Require(Access::PickLink(*mux, 16384, TcpIntent::Bandwidth) == spare,
+        "the only surviving carrier on the alternate path still serves bulk");
+}
 
 // Capture exactly what the VMUX write pump gives the surviving carrier.
 class CaptureTransmission final : public ppp::transmissions::ITransmission {
@@ -1866,6 +2003,9 @@ public:
     std::vector<vmux::vmux_net_test_access::WireFrame> frames;
     bool use_encoded_write_queue = false;
     unsigned encoded_writes = 0;
+    bool hold_write = false;
+    AsynchronousWriteCallback pending_write;
+
     bool ShiftToScheduler() noexcept override { return false; }
     boost::asio::ip::tcp::endpoint GetRemoteEndPoint() noexcept override { return {}; }
     std::shared_ptr<Byte> DoReadBytes(YieldContext&, int) noexcept override { return {}; }
@@ -1879,7 +2019,12 @@ public:
         auto copy = ppp::make_shared_alloc<Byte>(size);
         std::memcpy(copy.get(), data, size);
         frames.push_back({copy, size, false});
-        cb(true);
+        if (hold_write) {
+            pending_write = cb;
+        }
+        else {
+            cb(true);
+        }
         return true;
     }
 };
@@ -1958,6 +2103,230 @@ void TestAcceleratedCarrierWriteCredit() {
     Require(completions == 1 && !success && primary_wire->encoded_writes == 1 && !primary->connection->IsLinked() &&
         backup->connection->IsLinked() && !Access::IsDisposed(*mux),
         "actual logical rejection fails the waiter once and isolates only the rejecting carrier");
+
+void TestReliableFlowWriteFailurePreservesRetainedPayload() {
+    using Access = vmux::vmux_net_test_access;
+    const auto check = [](bool survivor, bool acknowledged) {
+        auto sender = MakeMux();
+        Access::ConfigureFlowV2(*sender, 65536, 1000);
+        Access::EnableFlowReliability(*sender);
+        const auto attach = [&](std::uint16_t id) {
+            auto link = Access::MakeDeadLink(true);
+            auto transport = std::make_shared<SchedulerTestTransport>();
+            auto wire = std::make_shared<CaptureTransmission>(
+                sender->get_context(), sender->get_strand(), sender->AppConfiguration);
+            transport->transmission = wire;
+            link->connection = transport;
+            link->id_ = id;
+            Access::AttachLink(*sender, link);
+            return std::make_pair(link, wire);
+        };
+
+        auto [lost, lost_wire] = attach(1);
+        lost_wire->hold_write = true;
+        constexpr std::uint32_t cid = 7;
+        Access::InstallQueueOnlySkt(sender, cid);
+        std::vector<bool> completions;
+        Require(Access::PostPush(*sender, cid, 4096, [&](bool ok) { completions.push_back(ok); }),
+            "post payload with a coupled completion");
+        DrainContext(sender);
+        Require(Access::RtxSize(*sender) == 1 && lost_wire->pending_write && completions.empty(),
+            "payload retained while the original write is pending");
+
+        std::shared_ptr<CaptureTransmission> live_wire;
+        if (survivor) live_wire = attach(2).second;
+        if (acknowledged) {
+            Access::InjectAck(*sender, cid, 2, 2, ppp::threading::Executors::GetTickCount());
+            Require(completions.empty(), "an ACK outside the retained DSN does not resume the read pump");
+            Access::InjectAck(*sender, cid, 1, 1, ppp::threading::Executors::GetTickCount());
+            Require(Access::RtxSize(*sender) == 0, "ACK releases payload before write completion");
+            Require(completions == std::vector<bool>{true},
+                "peer delivery resumes the read pump while the original write is still pending");
+            Access::InjectAck(*sender, cid, 1, 1, ppp::threading::Executors::GetTickCount());
+            Require(completions.size() == 1, "duplicate ACK does not resume the read pump a second time");
+        }
+        auto fail_write = std::move(lost_wire->pending_write);
+        Access::RunOnStrandVoid(*sender, [&]() { fail_write(false); });
+        DrainContext(sender);
+        Require(completions.size() == 1, "write callback completes exactly once");
+        Require(completions.front() == survivor, acknowledged
+            ? "an ACKed payload remains accepted after its carrier fails"
+            : "recoverable carrier failure preserves the stream and last-carrier failure propagates");
+        Require(lost->exited_, "failed carrier exits");
+        if (survivor && !acknowledged) {
+            Require(live_wire->frames.size() == 1, "surviving carrier writes the retained frame");
+            const auto& original = lost_wire->frames.front();
+            const auto& replay = live_wire->frames.front();
+            Require(original.length == replay.length &&
+                std::memcmp(original.buffer.get(), replay.buffer.get(), original.length) == 0,
+                "retransmission preserves the exact payload and DSN");
+        }
+        if (acknowledged) {
+            Require(live_wire->frames.empty(), "do not replay an already acknowledged frame");
+        }
+    };
+    check(true, false);
+    check(true, true);
+    check(false, false);
+}
+
+void TestBulkRepairDoesNotBlockInteractiveFlow() {
+    using Access = vmux::vmux_net_test_access;
+    using ppp::app::mux::TcpIntent;
+    auto sender = MakeMux();
+    Access::ConfigureFlowV2(*sender, 65536, 1000);
+    Access::EnableFlowReliability(*sender);
+    ppp::app::mux::TcpIntentConfig config;
+    config.enabled = true;
+    sender->set_intent_config(config);
+    sender->set_multipath_scheduler_policy(true, false);
+
+    const auto attach = [&](std::uint16_t id, const char* path) {
+        auto link = Access::MakeDeadLink(true);
+        auto transport = std::make_shared<SchedulerTestTransport>();
+        auto wire = std::make_shared<CaptureTransmission>(
+            sender->get_context(), sender->get_strand(), sender->AppConfiguration);
+        transport->transmission = wire;
+        link->connection = transport;
+        link->id_ = id;
+        link->path_id_ = path;
+        Access::AttachLink(*sender, link);
+        return std::make_pair(link, wire);
+    };
+    auto [primary, primary_wire] = attach(1, "path1");
+    auto [alternate, alternate_wire] = attach(2, "path2");
+    auto [bulk, bulk_wire] = attach(3, "path3");
+    auto [lost, lost_wire] = attach(4, "path3");
+    Access::SetQueuedBytes(alternate, 16 * PPP_MUX_LINK_BYTE_HIGH_WATER);
+    Access::SetQueuedBytes(bulk, 16 * PPP_MUX_LINK_BYTE_HIGH_WATER);
+    constexpr std::uint32_t bulk_cid = 7;
+    constexpr std::uint32_t web_cid = 8;
+    Access::SetFlowIntent(*sender, bulk_cid, TcpIntent::Bandwidth);
+    Access::SetFlowIntent(*sender, web_cid, TcpIntent::Latency);
+    Require(Access::TrackSentFlow(*sender, bulk_cid, 1, 8192, 1000, lost->id_),
+        "keep a bulk DSN on the failed carrier");
+    Access::OnLinkExit(*sender, lost, "test");
+    Require(Access::PendingRtx(*sender) == 1, "bulk repair waits for a bulk carrier");
+    Access::EmplaceDataFrameSeq(*sender, bulk_cid, 2, 8192);
+    Require(Access::PostPush(*sender, web_cid, 768), "enqueue a separate interactive flow");
+    DrainContext(sender);
+    Require(primary_wire->frames.size() == 1 && primary_wire->frames.front().length == 777,
+        "independent interactive payload reaches the idle primary carrier");
+    Require(Access::PendingRtx(*sender) == 1 && Access::TxDataFrames(*sender) == 1,
+        "fresh bulk data remains behind its repair");
+
+    Access::SetQueuedBytes(bulk, 0);
+    Require(Access::ProcessTxAll(*sender), "bulk credit returns");
+    DrainContext(sender);
+    Require(bulk_wire->frames.size() == 2 && Access::PendingRtx(*sender) == 0,
+        "repair and fresh bulk data both drain on their own carrier");
+
+    Access::SetQueuedBytes(bulk, 16 * PPP_MUX_LINK_BYTE_HIGH_WATER);
+    Access::EmplaceDataFrameSeq(*sender, bulk_cid, 3, 8192);
+    Require(Access::PostPush(*sender, web_cid, 768), "enqueue interactive data behind unsendable bulk data");
+    DrainContext(sender);
+    Require(primary_wire->frames.size() == 2 && primary_wire->frames.back().length == 777 &&
+        Access::TxDataFrames(*sender) == 1,
+        "ordinary bulk credit exhaustion cannot hold an independent interactive flow");
+}
+
+void TestIntentCarrierRecoveryAndDuplicateDelivery() {
+    using Access = vmux::vmux_net_test_access;
+    auto sender = MakeMux(), receiver = MakeMux();
+    Access::ConfigureFlowV2(*sender, 65536, 1000);
+    Access::ConfigureFlowV2(*receiver, 65536, 1000);
+    Access::EnableFlowReliability(*sender);
+    ppp::app::mux::TcpIntentConfig config;
+    config.enabled = true;
+    sender->set_intent_config(config);
+    sender->set_multipath_scheduler_policy(true, false);
+    const auto attach = [&](std::uint16_t id, const char* path, std::uint64_t rtt) {
+        auto link = Access::MakeDeadLink(true);
+        auto transport = std::make_shared<SchedulerTestTransport>();
+        auto wire = std::make_shared<CaptureTransmission>(sender->get_context(), sender->get_strand(), sender->AppConfiguration);
+        transport->transmission = wire;
+        link->connection = transport;
+        link->id_ = id;
+        link->path_id_ = path;
+        const auto tick = ppp::threading::Executors::GetTickCount() - 1000;
+        link->intent_path_probe_.Sent(tick);
+        Require(link->intent_path_probe_.Acknowledge(static_cast<std::uint32_t>(tick), tick + rtt), "sample live carrier");
+        Access::AttachLink(*sender, link);
+        return std::make_pair(link, wire);
+    };
+    auto [first, first_wire] = attach(1, "path1", 40);
+    auto [peer, peer_wire] = attach(2, "path1", 45);
+    auto [other, other_wire] = attach(3, "path3", 155);
+    constexpr std::uint32_t cid = 7;
+    auto skt = Access::InstallQueueOnlySkt(receiver, cid);
+    Require(Access::PostPush(*sender, cid, 768), "post small payload");
+    DrainContext(sender);
+    Require(first_wire->frames.size() == 1 && peer_wire->frames.size() == 1 && other_wire->frames.empty(),
+        "small payload copied on the chosen path only");
+    Access::Deliver(*receiver, {peer_wire->frames[0], first_wire->frames[0]});
+    Require(Access::QueuedRxBytes(*skt) == 768 && Access::RtxSize(*sender) == 1,
+        "copies share the delivery sequence and consume one send window entry");
+    Access::InjectAck(*sender, cid, 1, 1, ppp::threading::Executors::GetTickCount());
+
+    first_wire->frames.clear();
+    peer_wire->frames.clear();
+    const auto [near, near_wire] = attach(4, "path2", 80);
+    const auto [busy, busy_wire] = attach(5, "path2", 60);
+    Access::SetQueuedBytes(busy, PPP_MUX_LINK_BYTE_HIGH_WATER / 2);
+    Require(Access::PostPush(*sender, cid, 768), "post small payload with a second latency path");
+    DrainContext(sender);
+    Require(first_wire->frames.size() == 1 && peer_wire->frames.size() == 1 && near_wire->frames.size() == 1 &&
+        busy_wire->frames.empty() && other_wire->frames.empty(),
+        "hedge on a comparable independent path without queueing behind a busier sibling");
+    Access::Deliver(*receiver, {near_wire->frames.front(), first_wire->frames.front(), peer_wire->frames.front()});
+    Require(Access::QueuedRxBytes(*skt) == 1536 && Access::RtxSize(*sender) == 1,
+        "first arrival across paths releases exactly one copy");
+    Access::InjectAck(*sender, cid, 2, 2, ppp::threading::Executors::GetTickCount());
+
+    first_wire->frames.clear();
+    peer_wire->frames.clear();
+    near_wire->frames.clear();
+    Access::SetQueuedBytes(busy, 0);
+    Require(Access::PostPush(*sender, cid, 768), "post small payload with an idle alternate sibling");
+    DrainContext(sender);
+    Require(first_wire->frames.size() == 1 && peer_wire->frames.size() == 1 && near_wire->frames.size() == 1 &&
+        busy_wire->frames.size() == 1 && other_wire->frames.empty(),
+        "hedge on both idle carriers of the comparable path");
+    Access::Deliver(*receiver, {busy_wire->frames.front(), near_wire->frames.front()});
+    Require(Access::QueuedRxBytes(*skt) == 2304 && Access::RtxSize(*sender) == 1,
+        "idle-sibling copies preserve one delivery and send window entry");
+    Access::InjectAck(*sender, cid, 3, 3, ppp::threading::Executors::GetTickCount());
+
+    first_wire->frames.clear();
+    Access::WithdrawLink(*sender, near);
+    Access::SetQueuedBytes(near, PPP_MUX_LINK_BYTE_HIGH_WATER);
+    Access::WithdrawLink(*sender, busy);
+    Access::SetQueuedBytes(busy, PPP_MUX_LINK_BYTE_HIGH_WATER);
+    Access::WithdrawLink(*sender, peer);
+    Access::SetQueuedBytes(peer, PPP_MUX_LINK_BYTE_HIGH_WATER);
+    Access::PostOpeningAndAck(*sender, cid + 1);
+    DrainContext(sender);
+    Require(first_wire->frames.size() == 2 && other_wire->frames.empty(), "SYN and ACK entered failed path");
+    Access::RecoverIntentTimeout(*sender, first);
+    DrainContext(sender);
+    Require(other_wire->frames.size() == 2, "survivor replays cumulative ACK and pending SYN");
+    for (std::size_t i = 0; i < 2; ++i) {
+        const auto& original = first_wire->frames[i];
+        const auto& replay = other_wire->frames[1 - i];
+        Require(original.length == replay.length && std::memcmp(original.buffer.get(), replay.buffer.get(), original.length) == 0,
+            "recovery preserves frame data and connection identity");
+    }
+    Access::RecoverIntentTimeout(*sender, first);
+    DrainContext(sender);
+    Require(other_wire->frames.size() == 2, "timeout replay happens once for a failure epoch");
+
+    first->pool_primary_ = true;
+    sender->set_link_exit_callback([](const auto&, bool) noexcept {});
+    Access::RecoverIntentTimeout(*sender, first, 4000);
+    DrainContext(sender);
+    Require(!first->exited_ && first->connection->IsLinked(),
+        "do not replace a primary subchannel that shares the control transport");
+
 }
 
 void TestChurnRepairPrecedesFreshDataOnReturnedCredit() {
@@ -2397,6 +2766,11 @@ int main() {
         TestFastRetransmitOffByDefaultIgnoresDupAckHoles();
         TestFirstFastRetryUsesTheOriginalCarrierFeedbackTime();
         TestFastRetryBudgetExpiresOnlyAfterDistinctAttempts();
+TestIntentBandwidthFallbackReservesPrimaryLatencyPath();
+        TestReliableFlowWriteFailurePreservesRetainedPayload();
+        TestBulkRepairDoesNotBlockInteractiveFlow();
+        TestIntentCarrierRecoveryAndDuplicateDelivery();
+
         TestLinkExitReinjectsInflightFrames();
         TestRtxWindowHoldsFrameUntilAck();
         TestRtxWindowOnlyHardCapClosesCompatSession();

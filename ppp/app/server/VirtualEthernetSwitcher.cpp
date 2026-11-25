@@ -2981,6 +2981,7 @@ namespace ppp {
                 state.vmux_session_id = stats.session_id;
                 state.reorder_events = stats.reorder_events;
                 state.reorder_buffered_bytes = stats.reorder_buffered_bytes;
+                state.intent = stats.intent;
                 state.links = std::move(stats.links);
                 const auto remaining = mux->get_carrier_resume_remaining_ms();
                 state.state = remaining != 0 ? "recovering" : "active";
@@ -3321,7 +3322,9 @@ namespace ppp {
                     ITransmissionPtr mux_stream = secured ? secured->CreateMuxSubchannel() : ITransmissionPtr();
                     if (!mux_stream) return false;
                     MultipathCarrierRegistration mux_registration = *multipath_carrier;
-                    mux_registration.carrier_id.clear();
+                    // The primary subchannel shares the authenticated carrier
+                    // identity but does not own the underlying registration.
+                    mux_registration.notify_carrier_leave = false;
                     auto mux_context = mux_stream->GetContext();
                     auto mux_strand = mux_stream->GetStrand();
                     auto mux_allocator = mux_stream->BufferAllocator;
@@ -3485,7 +3488,7 @@ namespace ppp {
                             connection->SetMultipathCarrier(carrier_registration.session_generation,
                                 carrier_registration.connection_generation,
                                 carrier_registration.carrier_id, carrier_registration.failover,
-                                !carrier_registration.carrier_id.empty());
+                                carrier_registration.notify_carrier_leave && !carrier_registration.carrier_id.empty());
                         }
                         if (connection->Run(y)) {
                             if (connection->IsMux()) {
