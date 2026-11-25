@@ -1,15 +1,17 @@
-# OpenPPP2 v2.1.10.1
+# OpenPPP2 v2.1.10.2
 
 > Status: Release preparation
 > Type: Release notes
 > Last verified: 2026-11-22
 > Parent index: [Operations](README.md) · Chinese: [发行说明](RELEASE_NOTES_CN.md)
 
-These notes describe the intended `v2.1.10.1` release from the current main
+These notes describe the intended `v2.1.10.2` release from the current main
 revision. The GitHub release workflow remains the authority for the exact tag,
 required CI runs, packaged assets, checksums, and publication status.
 
 ## Patch update
+
+- Fix the merged VMUX receive-semantics regression test so the release test target compiles.
 
 - Harden multipath path selection, reliability ACK/retransmission bookkeeping, frame admission, pacing state, and transport write accounting.
 - Add focused scheduler, retransmission, receive-semantics, pacing, SIMD-tail, and integration telemetry regression coverage.

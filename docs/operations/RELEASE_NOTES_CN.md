@@ -1,14 +1,16 @@
-# OpenPPP2 v2.1.10.1
+# OpenPPP2 v2.1.10.2
 
 > Status: Release preparation
 > Type: Release notes
 > Last verified: 2026-11-22
 > Parent index: [运维](README_CN.md) · English: [Release notes](RELEASE_NOTES.md)
 
-以下内容描述当前 main 修订版计划发布的 `v2.1.10.1`。精确的标签、必需
+以下内容描述当前 main 修订版计划发布的 `v2.1.10.2`。精确的标签、必需
 CI、打包制品、校验和及发布状态，以 GitHub release 工作流的结果为准。
 
 ## 小版本修复
+
+- 修复合并后的 VMUX 接收语义回归测试闭合问题，确保发布测试目标可以编译。
 
 - 加固多路径选路、可靠性 ACK/重传记账、整帧准入、pacing 状态和传输写入记账。
 - 增加调度器、重传、接收语义、pacing、SIMD 尾部和集成遥测回归覆盖。
