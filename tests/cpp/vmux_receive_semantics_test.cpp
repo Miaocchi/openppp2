@@ -2103,6 +2103,7 @@ void TestAcceleratedCarrierWriteCredit() {
     Require(completions == 1 && !success && primary_wire->encoded_writes == 1 && !primary->connection->IsLinked() &&
         backup->connection->IsLinked() && !Access::IsDisposed(*mux),
         "actual logical rejection fails the waiter once and isolates only the rejecting carrier");
+}
 
 void TestReliableFlowWriteFailurePreservesRetainedPayload() {
     using Access = vmux::vmux_net_test_access;
