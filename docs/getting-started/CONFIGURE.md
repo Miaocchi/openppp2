@@ -223,6 +223,7 @@ Configuration rules:
 - `adaptive` selects and distributes traffic according to carrier state; `failover` prefers one carrier and switches only when it becomes unavailable. Use `adaptive` when multiple links should carry traffic concurrently.
 - `max_concurrent_connects` limits startup dialing concurrency; it does not change the final carrier count. Set `server.multipath.max_connections` at least as high as the client's total; `max_sessions` caps concurrent multipath sessions on the server.
 - A TCP path uses only `id`, `transport`, `connect_host`, `port`, and `connections`. For WS/WSS, set `ws_path` to the server's `websocket.path`; WSS requires `tls_server_name`. `http_host` is the HTTP Host value and defaults to `connect_host` when omitted.
+- A path may use `url` as an endpoint shorthand, for example `"url": "wss://vpn.example.com[203.0.113.10]:443/tun"`. The hostname is used for TLS SNI and HTTP Host, while the bracketed address is used for dialing. Do not provide the other endpoint fields with `url`.
 - Multipath does not create listeners or discover routes automatically. Configure DNS, firewalls, and reverse proxies for each entry first, then list them in `paths`. The server still needs the corresponding `tcp.listen` or `websocket.listen` configuration.
 
 First verify that `client.server` works with one path, then add the second path. After connecting, inspect runtime statistics for path IDs and carrier counts; multiple TCP sockets alone do not prove that application traffic is aggregated.

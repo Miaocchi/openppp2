@@ -28,12 +28,18 @@
   }
   function setMultipathField(key,value) { updateMultipath((mp) => ({...mp,[key]:value})) }
   function setPathField(index,key,value) {
-    updateMultipath((mp) => ({...mp,paths:mp.paths.map((path,i) => i === index ? {...path,[key]:value} : path)}))
+    updateMultipath((mp) => ({...mp,paths:mp.paths.map((path,i) => {
+      if (i !== index) return path
+      const next={...path,[key]:value}
+      if (path.url && !['id','connections'].includes(key)) delete next.url
+      return next
+    })}))
   }
   function setPathTransport(index,transport) {
     updateMultipath((mp) => ({...mp,paths:mp.paths.map((path,i) => {
       if (i !== index) return path
       const next={...path,transport}
+      delete next.url
       if (transport === 'tcp') { next.tls_server_name=''; next.http_host=''; next.ws_path='' }
       else if (transport === 'ws') next.tls_server_name=''
       return next

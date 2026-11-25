@@ -175,7 +175,7 @@ Grace period for keeping the session after all carriers temporarily disappear, `
 
 **Type:** array · **If omitted:** empty · **Limit:** 8 entries
 
-Each entry is one server endpoint. `id` must be unique; `transport` is `tcp`, `ws`, or `wss`; `connect_host` and `port` are the actual dial address; `connections` is the number of carriers for that endpoint, `1..32`.
+Each entry is one server endpoint. `id` must be unique; `transport` is `tcp`, `ws`, or `wss`; `connect_host` and `port` are the actual dial address; `connections` is the number of carriers for that endpoint, `1..32`. As a shorthand, a path may provide `url` instead of the endpoint fields, for example `wss://vpn.example.com[203.0.113.10]:443/tun`. The URL's hostname becomes the WSS SNI and HTTP Host, while the bracketed address is used for dialing. `url` cannot be combined with `transport`, `connect_host`, `port`, `tls_server_name`, `http_host`, or `ws_path`.
 
 WS/WSS may also set `http_host` and `ws_path`; WSS requires `tls_server_name`. `ws_path` should exactly match the server's `websocket.path`. TCP paths must not set WebSocket/TLS fields.
 

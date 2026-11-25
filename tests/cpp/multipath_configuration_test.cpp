@@ -89,6 +89,26 @@ BOOST_AUTO_TEST_CASE(websocket_fields_are_transport_scoped_and_crlf_safe) {
     BOOST_TEST(error.find("http_host") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(url_paths_split_dial_address_from_wss_identity) {
+    Json::Value root = MakeMultipath();
+    Json::Value& path = root["paths"][0];
+    path.removeMember("transport");
+    path.removeMember("connect_host");
+    path.removeMember("port");
+    path["url"] = "wss://vpn.example.com[203.0.113.10]:443/tun";
+    ppp::string error;
+
+    MultipathConfiguration parsed;
+    BOOST_REQUIRE(parsed.Load(root, error));
+    BOOST_REQUIRE(parsed.paths.size() == 1u);
+    BOOST_TEST(parsed.paths[0].transport == "wss");
+    BOOST_TEST(parsed.paths[0].connect_host == "203.0.113.10");
+    BOOST_TEST(parsed.paths[0].port == 443);
+    BOOST_TEST(parsed.paths[0].tls_server_name == "vpn.example.com");
+    BOOST_TEST(parsed.paths[0].http_host == "vpn.example.com");
+    BOOST_TEST(parsed.paths[0].ws_path == "/tun");
+}
+
 BOOST_AUTO_TEST_CASE(unknown_keys_and_wrong_types_are_rejected_with_safe_errors) {
     ppp::string error;
     Json::Value root = MakeMultipath();

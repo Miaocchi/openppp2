@@ -223,6 +223,7 @@ sudo ./ppp --mode=client --config=./client.json
 - `adaptive` 会根据链路状态选择并分配业务流量；`failover` 优先使用一条链路，只有不可用时才切换到其他链路。一般需要同时利用多条链路时用 `adaptive`。
 - `max_concurrent_connects` 只限制启动时同时拨号的 path 数，不改变最终连接总数。服务端 `server.multipath.max_connections` 应不小于客户端总连接数；`max_sessions` 是服务端并发多路径会话上限。
 - TCP path 只填写 `id`、`transport`、`connect_host`、`port`、`connections`。WS/WSS path 还要把 `ws_path` 写成服务端 `websocket.path`；WSS 必须填写 `tls_server_name`，`http_host` 用于 HTTP Host，省略时默认使用 `connect_host`。
+- path 也可以用 `url` 简写端点，例如 `"url": "wss://vpn.example.com[203.0.113.10]:443/tun"`。域名用于 TLS SNI 和 HTTP Host，中括号内的地址用于拨号，此时不要再填写其他端点字段。
 - 多路径不等于自动创建监听端口，也不等于自动发现线路。先为每个入口配置 DNS / 防火墙 / 反向代理，再把入口写进 `paths`。服务端仍需按普通方式配置相应的 `tcp.listen` 或 `websocket.listen`。
 
 启动前先用单路径确认 `client.server` 能连接，再加入第二个 path。连接后可查看运行统计中的 path ID 和 carrier 数，确认每条 path 都有承载流量；仅看到多个 TCP 连接不能证明业务流量已经聚合。

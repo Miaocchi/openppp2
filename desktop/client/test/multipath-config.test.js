@@ -22,3 +22,9 @@ test('multipath configuration validates supported transports, bounds and require
   assert.throws(() => validateMultipathConfig({ client: { multipath: { ...root.client.multipath, paths: [{ ...validPath, ws_path: '/x%0d%0aInjected' }] } } }), /WebSocket path is invalid/)
   assert.throws(() => validateMultipathConfig({ client: { multipath: { ...root.client.multipath, max_connections: 0 } } }), /between 1 and 32/)
 })
+
+test('multipath URL shorthand preserves domain identity and explicit dial address syntax', () => {
+  const root = { client: { multipath: { ...defaultMultipathConfig(), enabled: true, paths: [{ id: 'lax', url: 'wss://vpn.example.com[203.0.113.10]:443/tun', connections: 1 }] } } }
+  assert.equal(validateMultipathConfig(root), true)
+  assert.throws(() => validateMultipathConfig({ client: { multipath: { ...root.client.multipath, paths: [{ ...root.client.multipath.paths[0], connect_host: '203.0.113.10' }] } } }), /cannot be combined/)
+})
