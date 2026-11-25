@@ -36,6 +36,18 @@ function validWsPath(value) {
   return !/%(?:0a|0d|23)/i.test(value)
 }
 
+function parsePathUrl(value) {
+  if (typeof value !== 'string' || value.length > 4096) return null
+  const match = /^(tcp|ws|wss):\/\/([^/?#:]+)(?:\[([^\]]+)\])?(?::([0-9]+))?(\/.*)?$/.exec(value)
+  if (!match || !validHost(match[2]) || (match[3] && !validHost(match[3]))) return null
+  const transport = match[1]
+  const port = match[4] ? Number(match[4]) : (transport === 'wss' ? 443 : transport === 'ws' ? 80 : 0)
+  if (!integerIn(port, 1, 65535)) return null
+  if (transport === 'tcp' && !match[4]) return null
+  if (match[5] && !validWsPath(match[5])) return null
+  return { transport }
+}
+
 export function validateMultipathConfig(root) {
   const configured = root?.client?.multipath
   if (configured == null) return true
@@ -57,11 +69,18 @@ export function validateMultipathConfig(root) {
       throw new Error(`${prefix}: enter a unique path ID`)
     }
     ids.add(path.id)
+    if (!integerIn(path.connections, 1, 32)) throw new Error(`${prefix}: connections must be between 1 and 32`)
+    total += path.connections
+    if (path.url !== undefined) {
+      if (!parsePathUrl(path.url)) throw new Error(`${prefix}: URL is invalid`)
+      for (const field of ['transport', 'connect_host', 'port', 'tls_server_name', 'http_host', 'ws_path']) {
+        if (Object.prototype.hasOwnProperty.call(path, field)) throw new Error(`${prefix}: URL cannot be combined with endpoint fields`)
+      }
+      continue
+    }
     if (!['tcp', 'ws', 'wss'].includes(path.transport)) throw new Error(`${prefix}: choose TCP, WS or WSS`)
     if (!validHost(path.connect_host)) throw new Error(`${prefix}: enter a valid connect host`)
     if (!integerIn(path.port, 1, 65535)) throw new Error(`${prefix}: port must be between 1 and 65535`)
-    if (!integerIn(path.connections, 1, 32)) throw new Error(`${prefix}: connections must be between 1 and 32`)
-    total += path.connections
     const tls = path.tls_server_name || ''
     const http = path.http_host || ''
     const wsPath = path.ws_path || ''

@@ -175,7 +175,7 @@ SOCKS5 认证。
 
 **类型：**array · **省略时：**空 · **上限：**8 个
 
-每个条目代表一个服务端入口。`id` 必须唯一；`transport` 为 `tcp`、`ws` 或 `wss`；`connect_host` 和 `port` 是实际拨号地址；`connections` 为该入口创建的 carrier 数，范围 `1..32`。
+每个条目代表一个服务端入口。`id` 必须唯一；`transport` 为 `tcp`、`ws` 或 `wss`；`connect_host` 和 `port` 是实际拨号地址；`connections` 为该入口创建的 carrier 数，范围 `1..32`。也可以用 `url` 作为端点字段的简写，例如 `wss://vpn.example.com[203.0.113.10]:443/tun`。URL 中的域名会用于 WSS SNI 和 HTTP Host，中括号内的地址用于实际拨号。`url` 不能与 `transport`、`connect_host`、`port`、`tls_server_name`、`http_host` 或 `ws_path` 同时使用。
 
 WS/WSS 还可设置 `http_host` 和 `ws_path`；WSS 必须设置 `tls_server_name`。`ws_path` 应与服务端 `websocket.path` 完全一致。TCP path 不得填写这些 WebSocket/TLS 字段。
 

@@ -17,6 +17,7 @@
 #include <ppp/net/http/HttpClient.h>
 #include <ppp/auxiliary/JsonAuxiliary.h>
 #include <ppp/auxiliary/StringAuxiliary.h>
+#include <ppp/auxiliary/UriAuxiliary.h>
 #include <ppp/diagnostics/Error.h>
 #include <ppp/diagnostics/TelemetryFwd.h>
 
@@ -29,6 +30,7 @@
 
 using ppp::auxiliary::StringAuxiliary;
 using ppp::auxiliary::JsonAuxiliary;
+using ppp::auxiliary::UriAuxiliary;
 using ppp::cryptography::Ciphertext;
 using ppp::io::File;
 using ppp::io::FileAccess;
@@ -413,7 +415,7 @@ namespace ppp {
                     ppp::string prefix = "client.multipath.paths[" + stl::to_string<ppp::string>(i) + "]";
                     if (!item.isObject()) return fail(prefix + " must be an object");
                     static const ppp::unordered_set<ppp::string> path_keys = {
-                        "id", "transport", "connect_host", "port", "connections", "tls_server_name", "http_host", "ws_path"
+                        "id", "url", "transport", "connect_host", "port", "connections", "tls_server_name", "http_host", "ws_path"
                     };
                     for (const ppp::string& key : item.getMemberNames()) {
                         if (!path_keys.count(key)) return fail("unknown " + prefix + " key");
@@ -427,13 +429,65 @@ namespace ppp {
                         return true;
                     };
                     if (!read_string("id", path.id, true)) return fail(prefix + ".id must be a string");
-                    if (!read_string("transport", path.transport, true)) return fail(prefix + ".transport must be a string");
-                    if (!read_string("connect_host", path.connect_host, true)) return fail(prefix + ".connect_host must be a string");
-                    if (item.isMember("port") && !IsJsonInteger(item["port"], path.port)) return fail(prefix + ".port must be an integer");
                     if (item.isMember("connections") && !IsJsonInteger(item["connections"], path.connections)) return fail(prefix + ".connections must be an integer");
-                    if (!read_string("tls_server_name", path.tls_server_name, false)) return fail(prefix + ".tls_server_name must be a string");
-                    if (!read_string("http_host", path.http_host, false)) return fail(prefix + ".http_host must be a string");
-                    if (!read_string("ws_path", path.ws_path, false)) return fail(prefix + ".ws_path must be a string");
+
+                    const bool has_url = item.isMember("url");
+                    if (has_url) {
+                        ppp::string url;
+                        if (!read_string("url", url, true)) return fail(prefix + ".url must be a string");
+                        static const char* endpoint_fields[] = {
+                            "transport", "connect_host", "port", "tls_server_name", "http_host", "ws_path"
+                        };
+                        for (const char* field : endpoint_fields) {
+                            if (item.isMember(field)) {
+                                return fail(prefix + ".url cannot be combined with " + field);
+                            }
+                        }
+
+                        ppp::string hostname;
+                        ppp::string address;
+                        ppp::string path_text;
+                        int port = 0;
+                        UriAuxiliary::ProtocolType protocol = UriAuxiliary::ProtocolType_PPP;
+                        ppp::string parsed = UriAuxiliary::Parse(
+                            url, hostname, address, path_text, port, protocol,
+                            NULLPTR, nullof<ppp::coroutines::YieldContext>(), false);
+                        if (parsed.empty() || hostname.empty() || port < 1 || port > 65535) {
+                            return fail(prefix + ".url is invalid");
+                        }
+
+                        switch (protocol) {
+                        case UriAuxiliary::ProtocolType_PPP:
+                            path.transport = "tcp";
+                            break;
+                        case UriAuxiliary::ProtocolType_WebSocket:
+                            path.transport = "ws";
+                            break;
+                        case UriAuxiliary::ProtocolType_WebSocketSSL:
+                            path.transport = "wss";
+                            break;
+                        default:
+                            return fail(prefix + ".url must use tcp://, ws://, or wss://");
+                        }
+
+                        path.connect_host = address.empty() ? hostname : address;
+                        path.port = port;
+                        if (path.transport == "ws" || path.transport == "wss") {
+                            path.http_host = hostname;
+                            path.ws_path = path_text;
+                        }
+                        if (path.transport == "wss") {
+                            path.tls_server_name = hostname;
+                        }
+                    }
+                    else {
+                        if (!read_string("transport", path.transport, true)) return fail(prefix + ".transport must be a string");
+                        if (!read_string("connect_host", path.connect_host, true)) return fail(prefix + ".connect_host must be a string");
+                        if (item.isMember("port") && !IsJsonInteger(item["port"], path.port)) return fail(prefix + ".port must be an integer");
+                        if (!read_string("tls_server_name", path.tls_server_name, false)) return fail(prefix + ".tls_server_name must be a string");
+                        if (!read_string("http_host", path.http_host, false)) return fail(prefix + ".http_host must be a string");
+                        if (!read_string("ws_path", path.ws_path, false)) return fail(prefix + ".ws_path must be a string");
+                    }
                     paths.emplace_back(std::move(path));
                 }
             }
