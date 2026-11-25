@@ -404,7 +404,7 @@ namespace ssea
     //   masked_xor             AVX2 -> Scalar -> SSE2 -> AVX -> SSE3 -> SSSE3 -> SSE4_1 -> SSE4_2
     //                          (154967 > 78542 [auto-vectorized] > 67069 > 40821 > 40104 > ...)
     //   masked_xor_random_next any level (keystream-bound, ~1.4 GB/s everywhere) -> highest detected
-    //   shuffle / unshuffle    Scalar (+power-of-two AND) - SIMD not applicable (argued)
+    //   shuffle / unshuffle    ordered, word-sized exchanges on optimized backends
     //
     // The compile-time fallback chain inside ssea_dispatch_for() covers GCC
     // builds compiled with a limited -m flag set: a preferred level that was

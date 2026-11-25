@@ -289,21 +289,22 @@ public:
 
     ~TcpMultipathPair() { Dispose(); }
 
-    bool Run() {
+    bool Run(std::chrono::milliseconds response_delay = {}) {
         for (int i = 0; i < 4; ++i) threads_.emplace_back([context = context_]() { context->run(); });
         if (websocket_ && !UpgradeWebsocket()) return false;
-        if (!StartNoise()) return false;
+        if (!StartNoise(response_delay)) return false;
         if (!Admit()) return false;
         return CompleteApplicationHandshake();
     }
 
-    bool StartNoise() {
+    bool StartNoise(std::chrono::milliseconds response_delay = {}) {
         pending_.store(2);
         const bool server_spawned = ppp::coroutines::YieldContext::Spawn(nullptr, *context_, server_strand_.get(),
-            [this](ppp::coroutines::YieldContext& y) noexcept {
+            [this, response_delay](ppp::coroutines::YieldContext& y) noexcept {
                 int frame_length = 0;
                 auto first_frame = server_->Read(y, frame_length);
                 if (first_frame) {
+                    if (response_delay.count() > 0) std::this_thread::sleep_for(response_delay);
                     if (corrupt_noise_ && frame_length > 0) first_frame.get()[frame_length - 1] ^= 1;
                     server_secure_ = std::make_shared<MultipathTransmission>(server_, TestParameters(), TestSecret(server_psk_),
                         ppp::cryptography::noise::HandshakeRole::NetworkServerResponder, first_frame, frame_length);
@@ -1802,6 +1803,8 @@ BOOST_AUTO_TEST_CASE(plaintext_carrier_keeps_base94_even_when_both_peers_support
     BOOST_REQUIRE(pair.Run());
     BOOST_TEST(pair.ClientSecure()->IsSecureReady());
     BOOST_TEST(pair.ServerSecure()->IsSecureReady());
+    BOOST_TEST(pair.ClientSecure()->GetInitialCarrierRttMs() > 0u);
+    BOOST_TEST(pair.ServerSecure()->GetInitialCarrierRttMs() == 0u);
     // key.plaintext forces the legacy envelope, so the responder's negotiation
     // is a no-op success and neither side flips its framing state.
     BOOST_TEST(!pair.ClientTransmission()->IsAuthenticatedMultipathBinaryFramingEnabled());
@@ -1813,6 +1816,30 @@ BOOST_AUTO_TEST_CASE(plaintext_carrier_keeps_base94_even_when_both_peers_support
     BOOST_TEST(pair.ClientStatistics()->OutgoingTraffic.load() > payload.size() * 5 / 4);
 }
 
+
+BOOST_AUTO_TEST_CASE(mux_rtt_includes_the_authenticated_peer_beyond_a_fast_transport) {
+    const auto check = [](TcpMultipathPair& pair) {
+        BOOST_TEST(pair.ClientTransmission()->GetInitialCarrierRttMs() == 0u);
+        BOOST_TEST(pair.ServerTransmission()->GetInitialCarrierRttMs() == 0u);
+        // Add delay beyond the connected loopback socket, as on a proxied carrier.
+        constexpr auto upstream_delay = std::chrono::milliseconds(20);
+        BOOST_REQUIRE(pair.Run(upstream_delay));
+        BOOST_REQUIRE(pair.CreateMuxPair());
+        const auto client_rtt = pair.ClientSecure()->GetInitialCarrierRttMs();
+        const auto server_rtt = pair.ServerSecure()->GetInitialCarrierRttMs();
+        BOOST_TEST(client_rtt >= static_cast<std::uint64_t>(upstream_delay.count()));
+        BOOST_TEST(server_rtt > 0u);
+        BOOST_TEST(pair.ClientMux()->GetInitialCarrierRttMs() == client_rtt);
+        BOOST_TEST(pair.ServerMux()->GetInitialCarrierRttMs() == server_rtt);
+    };
+    TcpMultipathPair tcp;
+    check(tcp);
+    TcpMultipathPair ws(true);
+    check(ws);
+    EphemeralCa ca;
+    TcpMultipathPair wss(true, &ca);
+    check(wss);
+}
 
 BOOST_AUTO_TEST_CASE(tcp_carrier_applies_and_clears_wire_pacing_without_closing) {
     TcpMultipathPair pair;

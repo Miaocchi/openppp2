@@ -55,8 +55,44 @@ BOOST_AUTO_TEST_CASE(track_refuses_to_exceed_the_byte_cap) {
     mux::MuxRetransmitBuffer rtx;
     BOOST_TEST(rtx.Track(0, 1, make_frame(1), 400, 1000, 500));
     BOOST_TEST(!rtx.Track(0, 2, make_frame(2), 400, 1000, 500));
+    BOOST_TEST(!rtx.Track(1, 1, make_frame(3), 0, 1000, 0));
+    BOOST_TEST(!rtx.Track(1, 1, make_frame(3), -1, 1000, 0));
     BOOST_TEST(rtx.size() == 1u);
     BOOST_TEST(rtx.bytes() == 400u);
+}
+
+BOOST_AUTO_TEST_CASE(disabled_fast_retransmit_releases_acked_frames_without_marking_holes) {
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_REQUIRE(rtx.Track(7, 1, make_frame(1), 100, 1000, 1024, 2));
+    BOOST_REQUIRE(rtx.Track(7, 4, make_frame(4), 100, 1010, 1024, 3));
+    BOOST_REQUIRE(rtx.Track(9, 4, make_frame(4), 40, 1020, 1024, 1));
+
+    std::vector<std::uint64_t> fast;
+    std::uint16_t link = 0;
+    std::unordered_map<std::uint16_t, std::size_t> acked;
+    const auto sample = rtx.Ack(7, 4, {{4, 4}}, 1100, 3, 0, fast, &link, &acked,
+        nullptr, nullptr, false);
+    BOOST_TEST(sample == 90u);
+    BOOST_TEST(link == 3u);
+    BOOST_TEST(acked.at(3) == 100u);
+    BOOST_TEST(rtx.CidBytes(7) == 100u);
+    BOOST_TEST(rtx.CidBytes(9) == 40u);
+    BOOST_TEST(fast.empty());
+
+    // A duplicate ACK can still discover the hole if collection is requested.
+    rtx.Ack(7, 4, {{4, 4}}, 1101, 3, 0, fast, &link, &acked);
+    BOOST_REQUIRE_EQUAL(fast.size(), 1u);
+    BOOST_TEST(fast.front() == mux::MuxRetransmitBuffer::Key(7, 1));
+    BOOST_TEST(acked.empty());
+
+    rtx.EraseCid(7);
+    link = 9;
+    acked[3] = 100;
+    BOOST_TEST(rtx.Ack(7, 4, {{1, 4}}, 1102, 3, 0, fast, &link, &acked) == 0u);
+    BOOST_TEST(link == 0u);
+    BOOST_TEST(acked.empty());
+    BOOST_TEST(fast.size() == 1u);
+    BOOST_TEST(rtx.bytes() == 40u);
 }
 
 BOOST_AUTO_TEST_CASE(fast_retransmit_candidates_follow_the_distance_rule) {
@@ -94,6 +130,97 @@ BOOST_AUTO_TEST_CASE(no_rtt_sample_from_retransmitted_frames) {
     std::vector<mux::MuxAckRange> ranges = { {1, 1} };
     const std::uint64_t sample = rtx.Ack(0, 1, ranges, 2000, 3, 0, fast);
     BOOST_TEST(sample == 0u); // Karn's rule: retransmitted frames give no sample.
+}
+
+BOOST_AUTO_TEST_CASE(advancing_acks_do_not_retry_a_recent_replacement) {
+    mux::MuxRetransmitBuffer rtx;
+    BOOST_REQUIRE(rtx.Track(9, 1, make_frame(1), 100, 1000, 1024, 1));
+    const auto key = rtx.Key(9, 1);
+    std::vector<std::uint64_t> fast;
+    rtx.Ack(9, 8, {{8, 8}}, 1200, 3, 50, fast);
+    BOOST_REQUIRE_EQUAL(fast.size(), 1u);
+    rtx.MarkRetransmitted(key, 1200, 2);
+
+    // Delayed ACKs for later original packets arrive while the replacement
+    // is still on its way. Acting on each hint used to spend all eight retries.
+    for (std::uint32_t i = 1; i <= 10; ++i) {
+        fast.clear();
+        rtx.Ack(9, 8 + i, {{8 + i, 8 + i}}, 1200 + i, 3, 50, fast);
+        if (!fast.empty()) rtx.MarkRetransmitted(key, 1200 + i, 2);
+    }
+    BOOST_TEST(rtx.Find(key)->attempts == 1u);
+    fast.clear();
+    BOOST_REQUIRE(rtx.Track(9, 22, make_frame(22), 100, 1201, 1024, 2));
+    rtx.Ack(9, 22, {{22, 22}}, 1250, 3, 50, fast);
+    BOOST_REQUIRE_EQUAL(fast.size(), 1u);
+    BOOST_TEST(fast.front() == key);
+}
+
+BOOST_AUTO_TEST_CASE(delayed_original_acks_cannot_spend_the_replacements_retry_budget) {
+    mux::MuxRetransmitBuffer rtx;
+    for (unsigned seq = 1; seq <= 12; ++seq) {
+        BOOST_REQUIRE(rtx.Track(9, seq, make_frame(seq), 100, 1000, 4096, 1));
+    }
+    const auto key = rtx.Key(9, 1);
+    std::vector<std::uint64_t> fast;
+    rtx.Ack(9, 4, {{2, 4}}, 1200, 3, 25, fast);
+    BOOST_REQUIRE_EQUAL(fast.size(), 1u);
+    rtx.MarkRetransmitted(key, 1200, 2);
+    for (unsigned seq = 5; seq <= 12; ++seq) {
+        fast.clear();
+        const auto now = 1200 + 125 * (seq - 4);
+        rtx.Ack(9, seq, {{2, seq}}, now, 3, 25, fast);
+        if (!fast.empty()) rtx.MarkRetransmitted(key, now, 2);
+    }
+    BOOST_TEST(rtx.Find(key)->attempts == 1u);
+    BOOST_REQUIRE(rtx.Track(9, 13, make_frame(13), 100, 2210, 4096, 1));
+    fast.clear();
+    rtx.Ack(9, 13, {{2, 13}}, 2300, 3, 25, fast);
+    BOOST_REQUIRE_EQUAL(fast.size(), 1u);
+    BOOST_TEST(fast.front() == key);
+}
+
+BOOST_AUTO_TEST_CASE(pending_hole_has_a_single_retry_across_ack_pto_and_carrier_exit) {
+    mux::MuxRetransmitBuffer rtx;
+    const auto key = rtx.Key(9, 1);
+    BOOST_REQUIRE(rtx.Track(9, 1, make_frame(1), 100, 1000, 1024, 1));
+    std::vector<std::uint64_t> pending, fast, expired;
+    BOOST_REQUIRE(rtx.QueueRetry(key, pending, "fast"));
+    rtx.Ack(9, 9, {{9, 9}}, 2000, 3, 50, fast);
+    rtx.CollectExpired(2000, 100, 60000, 32, expired);
+    BOOST_TEST(fast.empty());
+    BOOST_TEST(expired.empty());
+    rtx.TakeLinkInflight(1, pending);
+    BOOST_REQUIRE_EQUAL(pending.size(), 1u);
+    BOOST_TEST(rtx.Find(key)->last_link_id == 0u);
+    BOOST_TEST(rtx.LinkBytes(1) == 0u);
+    rtx.MarkRetransmitted(key, 2000, 2);
+    BOOST_TEST(!rtx.Find(key)->retry_source);
+    rtx.TakeLinkInflight(2, fast);
+    BOOST_REQUIRE_EQUAL(fast.size(), 1u);
+    BOOST_TEST(fast.front() == key);
+}
+
+BOOST_AUTO_TEST_CASE(pto_tracks_the_current_carrier_and_falls_back_for_unknown_links) {
+    mux::MuxRetransmitBuffer rtx;
+    const std::unordered_map<std::uint16_t, std::uint64_t> ptos = {{1, 900}, {2, 100}};
+    for (std::uint16_t link = 1; link <= 3; ++link) {
+        BOOST_REQUIRE(rtx.Track(9, link, make_frame(link), 100, 1000, 1024, link));
+    }
+    std::vector<std::uint64_t> expired;
+    rtx.CollectExpired(1300, 200, 60000, 32, expired, 0, &ptos);
+    BOOST_REQUIRE_EQUAL(expired.size(), 2u);
+    BOOST_TEST(expired[0] == rtx.Key(9, 2));
+    BOOST_TEST(expired[1] == rtx.Key(9, 3));
+    rtx.MarkRetransmitted(expired[0], 1300, 1);
+    expired.clear();
+    rtx.CollectExpired(3099, 200, 60000, 32, expired, 1, &ptos);
+    BOOST_REQUIRE_EQUAL(expired.size(), 1u);
+    BOOST_TEST(expired[0] == rtx.Key(9, 1));
+    expired.clear();
+    rtx.CollectExpired(3100, 200, 60000, 32, expired, 1, &ptos);
+    BOOST_REQUIRE_EQUAL(expired.size(), 2u);
+    BOOST_TEST(expired[1] == rtx.Key(9, 2));
 }
 
 BOOST_AUTO_TEST_CASE(collect_expired_respects_pto_and_count_bound) {

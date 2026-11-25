@@ -5,6 +5,7 @@
 #include <ppp/transmissions/TransmissionFrameLimits.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <openssl/crypto.h>
 
@@ -13,6 +14,11 @@ namespace {
 constexpr std::size_t PrefaceSize = 7;
 constexpr std::size_t MaxLogicalRecords = 128;
 constexpr std::size_t MaxLogicalBytes = 4 * 1024 * 1024;
+std::uint64_t ElapsedRoundTripMs(std::chrono::steady_clock::time_point start) noexcept {
+    return std::max<std::int64_t>(1, std::chrono::ceil<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count());
+}
+
 std::uint16_t Read16(const std::uint8_t* p) noexcept {
     return static_cast<std::uint16_t>((static_cast<std::uint16_t>(p[0]) << 8) | p[1]);
 }
@@ -46,8 +52,13 @@ public:
         return owner ? owner->GetAuthenticatedCarrierKind() : AuthenticatedCarrierKind::None;
     }
 
-    // The VMUX/scheduler holds this logical channel, so pacing must be
-    // forwarded to the one raw carrier that actually writes the bytes.
+    std::uint64_t GetInitialCarrierRttMs() const noexcept override {
+        auto owner = owner_.lock();
+        return owner ? owner->GetInitialCarrierRttMs() : 0;
+    }
+
+    // VMUX holds this logical channel. The RTT and pacing operations belong
+    // to the underlying carrier that writes its bytes.
     bool SupportsPacingRate() const noexcept override {
         auto owner = owner_.lock();
         return owner && owner->SupportsPacingRate();
@@ -210,12 +221,18 @@ bool MultipathTransmission::StartClientHandshake(YieldContext& y) noexcept {
         if (secure_started_ || !secure_.Start(role_, std::move(psk_), parameters_, first)) return false;
         secure_started_ = true;
     }
+    // A proxy can terminate the underlying TCP socket. Time the exchange with
+    // the authenticated peer after any HTTP or TLS upgrade has finished.
+    const auto start = std::chrono::steady_clock::now();
     if (!SendHandshakeFrame(y, first)) return false;
     std::vector<std::uint8_t> response, unused;
     if (!ReceiveHandshakeFrame(y, response)) return false;
+    const auto rtt_ms = ElapsedRoundTripMs(start);
     std::lock_guard<std::mutex> lock(secure_mutex_);
-    return secure_.ProcessHandshakeMessage(response.data(), response.size(), unused) &&
-        unused.empty() && secure_.IsReady();
+    if (!secure_.ProcessHandshakeMessage(response.data(), response.size(), unused) ||
+        !unused.empty() || !secure_.IsReady()) return false;
+    initial_rtt_ms_.store(rtt_ms, std::memory_order_relaxed);
+    return true;
 }
 
 bool MultipathTransmission::StartServerHandshake(YieldContext& y) noexcept {
@@ -362,10 +379,14 @@ bool MultipathTransmission::NegotiateBinaryFramingServer(YieldContext& y) noexce
 
     std::uint8_t type = 0;
     std::vector<std::uint8_t> data;
-    return WriteSecureRecord(y, BinaryFramingOffer, &BinaryFramingVersion, 1) &&
-        ReadSecureRecord(y, type, data) && type == BinaryFramingAck &&
-        data.size() == 1 && data.front() == BinaryFramingVersion &&
-        carrier_->EnableAuthenticatedMultipathBinaryFraming();
+    const auto start = std::chrono::steady_clock::now();
+    if (!WriteSecureRecord(y, BinaryFramingOffer, &BinaryFramingVersion, 1) ||
+        !ReadSecureRecord(y, type, data) || type != BinaryFramingAck ||
+        data.size() != 1 || data.front() != BinaryFramingVersion) return false;
+    const auto rtt_ms = ElapsedRoundTripMs(start);
+    if (!carrier_->EnableAuthenticatedMultipathBinaryFraming()) return false;
+    initial_rtt_ms_.store(rtt_ms, std::memory_order_relaxed);
+    return true;
 }
 
 bool MultipathTransmission::BeginApplicationIO() noexcept {
@@ -657,6 +678,10 @@ boost::asio::ip::tcp::endpoint MultipathTransmission::GetRemoteEndPoint() noexce
 
 AuthenticatedCarrierKind MultipathTransmission::GetAuthenticatedCarrierKind() const noexcept {
     return carrier_ ? carrier_->GetAuthenticatedCarrierKind() : AuthenticatedCarrierKind::None;
+}
+
+std::uint64_t MultipathTransmission::GetInitialCarrierRttMs() const noexcept {
+    return initial_rtt_ms_.load(std::memory_order_relaxed);
 }
 
 bool MultipathTransmission::SupportsPacingRate() const noexcept {

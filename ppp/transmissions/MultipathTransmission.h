@@ -72,6 +72,7 @@ public:
     AuthenticatedCarrierKind GetAuthenticatedCarrierKind() const noexcept override;
     /** @brief Pacing is only as available as the underlying carrier. */
     bool SupportsPacingRate() const noexcept override;
+    std::uint64_t GetInitialCarrierRttMs() const noexcept override;
     std::uint64_t GetPacingRateBytesPerSecond() const noexcept override;
     /** @brief Forwards the cap to the raw carrier; WS/WSS report Unsupported. */
     TransmissionPacingResult ApplyPacingRate(std::uint64_t bytes_per_second) noexcept override;
@@ -150,6 +151,7 @@ private:
     std::size_t pending_control_bytes_ = 0;
     std::size_t pending_control_writes_ = 0;
     std::size_t pending_control_write_bytes_ = 0;
+    std::atomic<std::uint64_t> initial_rtt_ms_{0};
     bool secure_started_ = false;
     std::atomic_bool disposed_{false};
 };

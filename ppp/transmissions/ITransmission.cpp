@@ -50,6 +50,9 @@ namespace ppp {
         static constexpr int EVP_HEADER_TSS = 2;                  // Encrypted length field size (2 bytes)
         static constexpr int EVP_HEADER_MSS = EVP_HEADER_TSS + 1; // 3 bytes: total header after first key byte
         static constexpr int EVP_HEADER_XSS = EVP_HEADER_MSS + 1; // 4 bytes: simple header (random key + filler + swapped length)
+        static_assert(EVP_HEADER_MSS == TransmissionBinaryHeaderBytes);
+        static_assert(EVP_HEADER_XSS == TransmissionBase94MinHeaderBytes);
+        static_assert(EVP_HEADER_XSS + EVP_HEADER_MSS == TransmissionBase94MaxHeaderBytes);
 
         // Forward declaration of the full packet read helper (used by ReadBinary).
         static std::shared_ptr<Byte> Transmission_Packet_Read(

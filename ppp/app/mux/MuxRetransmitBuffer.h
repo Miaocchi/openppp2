@@ -21,6 +21,7 @@
  * Not thread-safe: strand-affine by design, like the rest of vmux state.
  */
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <list>
@@ -65,6 +66,8 @@ struct MuxRtxEntry final {
     std::uint64_t                 first_sent_tick = 0; ///< Tick of the first transmission.
     std::uint64_t                 last_sent_tick = 0;  ///< Tick of the most recent (re)transmission.
     std::uint32_t                 attempts = 0;   ///< Retransmissions already performed.
+    const char*                   retry_source = nullptr; ///< One outstanding retry request across ACK, PTO and carrier exit.
+    std::uint64_t                 retry_delay_ms = 0; ///< Initial carrier RTT for fast loss detection, then the replacement feedback interval.
     std::uint32_t                 fast_rtx_mark = 0;   ///< largest-acked value at the last fast retransmit (dedup).
     std::uint16_t                 orig_link_id = 0;  ///< Carrier link the frame was FIRST sent on (for per-link RTT attribution).
     std::uint16_t                 last_link_id = 0;  ///< Carrier link the frame was most recently (re)sent on (for per-link PTO).
@@ -86,7 +89,7 @@ public:
 
     /**
      * Retain one freshly-sent frame.
-     * @return false when the byte cap would be exceeded (caller degrades).
+     * @return false for an empty/invalid frame or when the byte cap would be exceeded.
      */
     bool Track(
         std::uint32_t connection_id,
@@ -97,12 +100,13 @@ public:
         std::size_t byte_cap,
         std::uint16_t link_id = 0,
         const MuxDeliveryStamp& delivery_stamp = {},
-        std::size_t payload_bytes = 0) {
+        std::size_t payload_bytes = 0,
+        std::uint64_t initial_fast_delay_ms = 0) {
         const std::uint64_t key = Key(connection_id, sequence);
         if (entries_.find(key) != entries_.end()) {
             return true; // Already tracked (defensive; sends are unique per key).
         }
-        if (byte_cap > 0 && bytes_ + static_cast<std::size_t>(length) > byte_cap) {
+        if (length <= 0 || (byte_cap > 0 && bytes_ + static_cast<std::size_t>(length) > byte_cap)) {
             return false;
         }
 
@@ -116,21 +120,24 @@ public:
         entry.last_link_id = link_id;
         entry.delivery_stamp = delivery_stamp;
         entry.payload_bytes = payload_bytes;
+        entry.retry_delay_ms = initial_fast_delay_ms;
         entry.order = (--order_.end());
         entries_.emplace(key, std::move(entry));
         bytes_ += static_cast<std::size_t>(length);
-        cid_bytes_[connection_id] += static_cast<std::size_t>(length);
+        cid_flight_[connection_id].bytes += static_cast<std::size_t>(length);
         AddLinkBytes(link_id, static_cast<std::size_t>(length));
         return true;
     }
 
     /**
      * Release every entry of @p connection_id covered by the ACK ranges and
-     * collect fast-retransmit candidates: entries whose sequence sits at least
-     * @p fast_threshold below @p largest (approximating "N later frames were
-     * acked above the hole", the QUIC dup-ACK rule) AND whose first_sent_tick
-     * is at least @p fast_time_threshold ago (QUIC time threshold ≈ SRTT/4).
-     * A candidate is reported at most once per advancing @p largest.
+     * collect fast-retransmit candidates. A gap must be at least
+     * @p fast_threshold sequence numbers behind @p largest and the most recent
+     * send must be at least @p fast_time_threshold old. For a retransmitted
+     * frame, its carrier feedback interval must also have elapsed and the
+     * peer must have acknowledged data first sent after the retransmission.
+     * A candidate is reported at most once per advancing @p largest. When
+     * @p collect_fast is false, holes are neither reported nor marked.
      * If supplied, @p cumulative_payload accumulates newly acknowledged payload
      * bytes across calls, saturating at UINT64_MAX regardless of carrier attribution.
      * @return RTT sample in ms from the first newly-acked entry that was never
@@ -147,7 +154,8 @@ public:
         std::uint16_t* out_link_id = nullptr,
         std::unordered_map<std::uint16_t, std::size_t>* out_link_acked_bytes = nullptr,
         std::unordered_map<std::uint16_t, MuxAckDelivery>* out_deliveries = nullptr,
-        std::uint64_t* cumulative_payload = nullptr) {
+        std::uint64_t* cumulative_payload = nullptr,
+        bool collect_fast = true) {
         std::uint64_t rtt_sample = 0;
         if (nullptr != out_link_id) {
             *out_link_id = 0;
@@ -158,25 +166,26 @@ public:
 
         if (out_deliveries) out_deliveries->clear();
 
-        // Collect keys first: erasing while iterating the map is fine, but the
-        // candidate scan below walks the whole map anyway, so do one pass.
-        std::vector<std::uint64_t> acked;
-        for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+        // Late ACKs for a drained/reset flow require no scan of other flows.
+        auto flow = cid_flight_.find(connection_id);
+        if (flow == cid_flight_.end()) return 0;
+        const auto candidate_start = fast_candidates.size();
+        for (auto it = entries_.begin(); it != entries_.end();) {
             if (KeyCid(it->first) != connection_id) {
+                ++it;
                 continue;
             }
-            const std::uint32_t seq = static_cast<std::uint32_t>(it->first & 0xFFFFFFFFu);
-            for (const MuxAckRange& range : ranges) {
-                if (seq >= range.start && seq <= range.end) {
-                    acked.push_back(it->first);
-                    break;
+            const auto seq = static_cast<std::uint32_t>(it->first);
+            const bool acknowledged = std::any_of(ranges.begin(), ranges.end(),
+                [seq](const MuxAckRange& range) { return seq >= range.start && seq <= range.end; });
+            if (!acknowledged) {
+                auto& entry = it->second;
+                if (collect_fast && !entry.retry_source && largest > seq && largest - seq >= fast_threshold &&
+                    entry.fast_rtx_mark != largest &&
+                    now >= entry.last_sent_tick && now - entry.last_sent_tick >= std::max(fast_time_threshold, entry.retry_delay_ms)) {
+                    fast_candidates.push_back(it->first);
                 }
-            }
-        }
-
-        for (std::uint64_t key : acked) {
-            auto it = entries_.find(key);
-            if (it == entries_.end()) {
+                ++it;
                 continue;
             }
             if (rtt_sample == 0 && it->second.attempts == 0 && now >= it->second.first_sent_tick) {
@@ -206,39 +215,24 @@ public:
             }
             ReleaseLinkBytes(it->second.last_link_id, static_cast<std::size_t>(it->second.length));
             bytes_ -= static_cast<std::size_t>(it->second.length);
-            ReleaseCidBytes(connection_id, static_cast<std::size_t>(it->second.length));
+            flow->second.bytes -= static_cast<std::size_t>(entry.length);
+            flow->second.latest_acked_send = std::max(flow->second.latest_acked_send, entry.first_sent_tick);
             order_.erase(it->second.order);
-            entries_.erase(it);
+            it = entries_.erase(it);
         }
 
-        // Fast-retransmit candidates: unacked entries of this space with at
-        // least fast_threshold acked sequences above them.
-        for (auto& kv : entries_) {
-            if (KeyCid(kv.first) != connection_id) {
-                continue;
-            }
-            const std::uint32_t seq = static_cast<std::uint32_t>(kv.first & 0xFFFFFFFFu);
-            if (!(largest > seq)) {
-                continue;
-            }
-            if (static_cast<std::uint32_t>(largest - seq) < fast_threshold) {
-                continue;
-            }
-            MuxRtxEntry& entry = kv.second;
-            if (entry.fast_rtx_mark == largest) {
-                continue; // Already fast-retransmitted for this largest.
-            }
-            // Time threshold (QUIC ≈ SRTT/4): skip entries that were sent
-            // too recently — the gap might just be normal reordering on a
-            // heterogeneous multi-path link. 0 disables the time gate.
-            if (fast_time_threshold > 0 && now >= entry.first_sent_tick &&
-                (now - entry.first_sent_tick) < fast_time_threshold) {
-                continue;
-            }
+        // Frames retain their DSN on retry. Later ACKs from the original flight
+        // can advance largest for many RTTs without saying anything about the
+        // replacement. Require delivery of a frame first sent after that retry.
+        auto accepted = fast_candidates.begin() + candidate_start;
+        for (auto candidate = accepted; candidate != fast_candidates.end(); ++candidate) {
+            auto& entry = entries_.find(*candidate)->second;
+            if (entry.attempts != 0 && flow->second.latest_acked_send <= entry.last_sent_tick) continue;
             entry.fast_rtx_mark = largest;
-            fast_candidates.push_back(kv.first);
+            *accepted++ = *candidate;
         }
-
+        fast_candidates.erase(accepted, fast_candidates.end());
+        if (flow->second.bytes == 0) cid_flight_.erase(flow);
         return rtt_sample;
     }
 
@@ -254,31 +248,27 @@ public:
      */
     void CollectExpired(std::uint64_t now, std::uint64_t base_pto,
         std::uint64_t pto_max, std::size_t max_count,
-        std::vector<std::uint64_t>& expired, std::uint16_t link_id = 0) const {
+        std::vector<std::uint64_t>& expired, std::uint16_t link_id = 0,
+        const std::unordered_map<std::uint16_t, std::uint64_t>* link_ptos = nullptr) const {
         for (const auto key : order_) {
             if (expired.size() >= max_count) {
                 break;
             }
             const MuxRtxEntry& entry = entries_.find(key)->second;
-            if (link_id != 0 && entry.last_link_id != link_id) {
+            if (entry.retry_source || (link_id != 0 && entry.last_link_id != link_id)) {
                 continue;
             }
             if (now < entry.last_sent_tick) {
                 continue;
             }
             // Saturating shift-left: base_pto << shift, clamped to UINT64_MAX.
-            const std::uint32_t shift = entry.attempts > 5 ? 5 : entry.attempts;
             std::uint64_t effective = base_pto;
-            for (std::uint32_t s = 0; s < shift; ++s) {
-                if (effective > (UINT64_MAX >> 1)) {
-                    effective = UINT64_MAX;
-                    break;
-                }
-                effective <<= 1;
+            if (link_ptos) {
+                const auto carrier = link_ptos->find(entry.last_link_id);
+                if (carrier != link_ptos->end()) effective = carrier->second;
             }
-            if (effective > pto_max) {
-                effective = pto_max;
-            }
+            effective = BackedOffPto(effective, entry.attempts, pto_max);
+            if (entry.attempts != 0) effective = std::max(effective, entry.retry_delay_ms);
             if ((now - entry.last_sent_tick) >= effective) {
                 expired.push_back(key);
             }
@@ -290,11 +280,28 @@ public:
         return it == entries_.end() ? nullptr : &it->second;
     }
 
+    static std::uint64_t BackedOffPto(std::uint64_t base, std::uint32_t attempts,
+        std::uint64_t maximum) noexcept {
+        const auto shift = std::min<std::uint32_t>(attempts, 5);
+        return base > (maximum >> shift) ? maximum : base << shift;
+    }
+
+    /** Multiple loss signals share one pending retry until it is actually written. */
+    bool QueueRetry(std::uint64_t key, std::vector<std::uint64_t>& pending, const char* source) {
+        auto* entry = Find(key);
+        if (!entry || entry->retry_source) return false;
+        pending.push_back(key);
+        entry->retry_source = source;
+        return true;
+    }
+
     /** Account one retransmission of @p key on @p link_id. */
     void MarkRetransmitted(std::uint64_t key, std::uint64_t now,
-        std::uint16_t link_id = 0) noexcept {
+        std::uint16_t link_id = 0, std::uint64_t retry_delay_ms = 0) noexcept {
         MuxRtxEntry* entry = Find(key);
         if (nullptr != entry) {
+            entry->retry_source = nullptr;
+            entry->retry_delay_ms = retry_delay_ms;
             if (entry->last_link_id != link_id) {
                 try {
                     AddLinkBytes(link_id, static_cast<std::size_t>(entry->length));
@@ -335,13 +342,14 @@ public:
             it->second.orig_link_id = 0;
             it->second.last_link_id = 0;
             it->second.last_sent_tick = 0;
-            out.push_back(key);
+            if (it->second.retry_source) it->second.retry_source = "exit";
+            else QueueRetry(key, out, "exit");
         }
     }
 
     /** Drop every entry of one connection space (flow reset / flow release). */
     void EraseCid(std::uint32_t connection_id) {
-        cid_bytes_.erase(connection_id);
+        cid_flight_.erase(connection_id);
         for (auto it = entries_.begin(); it != entries_.end();) {
             if (KeyCid(it->first) == connection_id) {
                 bytes_ -= static_cast<std::size_t>(it->second.length);
@@ -358,7 +366,7 @@ public:
     void Clear() noexcept {
         entries_.clear();
         order_.clear();
-        cid_bytes_.clear();
+        cid_flight_.clear();
         link_bytes_.clear();
         bytes_ = 0;
     }
@@ -368,8 +376,8 @@ public:
 
     /** Unacked bytes retained for one connection space (released by Ack / EraseCid). */
     std::size_t CidBytes(std::uint32_t connection_id) const noexcept {
-        auto it = cid_bytes_.find(connection_id);
-        return it == cid_bytes_.end() ? 0 : it->second;
+        auto it = cid_flight_.find(connection_id);
+        return it == cid_flight_.end() ? 0 : it->second.bytes;
     }
 
     /** Unacked bytes whose most recent transmission is assigned to @p link_id. */
@@ -394,24 +402,16 @@ private:
         else it->second -= length;
     }
 
-    void ReleaseCidBytes(std::uint32_t connection_id, std::size_t length) noexcept {
-        auto it = cid_bytes_.find(connection_id);
-        if (it == cid_bytes_.end()) {
-            return;
-        }
-        if (it->second <= length) {
-            cid_bytes_.erase(it);
-        }
-        else {
-            it->second -= length;
-        }
-    }
+    struct CidFlight {
+        std::size_t bytes = 0;
+        std::uint64_t latest_acked_send = 0;
+    };
 
     // std::list iterators are stable across insert/erase, so each entry can
     // store its position for O(1) removal from the insertion-ordered list.
     std::list<std::uint64_t>                                       order_;
     std::unordered_map<std::uint64_t, MuxRtxEntry>                 entries_;
-    std::unordered_map<std::uint32_t, std::size_t>                 cid_bytes_;
+    std::unordered_map<std::uint32_t, CidFlight>                   cid_flight_;
     std::unordered_map<std::uint16_t, std::size_t>                 link_bytes_;
     std::size_t                                                    bytes_ = 0;
 };

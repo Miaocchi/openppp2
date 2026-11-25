@@ -21,6 +21,7 @@ import time
 import uuid
 import copy
 import re
+from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from pathlib import Path
 
 TBF_BURST_KB_CHOICES = (128, 256, 512, 1024)
 DEFAULT_TBF_BURST_KB = 128
+WIRE_BOUNDARY_TOLERANCE = 0.05  # seconds on either side of a scheduled boundary
 CONGESTION_CONTROL_CHOICES = ("bbr", "cubic")
 # IPv4 total length below this is a pure ACK or a small control frame. Bulk
 # data frames are near the 1500-byte veth MTU, so 256 bytes separates them
@@ -314,11 +316,6 @@ class Lab:
              "match", "u32", "0", "0", "flowid", "20:2"])
 
     @staticmethod
-    def _path_rate(ns: str, dev: str, rate: int, action: str = "replace") -> None:
-        run(["ip", "netns", "exec", ns, "tc", "qdisc", action, "dev", dev,
-             "root", "handle", "1:", "tbf", "rate", f"{rate}mbit", "burst", "128kb", "latency", "500ms"])
-
-    @staticmethod
     def _netem(ns: str, dev: str, rtt: float, jitter: float = 0,
                loss_percent: float = 0, jitter_distribution: str = "normal",
                parent: str = "1:1", handle: str = "10:") -> None:
@@ -468,9 +465,22 @@ class Lab:
             ))
         return counters
 
-    def directional_path_bytes(self, direction: str) -> dict[str, int]:
-        ns, dev = ("client_ns", "client_if") if direction == "upload" else ("router_ns", "router_client_if")
-        return {path["id"]: self._root_tbf_bytes(path[ns], path[dev]) for path in self.paths}
+    def wire_counters(self, directions: tuple[str, ...]) -> tuple[dict, dict]:
+        def read(direction, path):
+            ns, dev = ("client_ns", "client_if") if direction == "upload" else ("router_ns", "router_client_if")
+            before = time.monotonic()
+            count = self._root_tbf_bytes(path[ns], path[dev])
+            return path["id"], count, [before, time.monotonic()]
+
+        counts = {d: {} for d in directions}
+        times = {d: {} for d in directions}
+        with ThreadPoolExecutor(max_workers=len(directions) * len(self.paths)) as pool:
+            jobs = [(d, pool.submit(read, d, path)) for d in directions for path in self.paths]
+            for direction, job in jobs:
+                path_id, count, timing = job.result()
+                counts[direction][path_id] = count
+                times[direction][path_id] = timing
+        return counts, times
 
 
 def validate_result(path: Path, scenario: str, *, min_ratio: float,
@@ -621,6 +631,11 @@ def workspace_evidence(root: Path) -> dict:
 
 
 def production_six_flow(args: argparse.Namespace) -> int:
+    if args.min_path_utilization is not None:
+        if not 0 <= args.min_path_utilization <= 1:
+            raise HarnessError("--min-path-utilization must be a fraction from 0 to 1")
+        if args.wire_interval != 1:
+            raise HarnessError("--min-path-utilization requires --wire-interval 1")
     source = workspace_evidence(Path(__file__).resolve().parents[3])
     output = Path(args.output).resolve()
     output.mkdir(parents=True, mode=0o700)
@@ -630,6 +645,7 @@ def production_six_flow(args: argparse.Namespace) -> int:
                      "cwd": os.getcwd(), "workspace": source, "clock_reference": clock,
                      "profile": args.profile, "executor_concurrency": args.concurrent,
                      "wire_interval": args.wire_interval,
+                     "min_path_utilization": args.min_path_utilization,
                      "qdisc_metrics": args.qdisc_metrics,
                      "socket_metrics": args.socket_metrics,
                      "tbf_burst_kb": args.tbf_burst_kb,
@@ -664,7 +680,9 @@ def production_six_flow(args: argparse.Namespace) -> int:
         args.evidence["exit_code"] = code
         evidence_path.write_text(json.dumps(args.evidence, indent=2) + "\n")
     if code == 0:
-        print(f"PASS: {args.flows} verified flows per selected direction; result={output / 'six-flow-integrity.json'}")
+        rate = (f", every path reached {args.min_path_utilization:.1%} in every measured one-second window (±50 ms per boundary)"
+                if args.min_path_utilization is not None else "")
+        print(f"PASS: {args.flows} verified flows per selected direction{rate}; result={output / 'six-flow-integrity.json'}")
     return code
 
 
@@ -875,14 +893,21 @@ def socket_metrics_sample(lab: Lab, directions: tuple[str, ...], sampled_ms: int
 def sample_directional_wire(lab: Lab, output: Path, directions: tuple[str, ...],
                             phase_started: float, send_seconds: int, impairment: dict | None,
                             wire_interval: int = 6, qdisc_metrics: bool = False,
-                            socket_metrics: bool = False) -> None:
-    # Include the send boundary so the final interval is measurable; consumers
-    # must ignore any partial interval shorter than wire_interval.
-    sample_offsets = set(range(9, send_seconds + 1, wire_interval))
+                            socket_metrics: bool = False, initial_sample: tuple[dict, dict] | None = None,
+                            release_finished: float | None = None) -> None:
+    if wire_interval == 1:
+        if initial_sample is None or release_finished is None:
+            raise HarnessError("one-second sampling requires counters from before workload release")
+        before, before_times = initial_sample
+        started = phase_started
+        sample_offsets = set(range(1, send_seconds + 1))
+    else:
+        # Preserve the historical warm-up and first six-second window.
+        time.sleep(max(0, phase_started + 3 - time.monotonic()))
+        before, before_times = lab.wire_counters(directions)
+        started = time.monotonic()
+        sample_offsets = set(range(9, send_seconds + 1, wire_interval))
     faults = {impairment["start"]: False, impairment["stop"]: True} if impairment else {}
-    time.sleep(max(0, phase_started + 3 - time.monotonic()))
-    before = {direction: lab.directional_path_bytes(direction) for direction in directions}
-    started = time.monotonic()
     with contextlib.ExitStack() as handles:
         wires = {direction: handles.enter_context((output / f"{direction}-wire.ndjson").open("w"))
                  for direction in directions}
@@ -892,11 +917,20 @@ def sample_directional_wire(lab: Lab, output: Path, directions: tuple[str, ...],
                    if socket_metrics else None)
         for offset in sorted(sample_offsets | faults.keys()):
             time.sleep(max(0, phase_started + offset - time.monotonic()))
-            after = {direction: lab.directional_path_bytes(direction) for direction in directions}
+            after, after_times = lab.wire_counters(directions)
             finished = time.monotonic()
             for direction in directions:
                 deltas = {path: (count - before[direction][path] if count >= before[direction][path] else None)
                           for path, count in after[direction].items()}
+                samples = {path: [*before_times[direction][path], *after_times[direction][path]]
+                           for path in deltas}
+                # The kernel read occurred within each tc command. Use the longest
+                # possible elapsed time for acceptance and retain all four bounds.
+                rates = {path: count * 8 / (samples[path][3] - samples[path][0]) / 1e6
+                         if count is not None else None for path, count in deltas.items()}
+                timing = ({"release_monotonic": [phase_started, release_finished],
+                           "counter_read_monotonic": samples, "scheduled_second": offset}
+                          if wire_interval == 1 else {})
                 print(json.dumps({"start_seconds": started - phase_started,
                                   "end_seconds": finished - phase_started,
                                   "start_monotonic_ms": int(started * 1000),
@@ -904,10 +938,9 @@ def sample_directional_wire(lab: Lab, output: Path, directions: tuple[str, ...],
                                   "start_tbf_bytes": before[direction],
                                   "end_tbf_bytes": after[direction],
                                   "tbf_bytes": deltas,
-                                  "mbps": {path: count * 8 / (finished - started) / 1e6 if count is not None else None
-                                           for path, count in deltas.items()}}),
+                                  "mbps": rates, **timing}),
                       file=wires[direction], flush=True)
-            started, before = finished, after
+            started, before, before_times = finished, after, after_times
             sampled_ms = int(time.monotonic() * 1000)
             if metrics is not None:
                 for path in lab.paths:
@@ -1253,6 +1286,136 @@ def record_pool_events(output: Path, clock: dict) -> None:
                           file=events)
 
 
+def _wire_windows(path: Path, seconds: int, targets: dict,
+                  verified_seconds: set[int] | None = None) -> tuple[dict, list[str], tuple | None]:
+    windows, errors = {}, []
+    release = None
+    previous = {}
+    if not path.is_file():
+        return windows, [f"missing {path.name}"], release
+    for index, line in enumerate(path.read_text().splitlines(), 1):
+        try:
+            row = json.loads(line)
+            if not isinstance(row, dict) or not isinstance(row.get("tbf_bytes"), dict):
+                raise HarnessError("expected a record containing per-path TBF byte counters")
+            if "counter_read_monotonic" not in row:
+                legacy_error = "legacy batch timestamps cannot verify per-path timing or workload release"
+                if legacy_error not in errors:
+                    errors.append(legacy_error)
+                start = finite_nonnegative(row["start_seconds"], "start_seconds")
+                end = finite_nonnegative(row["end_seconds"], "end_seconds")
+                second = math.floor(end + 0.5)
+                if (second in windows or not 1 <= second <= seconds or
+                        math.floor(start + 0.5) != second - 1 or math.floor(end - start + 0.5) != 1):
+                    raise HarnessError("off-cadence or duplicate legacy window")
+                windows[second] = {k: n * 8 / (end - start) / 1e6 for k, n in row["tbf_bytes"].items()
+                                   if type(n) is int and n >= 0}
+                continue
+            second = row["scheduled_second"]
+            if type(second) is not int or not 1 <= second <= seconds or second != index:
+                raise HarnessError("missing, duplicate, or out-of-order scheduled second")
+            first, last = (finite_nonnegative(v, "release timestamp") for v in row["release_monotonic"])
+            if last < first or last - first > WIRE_BOUNDARY_TOLERANCE or (release and release != (first, last)):
+                raise HarnessError("inconsistent or delayed workload release")
+            release = first, last
+            rates = windows[second] = {}
+            for name in targets:
+                if any(name not in row[field] for field in (
+                        "counter_read_monotonic", "start_tbf_bytes", "end_tbf_bytes", "tbf_bytes")):
+                    errors.append(f"row {index} {name}: missing path counter")
+                    continue
+                a, b, c, d = (finite_nonnegative(v, "counter timestamp")
+                              for v in row["counter_read_monotonic"][name])
+                low, high = row["start_tbf_bytes"][name], row["end_tbf_bytes"][name]
+                delta = row["tbf_bytes"][name]
+                if (type(low) is not int or type(high) is not int or type(delta) is not int or
+                        low < 0 or high < low or high - low != delta or not a <= b < c <= d or
+                        (second > 1 and previous.get(name) != (a, b, low)) or
+                        (second == 1 and b > first) or
+                        a < last + second - 1 - WIRE_BOUNDARY_TOLERANCE or
+                        b > first + second - 1 + WIRE_BOUNDARY_TOLERANCE or
+                        c < last + second - WIRE_BOUNDARY_TOLERANCE or
+                        d > first + second + WIRE_BOUNDARY_TOLERANCE):
+                    errors.append(f"row {index} {name}: counter or timing outside accepted bounds")
+                else:
+                    rates[name] = delta * 8 / (d - a) / 1e6
+                previous[name] = c, d, high
+            if verified_seconds is not None and rates.keys() >= targets.keys():
+                verified_seconds.add(second)
+        except (ValueError, TypeError, KeyError, HarnessError) as exc:
+            errors.append(f"row {index}: {exc}")
+    return windows, errors, release
+
+
+def evaluate_path_utilization(output: Path, minimum: float, result: dict | None = None) -> dict:
+    """Evaluate every selected path and second, including on a saved six-flow run."""
+    if finite_nonnegative(minimum, "minimum path utilization") > 1:
+        raise HarnessError("minimum path utilization must be a fraction from 0 to 1")
+    if result is None:
+        result = json.loads((output / "six-flow-integrity.json").read_text())
+    topology = json.loads((output / "topology.json").read_text())
+    caps = {path["id"]: path["rate_mbps"] for path in topology["paths"]}
+    targets = {}
+    for path_id in result["paths"]:
+        cap = finite_nonnegative(caps.get(path_id), f"{path_id} rate_mbps")
+        if not cap:
+            raise HarnessError(f"missing positive {path_id} capacity")
+        targets[path_id] = cap * minimum
+    if not targets:
+        raise HarnessError("no selected paths to evaluate")
+    mode = result["direction_mode"]
+    phases = ("upload", "download") if mode in ("bidirectional", "sequential") else (mode,)
+    report = {"min_path_utilization": minimum, "passed": True, "directions": {}}
+    passed_seconds = {}
+    releases = {}
+    for direction in phases:
+        seconds = result["directions"][direction]["send_seconds"]
+        if direction not in ("upload", "download") or type(seconds) is not int or seconds <= 0:
+            raise HarnessError("invalid workload direction or duration")
+        verified_seconds = set()
+        windows, errors, releases[direction] = _wire_windows(
+            output / f"{direction}-wire.ndjson", seconds, targets, verified_seconds)
+        paths = {}
+        for path_id, target in targets.items():
+            rates = []
+            failed_seconds = []
+            for second in range(1, seconds + 1):
+                mbps = windows.get(second, {}).get(path_id)
+                if mbps is not None:
+                    rates.append(mbps)
+                if mbps is None or mbps < target:
+                    failed_seconds.append(second)
+            paths[path_id] = {"target_mbps": target, "minimum_mbps": min(rates, default=None),
+                              "passed_windows": seconds - len(failed_seconds), "failed_seconds": failed_seconds}
+        failed = {second for path in paths.values() for second in path["failed_seconds"]}
+        passed_seconds[direction] = set(range(1, seconds + 1)) - failed
+        passed = not errors and not failed
+        report["directions"][direction] = {"expected_windows": seconds, "valid_windows": len(verified_seconds),
+                                           "all_paths_passed_windows": len(passed_seconds[direction]),
+                                           "paths": paths, "errors": errors, "passed": passed}
+        if seconds > 36:
+            first = seconds - 35
+            report["directions"][direction]["last_36_seconds"] = {
+                "first_second": first, "last_second": seconds, "expected_windows": 36,
+                "all_paths_passed_windows": sum(second >= first for second in passed_seconds[direction])}
+        report["passed"] &= passed
+    if mode == "bidirectional":
+        # Both directions are sampled in the same loop after a common start.
+        common = passed_seconds["upload"] & passed_seconds["download"]
+        durations = [result["directions"][direction]["send_seconds"] for direction in phases]
+        seconds = max(durations)
+        report["bidirectional"] = {"expected_windows": seconds, "all_paths_passed_windows": len(common)}
+        if seconds > 36:
+            report["bidirectional"]["last_36_seconds"] = {
+                "first_second": seconds - 35, "last_second": seconds, "expected_windows": 36,
+                "all_paths_passed_windows": sum(second > seconds - 36 for second in common)}
+        if releases["upload"] != releases["download"]:
+            report["bidirectional"]["error"] = "directions have different workload release times"
+            report["passed"] = False
+        report["passed"] &= len(common) == seconds
+    return report
+
+
 def six_flow_impairment(args: argparse.Namespace, selected_paths: list[dict]) -> dict | None:
     if args.impairment is None:
         if args.impair_path is not None or args.impair_value is not None:
@@ -1289,6 +1452,7 @@ def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path
         send_seconds = duration or max(workload.SECONDS[direction] for direction in directions)
         time.sleep(idle)
         ready = output / f"{phase}.ready"
+        synchronized = wire_interval == 1
         reports = {}
         endpoints = {}
         for role in ("server", "client"):
@@ -1296,7 +1460,8 @@ def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path
             with prefix.with_suffix(".ndjson").open("w") as out, prefix.with_suffix(".log").open("w") as err:
                 endpoints[role] = spawn_owned(children, ["ip", "netns", "exec", lab.names[role],
                     sys.executable, workload.__file__, role, BUSINESS_IP, "19003", phase, str(ready),
-                    str(flow_count), str(send_seconds)],
+                    str(flow_count), str(send_seconds), *(["--wait-for-start"] if synchronized else [])],
+                    stdin=subprocess.PIPE if synchronized else None,
                     stdout=out, stderr=err)
             if role == "server":
                 deadline = time.monotonic() + workload.CONNECT_TIMEOUT
@@ -1306,11 +1471,24 @@ def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path
                     time.sleep(.02)
                 ready.unlink()
 
-        # One deadline for all endpoint workers.
+        initial_sample = None
+        if synchronized:
+            # The server has received a start handshake on every client stream.
+            _wait_for_ready(ready.with_suffix(".armed"), endpoints["server"], workload.IO_TIMEOUT, phase)
+            if socket_metrics:
+                with (output / "socket-metrics.ndjson").open("a") as samples:
+                    for sample in socket_metrics_sample(lab, directions, int(time.monotonic() * 1000)):
+                        print(json.dumps(sample), file=samples)
+            initial_sample = lab.wire_counters(directions)
         phase_started = time.monotonic()
+        if synchronized:
+            for endpoint in endpoints.values():
+                with endpoint.stdin as control:
+                    control.write(b"G")
+        release_finished = time.monotonic()
         deadline = phase_started + send_seconds + workload.IO_TIMEOUT
         sample_directional_wire(lab, output, directions, phase_started, send_seconds, impairment,
-                                wire_interval, qdisc_metrics, socket_metrics)
+                                wire_interval, qdisc_metrics, socket_metrics, initial_sample, release_finished)
         for role, process in endpoints.items():
             if process.wait(timeout=max(0, deadline - time.monotonic())):
                 raise HarnessError(f"{phase} {role} failed; inspect {output}/{phase}-*.ndjson and *.log")
@@ -1533,11 +1711,6 @@ def production_smoke(args: argparse.Namespace) -> int:
             args.evidence["configured_carriers"] = {path["id"]: carriers_per_path for path in selected_paths}
             impairment = six_flow_impairment(args, selected_paths)
             server_process, client_process = start_trial("six-flow", 0, selected_paths, True)
-            directions = six_flow_acceptance(lab, children, output, args.flows, args.duration, args.direction,
-                                             impairment, args.wire_interval, args.qdisc_metrics,
-                                             args.socket_metrics)
-            if server_process.poll() is not None or client_process.poll() is not None:
-                raise HarnessError("candidate exited during six-flow acceptance")
             result = {"kind": "production-multipath-six-flow", "profile": args.profile,
                       "candidate": {"path": str(run_binary), "sha256": binary_sha256},
                       "topology": str(topology_path), "paths": [path["id"] for path in selected_paths],
@@ -1548,10 +1721,29 @@ def production_smoke(args: argparse.Namespace) -> int:
                       "tbf_burst_kb": args.tbf_burst_kb,
                       "ack_priority": args.ack_priority,
                       "congestion_control": args.congestion_control,
-                      "direction_mode": args.direction,
-                      "directions": directions, "passed": True}
+                      "direction_mode": args.direction, "passed": False}
             result_path = output / "six-flow-integrity.json"
+            try:
+                result["directions"] = six_flow_acceptance(lab, children, output, args.flows, args.duration,
+                    args.direction, impairment, args.wire_interval, args.qdisc_metrics, args.socket_metrics)
+                if server_process.poll() is not None or client_process.poll() is not None:
+                    raise HarnessError("candidate exited during six-flow acceptance")
+            except (HarnessError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                if args.min_path_utilization is not None:
+                    result.update(integrity_passed=False, integrity_error=str(exc), performance=None)
+                    result_path.write_text(json.dumps(result, indent=2) + "\n")
+                raise
+            result["integrity_passed"] = True
+            result["performance"] = None
+            result["passed"] = True
+            if args.min_path_utilization is not None:
+                result["performance"] = evaluate_path_utilization(output, args.min_path_utilization, result)
+                result["passed"] = result["performance"]["passed"]
             result_path.write_text(json.dumps(result, indent=2) + "\n")
+            if not result["passed"]:
+                print(f"FAIL: six-flow integrity passed, but the {args.min_path_utilization:.1%} "
+                      f"per-path utilization requirement failed; result={result_path}", file=sys.stderr)
+                return 1
             return 0
 
         echo = spawn_owned(children, ["ip", "netns", "exec", lab.names["server"], sys.executable, "-u", "-c",
@@ -2269,6 +2461,9 @@ def main() -> int:
     six_parser.add_argument("--wire-interval", type=int, choices=range(1, 7), metavar="1..6", default=6,
                             help="seconds between root TBF wire samples during each direction "
                                  "(default: 6)")
+    six_parser.add_argument("--min-path-utilization", type=float, metavar="0..1",
+                            help="require every one-second TBF window on each selected path and direction "
+                                 "to reach this fraction of its configured capacity (requires --wire-interval 1)")
     six_parser.add_argument("--tcp-cwnd", type=int, metavar="BYTES",
                             help="diagnostic TCP send-buffer override for each endpoint")
     six_parser.add_argument("--qdisc-metrics", action="store_true",

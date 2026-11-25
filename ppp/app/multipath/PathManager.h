@@ -46,7 +46,7 @@ namespace ppp::app::multipath {
 
         bool Start(const ppp::configurations::MultipathConfiguration& configuration) noexcept;
         void Stop() noexcept;
-        bool BeginAttempt(std::uint64_t now_ms, Attempt& attempt) noexcept;
+        bool BeginAttempt(std::uint64_t now_ms, Attempt& attempt, bool pool_trial = false) noexcept;
         bool MarkAuthenticating(const Attempt& attempt) noexcept;
         bool MarkJoined(const Attempt& attempt, const std::shared_ptr<void>& lifetime = nullptr) noexcept;
         bool Fail(const Attempt& attempt, std::uint64_t now_ms, Failure failure) noexcept;
@@ -93,6 +93,7 @@ namespace ppp::app::multipath {
         std::uint32_t generation_ = 0;
         std::size_t active_attempts_ = 0;
         std::size_t joined_carriers_ = 0;
+        std::size_t next_trial_path_ = 0;
         bool running_ = false;
     };
 }

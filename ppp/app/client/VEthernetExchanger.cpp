@@ -3555,7 +3555,7 @@ namespace ppp {
                                     break;
                                 }
                                 ppp::app::multipath::PathManager::Attempt path_slot;
-                                if (!multipath_paths_.BeginAttempt(Executors::GetTickCount(), path_slot)) break;
+                                if (!multipath_paths_.BeginAttempt(Executors::GetTickCount(), path_slot, token != 0)) break;
                                 multipath_paths_.MarkAuthenticating(path_slot);
                                 std::shared_ptr<ppp::app::multipath::PathAttempt> path_attempt;
                                 ITransmissionPtr transmission = OpenMultipathCarrier(

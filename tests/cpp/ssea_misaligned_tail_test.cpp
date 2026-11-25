@@ -235,3 +235,30 @@ BOOST_AUTO_TEST_CASE(shuffle_preserves_legacy_wire_order) {
         }
     }
 }
+BOOST_AUTO_TEST_CASE(shuffle_keeps_scalar_order_across_word_boundaries) {
+    std::array<char, 96> input{};
+    for (size_t i = 0; i < input.size(); ++i) {
+        input[i] = static_cast<char>(i);
+    }
+    for (const int size : {7, 8, 9, 15, 16, 17, 23, 24, 25, 63, 64, 65}) {
+        for (int offset = 0; offset < 8; ++offset) {
+            for (uint32_t lane = 0; lane < 8; ++lane) {
+                for (const uint32_t high : {0u, 8u, 16u, 64u, 128u, 0xfffffff8u}) {
+                    const uint32_t key = high | lane;
+                    auto expected = input;
+                    auto actual = input;
+                    BOOST_TEST_CONTEXT("size=" << size << " offset=" << offset << " key=" << key) {
+                        ssea::shuffle_data_scalar(expected.data() + offset, size, key);
+                        ssea::shuffle_data_opt(actual.data() + offset, size, key);
+                        BOOST_REQUIRE(actual == expected);
+                        expected = input;
+                        actual = input;
+                        ssea::unshuffle_data_scalar(expected.data() + offset, size, key);
+                        ssea::unshuffle_data_opt(actual.data() + offset, size, key);
+                        BOOST_REQUIRE(actual == expected);
+                    }
+                }
+            }
+        }
+    }
+}

@@ -129,10 +129,11 @@ public:
             MaxProbeBurstBytes)) {}
 
     // Keep a full BDP of extra flight available while a fresh estimate is
-    // being validated, i.e. a 2x BDP target. Reverse-path ACK queueing may
-    // expand that headroom up to the bounded 3x-BDP target. The session
-    // window remains the hard aggregate bound; unknown or symmetric RTT keeps
-    // the 2x baseline.
+    // being validated, i.e. a 2x BDP target. A modest amount of additional
+    // headroom is allowed when the observed ACK completion time is larger than
+    // the minimum RTT. That sample also contains VMUX and peer queues, so the
+    // expansion is capped at a 3x target to bound feedback from queueing into
+    // the flight budget.
     static constexpr std::uint64_t FlightHeadroomDivisor = 1;
     static constexpr std::uint64_t MaxAckReversalPermille = 3000;
     static std::uint64_t FlightHeadroomBytes(std::uint64_t bdp,
@@ -176,7 +177,7 @@ public:
         const auto weighted = (target / 100) * bounded_weight +
             (target % 100) * bounded_weight / 100;
         // Weighting may share a carrier down, but discovery still needs the
-        // measured target (BDP plus reversal headroom) as its floor. Without
+        // measured target (BDP plus bounded RTT headroom) as its floor. Without
         // it, a carrier at exactly its provisional BDP receives zero credit
         // and can never generate a larger sample or probe its real capacity.
         // The floor also never drops below the startup window: a known-but-tiny
@@ -216,7 +217,7 @@ public:
     // never borrows. Lending is stateless: a carrier that starts sending
     // raises its own inflight and automatically reduces what it can lend.
     //
-    // Demand is per carrier: max(startup, minimum, BDP + RTT headroom) when a
+    // Demand is per carrier: max(startup, minimum, BDP plus bounded RTT headroom) when a
     // fresh capacity sample backs the BDP, and the equal session share
     // (session_window / live_carriers, never below the startup/minimum floor)
     // when capacity is unknown or stale, matching the legacy equal-share
@@ -348,7 +349,7 @@ public:
     static std::size_t BuildFlightCreditPlan(std::uint64_t session_window,
         const FlightCreditRequest* requests, std::size_t count,
         std::uint64_t startup_window, std::uint64_t minimum_window,
-        FlightCreditAllocation* allocations) noexcept {
+        FlightCreditAllocation* allocations, std::uint64_t session_inflight_bytes = 0) noexcept {
         if (!requests || !allocations || count == 0 || count > MaxCandidates) {
             return 0;
         }
@@ -366,15 +367,14 @@ public:
             minimum_window);
         std::uint64_t inflights[MaxCandidates] = {};
         std::uint64_t unused[MaxCandidates] = {};
-        std::uint64_t reserved_total = 0;
+        std::uint64_t listed_flight = 0;
+        std::uint64_t base_credit = 0;
         std::uint64_t total_unused = 0;
         for (std::size_t i = 0; i < count; ++i) {
             FlightCreditAllocation& allocation = allocations[i];
             const FlightCreditRequest& request = requests[i];
+            listed_flight = SaturatingAdd(listed_flight, request.inflight_bytes);
             if (!allocation.eligible) {
-                // Draining/avoided flight still occupies the session window
-                // even though the carrier receives no new allocation.
-                reserved_total = SaturatingAdd(reserved_total, request.inflight_bytes);
                 continue;
             }
             allocation.capacity_known =
@@ -398,11 +398,8 @@ public:
             // an over-full carrier has nothing idle.
             unused[i] = share > request.inflight_bytes
                 ? share - request.inflight_bytes : 0;
-            // A capacity decrease can put existing flight above its new
-            // target. That overhang cannot be returned to another carrier
-            // until ACKs release it; reserving only the target lends it twice.
-            reserved_total = SaturatingAdd(reserved_total,
-                std::max(allocation.target_bytes, request.inflight_bytes));
+            if (allocation.target_bytes > request.inflight_bytes)
+                base_credit += allocation.target_bytes - request.inflight_bytes;
             total_unused = SaturatingAdd(total_unused, unused[i]);
         }
 
@@ -411,8 +408,32 @@ public:
         // by a peer's bulk demand; both paths are still capped by the session
         // window. Process carriers by ascending id so the split does not
         // depend on the order of the request list.
-        std::uint64_t remaining = session_window > reserved_total
-            ? session_window - reserved_total : 0;
+        // The session count includes frames awaiting reinjection and draining
+        // carriers no longer present in the candidate list. Fund ordinary
+        // shares from free bytes before granting discovery or borrowed credit.
+        const auto resident = std::max(listed_flight, session_inflight_bytes);
+        std::uint64_t remaining = session_window - std::min(resident, session_window);
+        if (base_credit > remaining) {
+            // A carrier above its share can leave too little for its peers'
+            // ordinary targets. Fill the least occupied peers first so the
+            // last available frame is not divided into unusable fragments.
+            std::array<std::size_t, MaxCandidates> order{};
+            for (std::size_t i = 0; i < count; ++i) order[i] = i;
+            std::sort(order.begin(), order.begin() + count, [&](std::size_t a, std::size_t b) {
+                if (inflights[a] != inflights[b]) return inflights[a] < inflights[b];
+                return requests[a].id < requests[b].id;
+            });
+            for (std::size_t n = 0; n < count; ++n) {
+                const auto i = order[n];
+                auto& target = allocations[i].target_bytes;
+                if (target <= inflights[i]) continue;
+                const auto funded = std::min(target - inflights[i], remaining);
+                target = inflights[i] + funded;
+                remaining -= funded;
+            }
+        } else {
+            remaining -= base_credit;
+        }
         std::uint64_t total_discovery = 0;
         for (std::size_t i = 0; i < count; ++i) {
             if (!allocations[i].eligible) continue;
@@ -467,18 +488,22 @@ public:
                     pick_need = need;
                 }
             }
-            if (pick == count || remaining == 0 || borrow_pool == 0) break;
+            if (pick == count || borrow_pool == 0) break;
             served_borrower[pick] = true;
             FlightCreditAllocation& allocation = allocations[pick];
             const auto own_unused = unused[pick];
             const auto peer_unused = total_unused > own_unused
                 ? total_unused - own_unused : 0;
             const auto needed = allocation.demand_bytes - share;
+            // Flight already above this borrower's share was reserved when
+            // computing remaining. Only an increase beyond that flight needs
+            // new session capacity. The full borrow still uses peer shares.
+            const auto occupied = inflights[pick] > share ? inflights[pick] - share : 0;
             const auto grant = std::min(needed,
-                std::min(std::min(borrow_pool, peer_unused), remaining));
+                std::min(std::min(borrow_pool, peer_unused), SaturatingAdd(occupied, remaining)));
             allocation.borrow_bytes = grant;
-            allocation.target_bytes = SaturatingAdd(share, grant);
-            remaining -= grant;
+            if (grant != 0) allocation.target_bytes = SaturatingAdd(share, grant);
+            remaining -= grant > occupied ? grant - occupied : 0;
             borrow_pool -= grant;
         }
 

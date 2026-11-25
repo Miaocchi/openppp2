@@ -123,6 +123,7 @@ namespace vmux {
                 std::atomic<uint64_t> rx_backpressure_count{0};
             };
             IMuxTransportPtr                                                        connection;
+            bool                                                                    write_base94_bound_ = false; ///< Envelope at attach; later binary negotiation can only reduce the charge.
             std::string                                                             path_id_;
             std::shared_ptr<PathRuntimeCounters>                                    path_runtime_counters_;
             TraceWindow                                                             trace_window; ///< Scheduler-trace latency window; atomics only touched while tracing.
@@ -287,7 +288,7 @@ namespace vmux {
             fin_write_only = 'W',
 
             max_buffers_size = UINT16_MAX - sizeof(vmux_hdr), ///< Maximum payload bytes per vmux frame.
-            max_frame_size = UINT16_MAX,                      ///< Largest wire frame: header plus maximum payload. One frame is also the admission slack a carrier may cross its byte window by.
+            max_frame_size = UINT16_MAX,                      ///< Largest wire frame: header plus maximum payload.
             zero_copy_min_payload = 4096,                     ///< Pushes at least this large are sent from the read buffer itself (no copy).
         };
 
@@ -901,16 +902,7 @@ namespace vmux {
         void                                                                        on_link_exit(const vmux_linklayer_ptr& linklayer, const char* reason) noexcept;
         /** @brief Count handshake-complete non-retiring carriers (strand-affine). */
         size_t                                                                      count_live_carriers(const vmux_linklayer_ptr& except = NULLPTR) const noexcept;
-        /**
-         * @brief True when the link still has room under the per-link byte high-water.
-         * @details The window is a residency line, not a fit test. The window is an
-         *          exact number of maximum-size VMUX frames, so requiring the whole
-         *          frame to fit always left 0..frame-1 unusable bytes behind and made
-         *          a healthy carrier look credit-less to the scheduler at every
-         *          window boundary. A carrier below its window therefore admits the
-         *          next frame even when it crosses the line; the crossing is bounded
-         *          by one maximum frame (@ref max_frame_size).
-         */
+        /** @brief True when this whole frame fits both local scheduling and logical write-queue credit. */
         bool                                                                        link_has_byte_credit(const vmux_linklayer_ptr& linklayer, int packet_length) noexcept;
         /** @brief Enqueue one data frame into the per-flow DRR queue (strand-affine). @return false when the per-flow cap rejected it (never silently dropped). */
         bool                                                                        enqueue_flow_tx(uint32_t connection_id, tx_packet&& packet) noexcept;
@@ -939,9 +931,11 @@ namespace vmux {
         /** @brief Publish a lock-free runtime snapshot (call on strand or under mutex). */
         void                                                                        publish_runtime_snapshot_locked() noexcept;
         void                                                                        publish_multipath_path_runtime_stats() noexcept;
-        uint64_t                                                                     local_send_credit(vmux_linklayer& link) noexcept;
+        uint64_t                                                                     available_write_credit(vmux_linklayer& link, uint64_t frame_bytes) noexcept;
+        bool                                                                         can_route_write(const vmux_linklayer& link, uint64_t frame_bytes) noexcept;
+        uint64_t                                                                     local_send_credit(vmux_linklayer& link, uint64_t frame_bytes = 0) noexcept;
         uint64_t                                                                     adaptive_send_credit(vmux_linklayer& link,
-            const ppp::app::multipath::PathTelemetry& telemetry, size_t live_carriers) noexcept;
+            const ppp::app::multipath::PathTelemetry& telemetry, size_t live_carriers, uint64_t frame_bytes = 0) noexcept;
         uint64_t                                                                     refresh_link_write_high_water(vmux_linklayer& link, uint64_t now) noexcept;
         void                                                                         collect_stalled_link_retries(uint64_t now) noexcept;
         void                                                                         note_link_rtt(vmux_linklayer& link, uint64_t sample, uint64_t now) noexcept;

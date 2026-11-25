@@ -100,10 +100,17 @@ def transfer(stream, server, direction, flow, duration):
     return {**report, "exact_eof": True}
 
 
-def phase(role, address, port, direction, ready_file, flows, duration):
+def phase(role, address, port, direction, ready_file, flows, duration, wait_for_start=False):
     server = role == "server"
     tag = direction[:1].upper().encode()
-    barrier = threading.Barrier(flows, timeout=IO_TIMEOUT)
+
+    def await_sampler():
+        if server:
+            ready_file.with_suffix(".armed").touch()
+        if sys.stdin.buffer.read(1) != b"G":
+            raise RuntimeError("sampler exited before releasing workload")
+
+    barrier = threading.Barrier(flows, action=await_sampler if wait_for_start else None, timeout=IO_TIMEOUT)
     with (socket.socket() if server else nullcontext()) as listener:
         if server:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -136,8 +143,11 @@ def phase(role, address, port, direction, ready_file, flows, duration):
                         if exact(stream, 1) != b"R":
                             raise RuntimeError("origin not ready")
                         # All SOCKS streams must open before sending payload.
-                        barrier.wait()
+                        if not wait_for_start:
+                            barrier.wait()
                         stream.sendall(b"G")
+                    if wait_for_start:
+                        barrier.wait()
                     result = transfer(stream, server, direction, flow, duration)
                     return {"flow": flow, **result}
             except Exception as error:
@@ -163,4 +173,6 @@ if __name__ == "__main__":
         raise SystemExit("flow count must be between 1 and 64")
     if not 12 <= duration <= 120:
         raise SystemExit("send duration must be between 12 and 120 seconds")
-    raise SystemExit(0 if phase(role, address, int(port), direction, Path(ready), flows, duration) else 1)
+    passed = phase(role, address, int(port), direction, Path(ready), flows, duration,
+                   wait_for_start="--wait-for-start" in options[2:])
+    raise SystemExit(0 if passed else 1)

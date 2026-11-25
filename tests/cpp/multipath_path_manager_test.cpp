@@ -65,6 +65,67 @@ BOOST_AUTO_TEST_CASE(partial_path_failure_does_not_withdraw_joined_carrier) {
     BOOST_CHECK(second_state.state == mp::PathManager::State::Backoff);
 }
 
+BOOST_AUTO_TEST_CASE(adaptive_trials_rotate_after_rejection_and_count_inflight_carriers) {
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(MakeConfig(3, 2, 6, 2)));
+    mp::PathManager::Attempt primary, trial, pending, last;
+    BOOST_REQUIRE(manager.BeginAttempt(0, primary));
+    BOOST_REQUIRE_EQUAL(primary.path_index, 0u);
+    BOOST_REQUIRE(manager.MarkJoined(primary));
+
+    for (unsigned expected : {1u, 2u, 1u}) {
+        BOOST_REQUIRE(manager.BeginAttempt(1, trial, true));
+        BOOST_REQUIRE_EQUAL(trial.path_index, expected);
+        BOOST_REQUIRE(manager.MarkJoined(trial));
+        BOOST_REQUIRE(manager.CarrierRetired(trial));
+    }
+
+    BOOST_REQUIRE(manager.BeginAttempt(2, pending, true));
+    BOOST_REQUIRE_EQUAL(pending.path_index, 2u);
+    BOOST_REQUIRE(manager.BeginAttempt(2, trial, true));
+    BOOST_REQUIRE_EQUAL(trial.path_index, 1u);
+    BOOST_TEST(!manager.BeginAttempt(2, last, true));
+    BOOST_REQUIRE(manager.MarkJoined(pending));
+    BOOST_REQUIRE(manager.MarkJoined(trial));
+    // All three paths now have one live carrier. Fill their remaining slots.
+    for (unsigned expected : {2u, 0u, 1u}) {
+        BOOST_REQUIRE(manager.BeginAttempt(3, last, true));
+        BOOST_REQUIRE_EQUAL(last.path_index, expected);
+        BOOST_REQUIRE(manager.MarkJoined(last));
+    }
+    BOOST_TEST(!manager.BeginAttempt(4, last, true));
+}
+
+BOOST_AUTO_TEST_CASE(adaptive_trials_skip_backoff_and_other_dials_follow_configuration_order) {
+    auto config = MakeConfig(3, 2, 6, 2);
+    config.paths[1].connections = 1;
+    mp::PathManager manager;
+    BOOST_REQUIRE(manager.Start(config));
+    mp::PathManager::Attempt primary, failed, next;
+    BOOST_REQUIRE(manager.BeginAttempt(0, primary));
+    BOOST_REQUIRE(manager.MarkJoined(primary));
+    BOOST_REQUIRE(manager.BeginAttempt(1, failed, true));
+    BOOST_REQUIRE_EQUAL(failed.path_index, 1u);
+    BOOST_REQUIRE(manager.Fail(failed, 1, mp::PathManager::Failure::Network));
+    BOOST_REQUIRE(manager.BeginAttempt(2, next, true));
+    BOOST_REQUIRE_EQUAL(next.path_index, 2u);
+    BOOST_REQUIRE(manager.CarrierRetired(primary));
+    BOOST_REQUIRE(manager.BeginAttempt(2, next, true));
+    BOOST_REQUIRE_EQUAL(next.path_index, 0u);
+    BOOST_REQUIRE(manager.MarkJoined(next));
+    BOOST_REQUIRE(manager.BeginAttempt(3, next, true));
+    BOOST_REQUIRE_EQUAL(next.path_index, 2u);
+
+    for (bool failover : {false, true}) {
+        config.policy = failover ? "failover" : "adaptive";
+        BOOST_REQUIRE(manager.Start(config));
+        BOOST_REQUIRE(manager.BeginAttempt(0, primary));
+        BOOST_REQUIRE(manager.MarkJoined(primary));
+        BOOST_REQUIRE(manager.BeginAttempt(1, next, failover));
+        BOOST_REQUIRE_EQUAL(next.path_index, 0u);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(retry_backoff_is_jittered_bounded_and_stale_attempts_cannot_complete_retry) {
     mp::PathManager manager;
     BOOST_REQUIRE(manager.Start(MakeConfig(1, 1, 1, 1)));

@@ -101,8 +101,28 @@ public:
      * overshooting probe can reveal the capacity behind a paced plateau.
      */
     static constexpr std::uint64_t DiscoverySlackPermille = 1250;
+    /**
+     * Binding-probe headroom: when the measured capacity already reaches
+     * DiscoveryBindingPermille of the probe cap in force, that cap shaped the
+     * sample, so the sample says nothing about the capacity behind it. Growing
+     * the probe by DiscoverySlackPermille per maturity window then needs many
+     * seconds to climb out of an early low estimate (a loss in slow start
+     * leaves CUBIC far below the path, and a cap that binds also stops the
+     * kernel from growing cwnd). A binding probe therefore doubles instead.
+     */
+    static constexpr std::uint64_t DiscoveryBindingSlackPermille = 2000;
+    static constexpr std::uint64_t DiscoveryBindingPermille = 900;
     /** Re-apply only when the target moves at least this much. */
     static constexpr std::uint64_t MinRateChangePermille = 50;
+    /**
+     * Mature-cap headroom: once discovery has confirmed the capacity, pace the
+     * carrier slightly below it. A cap at the full measured rate keeps the
+     * bottleneck queue (and the sender's own backlog) standing, which inflates
+     * every RTT sample, starves the reverse ACK stream, and drives BBR into
+     * periodic ProbeRTT collapses (cwnd 4). The high-water candidate never
+     * falls on paced feedback, so this margin cannot ratchet the cap down.
+     */
+    static constexpr std::uint64_t MatureHeadroomPermille = 975;
 
     /**
      * @brief Evaluates one carrier observation.
@@ -205,11 +225,17 @@ public:
             completed_now = true;
         }
 
-        const std::uint64_t target = discovery_
+        const bool binding_probe = discovery_ && applied_bytes_per_second_ != 0 &&
+            SaturatingMultiply(DeriveRate(candidate_bytes_per_second_,
+                observation.payload_to_wire_numerator,
+                observation.payload_to_wire_denominator), 1000) >=
+            SaturatingMultiply(applied_bytes_per_second_, DiscoveryBindingPermille);
+        std::uint64_t target = discovery_
             ? DeriveDiscoveryRate(candidate_bytes_per_second_,
                 observation.payload_to_wire_numerator,
-                observation.payload_to_wire_denominator)
-            : DeriveRate(candidate_bytes_per_second_,
+                observation.payload_to_wire_denominator,
+                binding_probe ? DiscoveryBindingSlackPermille : DiscoverySlackPermille)
+            : DeriveMatureRate(candidate_bytes_per_second_,
                 observation.payload_to_wire_numerator,
                 observation.payload_to_wire_denominator);
         if (target == 0) {
@@ -329,6 +355,25 @@ public:
     }
 
     /**
+     * @brief Derives the mature target: the wire-ratio rate scaled by
+     *        MatureHeadroomPermille (never below 1 byte/s once non-zero).
+     */
+    static std::uint64_t DeriveMatureRate(std::uint64_t capacity,
+        std::uint64_t payload_to_wire_numerator,
+        std::uint64_t payload_to_wire_denominator) noexcept {
+        const std::uint64_t ratio = DeriveRate(capacity,
+            payload_to_wire_numerator, payload_to_wire_denominator);
+        if (ratio == 0) {
+            return 0;
+        }
+        const std::uint64_t scaled =
+            ratio > std::numeric_limits<std::uint64_t>::max() / MatureHeadroomPermille
+            ? (ratio / 1000) * MatureHeadroomPermille
+            : (ratio * MatureHeadroomPermille) / 1000;
+        return scaled != 0 ? scaled : 1;
+    }
+
+    /**
      * @brief Derives the discovery target: the larger of the wire-ratio rate
      *        and DiscoverySlackPermille of the measured payload capacity.
      * @return Saturation-safe wire target, or 0 (no probe) when the ratio is
@@ -337,16 +382,17 @@ public:
      */
     static std::uint64_t DeriveDiscoveryRate(std::uint64_t capacity,
         std::uint64_t payload_to_wire_numerator,
-        std::uint64_t payload_to_wire_denominator) noexcept {
+        std::uint64_t payload_to_wire_denominator,
+        std::uint64_t slack_permille = DiscoverySlackPermille) noexcept {
         if (capacity == 0 || !HasWireRatio(payload_to_wire_numerator,
             payload_to_wire_denominator)) {
             return 0;
         }
         const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
         const std::uint64_t headroom =
-            capacity > maximum / DiscoverySlackPermille
+            capacity > maximum / slack_permille
             ? maximum
-            : (capacity * DiscoverySlackPermille) / 1000;
+            : (capacity * slack_permille) / 1000;
         const std::uint64_t ratio = DeriveRate(capacity,
             payload_to_wire_numerator, payload_to_wire_denominator);
         return ratio > headroom ? ratio : headroom;

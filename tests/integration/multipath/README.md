@@ -201,7 +201,54 @@ SHA-256, topology reference, executor concurrency, startup carrier counts, and
 runner exit code. `--wire-interval N` (1..6, default 6) sets the spacing in
 seconds between root TBF wire samples written to `upload-wire.ndjson` /
 `download-wire.ndjson` during each direction; the resolved value is recorded
-as `wire_interval` in `run-evidence.json`.
+as `wire_interval` in `run-evidence.json`. With `--wire-interval 1`, both
+endpoints finish the stream handshakes and wait while the runner reads the
+initial TBF counters. Releasing the workload starts the measurement clock.
+A 36-second run records 36 consecutive windows per selected direction,
+including startup. Intervals of 2..6 seconds use the historical baseline at
+second 3 and take their first sample at second 9. Rates use the recorded
+elapsed time between counter reads. TBF bytes include control traffic and
+TCP acknowledgments for traffic in the opposite direction.
+
+Use `--wire-interval 1 --min-path-utilization 0.95` to require 95% of
+each selected path's configured rate in every second and direction. The
+runner reads the selected TBF counters concurrently and records monotonic
+timestamps immediately before and after each path's `tc` query. It also
+records when it starts and finishes releasing both workload processes.
+Each query must lie within 50 ms of its scheduled boundary, relative to
+both ends of release. This 5% timing tolerance allows process scheduling
+and `tc` overhead. The baseline must be captured before release. For
+each path the gate divides the byte delta by the **longest possible**
+elapsed time between the two counter reads. Counter discontinuities,
+missing samples and queries outside the timing tolerance fail the gate.
+Historical files with only batch timestamps still yield diagnostic Mbps
+and window counts. Their lack of per-path timing evidence prevents a
+verified pass.
+A path missing its counter in any window also fails. The runner exits
+with a nonzero status on failure. `six-flow-integrity.json` records
+`integrity_passed`, the `performance` report, and overall `passed`.
+The performance report identifies failed seconds per path, numbered from 1.
+Each direction counts a second in `valid_windows` when every selected path
+has a verified counter delta and timing interval, including seconds below target.
+Omitting the utilization option selects the integrity-only check.
+
+Use `--duration 60` to compare cold start with sustained utilization.
+Each direction reports the number of seconds when all selected paths reached
+their target together. In bidirectional mode, `performance.bidirectional`
+counts seconds when all paths met the target in both directions at once.
+For runs longer than 36 seconds, `last_36_seconds` repeats these counts
+over the final 36 windows.
+At 60 seconds the summary covers seconds 25 through 60 inclusive. The
+overall acceptance result includes every window starting at second 1.
+
+Saved output can be evaluated offline from the repository root.
+
+```sh
+PYTHONPATH=tests/integration/multipath python3 -c \
+  'import json, sys; from pathlib import Path; from run import evaluate_path_utilization; print(json.dumps(evaluate_path_utilization(Path(sys.argv[1]), 0.95), indent=2))' \
+  ./build/private/three-path-stable-01
+```
+
 Compare the `client-stats.ndjson` and `server-stats.ndjson` link snapshots
 using the VMUX session ID and shared link ID. Each endpoint's local link
 generation tracks changes on that endpoint. `path-telemetry.ndjson` pairs
@@ -236,7 +283,9 @@ unchanged. The resolved value is recorded as `qdisc_metrics` in
 
 `--socket-metrics` (default off) additionally runs `ss -tinm` inside the
 client and server namespaces at every `--wire-interval` sampling offset and
-appends records to `socket-metrics.ndjson` in the run output directory. Each
+appends records to `socket-metrics.ndjson` in the run output directory. In
+one-second mode it also samples both endpoints before releasing the workload,
+so the first window can be compared with the starting TCP congestion window. Each
 record contains the `role` (`client` or `server`), `namespace`, `directions`,
 `monotonic_ms`, the exact `ss` command, the full raw `ss` output (`raw`), and
 parsed `sockets` for every established TCP connection.
@@ -372,6 +421,35 @@ resolved value is recorded as `congestion_control` in `run-evidence.json`
 (`null` when the option is absent) and in successful `six-flow-integrity.json`;
 `topology.json` gains `"congestion_control": "<value>"` only when the option is
 used, matching the `ack_priority` convention.
+
+#### VMUX frame timing
+
+For per-frame VMUX timing, set `OPENPPP2_VMUX_PACKET_TIMING_PREFIX` in the
+environment inherited by both endpoints. For example, set it to an absolute
+prefix such as `/tmp/issue156/frames` in an existing private directory.
+The endpoints append NDJSON to `frames.client.ndjson` and `frames.server.ndjson`.
+Use a fresh prefix for each diagnostic run. The trace contains PUSH metadata
+for sequences 1, 33, 65, etc., and all VMUX ACK frames. It records no
+application payload or network addresses. Synchronous diagnostic writes can
+change timing, so measure acceptance throughput with the trace disabled.
+
+Each row has a local monotonic timestamp `us`, `session`, endpoint `role`,
+frame `kind`, and local numeric `carrier`. Sampled PUSH frames have a
+connection ID `cid` and sequence `seq`. A retransmission is marked `retry`
+on the sending side. The transmit events are `tx_post`, `write_start`, and
+`write_complete` (or `post_failed` / `write_failed`). Receive events are
+`rx_read` and `rx_dispatch`. The carrier write completion reports local
+transport completion. The peer reports VMUX feedback separately.
+
+Session-level `ack_generated` and `credit_release` events use `carrier=0`
+and include `rows` of `{cid, ranges}` with inclusive sequence ranges.
+`credit_release.bytes` is the session's decrease in retained RTX bytes
+while processing that ACK. Other `bytes` fields, where populated, give
+VMUX frame size. Match ACK transport events using `ack_id`, a 64-bit
+fingerprint of the encoded ranges. Repeated identical cumulative feedback
+has the same fingerprint. Correlate the same data frame across endpoints by
+session, sending role, CID and sequence. Compat ordering uses ACK CID 0 for
+its session-wide sequence space. Subtract timestamps only within one endpoint.
 
 #### ACK FIFO A/B (diagnostic)
 

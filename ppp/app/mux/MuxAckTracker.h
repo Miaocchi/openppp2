@@ -26,7 +26,7 @@
 namespace ppp::app::mux {
 
 /** Inclusive received-sequence range [start, end]. */
-struct MuxAckRange final {
+struct MuxAckRange {
     std::uint32_t start = 0;
     std::uint32_t end   = 0;
 };
@@ -37,11 +37,11 @@ public:
     /**
      * Record one received sequence number, merging adjacent/overlapping ranges.
      * @param seq Received sequence (0 is valid: flow_v2 control placeholder).
-     * @param max_ranges Hard cap; when merging cannot stay below it, the oldest
-     *        (lowest) ranges are dropped — they are the ones most likely already
-     *        covered by an earlier ACK, and the sender re-covers them via PTO.
+     * @param max_ranges Hard cap on retained disjoint ranges (zero disables it).
+     * @return True when every slot contains a receipt since the last ACK was
+     *         submitted. A sender with control credit can flush the full block.
      */
-    void Add(std::uint32_t seq, std::size_t max_ranges) {
+    bool Add(std::uint32_t seq, std::size_t max_ranges) {
         if (!ranges_.empty()) {
             const std::uint32_t front = ranges_.front().start;
             // Wrap heuristic: a sequence more than half the space behind the
@@ -69,7 +69,9 @@ public:
             ++i;
         }
 
+        ++observation_;
         if (i < n && !disjoint_above(ranges_[i])) {
+            ranges_[i].last_observation = observation_;
             // Overlapping or adjacent: merge into ranges_[i].
             if (seq < ranges_[i].start) {
                 ranges_[i].start = seq;
@@ -87,15 +89,24 @@ public:
             }
         }
         else {
-            ranges_.insert(ranges_.begin() + i, MuxAckRange{ seq, seq });
+            ranges_.insert(ranges_.begin() + i, Entry{{seq, seq}, observation_});
         }
 
-        if (max_ranges > 0) {
-            while (ranges_.size() > max_ranges) {
-                ranges_.erase(ranges_.begin()); // Drop oldest; PTO re-covers.
-            }
+        if (max_ranges == 0 || ranges_.size() < max_ranges) return false;
+        // A retransmitted low DSN has just been observed. Keep it through
+        // coalescing even when the following frames carry higher DSNs.
+        const auto by_observation = [](const Entry& a, const Entry& b) {
+            return a.last_observation < b.last_observation;
+        };
+        auto oldest = std::min_element(ranges_.begin(), ranges_.end(), by_observation);
+        while (ranges_.size() > max_ranges) {
+            ranges_.erase(oldest);
+            oldest = std::min_element(ranges_.begin(), ranges_.end(), by_observation);
         }
+        return oldest->last_observation > reported_at_;
     }
+
+    void MarkReported() noexcept { reported_at_ = observation_; }
 
     bool empty() const noexcept { return ranges_.empty(); }
     void Clear() noexcept { ranges_.clear(); }
@@ -106,10 +117,17 @@ public:
         return ranges_.empty() ? 0 : ranges_.back().end;
     }
 
-    const std::vector<MuxAckRange>& ranges() const noexcept { return ranges_; }
+    std::vector<MuxAckRange> ranges() const {
+        return {ranges_.begin(), ranges_.end()};
+    }
 
 private:
-    std::vector<MuxAckRange> ranges_;
+    struct Entry : MuxAckRange {
+        std::uint64_t last_observation;
+    };
+    std::vector<Entry> ranges_;
+    std::uint64_t observation_ = 0;
+    std::uint64_t reported_at_ = 0;
 };
 
 /** One decoded ACK block: ranges for one sequence space (connection_id). */

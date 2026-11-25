@@ -3,6 +3,7 @@
 
 #include <ppp/app/multipath/PathPacingPolicy.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 
@@ -111,9 +112,11 @@ BOOST_AUTO_TEST_CASE(higher_fresh_capacity_raises_the_cap_after_maturity) {
 
     const auto raised = policy.Observe(FreshWire(doubled, 2000 + Policy::DefaultMaturityMs));
     BOOST_TEST(IsAction(raised, Action::Apply));
-    // Still discovering, so the probe stays above the raised measurement.
+    // Still discovering, so the probe stays above the raised measurement. The
+    // doubled delivery already exceeds the cap in force (that cap was binding),
+    // so the probe doubles instead of adding the ordinary slack.
     BOOST_TEST(raised.rate_bytes_per_second ==
-        doubled * Policy::DiscoverySlackPermille / 1000);
+        doubled * Policy::DiscoveryBindingSlackPermille / 1000);
     BOOST_TEST(raised.rate_bytes_per_second > doubled);
 }
 
@@ -145,7 +148,10 @@ BOOST_AUTO_TEST_CASE(discovery_headroom_escapes_the_paced_capacity_plateau) {
     const auto escaped = policy.Observe(FreshWire(plateau_capacity,
         2 * Policy::DefaultMaturityMs + 2));
     BOOST_TEST(IsAction(escaped, Action::Apply));
-    BOOST_TEST(escaped.rate_bytes_per_second == 15625000u);
+    // The plateau sits at the cap in force, so that probe was binding and the
+    // next one doubles rather than creeping up by the ordinary slack.
+    BOOST_TEST(escaped.rate_bytes_per_second ==
+        plateau_capacity * Policy::DiscoveryBindingSlackPermille / 1000);
     BOOST_TEST(escaped.rate_bytes_per_second >
         plateau.rate_bytes_per_second);
     policy.CommitApplied(escaped.rate_bytes_per_second);
@@ -158,7 +164,7 @@ BOOST_AUTO_TEST_CASE(discovery_headroom_escapes_the_paced_capacity_plateau) {
         3 * Policy::DefaultMaturityMs + 2));
     BOOST_TEST(IsAction(settled, Action::Apply));
     BOOST_TEST(settled.rate_bytes_per_second ==
-        plateau_capacity * WireNumerator / WireDenominator);
+        Policy::DeriveMatureRate(plateau_capacity, WireNumerator, WireDenominator));
     BOOST_TEST(policy.CandidateCapacity() == plateau_capacity);
     policy.CommitApplied(settled.rate_bytes_per_second);
 
@@ -178,7 +184,8 @@ BOOST_AUTO_TEST_CASE(starved_carrier_sample_cannot_end_discovery) {
     (void)policy.Observe(FreshWire(ramp, 1));
     const auto probe = policy.Observe(FreshWire(ramp, Policy::DefaultMaturityMs + 1));
     BOOST_TEST(IsAction(probe, Action::Apply));
-    BOOST_TEST(probe.rate_bytes_per_second == 12500000u);
+    BOOST_TEST(probe.rate_bytes_per_second ==
+        ramp * Policy::DiscoverySlackPermille / 1000);
     policy.CommitApplied(probe.rate_bytes_per_second);
 
     // The granted headroom has now had a full maturity window without extra
@@ -198,7 +205,7 @@ BOOST_AUTO_TEST_CASE(starved_carrier_sample_cannot_end_discovery) {
     const auto filled = policy.Observe(FreshWire(ramp, 2 * Policy::DefaultMaturityMs + 3));
     BOOST_TEST(IsAction(filled, Action::Apply));
     BOOST_TEST(filled.rate_bytes_per_second ==
-        ramp * WireNumerator / WireDenominator);
+        Policy::DeriveMatureRate(ramp, WireNumerator, WireDenominator));
     BOOST_TEST(filled.rate_bytes_per_second < probe.rate_bytes_per_second);
     BOOST_TEST(policy.CandidateCapacity() == ramp);
 }
@@ -214,8 +221,10 @@ BOOST_AUTO_TEST_CASE(small_target_changes_do_not_repeat_the_syscall) {
     BOOST_TEST(IsAction(quiet, Action::None));
     BOOST_TEST(quiet.rate_bytes_per_second == 1240000u);
 
-    // 1250000 vs 1100000 is a 13.6% move: worth one syscall.
-    policy.CommitApplied(1100000);
+    // 1250000 vs 1180000 is a 5.9% move: worth one syscall. The 1.03 MB/s
+    // wire delivery stays under 90% of that cap, so the probe is not binding
+    // and keeps the ordinary slack.
+    policy.CommitApplied(1180000);
     const auto moving = policy.Observe(FreshWire(Megabyte, Policy::DefaultMaturityMs + 3));
     BOOST_TEST(IsAction(moving, Action::Apply));
     BOOST_TEST(moving.rate_bytes_per_second == 1250000u);
@@ -302,6 +311,21 @@ BOOST_AUTO_TEST_CASE(unknown_wire_ratio_never_applies_a_payload_cap) {
     BOOST_TEST(policy.AppliedRate() == 0u);
 }
 
+BOOST_AUTO_TEST_CASE(mature_cap_keeps_headroom_below_the_wire_rate) {
+    // The mature cap sits a fixed margin below the measured wire rate so the
+    // bottleneck queue drains instead of standing (RTT inflation, ProbeRTT).
+    const auto wire = Policy::DeriveRate(10 * Megabyte, WireNumerator, WireDenominator);
+    const auto mature = Policy::DeriveMatureRate(10 * Megabyte, WireNumerator, WireDenominator);
+    BOOST_TEST(mature == wire * Policy::MatureHeadroomPermille / 1000);
+    BOOST_TEST(mature < wire);
+    // With real framing overhead the margin still stays above the payload rate.
+    BOOST_TEST(mature > 10 * Megabyte);
+    BOOST_TEST(Policy::DeriveMatureRate(Megabyte, 0, 0) == 0u);
+    BOOST_TEST(Policy::DeriveMatureRate(0, WireNumerator, WireDenominator) == 0u);
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    BOOST_TEST(Policy::DeriveMatureRate(maximum, WireNumerator, WireDenominator) > 0u);
+}
+
 BOOST_AUTO_TEST_CASE(mature_cap_converts_payload_to_wire_when_ratio_known) {
     Policy policy;
     (void)policy.Observe(FreshWire(Megabyte, 1));
@@ -317,7 +341,7 @@ BOOST_AUTO_TEST_CASE(mature_cap_converts_payload_to_wire_when_ratio_known) {
     // The measured payload rate converts through the ratio, so the wire cap
     // sits above the payload sample that produced it and cannot shape it.
     BOOST_TEST(settled.rate_bytes_per_second ==
-        Megabyte * WireNumerator / WireDenominator);
+        Policy::DeriveMatureRate(Megabyte, WireNumerator, WireDenominator));
     BOOST_TEST(settled.rate_bytes_per_second > Megabyte);
     policy.CommitApplied(settled.rate_bytes_per_second);
 
@@ -406,3 +430,49 @@ BOOST_AUTO_TEST_CASE(carrier_counter_ratio_paces_at_the_measured_wire_rate) {
     BOOST_TEST(Policy::DeriveRate(capacity, ratio_permille, 1000) > capacity);
 }
 
+
+BOOST_AUTO_TEST_CASE(non_binding_probe_keeps_the_ordinary_slack) {
+    Policy policy;
+    constexpr std::uint64_t ramp = 10 * Megabyte;
+    (void)policy.Observe(FreshWire(ramp, 1));
+    const auto probe = policy.Observe(FreshWire(ramp, Policy::DefaultMaturityMs + 1));
+    BOOST_TEST(IsAction(probe, Action::Apply));
+    policy.CommitApplied(probe.rate_bytes_per_second);
+
+    // Delivery grows past the 5% threshold but stays well under 90% of the
+    // cap in force: the cap did not shape it, so the ordinary slack applies.
+    constexpr std::uint64_t grown = 10600000;
+    (void)policy.Observe(FreshWire(grown, Policy::DefaultMaturityMs + 2));
+    const auto next = policy.Observe(FreshWire(grown, 2 * Policy::DefaultMaturityMs + 2));
+    BOOST_TEST(IsAction(next, Action::Apply));
+    BOOST_TEST(next.rate_bytes_per_second ==
+        grown * Policy::DiscoverySlackPermille / 1000);
+}
+
+BOOST_AUTO_TEST_CASE(binding_probe_doubles_until_the_path_shows_its_capacity) {
+    Policy policy;
+    // An early loss left the estimate at a tenth of the real 30 MB/s path.
+    constexpr std::uint64_t path = 30 * Megabyte;
+    std::uint64_t capacity = 3 * Megabyte;
+    std::uint64_t now = 1;
+    (void)policy.Observe(FreshWire(capacity, now));
+    now += Policy::DefaultMaturityMs;
+    auto decision = policy.Observe(FreshWire(capacity, now));
+    BOOST_TEST(IsAction(decision, Action::Apply));
+    policy.CommitApplied(decision.rate_bytes_per_second);
+    int steps = 0;
+    while (policy.AppliedRate() * WireDenominator < path * WireNumerator && steps < 20) {
+        // A binding cap delivers exactly its wire rate.
+        capacity = std::min(path, policy.AppliedRate() * WireDenominator / WireNumerator);
+        (void)policy.Observe(FreshWire(capacity, ++now));
+        now += Policy::DefaultMaturityMs;
+        decision = policy.Observe(FreshWire(capacity, now));
+        if (IsAction(decision, Action::Apply)) {
+            policy.CommitApplied(decision.rate_bytes_per_second);
+        }
+        ++steps;
+    }
+    // 1.25x creeping would need about ten maturity windows; doubling needs four.
+    BOOST_TEST(steps <= 4);
+    BOOST_TEST(policy.AppliedRate() * WireDenominator >= path * WireNumerator);
+}

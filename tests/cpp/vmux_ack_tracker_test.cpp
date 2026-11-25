@@ -60,6 +60,40 @@ BOOST_AUTO_TEST_CASE(cap_drops_oldest_ranges) {
     BOOST_TEST(tracker.ranges()[2].start == 19u);
 }
 
+BOOST_AUTO_TEST_CASE(late_retries_survive_ack_coalescing_at_the_range_limit) {
+    constexpr std::size_t limit = 24;
+    mux::MuxAckTracker tracker;
+    for (unsigned i = 0; i < limit; ++i) {
+        BOOST_TEST(tracker.Add(100 + 2 * i, limit) == (i + 1 == limit));
+    }
+    tracker.MarkReported();
+    // The retransmission predates every retained range. Several more sparse
+    // frames arrive before the next ACK gets sent.
+    BOOST_TEST(!tracker.Add(50, limit));
+    BOOST_TEST(!tracker.Add(150, limit));
+    BOOST_TEST(!tracker.Add(152, limit));
+    const mux::MuxAckBlock block{1, tracker.largest(), tracker.ranges()};
+    std::vector<std::uint8_t> wire(mux::MuxAckFrameMaxSize(1, limit));
+    const auto n = mux::EncodeMuxAckFrame(&block, 1, wire.data(), wire.size(), limit);
+    std::vector<mux::MuxAckBlock> decoded;
+    BOOST_REQUIRE(mux::DecodeMuxAckFrame(wire.data(), n, 1, limit, decoded));
+    const auto& ranges = decoded.front().ranges;
+    BOOST_REQUIRE_EQUAL(ranges.size(), limit);
+    BOOST_TEST(ranges.front().start == 50u);
+    BOOST_TEST(ranges.front().end == 50u);
+    for (const auto& range : ranges) {
+        BOOST_TEST(range.start == range.end);
+        BOOST_TEST(range.start % 2 == 0u);
+    }
+    // Coalescing at high fragmentation requests an early ACK only after
+    // the remaining previously reported ranges have all been replaced.
+    for (unsigned i = 3; i < limit; ++i) {
+        BOOST_TEST(tracker.Add(152 + 2 * i, limit) == (i + 1 == limit));
+    }
+    tracker.MarkReported();
+    BOOST_TEST(!tracker.Add(50, limit));
+}
+
 BOOST_AUTO_TEST_CASE(uint32_max_merges_with_adjacent_range_below) {
     mux::MuxAckTracker tracker;
     tracker.Add(0xFFFFFFFEu, 24);

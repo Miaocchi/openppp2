@@ -425,6 +425,26 @@ BOOST_AUTO_TEST_CASE(borrow_credit_plan_reserves_overhang_before_discovery_and_b
     BOOST_TEST(resident_and_credit() == window);
 }
 
+BOOST_AUTO_TEST_CASE(borrower_can_fill_its_target_across_successive_sends) {
+    constexpr std::uint64_t mib = 1024 * 1024;
+    constexpr std::uint64_t frame = 65535;
+    constexpr std::uint64_t window = 60 * mib;
+    CreditRequest requests[] = {
+        KnownCreditRequest(1, 5 * mib, 10 * mib),
+        KnownCreditRequest(2, 5 * mib, 10 * mib),
+        KnownCreditRequest(3, 25 * mib, 35 * mib),
+    };
+    CreditAllocation allocations[3];
+    for (const auto inflight : {35 * mib, 40 * mib - frame, 40 * mib}) {
+        requests[2].inflight_bytes = inflight;
+        BOOST_REQUIRE_EQUAL(Scheduler::BuildFlightCreditPlan(window, requests,
+            3, 256 * 1024, frame, allocations), 3u);
+        BOOST_TEST(allocations[0].credit_bytes == 0u);
+        BOOST_TEST(allocations[1].credit_bytes == 0u);
+        BOOST_TEST(allocations[2].credit_bytes == 40 * mib - inflight);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(borrow_credit_plan_reserves_ineligible_carrier_flight) {
     constexpr std::uint64_t mib = 1024 * 1024;
     constexpr std::uint64_t window = 32 * mib;
@@ -453,6 +473,34 @@ BOOST_AUTO_TEST_CASE(borrow_credit_plan_reserves_ineligible_carrier_flight) {
         requests.size(), 256 * 1024, 65535, allocations.data()) == requests.size());
     BOOST_TEST(allocations[0].discovery_bytes == 0u);
     BOOST_TEST(allocations[1].borrow_bytes == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(overfull_share_and_draining_flight_consume_base_credit) {
+    std::vector<CreditRequest> requests{
+        KnownCreditRequest(1, 25, 50),
+        KnownCreditRequest(2, 25, 5),
+        KnownCreditRequest(3, 25, 4),
+    };
+    std::vector<CreditAllocation> allocations(requests.size());
+    const auto build = [&](std::uint64_t resident) {
+        BOOST_REQUIRE_EQUAL(Scheduler::BuildFlightCreditPlan(60, requests.data(),
+            requests.size(), 1, 1, allocations.data(), resident), requests.size());
+        return allocations[0].credit_bytes + allocations[1].credit_bytes + allocations[2].credit_bytes;
+    };
+    BOOST_TEST(build(59) == 1u);
+    BOOST_TEST(allocations[2].credit_bytes == 1u);
+    // The missing byte belongs to a retired carrier outside the live list.
+    BOOST_TEST(build(60) == 0u);
+    BOOST_TEST(build(std::numeric_limits<std::uint64_t>::max()) == 0u);
+
+    std::reverse(requests.begin(), requests.end());
+    BOOST_TEST(build(59) == 1u);
+    BOOST_TEST(allocations[0].credit_bytes == 1u);
+    requests[2].inflight_bytes -= 10;
+    BOOST_TEST(build(49) == 11u);
+    requests[2].eligible = false;
+    BOOST_TEST(build(0) == 11u);
+    BOOST_TEST(allocations[2].credit_bytes == 0u);
 }
 
 BOOST_AUTO_TEST_CASE(borrow_credit_plan_total_never_exceeds_session_window) {
@@ -1111,7 +1159,7 @@ BOOST_AUTO_TEST_CASE(flight_headroom_bytes_expands_with_ack_reversal) {
     // Saturating multiplication must not wrap for an extreme BDP.
     BOOST_TEST(Scheduler::FlightHeadroomBytes(std::numeric_limits<std::uint64_t>::max(),
         1, std::numeric_limits<std::uint64_t>::max()) ==
-        std::numeric_limits<std::uint64_t>::max());
+        std::numeric_limits<std::uint64_t>::max() / Scheduler::FlightHeadroomDivisor);
 }
 
 BOOST_AUTO_TEST_CASE(adaptive_flight_credit_accepts_measured_rtt_pair) {

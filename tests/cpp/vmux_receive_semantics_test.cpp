@@ -2,9 +2,11 @@
 #include <ppp/app/mux/vmux_net.h>
 #include <ppp/app/mux/vmux_skt.h>
 #include <ppp/configurations/AppConfiguration.h>
+#include <ppp/transmissions/TransmissionFrameLimits.h>
 
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -615,12 +617,12 @@ struct vmux_net_test_access {
         });
     }
 
-    /** Post one push frame through post_internal (no acceleration, no completion). */
-    static bool PostPush(vmux_net& mux, std::uint32_t cid, int payload_len) {
+    /** Post one push frame through post_internal with completion on local write. */
+    static bool PostPush(vmux_net& mux, std::uint32_t cid, int payload_len,
+        const vmux_net::PostInternalAsynchronousCallback& callback = {}) {
         return RunOnStrand(mux, [&]() {
             std::vector<std::uint8_t> payload(static_cast<std::size_t>(payload_len), 'p');
-            vmux_net::PostInternalAsynchronousCallback none;
-            return mux.post_internal(vmux_net::cmd_push, payload.data(), payload_len, cid, false, none);
+            return mux.post_internal(vmux_net::cmd_push, payload.data(), payload_len, cid, false, callback);
         });
     }
 
@@ -702,11 +704,18 @@ struct vmux_net_test_access {
         });
     }
 
-    static void EnableFlowReliability(vmux_net& mux) {
+    static void EnableFlowReliability(vmux_net& mux, bool fast = false) {
         RunOnStrandVoid(mux, [&]() {
             mux.reliability_on_ = true;
-            mux.rtx_fast_on_ = false;
+            mux.rtx_fast_on_ = fast;
             mux.rtx_pto_on_ = false;
+        });
+    }
+
+    static void SetRetryBudget(vmux_net& mux, unsigned attempts, std::uint64_t srtt) {
+        RunOnStrandVoid(mux, [&]() {
+            mux.rtx_max_attempts_ = attempts;
+            mux.srtt_ms_ = srtt;
         });
     }
 
@@ -864,11 +873,11 @@ private:
     std::shared_ptr<vmux::vmux_net> mux_;
 };
 
-ScopedMux MakeMux() {
+ScopedMux MakeMux(bool acceleration = false) {
     auto context = std::make_shared<boost::asio::io_context>();
     auto strand = std::make_shared<Executors::Strand>(context->get_executor());
     auto mux = ppp::make_shared_object<vmux::vmux_net>(
-        context, strand, 1, true, false, vmux::vmux_net::mux_mode_balance);
+        context, strand, 1, true, acceleration, vmux::vmux_net::mux_mode_balance);
     Require(static_cast<bool>(mux), "vmux allocation failed");
     auto cfg = ppp::make_shared_object<ppp::configurations::AppConfiguration>();
     Require(static_cast<bool>(cfg), "cfg allocation failed");
@@ -1251,6 +1260,29 @@ void TestLinkExitReinjectsInflightFrames() {
     Require(vmux::vmux_net_test_access::PendingRtx(*mux) == 1, "dead carrier's frame scheduled for re-send");
     Require(vmux::vmux_net_test_access::RtxLastLink(*mux, 1) == 0, "orphaned from the dead carrier id");
     Require(vmux::vmux_net_test_access::RtxLastLink(*mux, 2) == 6, "live carrier's frame untouched");
+}
+
+void TestFirstFastRetryUsesTheOriginalCarrierFeedbackTime() {
+    using Access = vmux::vmux_net_test_access;
+    // A faster carrier delivered later DSNs. Give the original carrier its
+    // measured feedback time, falling back to its handshake or session RTT.
+    for (const auto& row : std::vector<std::array<unsigned, 3>>{
+            {400, 160, 400}, {0, 160, 160}, {0, 0, 120}}) {
+        auto mux = MakeMux();
+        Access::EnableCompatReliability(*mux, true);
+        Access::SetRetryBudget(*mux, 8, 120);
+        auto origin = Access::MakeDeadLink(true);
+        origin->id_ = 1;
+        origin->has_rtt_sample_ = row[0] != 0;
+        origin->srtt_ms_ = row[0];
+        origin->min_rtt_ms_ = row[1];
+        Require(Access::TrackSentCompat(*mux, 1, 1, 1000, origin), "track original");
+        Require(Access::TrackSentCompat(*mux, 5, 2, 1000), "track later frame on faster link");
+        Access::InjectCompatAck(*mux, 5, 5, 1000 + row[2] - 1);
+        Require(Access::PendingRtx(*mux) == 0, "later DSNs cannot preempt the origin feedback interval");
+        Access::InjectCompatAck(*mux, 5, 5, 1000 + row[2]);
+        Require(Access::PendingRtx(*mux) == 1, "unrecovered hole can fast retry after the interval");
+    }
 }
 
 void TestRtxWindowHoldsFrameUntilAck() {
@@ -1832,11 +1864,18 @@ public:
     using Byte = ppp::Byte;
     using ITransmission::ITransmission;
     std::vector<vmux::vmux_net_test_access::WireFrame> frames;
+    bool use_encoded_write_queue = false;
+    unsigned encoded_writes = 0;
     bool ShiftToScheduler() noexcept override { return false; }
     boost::asio::ip::tcp::endpoint GetRemoteEndPoint() noexcept override { return {}; }
     std::shared_ptr<Byte> DoReadBytes(YieldContext&, int) noexcept override { return {}; }
-    bool DoWriteBytes(std::shared_ptr<Byte>, int, int, const AsynchronousWriteBytesCallback&) noexcept override { return false; }
+    bool DoWriteBytes(std::shared_ptr<Byte>, int, int, const AsynchronousWriteBytesCallback& cb) noexcept override {
+        ++encoded_writes;
+        cb(true);
+        return true;
+    }
     bool Write(const void* data, int size, const AsynchronousWriteCallback& cb) noexcept override {
+        if (use_encoded_write_queue) return ITransmission::Write(data, size, cb);
         auto copy = ppp::make_shared_alloc<Byte>(size);
         std::memcpy(copy.get(), data, size);
         frames.push_back({copy, size, false});
@@ -1844,6 +1883,82 @@ public:
         return true;
     }
 };
+
+void TestAcceleratedCarrierWriteCredit() {
+    using Access = vmux::vmux_net_test_access;
+    using ppp::transmissions::TransmissionWriteCredit;
+    constexpr int queue_limit = 4 * 1024 * 1024;
+    // Reported JOIN failure: 63 queued binary frames, billed 4,128,894 bytes.
+    const std::uint64_t queued_raw = 4128894 - 63 * 3;
+    Require(TransmissionWriteCredit(false, 128, queue_limit, 63, queued_raw) == 65407,
+        "remaining encoded bytes reserve the next frame header");
+    Require(TransmissionWriteCredit(false, 0, 65538, 0, 0) == 65535,
+        "a full binary frame may exactly fill an empty logical queue");
+    Require(TransmissionWriteCredit(true, 0, 1024, 1, 100) == (1024 - 2 * 13) / 2 - 100,
+        "each Base94 frame reserves expansion plus its own envelope");
+    Require(TransmissionWriteCredit(false, 1, 0, 1, 4) == 0 &&
+        TransmissionWriteCredit(false, 0, 0, 99, 999) == std::numeric_limits<std::uint64_t>::max(),
+        "unlimited item and byte limits are independent");
+
+    auto mux = MakeMux(true);
+    auto make_link = [&](std::uint16_t id, int max_bytes, bool base94) {
+        auto link = Access::MakeDeadLink(true);
+        auto carrier = std::make_shared<SchedulerTestTransport>();
+        auto wire = std::make_shared<CaptureTransmission>(
+            mux->get_context(), mux->get_strand(), mux->AppConfiguration);
+        wire->SetMaxPendingItems(1);
+        wire->SetMaxPendingBytes(max_bytes);
+        carrier->transmission = wire;
+        link->connection = carrier;
+        link->id_ = id;
+        link->write_base94_bound_ = base94;
+        Access::AttachLink(*mux, link);
+        return link;
+    };
+    auto primary = make_link(1, 180, true);
+    auto backup = make_link(2, 1024, false);
+    mux->set_multipath_scheduler_policy(true, true);
+    Require(Access::PickLink(*mux, 80) == primary, "small frames still fit the small primary");
+    Require(Access::PickLink(*mux, 100) == backup, "guaranteed fit beats uncertain Base94 encoding");
+    const auto ticket = backup->drain_.BeginWrite();
+    Access::SetQueuedBytes(backup, 10);
+    Require(!Access::PickLink(*mux, 100), "wait for the eligible carrier to return its sole logical slot");
+    Require(backup->drain_.CompleteWrite(ticket), "completed write returns exactly one slot");
+    Access::SetQueuedBytes(backup, 0);
+    backup->connection->GetTransmission()->SetMaxPendingBytes(90);
+    Require(Access::PickLink(*mux, 100) == primary, "empty Base94 queue gets one actual encoding attempt");
+    const auto probe = primary->drain_.BeginWrite();
+    Access::SetQueuedBytes(primary, 100);
+    Require(!Access::PickLink(*mux, 100), "ambiguous Base94 fit cannot admit a second write");
+    Require(primary->drain_.CompleteWrite(probe), "encoding attempt returns its slot");
+    Access::SetQueuedBytes(primary, 0);
+    Require(Access::PickLink(*mux, 1024) == primary, "a truly oversized frame reaches the ordinary write failure path");
+
+    // Exercise the real encoder, WriteBytes hard check and asynchronous VMUX
+    // completion. A survivor remains attached even though both limits are tiny.
+    Access::ConfigureFlowV2(*mux, 65536, 1000);
+    auto primary_wire = std::static_pointer_cast<CaptureTransmission>(primary->connection->GetTransmission());
+    Require(mux->AppConfiguration->Normalize(), "initialize the real frame codec");
+    primary_wire->use_encoded_write_queue = true;
+    primary_wire->SetMaxPendingBytes(1024);
+    const std::uint8_t control[90] = {};
+    bool control_written = false;
+    Require(Access::RunOnStrand(*mux, [&] {
+        return primary_wire->Write(control, sizeof(control), [&](bool ok) { control_written = ok; });
+    }), "same codec admits a frame when the queue has room");
+    DrainContext(mux);
+    Require(control_written && primary_wire->encoded_writes == 1, "control write reached the underlying transport");
+    primary_wire->SetMaxPendingBytes(1);
+    backup->connection->GetTransmission()->SetMaxPendingBytes(1);
+    int completions = 0;
+    bool success = true;
+    Require(Access::PostPush(*mux, 7, 81, [&](bool ok) { ++completions; success = ok; }),
+        "submit exactly one pending empty-queue attempt");
+    DrainContext(mux);
+    Require(completions == 1 && !success && primary_wire->encoded_writes == 1 && !primary->connection->IsLinked() &&
+        backup->connection->IsLinked() && !Access::IsDisposed(*mux),
+        "actual logical rejection fails the waiter once and isolates only the rejecting carrier");
+}
 
 void TestChurnRepairPrecedesFreshDataOnReturnedCredit() {
     using Access = vmux::vmux_net_test_access;
@@ -1883,6 +1998,50 @@ void TestChurnRepairPrecedesFreshDataOnReturnedCredit() {
     Require(Access::RtxBytes(*sender) == 0, "peer ACK releases both frames");
 }
 
+void TestFastRetryBudgetExpiresOnlyAfterDistinctAttempts() {
+    using Access = vmux::vmux_net_test_access;
+    auto mux = MakeMux();
+    Access::ConfigureFlowV2(*mux, 65536, 1000);
+    Access::EnableFlowReliability(*mux, true);
+    Access::SetRetryBudget(*mux, 2, 200);
+    auto missing = Access::InstallQueueOnlySkt(mux, 7);
+    auto healthy = Access::InstallQueueOnlySkt(mux, 8);
+    auto live = Access::MakeDeadLink(true);
+    live->id_ = 1;
+    auto carrier = std::make_shared<SchedulerTestTransport>();
+    auto wire = std::make_shared<CaptureTransmission>(mux->get_context(), mux->get_strand(), mux->AppConfiguration);
+    carrier->transmission = wire;
+    live->connection = carrier;
+    Access::AttachLink(*mux, live);
+    Access::OfferLink(*mux, live);
+    Require(Access::TrackSentFlow(*mux, 7, 1, 41, 1000, 1), "retain delayed frame");
+    for (unsigned seq = 4; seq < 14; ++seq) {
+        Require(Access::TrackSentFlow(*mux, 7, seq, 41, 1000 + seq - 4, 1), "retain later frames");
+    }
+    for (unsigned seq = 4; seq < 14; ++seq) {
+        Access::InjectAck(*mux, 7, seq, seq, 1200 + seq - 4);
+        DrainContext(mux);
+    }
+    Require(wire->frames.size() == 1 && !Access::SktDisposed(*mux, *missing),
+        "advancing ACKs while replacement is in flight use a single retry");
+    Require(Access::TrackSentFlow(*mux, 7, 14, 41, 1210, 1), "new frame sent after first repair");
+    Access::InjectAck(*mux, 7, 14, 14, 1410);
+    DrainContext(mux);
+    Require(wire->frames.size() == 1, "newer ACK still gives the replacement its carrier feedback interval");
+    Access::InjectAck(*mux, 7, 14, 14, 4200);
+    DrainContext(mux);
+    Require(wire->frames.size() == 2 && !Access::SktDisposed(*mux, *missing),
+        "second attempt has time to reach the peer");
+    Require(Access::TrackSentFlow(*mux, 7, 15, 41, 4210, 1), "new frame sent after second repair");
+    Access::InjectAck(*mux, 7, 15, 15, 4410);
+    DrainContext(mux);
+    Require(!Access::SktDisposed(*mux, *missing), "final attempt receives its full feedback interval");
+    Access::InjectAck(*mux, 7, 15, 15, 7200);
+    DrainContext(mux);
+    Require(Access::SktDisposed(*mux, *missing) && !Access::SktDisposed(*mux, *healthy) &&
+        !Access::IsDisposed(*mux), "persistent gap exhausts only its flow");
+}
+
 void TestMultipathSchedulerUsesPeerOutstandingAndFailoverCredit() {
     auto mux = MakeMux();
     vmux::vmux_net_test_access::EnableCompatReliability(*mux, false);
@@ -1909,6 +2068,12 @@ void TestMultipathSchedulerUsesPeerOutstandingAndFailoverCredit() {
         "retain fast path bytes until peer acknowledgment");
     Require(vmux::vmux_net_test_access::PickLink(*mux, 1024) == slow,
         "peer outstanding bytes matter even after local writes complete");
+    Require(vmux::vmux_net_test_access::PickLink(*mux, 65535) == slow,
+        "wire residency leaves a complete data frame of credit on the fast path");
+    vmux::vmux_net_test_access::InjectCompatAck(*mux, 1, 1,
+        ppp::threading::Executors::GetTickCount());
+    Require(vmux::vmux_net_test_access::PickLink(*mux, 65535) == fast,
+        "acknowledgment restores the fast path data residency credit");
     mux->set_multipath_scheduler_policy(true, true);
     Require(vmux::vmux_net_test_access::PickLink(*mux, 1024) == fast,
         "failover retains the healthy primary despite backlog");
@@ -2103,7 +2268,7 @@ void TestFreshCapacityDoesNotBypassAdaptiveFlightCredit() {
     PathTelemetry telemetry;
     telemetry.has_sample = true;
     telemetry.capacity_rate_bytes_per_second = 10 * 1024 * 1024;
-    telemetry.capacity_updated_ms = 1000;
+    telemetry.capacity_updated_ms = ppp::threading::Executors::GetTickCount();
     telemetry.min_rtt_ms = 20;
     telemetry.srtt_ms = 20;
     telemetry.bdp_bytes = telemetry.capacity_rate_bytes_per_second * telemetry.min_rtt_ms / 1000;
@@ -2114,13 +2279,14 @@ void TestFreshCapacityDoesNotBypassAdaptiveFlightCredit() {
         static_cast<std::uint64_t>(PPP_MUX_LINK_BYTE_HIGH_WATER);
     const auto minimum_window = static_cast<std::uint64_t>(Access::MinimumWindowBytes());
     const auto rtx_cap = static_cast<std::uint64_t>(Access::RtxCapBytes(*mux));
-    const auto expected = PathScheduler::AdaptiveFlightCredit(
+    const auto expected_flight_credit = PathScheduler::AdaptiveFlightCredit(
         rtx_cap, 3, telemetry.bdp_bytes, telemetry.wire_inflight_bytes,
         telemetry.scheduling_weight, PPP_MUX_LINK_BYTE_HIGH_WATER, minimum_window);
-    Require(expected == telemetry.bdp_bytes / PathScheduler::FlightHeadroomDivisor,
+    Require(expected_flight_credit == telemetry.bdp_bytes / PathScheduler::FlightHeadroomDivisor,
         "flight credit at a full BDP equals the derived headroom");
     const auto credit = Access::AdaptiveSendCredit(*mux, *link, telemetry, 3);
-    Require(credit == expected, "fresh capacity still honors adaptive flight credit");
+    Require(credit == std::min(expected_flight_credit, local_credit),
+        "fresh capacity still honors adaptive flight credit");
     Require(credit < local_credit,
         "local write high-water no longer bypasses the flight cap");
 
@@ -2138,10 +2304,11 @@ void TestFreshCapacityDoesNotBypassAdaptiveFlightCredit() {
         std::min(local_credit, unknown_expected),
         "unknown BDP keeps startup-based adaptive credit");
 
-    // A single surviving carrier is already bounded by the session window,
-    // and a full local queue reports no credit at all.
+    // A single surviving carrier is already bounded by the session window.
+    // Reliability-layer bytes awaiting ACKs remain in the session flight
+    // ledger and do not consume this carrier's local queue credit.
     Require(Access::AdaptiveSendCredit(*mux, *link, telemetry, 1) == local_credit,
-        "single survivor uses the local write budget");
+        "single survivor keeps local queue credit independent of wire residency");
     Access::SetQueuedBytes(link,
         static_cast<std::size_t>(PPP_MUX_LINK_BYTE_HIGH_WATER));
     Require(Access::AdaptiveSendCredit(*mux, *link, telemetry, 3) == 0,
@@ -2202,6 +2369,7 @@ int main() {
             TestHalfCloseReceipt(flow_v2, true, true, /*abort*/ true);
         }
         TestMultipathSchedulerUsesPeerOutstandingAndFailoverCredit();
+        TestAcceleratedCarrierWriteCredit();
         TestGracefulShrinkOrphansProtocolOutstandingBeforeIdReuse();
         TestChurnRepairPrecedesFreshDataOnReturnedCredit();
         TestLateAckAfterShrinkDoesNotUpdateReplacementLinkMetrics();
@@ -2227,6 +2395,8 @@ int main() {
         TestCompatSinglePausedCarrierIsReleased();
         TestCompatReorderHardCapClosesSession();
         TestFastRetransmitOffByDefaultIgnoresDupAckHoles();
+        TestFirstFastRetryUsesTheOriginalCarrierFeedbackTime();
+        TestFastRetryBudgetExpiresOnlyAfterDistinctAttempts();
         TestLinkExitReinjectsInflightFrames();
         TestRtxWindowHoldsFrameUntilAck();
         TestRtxWindowOnlyHardCapClosesCompatSession();

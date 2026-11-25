@@ -1,7 +1,10 @@
 #include <ppp/app/multipath/PathManager.h>
 
 #include <algorithm>
+#include <array>
 #include <limits>
+#include <numeric>
+#include <tuple>
 
 namespace ppp::app::multipath {
     bool PathManager::Start(
@@ -46,6 +49,7 @@ namespace ppp::app::multipath {
         }
         active_attempts_ = 0;
         joined_carriers_ = 0;
+        next_trial_path_ = 0;
         running_ = !slots_.empty();
         return running_;
     }
@@ -70,14 +74,39 @@ namespace ppp::app::multipath {
         }
     }
 
-    bool PathManager::BeginAttempt(std::uint64_t now_ms, Attempt& attempt) noexcept {
+    bool PathManager::BeginAttempt(std::uint64_t now_ms, Attempt& attempt, bool pool_trial) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         attempt = Attempt();
         if (!running_ || active_attempts_ >= static_cast<std::size_t>(configuration_.max_concurrent_connects)) {
             return false;
         }
 
-        for (std::size_t i = 0; i < slots_.size(); ++i) {
+        using Configuration = ppp::configurations::MultipathConfiguration;
+        std::array<std::size_t, Configuration::MaxConnections> order;
+        const auto end = order.begin() + slots_.size();
+        std::iota(order.begin(), end, 0u);
+        const bool rotate = pool_trial && configuration_.policy == "adaptive";
+        if (rotate) {
+            std::array<unsigned, Configuration::MaxPaths> occupied{};
+            for (const auto& slot : slots_) {
+                const State state = slot.snapshot.state;
+                if (state == State::Connecting || state == State::Authenticating || state == State::Joined) {
+                    ++occupied[slot.snapshot.path_index];
+                }
+            }
+            // A rejected trial returns its slot to Waiting. Rotate ties so it
+            // cannot prevent another uncovered path from being measured.
+            const auto path_count = configuration_.paths.size();
+            const auto rank = [&](std::size_t slot) {
+                const auto path = slots_[slot].snapshot.path_index;
+                const auto distance = (path + path_count - next_trial_path_) % path_count;
+                return std::make_tuple(occupied[path], distance, slot);
+            };
+            std::sort(order.begin(), end, [&](std::size_t a, std::size_t b) { return rank(a) < rank(b); });
+        }
+
+        for (auto cursor = order.begin(); cursor != end; ++cursor) {
+            const auto i = *cursor;
             Slot& slot = slots_[i];
             if (!slot.control) continue;
             const PathControlSnapshot control = slot.control->Snapshot();
@@ -115,6 +144,7 @@ namespace ppp::app::multipath {
             attempt.slot = static_cast<std::uint16_t>(i);
             attempt.path_index = slot.snapshot.path_index;
             attempt.valid = true;
+            if (rotate) next_trial_path_ = (attempt.path_index + 1) % configuration_.paths.size();
             return true;
         }
         return false;

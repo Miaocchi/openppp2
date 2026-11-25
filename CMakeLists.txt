@@ -733,8 +733,9 @@ IF(ENABLE_VMUX_RECEIVE_SEMANTICS_TEST)
         tests/cpp/vmux_receive_semantics_test.cpp)
     TARGET_LINK_LIBRARIES(vmux_receive_semantics_test openppp2_lib)
     IF(PLATFORM_SYSTEM_LINUX)
+        # The dynamic C++ runtime must share the executable's allocator entry points.
         TARGET_LINK_OPTIONS(vmux_receive_semantics_test PRIVATE
-            "-Wl,--exclude-libs,ALL")
+            "-Wl,--no-export-dynamic,--exclude-libs,libopenppp2_lib.a:libxtcp_static.a")
     ENDIF()
     ADD_TEST(NAME vmux_receive_semantics_test COMMAND vmux_receive_semantics_test)
 ENDIF()

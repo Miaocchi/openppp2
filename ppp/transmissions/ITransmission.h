@@ -180,6 +180,8 @@ namespace ppp {
             void                                                                                    MarkServerLoopbackIngress() noexcept { server_loopback_ingress_.store(true, std::memory_order_release); }
             /** @brief Reports conservative server-side loopback ingress provenance. */
             bool                                                                                    IsServerLoopbackIngress() const noexcept { return server_loopback_ingress_.load(std::memory_order_acquire); }
+            /** @brief Reports whether Write applies the optional Base94 envelope. */
+            bool                                                                                    UsesBase94OuterFraming() const noexcept;
             /** @brief Reports whether authenticated multipath binary framing is active. */
             bool                                                                                    IsAuthenticatedMultipathBinaryFramingEnabled() const noexcept { return multipath_binary_framing_.load(std::memory_order_acquire); }
 
@@ -199,6 +201,8 @@ namespace ppp {
              * @note Only raw TCP carriers implement it; WS/WSS stay unsupported.
              */
             virtual bool                                                                            SupportsPacingRate() const noexcept { return false; }
+            /** @brief Authenticated endpoint round-trip time sampled before application traffic, in milliseconds (zero if unknown). */
+            virtual std::uint64_t GetInitialCarrierRttMs() const noexcept { return 0; }
             /** @brief Returns the wire pacing rate accepted by the carrier (0 = uncapped). */
             virtual std::uint64_t                                                                   GetPacingRateBytesPerSecond() const noexcept { return 0; }
             /**
@@ -336,7 +340,6 @@ namespace ppp {
             bool                                                                                    InternalHandshakeServer(YieldContext& y, const Int128& session_id, bool mux) noexcept;
             /** Called by the multipath adapter at an authenticated admission record boundary. */
             bool                                                                                    EnableAuthenticatedMultipathBinaryFraming() noexcept;
-            bool                                                                                    UsesBase94OuterFraming() const noexcept;
 
         private:
             /**
