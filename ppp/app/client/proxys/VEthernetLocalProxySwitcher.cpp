@@ -11,6 +11,7 @@
 
 #include <ppp/collections/Dictionary.h>
 #include <ppp/coroutines/YieldContext.h>
+#include <ppp/coroutines/asio/post_if_running.h>
 
 /**
  * @file VEthernetLocalProxySwitcher.cpp
@@ -23,6 +24,21 @@ namespace ppp {
     namespace app {
         namespace client {
             namespace proxys {
+                namespace {
+                    class AcceptedSocket final {
+                    public:
+                        explicit AcceptedSocket(int fd) noexcept : fd_(fd) {}
+                        AcceptedSocket(AcceptedSocket&& other) noexcept : fd_(other.Release()) {}
+                        ~AcceptedSocket() noexcept { ppp::net::Socket::Closesocket(fd_); }
+
+                        int Get() const noexcept { return fd_; }
+                        int Release() noexcept { return std::exchange(fd_, -1); }
+
+                    private:
+                        int fd_;
+                    };
+                }
+
                 /**
                  * @brief Initializes switcher state from exchanger-owned configuration.
                  */
@@ -192,7 +208,7 @@ namespace ppp {
                     auto self = shared_from_this();
                     acceptor->AcceptSocket =
                         [self, this](ppp::net::SocketAcceptor*, ppp::net::SocketAcceptor::AcceptSocketEventArgs& e) noexcept {
-                            int sockfd = e.Socket;
+                            AcceptedSocket accepted(e.Socket);
                             ppp::diagnostics::ErrorCode error_code = ppp::diagnostics::ErrorCode::SessionDisposed;
 
                             /**
@@ -220,8 +236,12 @@ namespace ppp {
                                     break;
                                 }
 
-                                bool posted = ppp::threading::Executors::Post(context, strand,
-                                    std::bind(&VEthernetLocalProxySwitcher::ProcessAcceptSocket, self, context, strand, sockfd));
+                                auto handler = [self, context, strand, accepted = std::move(accepted)]() mutable noexcept {
+                                    self->ProcessAcceptSocket(context, strand, accepted.Release());
+                                };
+                                using ppp::coroutines::asio::PostIfRunning;
+                                const bool posted = strand ? PostIfRunning(*strand, std::move(handler)) :
+                                    PostIfRunning(context->get_executor(), std::move(handler));
                                 if (!posted) {
                                     ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeTaskPostFailed);
                                 }
@@ -229,7 +249,6 @@ namespace ppp {
                                 return posted;
                             }
 
-                            ppp::net::Socket::Closesocket(sockfd);
                             ppp::diagnostics::SetLastErrorCode(error_code);
                             return false;
                         };
@@ -277,7 +296,7 @@ namespace ppp {
                 }
 
                 /**
-                 * @brief Creates an asio socket wrapper from a native accepted descriptor.
+                 * @brief Assigns a native descriptor to an asio socket, taking ownership on success.
                  */
                 std::shared_ptr<boost::asio::ip::tcp::socket> VEthernetLocalProxySwitcher::NewSocket(const std::shared_ptr<boost::asio::io_context>& context, const ppp::threading::Executors::StrandPtr& strand, int sockfd) noexcept {
                     if (NULLPTR == context) {
@@ -302,7 +321,6 @@ namespace ppp {
                     catch (const std::exception&) {}
 
                     if (ec) {
-                        ppp::net::Socket::Closesocket(sockfd);
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOpenFailed);
                         return NULLPTR;
                     }
@@ -334,22 +352,21 @@ namespace ppp {
                  * @brief Builds connection object and starts its coroutine worker.
                  */
                 bool VEthernetLocalProxySwitcher::ProcessAcceptSocket(const std::shared_ptr<boost::asio::io_context>& context, const ppp::threading::Executors::StrandPtr& strand, int sockfd) noexcept {
+                    AcceptedSocket accepted(sockfd);
                     if (NULLPTR == context) {
-                        ppp::net::Socket::Closesocket(sockfd);
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::RuntimeIoContextMissing);
                         return false;
                     }
 
-                    std::shared_ptr<boost::asio::ip::tcp::socket> socket = NewSocket(context, strand, sockfd);
+                    std::shared_ptr<boost::asio::ip::tcp::socket> socket = NewSocket(context, strand, accepted.Get());
                     if (NULLPTR == socket) {
-                        ppp::net::Socket::Closesocket(sockfd);
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::SocketOpenFailed);
                         return false;
                     }
+                    accepted.Release();
 
                     std::shared_ptr<VEthernetLocalProxyConnection> connection = NewConnection(context, strand, socket);
                     if (NULLPTR == connection) {
-                        ppp::net::Socket::Closesocket(sockfd);
                         ppp::diagnostics::SetLastErrorCode(ppp::diagnostics::ErrorCode::MemoryAllocationFailed);
                         return false;
                     }

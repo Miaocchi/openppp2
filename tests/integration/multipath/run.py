@@ -17,11 +17,15 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import copy
 import re
+import random
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -45,6 +49,38 @@ PROFILES = {
     "independent-90-125-180-stable": {
         "paths": [(90, 100, 0, 0), (125, 200, 0, 0), (180, 300, 0, 0)],
         "shared_mbps": None,
+    },
+    "intent-50-80-155": {
+        "paths": [(50, 50, 2.5, 0), (80, 300, 4.0, 0), (155, 700, 7.75, 0)],
+        "shared_mbps": None,
+        "jitter_distribution": "uniform",
+        "rate_jitter_percent": 5,
+    },
+    "intent-strict-narrow-p1": {
+        "paths": [(35, 15, 1.75, 0), (80, 300, 4.0, 0), (155, 700, 7.75, 0)],
+        "shared_mbps": None, "jitter_distribution": "uniform", "rate_jitter_percent": 5,
+    },
+    "intent-strict-role-flip": {
+        "paths": [(50, 50, 2.5, 0), (80, 300, 4.0, 0), (155, 700, 7.75, 0)],
+        "shared_mbps": None, "jitter_distribution": "uniform", "rate_jitter_percent": 5,
+    },
+    "intent-strict-credit-blackhole": {
+        "paths": [(50, 50, 2.5, 0), (80, 300, 4.0, 0), (155, 700, 7.75, 0)],
+        "shared_mbps": None, "jitter_distribution": "uniform", "rate_jitter_percent": 5,
+    },
+    "intent-strict-grayzone": {
+        "paths": [(50, 50, 2.5, 0), (80, 300, 4.0, 0), (155, 700, 7.75, 0)],
+        "shared_mbps": None, "jitter_distribution": "uniform", "rate_jitter_percent": 5,
+    },
+    "intent-strict-burst-kill": {
+        "paths": [(50, 50, 2.5, 0), (80, 300, 4.0, 0), (155, 700, 7.75, 0)],
+        "shared_mbps": None, "jitter_distribution": "normal", "rate_jitter_percent": 0,
+        "netem": {"loss_model": "gemodel", "gemodel": (2, 20, 70, 0.1),
+                   "reorder": (2, 50)},
+    },
+    "intent-strict-dynamic-tide": {
+        "paths": [(50, 50, 2.5, 0), (80, 300, 4.0, 0), (155, 700, 7.75, 0)],
+        "shared_mbps": None, "jitter_distribution": "uniform", "rate_jitter_percent": 5,
     },
     "asymmetric-5-80-200": {"paths": [(5, 100, 0, 0), (80, 40, 8, 0), (200, 20, 20, 0)], "shared_mbps": None},
     "asymmetric-5-80": {"paths": [(5, 100, 0, 0), (80, 40, 8, 0)], "shared_mbps": None},
@@ -132,15 +168,19 @@ class Lab:
             raise HarnessError(f"congestion control must be one of {CONGESTION_CONTROL_CHOICES}")
         self.profile_name = profile
         self.profile = PROFILES[profile]
+        self.rate_kind = "htb" if profile.startswith("intent-strict-") else "tbf"
         self.tbf_burst_kb = tbf_burst_kb
         self.ack_priority = bool(ack_priority)
         self.congestion_control = congestion_control
         self.specs = self.profile["paths"]
+        self.rate_jitter_percent = float(self.profile.get("rate_jitter_percent", 0))
+        self.rate_jitter = random.Random(0x4D5558)
         self.suffix = uuid.uuid4().hex[:8]
         self.names = {key: f"mp{key[0]}{self.suffix}" for key in ("client", "router", "bottleneck", "server")}
         self.created_ns: list[str] = []
         self.root_links: dict[str, tuple[int, str, bool]] = {}
         self.paths: list[dict] = []
+        self.firewall_rules: list[tuple[str, list[str]]] = []
 
     def setup(self) -> None:
         if os.geteuid() != 0:
@@ -185,7 +225,7 @@ class Lab:
                             (self.names["router"], router_b), (self.names["bottleneck"], bottle_r)):
                 self._shape(ns, dev, rtt, rate, jitter, loss,
                             self.profile.get("jitter_distribution", "normal"),
-                            self.tbf_burst_kb, self.ack_priority)
+                            self.tbf_burst_kb, self.ack_priority, self.rate_kind)
             self.paths.append({"id": f"path{index}", "rtt_ms": rtt, "jitter_ms": jitter,
                                "jitter_distribution": self.profile.get("jitter_distribution", "normal"),
                                "loss_percent": loss, "rate_mbps": rate,
@@ -270,20 +310,27 @@ class Lab:
     def _shape(ns: str, dev: str, rtt: int, rate: int, jitter: float = 0,
                loss_percent: float = 0, jitter_distribution: str = "normal",
                tbf_burst_kb: int = DEFAULT_TBF_BURST_KB,
-               ack_priority: bool = False) -> None:
+               ack_priority: bool = False, rate_kind: str = "tbf") -> None:
         # The round trip crosses four shaped path egresses.
-        Lab._path_rate(ns, dev, rate, tbf_burst_kb=tbf_burst_kb)
+        Lab._path_rate(ns, dev, rate, tbf_burst_kb=tbf_burst_kb, rate_kind=rate_kind)
         if ack_priority:
             Lab._ack_priority_shape(ns, dev, rtt, jitter, loss_percent, jitter_distribution)
         else:
             Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution)
 
     @staticmethod
-    def _path_rate(ns: str, dev: str, rate: int, action: str = "replace",
-                   tbf_burst_kb: int = DEFAULT_TBF_BURST_KB) -> None:
-        run(["ip", "netns", "exec", ns, "tc", "qdisc", action, "dev", dev,
-             "root", "handle", "1:", "tbf", "rate", f"{rate}mbit",
-             "burst", f"{tbf_burst_kb}kb", "latency", "500ms"])
+    def _path_rate(ns: str, dev: str, rate: float, action: str = "replace",
+                   tbf_burst_kb: int = DEFAULT_TBF_BURST_KB, rate_kind: str = "tbf") -> None:
+        tc = ["ip", "netns", "exec", ns, "tc"]
+        if rate_kind == "htb":
+            if action == "replace":
+                run([*tc, "qdisc", "replace", "dev", dev, "root", "handle", "1:", "htb", "default", "1"])
+            run([*tc, "class", action, "dev", dev, "parent", "1:", "classid", "1:1", "htb",
+                 "rate", f"{rate:g}mbit", "ceil", f"{rate:g}mbit", "quantum", "1514",
+                 "burst", f"{tbf_burst_kb}kb", "cburst", f"{tbf_burst_kb}kb"])
+            return
+        run([*tc, "qdisc", action, "dev", dev, "root", "handle", "1:", "tbf",
+             "rate", f"{rate:g}mbit", "burst", f"{tbf_burst_kb}kb", "latency", "500ms"])
 
     @staticmethod
     def _ack_priority_shape(ns: str, dev: str, rtt: float, jitter: float = 0,
@@ -314,15 +361,11 @@ class Lab:
              "match", "u32", "0", "0", "flowid", "20:2"])
 
     @staticmethod
-    def _path_rate(ns: str, dev: str, rate: int, action: str = "replace") -> None:
-        run(["ip", "netns", "exec", ns, "tc", "qdisc", action, "dev", dev,
-             "root", "handle", "1:", "tbf", "rate", f"{rate}mbit", "burst", "128kb", "latency", "500ms"])
-
-    @staticmethod
     def _netem(ns: str, dev: str, rtt: float, jitter: float = 0,
                loss_percent: float = 0, jitter_distribution: str = "normal",
-               parent: str = "1:1", handle: str = "10:") -> None:
-        command = ["ip", "netns", "exec", ns, "tc", "qdisc", "replace", "dev", dev,
+               parent: str = "1:1", handle: str = "10:", action: str = "replace",
+               extra_options: dict | None = None) -> None:
+        command = ["ip", "netns", "exec", ns, "tc", "qdisc", action, "dev", dev,
                    "parent", parent, "handle", handle, "netem", "delay", f"{rtt / 4:g}ms"]
         if jitter:
             command.append(f"{jitter / 4:g}ms")
@@ -331,6 +374,14 @@ class Lab:
                 command.extend(("distribution", "normal"))
         if loss_percent:
             command.extend(("loss", f"{loss_percent:g}%"))
+        if extra_options:
+            model = extra_options.get("loss_model")
+            gemodel = extra_options.get("gemodel")
+            reorder = extra_options.get("reorder")
+            if model == "gemodel" and gemodel:
+                command.extend(("loss", "gemodel", *(f"{value:g}%" for value in gemodel)))
+            if reorder:
+                command.extend(("reorder", f"{reorder[0]:g}%", f"{reorder[1]:g}%"))
         command.extend(("limit", "32768"))
         run(command)
 
@@ -342,9 +393,9 @@ class Lab:
         if ack_priority:
             for parent, handle in (("20:1", "30:"), ("20:2", "40:")):
                 Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution,
-                           parent=parent, handle=handle)
+                           parent=parent, handle=handle, action="change")
         else:
-            Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution)
+            Lab._netem(ns, dev, rtt, jitter, loss_percent, jitter_distribution, action="change")
 
     @staticmethod
     def _rate(ns: str, dev: str, rate: int, burst_kb: int = 2 * DEFAULT_TBF_BURST_KB) -> None:
@@ -357,17 +408,90 @@ class Lab:
                     "shared_bottleneck_interfaces": ["bottleneck/bs0", "server/s0"] if self.profile["shared_mbps"] else [],
                     "paths": self.paths,
                     "note": "Paths converge on one server-facing link; shared profile caps this aggregate link."}
+        if self.rate_jitter_percent:
+            topology["rate_jitter_percent"] = self.rate_jitter_percent
         if self.ack_priority:
             # Only the non-default mode adds a key, so baseline topology files
             # stay byte-identical.
             topology["ack_priority"] = True
         if self.congestion_control is not None:
             topology["congestion_control"] = self.congestion_control
+        if self.rate_kind != "tbf":
+            topology["rate_kind"] = self.rate_kind
+        if "netem" in self.profile:
+            topology["netem"] = self.profile["netem"]
         return topology
+
+    def apply_rate_jitter(self, excluded_paths=()) -> None:
+        """Apply one bounded rate sample while keeping each path's delay qdisc."""
+        if self.rate_jitter_percent <= 0:
+            return
+        for path, spec in zip(self.paths, self.specs):
+            if path["id"] in excluded_paths:
+                continue
+            base_rate = float(spec[1])
+            variation = self.rate_jitter.uniform(-self.rate_jitter_percent,
+                                                  self.rate_jitter_percent) / 100.0
+            rate = max(1.0, base_rate * (1.0 + variation))
+            for ns, dev in ((path["client_ns"], path["client_if"]),
+                            (path["router_ns"], path["router_client_if"]),
+                            (path["router_ns"], path["router_bottleneck_if"]),
+                            (path["bottleneck_ns"], path["bottleneck_router_if"])):
+                self._path_rate(ns, dev, round(rate, 3), "change", self.tbf_burst_kb, self.rate_kind)
+
+    def enable_baseline_loss(self) -> None:
+        options = self.profile.get("netem")
+        if not options:
+            return
+        for path in self.paths:
+            for ns, interface in ((path["client_ns"], path["client_if"]),
+                                  (path["router_ns"], path["router_client_if"])):
+                handles = (("20:1", "30:"), ("20:2", "40:")) if self.ack_priority else (("1:1", "10:"),)
+                for parent, handle in handles:
+                    self._netem(ns, interface, path["rtt_ms"], path["jitter_ms"],
+                                jitter_distribution=path["jitter_distribution"],
+                                parent=parent, handle=handle, extra_options=options)
+
+    def change_path_action(self, path: dict, action: str, *, restore: bool = False,
+                           value: int | None = None) -> None:
+        """Apply a live impairment while retaining the root 1: TBF and child 10: handle."""
+        if action == "drop_carrier":
+            raise HarnessError("drop_carrier is applied by the socket-aware scheduler")
+        egresses = ((path["client_ns"], path["client_if"]),
+                    (path["router_ns"], path["router_client_if"]))
+        if action == "throttle":
+            rate = path["rate_mbps"] if restore else value
+            if rate is None or rate <= 0:
+                raise HarnessError("throttle requires a positive rate")
+            for namespace, interface in egresses:
+                self._path_rate(namespace, interface, rate, "change", self.tbf_burst_kb, self.rate_kind)
+            return
+        jitter = path["jitter_ms"]
+        distribution = path["jitter_distribution"]
+        if action == "blackhole":
+            target_rtt = path["rtt_ms"]
+            target_loss = path["loss_percent"] if restore else 100
+        elif action == "degrade":
+            target_rtt = path["rtt_ms"] if restore else 4 * int(value or 140)
+            target_loss = path["loss_percent"] if restore else 3
+            if not restore:
+                jitter = 28
+                distribution = "normal"
+        elif action == "restore":
+            target_rtt = path["rtt_ms"]
+            target_loss = path["loss_percent"]
+        else:
+            raise HarnessError(f"unsupported dynamic action {action}")
+        for namespace, interface in egresses:
+            self._apply_path_delay(namespace, interface, target_rtt, jitter,
+                                   target_loss, distribution, self.ack_priority)
 
     def cleanup(self) -> None:
         previous = block_interrupt_signals()
         try:
+            for namespace, rule in reversed(self.firewall_rules):
+                run(["ip", "netns", "exec", namespace, "iptables", "-D", "OUTPUT", *rule], check=False)
+            self.firewall_rules.clear()
             for ns in reversed(self.created_ns):
                 run(["ip", "netns", "del", ns], check=False)
             self.created_ns.clear()
@@ -398,12 +522,19 @@ class Lab:
                     records = json.loads(run(["ip", "netns", "exec", ns, "tc", "-j", "-s", "-d", "qdisc", "show", "dev", dev], capture=True))
                 except json.JSONDecodeError as exc:
                     raise HarnessError(f"invalid qdisc response for {ns}/{dev}") from exc
-                tbf = next((item for item in records if item.get("kind") == "tbf"), None)
-                if tbf is None:
-                    raise HarnessError(f"expected a root tbf qdisc on {ns}/{dev}")
+                root = next((item for item in records if item.get("kind") == self.rate_kind), None)
+                if root is None:
+                    raise HarnessError(f"expected a root {self.rate_kind} qdisc on {ns}/{dev}")
+                rate_options = root.get("options", {})
+                if self.rate_kind == "htb":
+                    classes = json.loads(run(["ip", "netns", "exec", ns, "tc", "-j", "-d",
+                                              "class", "show", "dev", dev], capture=True))
+                    traffic_class = next((item for item in classes if item.get("handle") == "1:1"), {})
+                    rate_options = traffic_class.get("options", traffic_class)
                 expected_rate = path["rate_mbps"] * 1_000_000 / 8
-                if abs(tbf.get("options", {}).get("rate", -1) - expected_rate) > 1:
-                    raise HarnessError(f"path rate cap readback mismatch on {ns}/{dev}")
+                if abs(rate_options.get("rate", -1) - expected_rate) > 1:
+                    raise HarnessError(f"path rate cap readback mismatch on {ns}/{dev}: "
+                                       f"{rate_options.get('rate')!r} != {expected_rate:g} bytes/s")
                 if self.ack_priority:
                     if not any(item.get("kind") == "prio" for item in records):
                         raise HarnessError(f"expected a prio qdisc on {ns}/{dev}")
@@ -449,7 +580,7 @@ class Lab:
         records = json.loads(run(["ip", "netns", "exec", namespace, "tc", "-j", "-s", "qdisc",
                                   "show", "dev", interface], capture=True))
         for record in records:
-            if record.get("kind") != "tbf":
+            if record.get("kind") not in ("tbf", "htb") or not record.get("root"):
                 continue
             for key in ("bytes", "stats64", "stats"):
                 value = record.get(key)
@@ -457,7 +588,7 @@ class Lab:
                     return value
                 if isinstance(value, dict) and isinstance(value.get("bytes"), int):
                     return value["bytes"]
-        raise HarnessError(f"tc did not report root TBF bytes for {namespace}/{interface}")
+        raise HarnessError(f"tc did not report root shaper bytes for {namespace}/{interface}")
 
     def path_egress_bytes(self) -> dict[str, int]:
         counters = {}
@@ -621,6 +752,26 @@ def workspace_evidence(root: Path) -> dict:
 
 
 def production_six_flow(args: argparse.Namespace) -> int:
+    if args.intent_migration_acceptance and (args.suite or args.strict_profile or
+            args.profile != "intent-50-80-155" or not args.fixed_pool or
+            args.carriers_per_path not in (2, 3) or args.single_path):
+        raise HarnessError("--intent-migration-acceptance requires intent-50-80-155 with 2 or 3 fixed carriers per path")
+    if getattr(args, "suite", None) == "intent-strict":
+        return intent_strict_suite(args)
+    if not getattr(args, "strict_profile", None) and args.profile in STRICT_PROFILE_SPECS:
+        args.strict_profile = args.profile
+    if getattr(args, "strict_profile", None):
+        spec = STRICT_PROFILE_SPECS[args.strict_profile]
+        args.profile = args.strict_profile
+        args.fixed_pool = spec["fixed_pool"]
+        args.carriers_per_path = spec["carriers"]
+        args.intent = True
+        args.intent_acceptance = False
+        args.pool_metrics = True
+        args.socket_metrics = True
+        args.duration = spec["duration"]
+    if args.intent_acceptance or args.intent_migration_acceptance:
+        args.intent = True
     source = workspace_evidence(Path(__file__).resolve().parents[3])
     output = Path(args.output).resolve()
     output.mkdir(parents=True, mode=0o700)
@@ -632,10 +783,14 @@ def production_six_flow(args: argparse.Namespace) -> int:
                      "wire_interval": args.wire_interval,
                      "qdisc_metrics": args.qdisc_metrics,
                      "socket_metrics": args.socket_metrics,
+                     "intent": args.intent,
+                     "intent_acceptance": args.intent_acceptance,
                      "tbf_burst_kb": args.tbf_burst_kb,
                      "ack_priority": args.ack_priority,
                      "congestion_control": args.congestion_control,
                      "candidate_commands": {}, "exit_code": None}
+    if args.intent_migration_acceptance:
+        args.evidence["intent_migration_acceptance"] = True
     evidence_path.write_text(json.dumps(args.evidence, indent=2) + "\n")
     code = 1
     try:
@@ -664,7 +819,10 @@ def production_six_flow(args: argparse.Namespace) -> int:
         args.evidence["exit_code"] = code
         evidence_path.write_text(json.dumps(args.evidence, indent=2) + "\n")
     if code == 0:
-        print(f"PASS: {args.flows} verified flows per selected direction; result={output / 'six-flow-integrity.json'}")
+        result_name = "intent-strict.json" if getattr(args, "strict_profile", None) else (
+            "intent-migration.json" if args.intent_migration_acceptance else
+            "intent-acceptance.json" if args.intent_acceptance else "six-flow-integrity.json")
+        print(f"PASS: multipath acceptance; result={output / result_name}")
     return code
 
 
@@ -892,6 +1050,7 @@ def sample_directional_wire(lab: Lab, output: Path, directions: tuple[str, ...],
                    if socket_metrics else None)
         for offset in sorted(sample_offsets | faults.keys()):
             time.sleep(max(0, phase_started + offset - time.monotonic()))
+            lab.apply_rate_jitter()
             after = {direction: lab.directional_path_bytes(direction) for direction in directions}
             finished = time.monotonic()
             for direction in directions:
@@ -1236,8 +1395,10 @@ def record_path_windows(output: Path) -> dict:
 def record_pool_events(output: Path, clock: dict) -> None:
     metric = re.compile(r"\[([^\]]+)\] COUNT \[(mux\.pool\.[\w.]+)\].*? delta=(-?\d+)\b")
     with (output / "pool-events.ndjson").open("w") as events:
-        for role in ("client", "server"):
-            log_path = output / f"six-flow-0-{role}.log"
+        log_paths = list(output.glob("strict-*-client.log")) + list(output.glob("strict-*-server.log"))
+        log_paths.extend(output / f"six-flow-0-{role}.log" for role in ("client", "server"))
+        for log_path in log_paths:
+            role = "client" if "client" in log_path.name else "server"
             if not log_path.is_file():
                 continue
             with log_path.open(errors="replace") as log:
@@ -1347,12 +1508,919 @@ def six_flow_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path
     return results
 
 
+INTENT_FLOW = str(Path(__file__).with_name("intent_flow.py").resolve())
+INTENT_IO_TIMEOUT = 20
+
+
+def sample_intent_wire(lab: Lab, output: Path, label: str,
+                       phase_started: float, duration: int) -> list[dict]:
+    before = lab.directional_path_bytes("download")
+    started = time.monotonic()
+    rows = []
+    for offset in range(1, duration + 1):
+        time.sleep(max(0, phase_started + offset - time.monotonic()))
+        lab.apply_rate_jitter()
+        after = lab.directional_path_bytes("download")
+        finished = time.monotonic()
+        deltas = {path: (count - before[path] if count >= before[path] else None)
+                  for path, count in after.items()}
+        row = {"traffic_group": label, "start_seconds": started - phase_started,
+               "end_seconds": finished - phase_started,
+               "start_monotonic_ms": int(started * 1000),
+               "end_monotonic_ms": int(finished * 1000),
+               "tbf_bytes": deltas,
+               "mbps": {path: count * 8 / (finished - started) / 1e6
+                        if count is not None else None
+                        for path, count in deltas.items()}}
+        rows.append(row)
+        before, started = after, finished
+    wire = output / f"{label}-wire.ndjson"
+    wire.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return rows
+
+
+def intent_path_summary(rows: list[dict]) -> dict:
+    if not rows:
+        raise HarnessError("intent workload produced no path samples")
+    path_ids = sorted(rows[0]["tbf_bytes"])
+    initial_rows = rows[:min(3, len(rows))]
+    tail_rows = rows[-min(3, len(rows)):]
+    def totals(window: list[dict]) -> dict[str, int]:
+        return {path: sum((row["tbf_bytes"].get(path) or 0) for row in window)
+                for path in path_ids}
+    initial = totals(initial_rows)
+    tail = totals(tail_rows)
+    return {"initial_bytes": initial, "tail_bytes": tail,
+            "initial_share": _shares(initial), "tail_share": _shares(tail),
+            "samples": len(rows)}
+
+
+def _shares(values: dict[str, int]) -> dict[str, float]:
+    total = sum(values.values())
+    return {path: (value / total if total else 0.0) for path, value in values.items()}
+
+
+def count_intent_metrics(paths: list[Path]) -> dict[str, int]:
+    counts = {"latency": 0, "bandwidth": 0, "unknown": 0, "flip": 0,
+              "fallback": 0, "credit_fallback": 0}
+    for path in paths:
+        if not path.is_file():
+            continue
+        text = path.read_text(errors="replace")
+        for name in counts:
+            deltas = re.findall(rf"\[mux\.intent\.{name}\][^\n]*\bdelta=([0-9]+)\b", text)
+            counts[name] += sum(map(int, deltas))
+    return counts
+
+
+def run_intent_phase(lab: Lab, children: list[subprocess.Popen], output: Path,
+                     label: str, mode: str, flows: int, duration: int, scenario: str = "") -> dict:
+    ready = output / f"{label}.ready"
+    ready.unlink(missing_ok=True)
+    endpoint_processes = {}
+    endpoint_logs = {}
+    workload_port = 19004 if scenario or mode == "web" else 19003
+    for role in ("server", "client"):
+        log_path = output / f"{label}-{role}.log"
+        endpoint_logs[role] = log_path
+        endpoint_processes[role] = spawn_owned(
+            children,
+            ["ip", "netns", "exec", lab.names[role], sys.executable, "-u", INTENT_FLOW,
+             role, BUSINESS_IP, str(workload_port), mode, str(ready), str(flows), str(duration),
+             *([scenario] if scenario else [])],
+            stdout=log_path.open("w"), stderr=subprocess.STDOUT)
+        if role == "server":
+            deadline = time.monotonic() + 5
+            while not ready.exists():
+                if endpoint_processes[role].poll() is not None or time.monotonic() >= deadline:
+                    raise HarnessError(f"{label} origin did not become ready; inspect {log_path}")
+                time.sleep(.02)
+    phase_started = time.monotonic()
+    rows = sample_intent_wire(lab, output, label, phase_started, duration)
+    for role, process in endpoint_processes.items():
+        if process.wait(timeout=duration + INTENT_IO_TIMEOUT):
+            raise HarnessError(f"{label} {role} failed; inspect {endpoint_logs[role]}")
+        children.remove(process)
+    reports = {}
+    for role, log_path in endpoint_logs.items():
+        lines = [line for line in log_path.read_text(errors="replace").splitlines() if line.strip()]
+        try:
+            reports[role] = json.loads(lines[-1])
+        except (IndexError, json.JSONDecodeError) as exc:
+            raise HarnessError(f"{label} {role} did not produce a valid workload report") from exc
+    if mode == "bulk":
+        sent = {row.get("flow"): row for row in reports["server"]}
+        received = {row.get("flow"): row for row in reports["client"]}
+        if set(sent) != set(received) or not sent:
+            raise HarnessError(f"{label} did not complete every download flow")
+        for flow, source in sent.items():
+            target = received[flow]
+            if (source.get("sent_bytes") != target.get("received_bytes") or
+                    source.get("sent_sha256") != target.get("received_sha256")):
+                raise HarnessError(f"{label} flow {flow} failed exact payload verification")
+    elif (reports["server"][0].get("requests", 0) < 20 or
+          reports["server"][0].get("requests") != reports["client"][0].get("requests")):
+        raise HarnessError(f"{label} did not complete the web request burst")
+    return {"mode": mode, "flows": flows, "duration_seconds": duration,
+            "reports": reports, "paths": intent_path_summary(rows),
+            "windowed_path_bytes": rows, **({"port": workload_port} if scenario else {})}
+
+
+def intent_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path) -> dict:
+    if not args_profile_is_intent(lab.profile_name):
+        raise HarnessError("intent-acceptance requires the intent-50-80-155 profile")
+    phases = {
+        "download4": run_intent_phase(lab, children, output, "intent-download4", "bulk", 4, 18),
+        "web": run_intent_phase(lab, children, output, "intent-web", "web", 1, 6),
+        "stream": run_intent_phase(lab, children, output, "intent-stream", "bulk", 1, 16),
+    }
+    download_paths = phases["download4"]["paths"]
+    web_paths = phases["web"]["paths"]
+    stream_paths = phases["stream"]["paths"]
+    if download_paths["tail_bytes"].get("path3", 0) <= download_paths["initial_bytes"].get("path3", 0):
+        raise HarnessError("four-flow download did not migrate toward the high-bandwidth path")
+    if web_paths["tail_share"].get("path1", 0.0) < web_paths["tail_share"].get("path3", 0.0):
+        raise HarnessError("web workload moved more traffic to the high-bandwidth path than the low-latency path")
+    if stream_paths["tail_share"].get("path3", 0.0) <= stream_paths["tail_share"].get("path1", 0.0):
+        raise HarnessError("streaming workload did not prefer the high-bandwidth path")
+    metrics = count_intent_metrics([output / "six-flow-0-client.log", output / "six-flow-0-server.log"])
+    if metrics["latency"] < 1 or metrics["bandwidth"] < 2:
+        raise HarnessError(f"intent classifier metrics did not cover web and bulk flows: {metrics}")
+    max_stall_ms = max((row.get("max_stall_ms", 0) for phase in phases.values()
+                        for row in phase["reports"]["client"]), default=0)
+    web_report = phases["web"]["reports"].get("client", [{}])[0]
+    telemetry = {**metrics, "intent_flip_count": metrics["flip"], "credit_fallback_count": metrics["credit_fallback"]}
+    return {"profile": lab.profile_name, "paths": lab.topology()["paths"],
+            "classification_metrics": metrics, "telemetry": telemetry,
+            "phases": phases,
+            "windowed_path_bytes": [row for phase in phases.values()
+                                    for row in phase.get("windowed_path_bytes", [])],
+            "web_rtt_ms": {"p95": web_report.get("rtt_p95_ms", 0),
+                           "p99": web_report.get("rtt_p99_ms", 0),
+                           "max": web_report.get("rtt_max_ms", 0)},
+            "max_stall_ms": max_stall_ms, "passed": True}
+
+
+def args_profile_is_intent(profile: str) -> bool:
+    return profile == "intent-50-80-155"
+
+
+def intent_migration_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path) -> dict:
+    phases = {}
+    for scenario, mode, flows, duration in (("download", "bulk", 4, 18),
+                                            ("web", "web", 1, 8),
+                                            ("video", "bulk", 1, 16)):
+        phases[scenario] = run_intent_phase(lab, children, output, f"migration-{scenario}",
+                                            mode, flows, duration, scenario)
+
+    connections = {}
+    for scenario, phase in phases.items():
+        for row in phase["reports"]["client"]:
+            key = (phase["port"], row["peer_port"])
+            connections.setdefault(key, []).append({"scenario": scenario, **row})
+
+    flows = {}
+    endpoint_intents = {"client": {}, "server": {}}
+    server_bytes = {}
+    for side in endpoint_intents:
+        path = output / f"{side}-flow-trace.ndjson"
+        if not path.is_file():
+            raise HarnessError(f"candidate did not record VMUX flow evidence at {path}")
+        with path.open() as source:
+            for line in source:
+                event = json.loads(line)
+                cid = event["cid"]
+                if event["event"] == "intent":
+                    if cid in endpoint_intents[side]:
+                        raise HarnessError(f"duplicate {side} intent for VMUX flow {cid}")
+                    endpoint_intents[side][cid] = event["intent"]
+                elif side == "client" and event["event"] == "open":
+                    key = (event["destination_port"], event["peer_port"])
+                    opened = event["monotonic_us"] * 1000
+                    matches = [row for row in connections.get(key, ())
+                               if row["connection_start_monotonic_ns"] <= opened + 999
+                               and opened <= row["connection_end_monotonic_ns"]]
+                    if len(matches) != 1 or cid in flows:
+                        raise HarnessError(f"could not uniquely attribute VMUX flow {cid} for {key}")
+                    flows[cid] = {"connection": matches[0], "prelude": Counter(), "body": Counter(),
+                                  "first_delivery_path": None, "first_body_delivery_ns": None,
+                                  "first_body_path3_ns": None}
+                elif event["event"] == "delivery" and cid in flows:
+                    carrier = event["path_id"]
+                    if side == "server":
+                        server_bytes.setdefault(cid, Counter())[carrier] += event["bytes"]
+                        continue
+                    flow = flows[cid]
+                    tick = event["monotonic_us"] * 1000
+                    is_body = tick >= flow["connection"]["body_start_monotonic_ns"]
+                    flow["body" if is_body else "prelude"][carrier] += event["bytes"]
+                    if flow["first_delivery_path"] is None:
+                        flow["first_delivery_path"] = carrier
+                    if is_body and flow["first_body_delivery_ns"] is None:
+                        flow["first_body_delivery_ns"] = tick
+                    if is_body and carrier == "path3" and flow["first_body_path3_ns"] is None:
+                        flow["first_body_path3_ns"] = tick
+
+    by_scenario = {name: [] for name in phases}
+    for cid, flow in flows.items():
+        row = flow.pop("connection")
+        scenario = row["scenario"]
+        intents = {side: values.get(cid) for side, values in endpoint_intents.items()}
+        expected_intent = "latency" if scenario == "web" else "bandwidth"
+        upstream = server_bytes.get(cid, {})
+        body_share = _shares(flow["body"])
+        checks = {
+            "detected_on_both_endpoints": all(intent == expected_intent for intent in intents.values()),
+            "first_payload_on_path1": flow["first_delivery_path"] == "path1" and flow["prelude"]["path1"] > 0,
+            "all_deliveries_attributed": (set(flow["prelude"]) | set(flow["body"]) | set(upstream)) <=
+                                         {"path1", "path2", "path3"},
+        }
+        first_delivery = flow["first_body_delivery_ns"]
+        first_body_ms = ((first_delivery - row["body_start_monotonic_ns"]) / 1_000_000
+                         if first_delivery is not None else None)
+        if scenario == "web":
+            checks["web_payload_stays_off_path3"] = (
+                sum(flow["body"].values()) > 0 and sum(upstream.values()) > 0 and
+                flow["prelude"]["path3"] + flow["body"]["path3"] + upstream.get("path3", 0) == 0)
+            checks["all_web_requests_completed"] = row["requests"] == 40
+            checks["web_p95_ms_at_most_85"] = row["rtt_p95_ms"] <= 85
+        else:
+            checks["migrated_on_same_connection"] = (
+                flow["first_body_path3_ns"] is not None and body_share.get("path3", 0) >= .80)
+            checks["bulk_integrity"] = row["exact_eof"] and row["received_bytes"] > 0
+            checks["first_body_ms_at_most_1000"] = first_body_ms is not None and first_body_ms <= 1000
+            checks["max_stall_ms_at_most_1000"] = row["max_stall_ms"] <= 1000
+        by_scenario[scenario].append({"cid": cid, "flow": row["flow"], "intent": intents, **flow,
+                                      "body_path_shares": body_share, "first_body_ms": first_body_ms,
+                                      "upstream_path_bytes": upstream,
+                                      "checks": checks, "passed": all(checks.values())})
+    metrics = count_intent_metrics([output / "six-flow-0-client.log", output / "six-flow-0-server.log"])
+    passed = metrics["flip"] == 0 and all(
+        sorted(flow["flow"] for flow in results) == list(range(phases[name]["flows"])) and
+        all(flow["passed"] for flow in results)
+        for name, results in by_scenario.items())
+    return {"port": next(iter(phases.values()))["port"], "phases": phases, "flows": by_scenario,
+            "classification_metrics": metrics, "passed": passed}
+
+
+@dataclass(frozen=True)
+class StrictWorkload:
+    label: str
+    mode: str
+    start_s: float
+    flows: int
+    byte_count: int = 0
+    duration_s: float = 0
+    requests: int = 0
+    interval_ms: int = 0
+    port: int = 0
+    group: str = ""
+
+
+MIB = 1024 * 1024
+STRICT_PROFILE_SPECS = {
+    "intent-strict-narrow-p1": {
+        "duration": 45, "fixed_pool": True, "carriers": 2,
+        "workloads": [StrictWorkload("download", "bulk", 0, 8, 25 * MIB, 43),
+                      StrictWorkload("stream", "bulk", 0, 1, 32 * MIB, 43),
+                      StrictWorkload("web", "web", 10, 4, requests=40, interval_ms=200)],
+        "gates": {"download_path1_max": .01, "download_path3_min": .45,
+                   "web_path3_max": .01, "web_p95_max": 55, "web_p99_max": 65,
+                   "stall_max": 1000},
+    },
+    "intent-strict-role-flip": {
+        "duration": 55, "fixed_pool": True, "carriers": 2,
+        "workloads": [StrictWorkload("download", "bulk", 0, 4, 62 * MIB, 54),
+                      StrictWorkload("stream", "bulk", 0, 1, 48 * MIB, 54),
+                      StrictWorkload("web-initial", "web", 1, 1, requests=8, interval_ms=500, group="web"),
+                      StrictWorkload("web-degrade-edge", "web", 14, 1, requests=6, interval_ms=500, group="web"),
+                      StrictWorkload("web-fault-early", "web", 18, 1, requests=8, interval_ms=500, group="web"),
+                      StrictWorkload("web-fault-late", "web", 29, 1, requests=8, interval_ms=500, group="web"),
+                      StrictWorkload("web-restore-edge", "web", 34, 1, requests=6, interval_ms=500, group="web"),
+                      StrictWorkload("web-recovery-early", "web", 40, 1, requests=8, interval_ms=500, group="web"),
+                      StrictWorkload("web-recovery-late", "web", 51, 1, requests=6, interval_ms=500, group="web")],
+        "faults": [{"at_s": 15, "path": "path1", "action": "degrade", "value": 140},
+                   {"at_s": 15, "path": "path3", "action": "throttle", "value": 30},
+                   {"at_s": 35, "path": "path1", "action": "restore", "restore_action": "degrade"},
+                   {"at_s": 35, "path": "path3", "action": "restore", "restore_action": "throttle"}],
+        "gates": {"fault_web_path1_max": .10, "fault_web_path2_min": .80,
+                   "fault_download_path3_max": .15, "fault_download_path2_min": .70,
+                   "recovery_web_path1_min": .50, "recovery_download_path3_min": .40,
+                   "stall_max": 2000},
+    },
+    "intent-strict-credit-blackhole": {
+        "duration": 45, "fixed_pool": True, "carriers": 2,
+        "workloads": [StrictWorkload("download", "bulk", 0, 2, 75 * MIB, 43),
+                      StrictWorkload("stream", "bulk", 0, 1, 24 * MIB, 43),
+                      StrictWorkload("web", "web", 7, 1, requests=45, interval_ms=600)],
+        "faults": [{"at_s": 10, "path": "path1", "action": "blackhole"},
+                   {"at_s": 10, "path": "path2", "action": "blackhole"},
+                   {"at_s": 20, "path": "path1", "action": "restore"},
+                   {"at_s": 20, "path": "path2", "action": "restore"}],
+        "gates": {"blackhole_web_path3_min": .90, "recovery_web_path3_max": .05,
+                   "recovery_web_p95_max": 85, "stall_max": 2500,
+                   "credit_fallback_min": 1},
+    },
+    "intent-strict-grayzone": {
+        "duration": 40, "fixed_pool": True, "carriers": 2,
+        "workloads": [StrictWorkload("port443_web", "web", 0, 4, requests=20, interval_ms=250, port=443),
+                      StrictWorkload("phase_shift", "phase", 0, 2, 100 * MIB, interval_ms=500),
+                      StrictWorkload("grayzone_unknown", "gray", 0, 3, requests=10, interval_ms=300),
+                      StrictWorkload("port443_bulk", "bulk", 5, 2, 50 * MIB, 24, port=443),
+                      StrictWorkload("nonstd_port_bulk", "bulk", 5, 2, 50 * MIB, 24,
+                                     port=24443, group="nonstd_bulk")],
+        "gates": {"unknown_min": 3, "latency_min": 1, "bandwidth_min": 4,
+                   "nonstd_bulk_path3_min": .40, "port443_bulk_path1_max": .05,
+                   "flip_max": 0},
+    },
+    "intent-strict-burst-kill": {
+        "duration": 50, "fixed_pool": True, "carriers": 2,
+        "workloads": [StrictWorkload("download", "bulk", 0, 4, 50 * MIB, 47),
+                      StrictWorkload("stream", "bulk", 0, 1, 32 * MIB, 47),
+                      StrictWorkload("web", "web", 2, 1, requests=30, interval_ms=1500)],
+        "faults": [{"at_s": 18, "path": "path3", "action": "drop_carrier", "duration_s": 5}],
+        "gates": {"download_path1_max": .03, "web_path3_max": .02,
+                   "stall_max": 2000, "web_p99_max": 120},
+    },
+    "intent-strict-dynamic-tide": {
+        "duration": 90, "fixed_pool": False, "carriers": 1,
+        "workloads": [StrictWorkload("idle_web_only", "web", 0, 1, requests=15, interval_ms=1000, group="web"),
+                      StrictWorkload("burst-download-1", "bulk", 15, 6, duration_s=25, group="download"),
+                      StrictWorkload("burst-stream-1", "bulk", 15, 1, 18 * MIB, 23, group="stream"),
+                      StrictWorkload("burst-web-1", "web", 15, 1, requests=50, interval_ms=500, group="web"),
+                      StrictWorkload("cooldown_web_only", "web", 40, 1, requests=20, interval_ms=1000, group="web"),
+                      StrictWorkload("burst-download-2", "bulk", 60, 6, duration_s=25, group="download"),
+                      StrictWorkload("burst-stream-2", "bulk", 60, 1, 18 * MIB, 23, group="stream"),
+                      StrictWorkload("burst-web-2", "web", 60, 1, requests=50, interval_ms=500, group="web")],
+        "gates": {"active_path1_min": 1, "scale_up": True, "scale_down": True,
+                   "burst_path3_min": .40, "cooldown_web_p99_max": 85,
+                   "stall_max": 1500},
+    },
+}
+
+
+def _strict_fault_path(lab: Lab, name: str) -> dict:
+    for path in lab.paths:
+        if path["id"] == name:
+            return path
+    raise HarnessError(f"strict fault references unknown path {name}")
+
+
+def _strict_carrier_socket(lab: Lab, path: dict, carrier_index: int) -> dict:
+    sockets = []
+    for protocol, flag in (("tcp", "-Htn"), ("udp", "-Huan")):
+        output = run(["ip", "netns", "exec", lab.names["client"], "ss", flag], capture=True)
+        for row in parse_established_sockets(output):
+            if (row.get("local_address") != path["client_ip"] or
+                    row.get("peer_address") != path["server_ip"] or
+                    row.get("peer_port") != str(path["carrier_listener_port"])):
+                continue
+            if row.get("local_port", "").isdigit():
+                sockets.append({"protocol": protocol, "source_ip": row["local_address"],
+                                "source_port": int(row["local_port"]), "peer_ip": row["peer_address"],
+                                "peer_port": int(row["peer_port"])})
+    sockets.sort(key=lambda item: (item["source_port"], item["protocol"]))
+    if carrier_index >= len(sockets):
+        raise HarnessError(f"could not resolve {path['id']}:carrier{carrier_index}")
+    return sockets[carrier_index]
+
+
+def _strict_drop_carrier(lab: Lab, path: dict, restore: bool, event: dict) -> dict:
+    carrier = event.get("carrier_socket")
+    if carrier is None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                carrier = _strict_carrier_socket(lab, path, event.get("carrier_index", 0))
+                break
+            except HarnessError:
+                time.sleep(.1)
+    if carrier is None:
+        raise HarnessError(f"drop_carrier could not resolve {path['id']} source port")
+    event["carrier_socket"] = carrier
+    namespace = lab.names["client"]
+    rule = ["-o", path["client_if"], "-p", carrier["protocol"], "-s", carrier["source_ip"],
+            "--sport", str(carrier["source_port"]), "-d", carrier["peer_ip"],
+            "--dport", str(carrier["peer_port"]), "-j", "DROP"]
+    tracked_rule = (namespace, rule)
+    previous = block_interrupt_signals()
+    try:
+        run(["ip", "netns", "exec", namespace, "iptables", "-D" if restore else "-I", "OUTPUT", *rule])
+        if restore:
+            lab.firewall_rules.remove(tracked_rule)
+        else:
+            lab.firewall_rules.append(tracked_rule)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+    return {"path_id": path["id"], "source_port": carrier["source_port"], "protocol": carrier["protocol"],
+            "five_tuple": carrier}
+
+
+def _strict_apply_fault(lab: Lab, event: dict, restore: bool = False) -> dict:
+    path = _strict_fault_path(lab, event["path"])
+    action = event["action"]
+    if action == "drop_carrier":
+        return _strict_drop_carrier(lab, path, restore, event)
+    lab.change_path_action(path, event.get("restore_action", action),
+                           restore=restore or action == "restore", value=event.get("value"))
+    return {"path_id": path["id"], "action": action,
+            "value": event.get("value"), "restored": restore or action == "restore"}
+
+
+def _strict_runtime_sample(output: Path, sampled_ms: int, role: str = "client") -> dict:
+    records = read_stats(output / f"{role}-stats.ndjson")
+    if not records:
+        return {"sample_ms": sampled_ms, "paths": [], "intent": {}}
+    row = min(records, key=lambda item: abs(item["monotonic_ms"] - sampled_ms))
+    multipath = row.get("runtime", {}).get("multipath", {})
+    return {"sample_ms": row.get("monotonic_ms", sampled_ms),
+            "paths": multipath.get("paths", []), "intent": multipath.get("intent", {})}
+
+
+@contextlib.contextmanager
+def _strict_fault_schedule(lab: Lab, output: Path, started: float, duration: int, events: list[dict]):
+    stop = threading.Event()
+    schedule = [(event["at_s"], False, event) for event in events]
+    schedule.extend((event["at_s"] + event["duration_s"], True, event)
+                    for event in events if event.get("duration_s"))
+    if lab.rate_jitter_percent:
+        event_times = {offset for offset, _, _ in schedule}
+        schedule.extend((second, False, None) for second in range(duration) if second not in event_times)
+    schedule.sort(key=lambda item: item[0])
+
+    def apply_events():
+        if not schedule:
+            return
+        throttled_paths = set()
+        with (output / "fault-events.ndjson").open("a", buffering=1) as event_file:
+            for offset, restore, event in schedule:
+                if stop.wait(max(0, started + offset - time.monotonic())):
+                    return
+                if event is None:
+                    lab.apply_rate_jitter(throttled_paths)
+                    continue
+                applied_at = time.monotonic() - started
+                details = _strict_apply_fault(lab, event, restore=restore)
+                if event.get("restore_action", event["action"]) == "throttle":
+                    if details["restored"]:
+                        throttled_paths.discard(event["path"])
+                    else:
+                        throttled_paths.add(event["path"])
+                event_file.write(json.dumps({**event, **details, "scheduled_at_s": offset,
+                                             "applied_at_s": applied_at,
+                                             "event": "restored" if details.get("restored") or restore else "applied"}) + "\n")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(apply_events)
+        try:
+            yield worker
+            worker.result()
+        finally:
+            stop.set()
+
+
+def _strict_start_job(lab: Lab, children: list[subprocess.Popen], output: Path,
+                      workload: StrictWorkload, port: int, starts_at: float) -> dict:
+    prefix = output / f"strict-{workload.label}"
+    ready = prefix.with_suffix(".ready")
+    script = str(Path(__file__).with_name("strict_flow.py"))
+    endpoints = {}
+    for role in ("server", "client"):
+        report = Path(f"{prefix}-{role}.json")
+        log = Path(f"{prefix}-{role}.log")
+        args = [script, role, BUSINESS_IP, str(port), workload.mode, str(ready),
+                str(workload.flows), str(workload.byte_count), str(workload.requests),
+                str(workload.interval_ms), "10", str(starts_at), str(workload.duration_s)]
+        with report.open("w") as stdout, log.open("w") as stderr:
+            process = spawn_owned(children, ["ip", "netns", "exec", lab.names[role],
+                                  sys.executable, "-u", *args], stdout=stdout, stderr=stderr)
+        endpoints[role] = (process, report, log)
+    return {"workload": workload, "port": port, "endpoints": endpoints}
+
+
+def _strict_read_report(path: Path, process: subprocess.Popen, label: str) -> list[dict]:
+    if process.returncode:
+        raise HarnessError(f"strict workload {label} failed with status {process.returncode}")
+    lines = [line for line in path.read_text(errors="replace").splitlines() if line.strip()]
+    try:
+        value = json.loads(lines[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise HarnessError(f"strict workload {label} did not produce JSON") from exc
+    if not isinstance(value, list):
+        raise HarnessError(f"strict workload {label} report is not an array")
+    return value
+
+
+def _strict_run_workloads(lab: Lab, children: list[subprocess.Popen], output: Path,
+                          spec: dict, started: float, fault_worker) -> tuple[list[dict], list[dict]]:
+    workloads = sorted(enumerate(spec["workloads"]), key=lambda item: item[1].start_s)
+    pending = list(workloads)
+    jobs = []
+    carrier_samples = []
+    duration = spec["duration"]
+    with (output / "carrier-samples.ndjson").open("w", buffering=1) as carrier_file, \
+            (output / "strict-socket-metrics.ndjson").open("w", buffering=1) as socket_file:
+        while True:
+            now = time.monotonic()
+            if fault_worker.done():
+                fault_worker.result()
+            while pending and now >= started + pending[0][1].start_s - .5:
+                index, workload = pending.pop(0)
+                jobs.append(_strict_start_job(lab, children, output, workload,
+                                              workload.port or 24000 + index, started + workload.start_s))
+            if len(carrier_samples) <= duration and now >= started + len(carrier_samples):
+                second = len(carrier_samples)
+                sample = _strict_runtime_sample(output, int(now * 1000))
+                sample["second"] = second
+                sample["active_carriers"] = {path["id"]: 0 for path in lab.paths}
+                for path in sample["paths"]:
+                    if path["id"] in sample["active_carriers"]:
+                        sample["active_carriers"][path["id"]] = path.get("carriers", 0)
+                carrier_samples.append(sample)
+                carrier_file.write(json.dumps(sample) + "\n")
+                for row in socket_metrics_sample(lab, ("download",), int(now * 1000)):
+                    socket_file.write(json.dumps(row) + "\n")
+            running = False
+            for job in jobs:
+                for role, (process, _, log) in job["endpoints"].items():
+                    status = process.poll()
+                    if status is None:
+                        running = True
+                    elif status:
+                        raise HarnessError(f"strict workload {job['workload'].label}-{role} exited {status}; inspect {log}")
+            if not pending and not running and len(carrier_samples) > duration:
+                break
+            if now >= started + duration + 45:
+                raise HarnessError("strict workload exceeded the profile and receipt deadline")
+            time.sleep(.04)
+    phases = []
+    for job in jobs:
+        workload = job["workload"]
+        expected = workload.requests if workload.mode == "web" else workload.flows
+        phase = {"label": workload.label, "group": workload.group or workload.label,
+                 "mode": workload.mode, "flows": expected, "port": job["port"],
+                 "byte_count": workload.byte_count}
+        for role, (process, report, _) in job["endpoints"].items():
+            children.remove(process)
+            rows = _strict_read_report(report, process, f"{workload.label}-{role}")
+            if ((workload.mode != "web" or role == "client") and
+                    (len(rows) != expected or {row.get("flow") for row in rows} != set(range(expected)))):
+                raise HarnessError(f"strict workload {workload.label}-{role} lacks {expected} distinct receipts")
+            phase[role] = rows
+        phases.append(phase)
+    return phases, carrier_samples
+
+
+def _strict_flow_windows(output: Path, phases: list[dict], paths: list[str],
+                         started: float, duration: int) -> tuple[list[dict], dict]:
+    """Bucket ordered VMUX payload on the carrier that delivered it."""
+    connections = {}
+    expected_flows = 0
+    for phase in phases:
+        for row in phase["client"]:
+            if "peer_port" not in row:
+                continue
+            socket_key = (phase["port"], row["peer_port"])
+            connections.setdefault(socket_key, []).append((row["connection_start_monotonic_ns"],
+                                                            row["connection_end_monotonic_ns"], phase["group"]))
+            expected_flows += 1
+    groups = sorted({group for lifetimes in connections.values() for _, _, group in lifetimes})
+    windows = [{group: dict.fromkeys(paths, 0) for group in groups} for _ in range(duration)]
+    flow_groups = {}
+    flow_intents = {}
+    observed = set()
+    unmatched_bytes = 0
+    overflow_bytes = 0
+    trace = output / "client-flow-trace.ndjson"
+    if not trace.is_file():
+        raise HarnessError(f"candidate did not emit per-flow VMUX delivery evidence at {trace}")
+    with trace.open() as source:
+        for line in source:
+            record = json.loads(line)
+            cid = record["cid"]
+            if record["event"] == "intent":
+                if cid in flow_intents:
+                    raise HarnessError(f"VMUX flow {cid} was accounted more than once")
+                flow_intents[cid] = record["intent"]
+                continue
+            if record["event"] == "open":
+                connection = (record["destination_port"], record["peer_port"])
+                if connection in connections:
+                    opened_ns = record["monotonic_us"] * 1000
+                    matches = [(began, group) for began, ended, group in connections[connection]
+                               if began <= opened_ns + 999 and opened_ns <= ended]
+                    if len(matches) != 1 or cid in flow_groups:
+                        raise HarnessError(f"ambiguous VMUX flow attribution for socket {connection}")
+                    began, group = matches[0]
+                    instance = (*connection, began)
+                    if instance in observed:
+                        raise HarnessError(f"ambiguous VMUX flow attribution for socket {connection}")
+                    flow_groups[cid] = group
+                    observed.add(instance)
+                continue
+            path, size = record["path_id"], record["bytes"]
+            second = math.floor(record["monotonic_us"] / 1_000_000 - started)
+            if cid not in flow_groups or path not in paths:
+                unmatched_bytes += size
+            elif 0 <= second < duration:
+                windows[second][flow_groups[cid]][path] += size
+            else:
+                overflow_bytes += size
+    rows = [{"start_seconds": second, "end_seconds": second + 1,
+             "start_monotonic_ms": int((started + second) * 1000),
+             "end_monotonic_ms": int((started + second + 1) * 1000),
+             "windowed_path_bytes": groups} for second, groups in enumerate(windows)]
+    with (output / "windowed_path_bytes.ndjson").open("w") as target:
+        for row in rows:
+            target.write(json.dumps(row) + "\n")
+    classifications = {group: Counter() for group in groups}
+    for cid, group in flow_groups.items():
+        if cid in flow_intents:
+            classifications[group][flow_intents[cid]] += 1
+    return rows, {"expected_flows": expected_flows, "matched_flows": len(observed),
+                  "unmatched_bytes": unmatched_bytes, "outside_profile_bytes": overflow_bytes,
+                  "classifications": classifications}
+
+
+def _strict_shares(rows: list[dict], group: str, start: int, end: int) -> dict[str, float]:
+    totals = Counter()
+    for row in rows[start:end]:
+        totals.update(row["windowed_path_bytes"].get(group, {}))
+    total = sum(totals.values())
+    return {path: value / total for path, value in totals.items()} if total else {}
+
+
+def _strict_rtt_summary(samples: list[float]) -> dict:
+    return {"count": len(samples), "p95": _percentile(samples, .95) if samples else None,
+            "p99": _percentile(samples, .99) if samples else None, "max": max(samples, default=None)}
+
+
+def _strict_all_reports(phases: list[dict]) -> dict:
+    integrity = []
+    web_samples = []
+    max_stall = 0
+    for phase in phases:
+        server = {row.get("flow"): row for row in phase["server"]}
+        client = {row.get("flow"): row for row in phase["client"]}
+        for flow, source in server.items():
+            target = client.get(flow, {})
+            if phase["mode"] in ("bulk", "phase"):
+                sent = source.get("sent_bytes")
+                received = target.get("received_bytes")
+                digest = source.get("sent_sha256")
+                integrity.append({"label": phase["label"], "flow": flow,
+                                  "sha256_ok": isinstance(digest, str) and len(digest) == 64 and
+                                               digest == target.get("received_sha256"),
+                                  "bytes_match": type(sent) is int and type(received) is int and
+                                                 sent == received and sent > 0 and
+                                                 (phase["byte_count"] == 0 or sent == phase["byte_count"]),
+                                  "eof_ok": source.get("eof_ok") is True and target.get("eof_ok") is True,
+                                  "sent_bytes": sent, "received_bytes": received})
+                max_stall = max(max_stall, source.get("max_stall_ms", 0), target.get("max_stall_ms", 0))
+        for row in phase["client"]:
+            web_samples.extend(zip(row.get("web_start_monotonic_ms", []), row.get("web_rtt_ms", []), strict=True))
+            max_stall = max(max_stall, row.get("max_stall_ms", 0))
+    return {"integrity": integrity, "web_samples": web_samples,
+            "web_rtt_ms": _strict_rtt_summary([value for _, value in web_samples]),
+            "max_stall_ms": max_stall}
+
+
+def strict_profile_acceptance(lab: Lab, children: list[subprocess.Popen], output: Path,
+                              profile_name: str) -> dict:
+    spec = STRICT_PROFILE_SPECS[profile_name]
+    duration = spec["duration"]
+    lab.enable_baseline_loss()
+    timeline_start = time.monotonic() + .5
+    with _strict_fault_schedule(lab, output, timeline_start, duration, copy.deepcopy(spec.get("faults", []))) as faults:
+        phases, carrier_samples = _strict_run_workloads(lab, children, output, spec, timeline_start, faults)
+
+    rows, attribution = _strict_flow_windows(
+        output, phases, [path["id"] for path in lab.paths], timeline_start, duration)
+    reports = _strict_all_reports(phases)
+    classified = Counter()
+    for group_counts in attribution["classifications"].values():
+        classified.update(group_counts)
+    kinds = ("latency", "bandwidth", "unknown")
+    # The runtime publisher and the per-flow trace run on different clocks.
+    # Allow the final connection counts to reach the next runtime snapshot.
+    completed_ms = time.monotonic_ns() // 1_000_000
+    stats_deadline = time.monotonic() + 3
+    while True:
+        sampled_ms = time.monotonic_ns() // 1_000_000
+        snapshots = {role: _strict_runtime_sample(output, sampled_ms, role)
+                     for role in ("client", "server")}
+        endpoint_telemetry = {role: snapshot["intent"] for role, snapshot in snapshots.items()}
+        if (all(snapshot["sample_ms"] >= completed_ms for snapshot in snapshots.values()) and
+                all(endpoint_telemetry["client"].get(kind) == classified[kind] for kind in kinds)):
+            break
+        if time.monotonic() >= stats_deadline:
+            break
+        time.sleep(.1)
+    telemetry = dict(endpoint_telemetry["client"])
+    for field in ("intent_flip_count", "credit_fallback_count"):
+        if all(field in values for values in endpoint_telemetry.values()):
+            telemetry[field] = sum(values[field] for values in endpoint_telemetry.values())
+        else:
+            telemetry.pop(field, None)
+    groups = {phase["group"]: _strict_shares(rows, phase["group"], 0, duration) for phase in phases}
+    windows = {
+        "intent-strict-role-flip": {"degraded": (18, 34), "recovery": (40, 55)},
+        "intent-strict-credit-blackhole": {"blackhole": (12, 19), "recovery": (25, 45)},
+        "intent-strict-dynamic-tide": {"first_burst": (15, 40), "cooldown": (40, 60), "second_burst": (60, 85)},
+    }.get(profile_name, {})
+    timeline_start_ms = int(timeline_start * 1000)
+    window_shares = {name: {group: _strict_shares(rows, group, start, end) for group in groups}
+                     for name, (start, end) in windows.items()}
+    web_rtt_by_window = {name: _strict_rtt_summary([
+        value for started, value in reports["web_samples"]
+        if start * 1000 <= started - timeline_start_ms < end * 1000
+    ]) for name, (start, end) in windows.items()}
+    web_success = 0
+    for phase in phases:
+        if phase["mode"] != "web":
+            continue
+        origins = {row.get("flow"): row for row in phase["server"]}
+        for row in phase["client"]:
+            origin = origins.get(row["flow"], {})
+            web_success += (
+                row.get("requests") == origin.get("requests") == 1 and
+                row.get("bytes") == origin.get("bytes") and
+                row.get("web_success_rate") == origin.get("web_success_rate") == 1.0 and
+                row.get("web_error_count") == origin.get("web_error_count") == 0 and
+                row.get("eof_ok") is True)
+    expected_requests = sum(workload.requests for workload in spec["workloads"] if workload.mode == "web")
+    web_errors = expected_requests - web_success
+    result = {"schema": 2, "profile": profile_name, "duration_seconds": duration,
+              "timeline_start_monotonic_ms": timeline_start_ms, "windowed_path_bytes": rows,
+              "group_path_shares": groups, "window_path_shares": window_shares,
+              "web_rtt_ms": reports["web_rtt_ms"], "web_rtt_ms_by_window": web_rtt_by_window,
+              "web_success_rate": web_success / expected_requests, "web_error_count": web_errors,
+              "max_stall_ms": reports["max_stall_ms"], "integrity": reports["integrity"],
+              "telemetry": telemetry, "endpoint_telemetry": endpoint_telemetry,
+              "phases": phases, "carrier_samples": carrier_samples,
+              "payload_attribution": attribution, "passed": False}
+    gates = spec["gates"]
+    checks = {}
+    compared = {}
+
+    def compare(name: str, actual, expected, condition: str):
+        passed = actual is not None and {
+            "min": lambda: actual >= expected,
+            "max": lambda: actual <= expected,
+            "equal": lambda: actual == expected,
+        }[condition]()
+        checks[name] = passed
+        compared[name] = {"actual": actual, condition: expected}
+
+    def share(label: str, path: str, window: str | None = None) -> float | None:
+        shares = window_shares[window] if window is not None else groups
+        return shares.get(label, {}).get(path)
+
+    if profile_name == "intent-strict-narrow-p1":
+        compare("download_path1_share", share("download", "path1"), gates["download_path1_max"], "max")
+        compare("download_path3_share", share("download", "path3"), gates["download_path3_min"], "min")
+        compare("web_path3_share", share("web", "path3"), gates["web_path3_max"], "max")
+        compare("web_p95_rtt_ms", reports["web_rtt_ms"]["p95"], gates["web_p95_max"], "max")
+        compare("web_p99_rtt_ms", reports["web_rtt_ms"]["p99"], gates["web_p99_max"], "max")
+    elif profile_name == "intent-strict-role-flip":
+        compare("web_path1_share", share("web", "path1", "degraded"), gates["fault_web_path1_max"], "max")
+        compare("web_path2_share", share("web", "path2", "degraded"), gates["fault_web_path2_min"], "min")
+        compare("download_path3_share", share("download", "path3", "degraded"), gates["fault_download_path3_max"], "max")
+        compare("download_path2_share", share("download", "path2", "degraded"), gates["fault_download_path2_min"], "min")
+        compare("recovery_web_path1_share", share("web", "path1", "recovery"), gates["recovery_web_path1_min"], "min")
+        compare("recovery_download_path3_share", share("download", "path3", "recovery"), gates["recovery_download_path3_min"], "min")
+    elif profile_name == "intent-strict-credit-blackhole":
+        compare("credit_fallback_count", telemetry.get("credit_fallback_count"), gates["credit_fallback_min"], "min")
+        compare("blackhole_web_path3_share", share("web", "path3", "blackhole"), gates["blackhole_web_path3_min"], "min")
+        compare("blackhole_web_samples", web_rtt_by_window["blackhole"]["count"], 1, "min")
+        compare("recovery_web_path3_share", share("web", "path3", "recovery"), gates["recovery_web_path3_max"], "max")
+        compare("recovery_web_p95_rtt_ms", web_rtt_by_window["recovery"]["p95"], gates["recovery_web_p95_max"], "max")
+    elif profile_name == "intent-strict-grayzone":
+        for kind in ("unknown", "latency", "bandwidth"):
+            compare(kind, telemetry.get(kind), gates[f"{kind}_min"], "min")
+        compare("grayzone_unknown", attribution["classifications"].get("grayzone_unknown", {}).get("unknown", 0),
+                gates["unknown_min"], "min")
+        compare("nonstd_port_bulk_path3_share", share("nonstd_bulk", "path3"), gates["nonstd_bulk_path3_min"], "min")
+        compare("port443_bulk_path1_share", share("port443_bulk", "path1"), gates["port443_bulk_path1_max"], "max")
+    elif profile_name == "intent-strict-burst-kill":
+        compare("download_path1_share", share("download", "path1"), gates["download_path1_max"], "max")
+        compare("web_path3_share", share("web", "path3"), gates["web_path3_max"], "max")
+        compare("web_p99_rtt_ms", reports["web_rtt_ms"]["p99"], gates["web_p99_max"], "max")
+    else:
+        counts = [row["active_carriers"] for row in carrier_samples]
+        totals = [sum(row.values()) for row in counts]
+        idle, first_burst = max(totals[:15]), max(totals[15:40])
+        cooldown, second_burst = min(totals[40:60]), max(totals[60:85])
+        result["path1_active_carriers_min_ever"] = min(row["path1"] for row in counts)
+        result["scale_up_detected"] = first_burst > idle and second_burst > totals[59]
+        result["scale_down_detected"] = cooldown < first_burst and any(
+            totals[second] < totals[second - 1] for second in range(40, 60))
+        result["carrier_pool_tide"] = {"idle_peak": idle, "first_burst_peak": first_burst,
+                                        "cooldown_floor": cooldown, "second_burst_peak": second_burst}
+        compare("path1_active_carriers_min_ever", result["path1_active_carriers_min_ever"], gates["active_path1_min"], "min")
+        compare("scale_up_detected", result["scale_up_detected"], True, "equal")
+        compare("scale_down_detected", result["scale_down_detected"], True, "equal")
+        compare("per_path_carrier_min", min(min(row.values()) for row in counts), 1, "min")
+        compare("per_path_carrier_max", max(max(row.values()) for row in counts), 4, "max")
+        compare("burst_full_1_path3_share", share("download", "path3", "first_burst"), gates["burst_path3_min"], "min")
+        compare("burst_full_2_path3_share", share("download", "path3", "second_burst"), gates["burst_path3_min"], "min")
+        compare("cooldown_web_p99_rtt_ms", web_rtt_by_window["cooldown"]["p99"], gates["cooldown_web_p99_max"], "max")
+
+    compare("matched_flows", attribution["matched_flows"], attribution["expected_flows"], "equal")
+    compare("unmatched_bytes", attribution["unmatched_bytes"], 0, "equal")
+    compare("classified_flows", sum(classified.values()), attribution["matched_flows"], "equal")
+    for kind in kinds:
+        compare(f"telemetry_{kind}_count", telemetry.get(kind), classified[kind], "equal")
+    if "stall_max" in gates:
+        compare("max_stall_ms", reports["max_stall_ms"], gates["stall_max"], "max")
+    compare("intent_flip_count", telemetry.get("intent_flip_count"), 0, "equal")
+    compare("web_success_rate", result["web_success_rate"], 1.0, "equal")
+    compare("web_error_count", web_errors, 0, "equal")
+    compare("integrity", bool(reports["integrity"]) and all(
+        item["sha256_ok"] and item["bytes_match"] and item["eof_ok"] for item in reports["integrity"]), True, "equal")
+    result["assertions"] = checks
+    result["assertion_values"] = compared
+    result["passed"] = all(checks.values())
+    if not result["passed"]:
+        (output / "intent-strict.json").write_text(json.dumps(result, indent=2) + "\n")
+        failed = {name: compared[name] for name, passed in checks.items() if not passed}
+        raise HarnessError(f"{profile_name} strict assertions failed: {json.dumps(failed, sort_keys=True)}")
+    return result
+
+
+def intent_strict_suite(args: argparse.Namespace) -> int:
+    binary = Path(args.binary).resolve()
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise HarnessError(f"candidate PPP binary is not executable: {binary}")
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, mode=0o700)
+    candidate = output / "ppp-candidate"
+    shutil.copy2(binary, candidate)
+    summary = {"schema": 2, "suite": "intent-strict", "profiles": [], "passed": False,
+               "candidate": {"source_binary": str(binary), "path": str(candidate),
+                             "sha256": _sha256_file(candidate)}}
+    summary_path = output / "intent-strict-summary.json"
+    for name in STRICT_PROFILE_SPECS:
+        profile_args = copy.copy(args)
+        profile_args.suite = None
+        profile_args.binary = str(candidate)
+        profile_args.strict_profile = name
+        profile_args.profile = name
+        profile_args.output = str(output / name)
+        profile_args.fixed_pool = STRICT_PROFILE_SPECS[name]["fixed_pool"]
+        profile_args.carriers_per_path = STRICT_PROFILE_SPECS[name]["carriers"]
+        profile_args.intent = True
+        profile_args.intent_acceptance = False
+        profile_args.pool_metrics = True
+        profile_args.socket_metrics = True
+        profile_args.duration = STRICT_PROFILE_SPECS[name]["duration"]
+        profile_path = Path(profile_args.output) / "intent-strict.json"
+        try:
+            code = production_six_flow(profile_args)
+            profile = json.loads(profile_path.read_text())
+            if code:
+                profile.update(passed=False, error=f"runner exited with status {code}")
+        except Exception as exc:
+            profile = {"profile": name}
+            if profile_path.is_file():
+                try:
+                    evidence = json.loads(profile_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    evidence = None
+                if isinstance(evidence, dict) and evidence.get("profile") == name:
+                    profile = evidence
+            profile.update(passed=False, error=str(exc))
+        profile["artifacts"] = {name: str(profile_path.parent / name)
+                                for name in ("run-evidence.json", "topology.json",
+                                             "carrier-samples.ndjson", "fault-events.ndjson",
+                                             "windowed_path_bytes.ndjson", "client-flow-trace.ndjson",
+                                             "server-flow-trace.ndjson")
+                                if (profile_path.parent / name).is_file()}
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(json.dumps(profile, indent=2) + "\n")
+        if not profile.get("passed"):
+            print(f"FAIL: {name}; {profile.get('error', 'strict assertions failed')}; result={profile_path}",
+                  file=sys.stderr, flush=True)
+        else:
+            print(f"PASS: {name}; result={profile_path}", flush=True)
+        summary["profiles"].append(profile)
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+    summary["passed"] = all(profile.get("passed") is True for profile in summary["profiles"])
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+    print(f"{'PASS' if summary['passed'] else 'FAIL'}: intent-strict suite; result={summary_path}")
+    return 0 if summary["passed"] else 1
+
+
 def production_smoke(args: argparse.Namespace) -> int:
     six_flow_mode = args.command == "six-flow-integrity"
+    intent_mode = six_flow_mode and args.intent_acceptance
+    migration_mode = six_flow_mode and args.intent_migration_acceptance
     fixed_pool = six_flow_mode and args.fixed_pool
     carriers_per_path = args.carriers_per_path if six_flow_mode else 1
     if carriers_per_path > 1 and not fixed_pool:
         raise HarnessError("--carriers-per-path above one requires --fixed-pool")
+    if intent_mode and (not fixed_pool or carriers_per_path < 2):
+        raise HarnessError("--intent-acceptance requires --fixed-pool with at least two carriers per path")
     binary = Path(args.binary).resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise HarnessError(f"candidate PPP binary is not executable: {binary}")
@@ -1404,11 +2472,28 @@ def production_smoke(args: argparse.Namespace) -> int:
             if six_flow_mode:
                 template["concurrent"] = args.concurrent
                 template["mux"] = {"mode": "flow", "turbo": not fixed_pool}
-                if args.tcp_turbo:
+                if args.intent:
+                    template["mux"]["intent"] = {
+                        "enabled": True,
+                        "mode": "auto",
+                        "window_ms": 250,
+                        "min_samples": 16384,
+                        "hysteresis": 20,
+                        "hold_ms": 5000,
+                    }
+                    if args.intent_acceptance and not getattr(args, "strict_profile", None):
+                        template["mux"]["intent"]["rules"] = [
+                            {"intent": "latency", "ports": [19004]},
+                            {"intent": "bandwidth", "ports": [19003]},
+                        ]
+                # Intent-routed short exchanges require immediate carrier and
+                # proxy writes. TCP_NODELAY is part of the latency policy and
+                # avoids adding a full carrier RTT to each request/response.
+                if args.tcp_turbo or args.intent:
                     template["tcp"]["turbo"] = True
                 if args.tcp_cwnd is not None:
                     template["tcp"]["cwnd"] = args.tcp_cwnd
-                if args.pool_metrics:
+                if args.pool_metrics or args.intent_acceptance or migration_mode:
                     template["telemetry"].update({"count": True, "console-metric": True})
         echo_port = 19002
         policy_rules = output / "multipath-policy.rules"
@@ -1432,15 +2517,25 @@ def production_smoke(args: argparse.Namespace) -> int:
             nonlocal trial_index
             trial_index += 1
             server_port = 20000 + trial_index
+            if getattr(args, "strict_profile", None):
+                for path in selected_paths:
+                    path["carrier_listener_port"] = server_port
             server = copy.deepcopy(server_template)
             server["tcp"]["listen"]["port"] = server_port
             server["udp"]["listen"]["port"] = server_port
             if multipath:
-                server["server"]["multipath"] = {"enabled": True}
+                # Keep the VMUX session resumable when the primary carrier is
+                # one of the paths under fault injection. Child carriers on a
+                # surviving path must carry the flow while the primary TCP
+                # socket is re-established.
+                server["server"]["multipath"] = {
+                    "enabled": True, "resume_grace_ms": 30000}
             else:
                 server["server"].pop("multipath", None)
             client = copy.deepcopy(client_template)
-            client["client"]["server"] = f"ppp://{selected_paths[0]['server_ip']}:{server_port}/"
+            primary_path = selected_paths[-1] if getattr(args, "strict_profile", None) == \
+                "intent-strict-credit-blackhole" else selected_paths[0]
+            client["client"]["server"] = f"ppp://{primary_path['server_ip']}:{server_port}/"
             client["client"].pop("mappings", None)
             client["client"]["policy"] = {
                 "version": 2,
@@ -1452,11 +2547,20 @@ def production_smoke(args: argparse.Namespace) -> int:
             }
             if multipath:
                 connection_count = len(selected_paths) * carriers_per_path
+                max_per_path = (4 if getattr(args, "strict_profile", None) == "intent-strict-dynamic-tide"
+                                else carriers_per_path)
+                configured_paths = list(selected_paths)
+                if getattr(args, "strict_profile", None) == "intent-strict-credit-blackhole":
+                    # The strict blackhole deliberately removes path1 and
+                    # path2. Make path3 the VMUX primary so the surviving
+                    # carrier remains the session anchor while the other
+                    # paths are being recovered.
+                    configured_paths.sort(key=lambda item: item["id"] != "path3")
                 client["client"]["multipath"] = {
-                    "enabled": True, "policy": "adaptive", "max_connections": connection_count,
+                    "enabled": True, "policy": "adaptive", "max_connections": len(selected_paths) * max_per_path,
                     "max_concurrent_connects": min(connection_count, 4), "resume_grace_ms": 30000,
                     "paths": [{"id": p["id"], "transport": "tcp", "connect_host": p["server_ip"],
-                               "port": server_port, "connections": carriers_per_path} for p in selected_paths],
+                               "port": server_port, "connections": max_per_path} for p in configured_paths],
                 }
             else:
                 client["client"].pop("multipath", None)
@@ -1480,16 +2584,25 @@ def production_smoke(args: argparse.Namespace) -> int:
                 client_command.append(f"--stats-json={output / 'client-stats.ndjson'}")
                 args.evidence["candidate_commands"] = {"server": server_command, "client": client_command}
                 args.evidence["candidate_logs"] = {"server": server_log.name, "client": client_log.name}
+            server_env = None
+            if migration_mode or getattr(args, "strict_profile", None) == "intent-strict-burst-kill":
+                server_trace = output / "server-flow-trace.ndjson"
+                server_env = {**os.environ, "OPENPPP2_MULTIPATH_FLOW_TRACE_JSON": str(server_trace)}
+                args.evidence["server_flow_trace"] = str(server_trace)
             server_process = spawn_owned(children, server_command, stdout=server_log, cwd=candidate_cwd,
-                                         stderr=subprocess.STDOUT)
+                                         stderr=subprocess.STDOUT, env=server_env)
             time.sleep(args.startup_wait)
             if server_process.poll() is not None:
                 raise HarnessError(f"candidate server exited; inspect {output / f'{label}-{repeat}-server.log'}")
+            client_env = None
+            if migration_mode or getattr(args, "strict_profile", None):
+                flow_trace = output / "client-flow-trace.ndjson"
+                client_env = {**os.environ, "OPENPPP2_MULTIPATH_FLOW_TRACE_JSON": str(flow_trace)}
+                args.evidence["flow_trace"] = str(flow_trace)
             client_process = spawn_owned(children, client_command, stdout=client_log, cwd=candidate_cwd,
-                                         stderr=subprocess.STDOUT)
-            # Adaptive starts on the primary. Joining secondary paths is a
-            # result of subsequent application demand, not a startup gate.
-            required_paths = selected_paths if fixed_pool else selected_paths[:1]
+                                         stderr=subprocess.STDOUT, env=client_env)
+            dynamic_tide = getattr(args, "strict_profile", None) == "intent-strict-dynamic-tide"
+            required_paths = selected_paths if fixed_pool or dynamic_tide else selected_paths[:1]
             required_count = carriers_per_path if fixed_pool else 1
             def carrier_counts() -> dict[str, int]:
                 sockets = established_path_endpoints(lab.names["client"])
@@ -1506,11 +2619,19 @@ def production_smoke(args: argparse.Namespace) -> int:
                     if int(first[1]) != 0x10:  # wire::RecordType::CreateRequest
                         raise HarnessError(f"fresh carrier sent record {first[1]} instead of CreateRequest")
                 client_text = Path(client_log.name).read_text(errors="replace")
-                ready_count = len(selected_paths) * carriers_per_path if fixed_pool else 1
+                ready_count = len(required_paths) * required_count
                 return all(len(re.findall(r"\[mux\][^\n]* :: link open\b", text)) >= ready_count
                            for text in (client_text, server_text))
+            def strict_pool_ready() -> bool:
+                if not getattr(args, "strict_profile", None):
+                    return True
+                snapshot = _strict_runtime_sample(output, int(time.monotonic() * 1000))
+                active = {path["id"]: path["carriers"] for path in snapshot["paths"]}
+                return all(active.get(path["id"]) == required_count for path in required_paths)
+
             while time.monotonic() < deadline:
-                if mux_ready() and all(count == required_count for count in carrier_counts().values()):
+                if (mux_ready() and all(count == required_count for count in carrier_counts().values())
+                        and strict_pool_ready()):
                     break
                 if server_process.poll() is not None or client_process.poll() is not None:
                     raise HarnessError(f"candidate PPP process exited; inspect {output}/*.log")
@@ -1522,6 +2643,8 @@ def production_smoke(args: argparse.Namespace) -> int:
                 raise HarnessError(f"required carrier readiness timed out for {label} trial {repeat}: {counts}")
             if not mux_ready():
                 raise HarnessError(f"VMUX link-open readiness timed out for {label} trial {repeat}")
+            if not strict_pool_ready():
+                raise HarnessError(f"strict runtime pool readiness timed out for {label} trial {repeat}")
             return server_process, client_process
 
         if six_flow_mode:
@@ -1533,12 +2656,36 @@ def production_smoke(args: argparse.Namespace) -> int:
             args.evidence["configured_carriers"] = {path["id"]: carriers_per_path for path in selected_paths}
             impairment = six_flow_impairment(args, selected_paths)
             server_process, client_process = start_trial("six-flow", 0, selected_paths, True)
-            directions = six_flow_acceptance(lab, children, output, args.flows, args.duration, args.direction,
-                                             impairment, args.wire_interval, args.qdisc_metrics,
-                                             args.socket_metrics)
+            if getattr(args, "strict_profile", None):
+                strict_result = strict_profile_acceptance(lab, children, output, args.strict_profile)
+                (output / "intent-strict.json").write_text(json.dumps(strict_result, indent=2) + "\n")
+                return 0
+            if migration_mode:
+                try:
+                    migration = intent_migration_acceptance(lab, children, output)
+                except (HarnessError, subprocess.TimeoutExpired) as failure:
+                    migration = {"passed": False, "error": str(failure)}
+                if server_process.poll() is not None or client_process.poll() is not None:
+                    migration.update(passed=False, error="candidate exited during intent migration acceptance")
+                result_path = output / "intent-migration.json"
+                result_path.write_text(json.dumps({
+                    "kind": "production-multipath-intent-migration", "profile": args.profile,
+                    "candidate": candidate_identity, "topology": str(topology_path),
+                    "fixed_pool": fixed_pool, "carriers_per_path": carriers_per_path, **migration,
+                }, indent=2) + "\n")
+                if not migration["passed"]:
+                    print(f"FAIL: intent migration acceptance; result={result_path}", file=sys.stderr)
+                return 0 if migration["passed"] else 1
+            if intent_mode:
+                directions = intent_acceptance(lab, children, output)
+            else:
+                directions = six_flow_acceptance(lab, children, output, args.flows, args.duration, args.direction,
+                                                 impairment, args.wire_interval, args.qdisc_metrics,
+                                                 args.socket_metrics)
             if server_process.poll() is not None or client_process.poll() is not None:
                 raise HarnessError("candidate exited during six-flow acceptance")
-            result = {"kind": "production-multipath-six-flow", "profile": args.profile,
+            result = {"kind": "production-multipath-intent" if intent_mode else "production-multipath-six-flow",
+                      "profile": args.profile,
                       "candidate": {"path": str(run_binary), "sha256": binary_sha256},
                       "topology": str(topology_path), "paths": [path["id"] for path in selected_paths],
                       "fixed_pool": fixed_pool,
@@ -1550,7 +2697,7 @@ def production_smoke(args: argparse.Namespace) -> int:
                       "congestion_control": args.congestion_control,
                       "direction_mode": args.direction,
                       "directions": directions, "passed": True}
-            result_path = output / "six-flow-integrity.json"
+            result_path = output / ("intent-acceptance.json" if intent_mode else "six-flow-integrity.json")
             result_path.write_text(json.dumps(result, indent=2) + "\n")
             return 0
 
@@ -2250,14 +3397,24 @@ def main() -> int:
     smoke_parser.set_defaults(func=production_smoke)
     six_parser = sub.add_parser("six-flow-integrity", help="require six concurrent timed streams per direction")
     six_parser.add_argument("--binary", default=str(Path(__file__).resolve().parents[3] / "bin/ppp"))
-    six_parser.add_argument("--profile", choices=("independent-12ms-24mbit", "shared-12ms-24mbit",
-                                                  "independent-90-125-180", "independent-90-125-180-stable"),
+    six_parser.add_argument("--profile", choices=tuple(PROFILES),
                             default="independent-12ms-24mbit")
+    six_parser.add_argument("--suite", choices=("intent-strict",),
+                            help="run the registered strict TCP-intent profile suite in order")
+    six_parser.add_argument("--strict-profile", choices=tuple(STRICT_PROFILE_SPECS),
+                            help=argparse.SUPPRESS)
     six_parser.add_argument("--output", required=True, help="new result directory (must not already exist)")
     six_parser.add_argument("--single-path", choices=("path1", "path2", "path3"),
                             help="cap the authenticated multipath session at one carrier on this path")
     six_parser.add_argument("--pool-metrics", action="store_true",
                             help="record VMUX counters, including pool decisions, in the candidate logs")
+    six_parser.add_argument("--intent", action="store_true",
+                            help="enable the TCP intent classifier and flow-v2 intent path pools")
+    intent_acceptance_options = six_parser.add_mutually_exclusive_group()
+    intent_acceptance_options.add_argument("--intent-acceptance", action="store_true",
+                            help="run four-flow download, web burst, and streaming intent gates")
+    intent_acceptance_options.add_argument("--intent-migration-acceptance", action="store_true",
+                            help="verify behavior-classified routing and migration on individual TCP connections")
     six_parser.add_argument("--fixed-pool", action="store_true",
                             help="disable Turbo and wait for all selected carriers before the workload")
     six_parser.add_argument("--flows", type=int, choices=range(1, 65), default=6, metavar="1..64",

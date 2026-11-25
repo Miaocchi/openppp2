@@ -377,6 +377,11 @@ openppp2_add_cpp_test(multipath_scheduler_test SOURCES
     multipath_scheduler_test.cpp)
 set_tests_properties(multipath_scheduler_test PROPERTIES LABELS "multipath;offline")
 
+openppp2_add_cpp_test(vmux_intent_classifier_test SOURCES
+    vmux_intent_classifier_test.cpp
+    "${OPENPPP2_ROOT}/ppp/app/mux/TcpIntentClassifier.cpp")
+set_tests_properties(vmux_intent_classifier_test PROPERTIES LABELS "mux;offline")
+
 openppp2_add_cpp_test(multipath_path_control_test SOURCES
     multipath_path_control_test.cpp
     "${OPENPPP2_ROOT}/ppp/app/multipath/PathControl.cpp")

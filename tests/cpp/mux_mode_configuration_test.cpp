@@ -60,11 +60,36 @@ void FallbackToCompat() {
     Require(LoadMode("turbo") == "compat", "unknown mux.mode must fall back to compat");
     Require(LoadMode("flow_v2") == "compat", "receiver ordering names are not scheduler modes");
 }
+
+void IntentConfiguration() {
+    Json::Value json(Json::objectValue);
+    json["mux"]["intent"]["enabled"] = true;
+    json["mux"]["intent"]["mode"] = "behavior";
+    json["mux"]["intent"]["window_ms"] = 400;
+    json["mux"]["intent"]["min_samples"] = 32768;
+    json["mux"]["intent"]["hysteresis"] = 25;
+    json["mux"]["intent"]["hold_ms"] = 7000;
+    json["mux"]["intent"]["rules"] = Json::arrayValue;
+    json["mux"]["intent"]["rules"][0]["intent"] = "bandwidth";
+    json["mux"]["intent"]["rules"][0]["ports"].append(443);
+
+    AppConfiguration config;
+    Require(config.Load(json), "intent configuration must load");
+    Require(config.mux.intent.enabled, "intent must be enabled");
+    Require(config.mux.intent.mode == "behavior", "intent mode must round-trip");
+    Require(config.mux.intent.window_ms == 400 && config.mux.intent.min_samples == 32768,
+        "intent sampling values must round-trip");
+    Require(config.mux.intent.rules.size() == 1 && config.mux.intent.rules[0].ports[0] == 443,
+        "intent port rule must round-trip");
+    const auto serialized = config.ToJson()["mux"]["intent"];
+    Require(serialized["enabled"].asBool() && serialized["rules"][0]["ports"][0].asInt() == 443,
+        "intent configuration must serialize");
+}
 }
 
 int main() {
     try {
-        CanonicalModes(); Aliases(); CaseAndWhitespace(); FallbackToCompat();
+        CanonicalModes(); Aliases(); CaseAndWhitespace(); FallbackToCompat(); IntentConfiguration();
         std::cout << "mux mode configuration tests passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

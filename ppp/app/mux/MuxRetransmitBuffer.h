@@ -133,6 +133,7 @@ public:
      * A candidate is reported at most once per advancing @p largest.
      * If supplied, @p cumulative_payload accumulates newly acknowledged payload
      * bytes across calls, saturating at UINT64_MAX regardless of carrier attribution.
+     * If supplied, @p acknowledged_keys receives the keys released by this ACK.
      * @return RTT sample in ms from the first newly-acked entry that was never
      *         retransmitted (Karn's rule); 0 when no usable sample exists.
      */
@@ -147,7 +148,8 @@ public:
         std::uint16_t* out_link_id = nullptr,
         std::unordered_map<std::uint16_t, std::size_t>* out_link_acked_bytes = nullptr,
         std::unordered_map<std::uint16_t, MuxAckDelivery>* out_deliveries = nullptr,
-        std::uint64_t* cumulative_payload = nullptr) {
+        std::uint64_t* cumulative_payload = nullptr,
+        std::vector<std::uint64_t>* acknowledged_keys = nullptr) {
         std::uint64_t rtt_sample = 0;
         if (nullptr != out_link_id) {
             *out_link_id = 0;
@@ -239,6 +241,7 @@ public:
             fast_candidates.push_back(kv.first);
         }
 
+        if (acknowledged_keys) acknowledged_keys->swap(acked);
         return rtt_sample;
     }
 

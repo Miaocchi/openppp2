@@ -142,6 +142,78 @@ each trial.
 
 #### Three independent paths
 
+#### TCP intent acceptance
+
+`intent-50-80-155` creates three independent paths at 50 Mbit/s and 50 ms
+RTT, 300 Mbit/s and 80 ms RTT, and 700 Mbit/s and 155 ms RTT. Netem uses
+uniform 5% RTT jitter and the acceptance sampler varies each path's TBF rate
+by a bounded random 5% at each sample. The intent gate keeps two authenticated
+VMUX carriers on every path, enables flow-v2 intent routing, and runs four
+concurrent download flows, a small bidirectional web-burst stream, and one
+sustained streaming stream. It checks exact payload integrity, classifier
+telemetry, download migration toward path 3, web preference for path 1, and
+streaming preference for path 3.
+
+Run it in a root Linux environment with network namespaces enabled:
+
+```sh
+sudo python3 tests/integration/multipath/run.py six-flow-integrity \
+  --binary ./bin/ppp --profile intent-50-80-155 --fixed-pool \
+  --carriers-per-path 2 --intent-acceptance --output ./build/private/intent-acceptance
+```
+
+The run writes `intent-acceptance.json`, per-phase path wire samples, endpoint
+logs, and the existing candidate evidence files. The repository's ordinary
+unit and compile checks do not provide these namespace capabilities.
+
+`--intent-migration-acceptance` uses the same topology with two or three fixed
+carriers per path. Four concurrent downloads, forty web exchanges, and a
+paced video segment stream share one origin port and use behavior
+classification. Each download and video connection receives its metadata on
+the low-latency path and requests the body on the same TCP connection.
+
+```sh
+sudo python3 tests/integration/multipath/run.py six-flow-integrity \
+  --binary ./bin/ppp --profile intent-50-80-155 --fixed-pool \
+  --carriers-per-path 2 --intent-migration-acceptance \
+  --output ./build/private/intent-migration
+```
+
+The `intent-migration.json` report correlates each SOCKS socket lifetime
+with one VMUX connection ID, traces the delivered bytes on both endpoints,
+and checks that both endpoints classify the connection. Each download and
+video flow requires its first payload on Path1, at least 80% of body delivery
+on Path3, valid byte and SHA-256 receipts, clean EOF, and at most 1000 ms to
+first body delivery or between payload progress samples. The web flow must
+complete all requests with p95 at most 85 ms and zero payload delivered on
+Path3 in either direction.
+
+`--suite intent-strict` runs the six concurrent intent profiles in their
+declared order. Each profile gets fresh namespaces, a candidate snapshot,
+and its own report directory. The fixed-pool profiles open two carriers
+per path. The dynamic-tide profile enables the adaptive pool.
+
+```sh
+sudo python3 tests/integration/multipath/run.py six-flow-integrity \
+  --binary ./bin/ppp --suite intent-strict --intent-acceptance \
+  --output ./build/private/intent-strict
+```
+
+Use `--profile intent-strict-burst-kill` in place of `--suite intent-strict`
+to run an individual profile with its configured workload and gates.
+
+Each `intent-strict.json` records one-second path bytes by traffic group,
+web RTT percentiles, the longest 200 ms sampled payload pause, intent
+telemetry, and observed and required values for each assertion.
+The client correlates VMUX deliveries to individual SOCKS connections so
+concurrent traffic on the same path or destination port can be attributed
+to its workload. The fault and carrier logs preserve injection timestamps,
+the selected socket, and one-second carrier counts. The burst-kill profile
+also records server-side VMUX deliveries and origin request timestamps
+to locate delay within an exchange. The suite returns a
+failure status when any profile fails and lists all results in
+`intent-strict-summary.json`.
+
 `independent-90-125-180-stable` shapes three paths to 100, 200, and 300 Mbit/s
 at 90, 125, and 180 ms RTT. `independent-90-125-180` adds 25 ms of configured
 jitter to path 2. Use `--fixed-pool --carriers-per-path 1` for three total

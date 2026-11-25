@@ -1,6 +1,7 @@
 #include <ppp/configurations/AppConfiguration.h>
 #include <ppp/app/server/VirtualEthernetExchanger.h>
 #include <ppp/app/mux/MuxCoordinator.h>
+#include <ppp/app/mux/TcpIntentClassifier.h>
 #include <ppp/app/server/udp/ServerDatagramPortManager.h>
 #include <ppp/app/server/udp/StaticDatagramPortManager.h>
 #include <ppp/app/server/VirtualEthernetSwitcher.h>
@@ -1395,7 +1396,8 @@ namespace ppp {
                 // Provisional agreed ordering; apply_negotiation is authoritative once mux exists.
                 bool turbo = NULLPTR != configuration && configuration->mux.turbo &&
                     effective_mux_mode == vmux::vmux_net::mux_mode_flow;
-                bool need_flow_v2 = vmux::vmux_net::mode_requires_flow_v2(effective_mux_mode, turbo) || peer_requests_flow_v2;
+                bool need_flow_v2 = vmux::vmux_net::mode_requires_flow_v2(effective_mux_mode, turbo) ||
+                    peer_requests_flow_v2 || (configuration && configuration->mux.intent.enabled);
                 vmux::vmux_net::receiver_ordering_mode agreed =
                     (need_flow_v2 && local_supports_flow_v2 && peer_supports_flow_v2)
                         ? vmux::vmux_net::ordering_flow_v2
@@ -1443,6 +1445,29 @@ namespace ppp {
                         mux->Logger = switcher_->GetLogger();
                         mux->AppConfiguration = configuration;
                         mux->BufferAllocator = transmission->BufferAllocator;
+                        {
+                            ppp::app::mux::TcpIntentConfig intent;
+                            intent.enabled = configuration->mux.intent.enabled;
+                            intent.mode = configuration->mux.intent.mode;
+                            intent.window_ms = static_cast<std::uint64_t>(std::max(1, configuration->mux.intent.window_ms));
+                            intent.min_samples = static_cast<std::size_t>(std::max(1, configuration->mux.intent.min_samples));
+                            intent.hysteresis = static_cast<double>(configuration->mux.intent.hysteresis) / 100.0;
+                            intent.hold_ms = static_cast<std::uint64_t>(std::max(0, configuration->mux.intent.hold_ms));
+                            std::vector<ppp::app::mux::TcpIntentRule> rules;
+                            for (const auto& configured : configuration->mux.intent.rules) {
+                                const auto intent_value = configured.intent == "latency"
+                                    ? ppp::app::mux::TcpIntent::Latency
+                                    : configured.intent == "bandwidth"
+                                        ? ppp::app::mux::TcpIntent::Bandwidth
+                                        : ppp::app::mux::TcpIntent::Unknown;
+                                for (const int port : configured.ports) {
+                                    if (port < 1 || port > 65535 || intent_value == ppp::app::mux::TcpIntent::Unknown) continue;
+                                    rules.push_back({intent_value, static_cast<std::uint16_t>(port), static_cast<std::uint16_t>(port), {}});
+                                }
+                            }
+                            mux->set_intent_config(intent);
+                            mux->set_intent_rules(rules);
+                        }
 
                         // turbo dynamic pool: the client may grow its carrier pool past
                         // the negotiated base at runtime. The client's turbo flag is

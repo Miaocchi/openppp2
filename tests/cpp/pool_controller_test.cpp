@@ -73,4 +73,37 @@ int main() {
     s.floor = s.live;
     s.now += 10000;
     check(r.Step(s) == PoolAction::Hold);
+
+    PoolController tides;
+    s = start(tides);
+    s.reprobe_after_idle = true;
+    ++s.topology;
+    ++s.live;
+    ++s.occupied;
+    s.trial_ready = s.trial_attached = true;
+    check(tides.Step(s) == PoolAction::Hold);
+    s.now += 2000;
+    check(tides.Step(s) == PoolAction::Hold);
+    s.now += 2000;
+    s.acked += 30000;
+    s.offered += 40000;
+    check(tides.Step(s) == PoolAction::Reject);
+    s.trial_ready = s.trial_attached = false;
+    s.now += 1000;
+    s.pressure = false;
+    s.idle = true;
+    check(tides.Step(s) == PoolAction::Hold);
+    s.now += 6000;
+    check(tides.Step(s) == PoolAction::Shrink);
+    ++s.topology;
+    --s.live;
+    --s.occupied;
+    s.now += 1000;
+    s.idle = false;
+    s.pressure = true;
+    check(tides.Step(s) == PoolAction::Hold);
+    s.now += 2000;
+    s.acked += 30000;
+    s.offered += 40000;
+    check(tides.Step(s) == PoolAction::Dial);
 }

@@ -143,6 +143,28 @@ BOOST_AUTO_TEST_CASE(multipath_snapshot_round_trips_bounded_path_health_and_unkn
     BOOST_TEST(decoded.multipath.paths.empty());
 }
 
+BOOST_AUTO_TEST_CASE(multipath_snapshot_round_trips_intent_telemetry_counters) {
+    runtime::RuntimeSnapshot source;
+    source.multipath.enabled = true;
+    source.multipath.active_paths = 1;
+    source.multipath.vmux_session_id = 17;
+    source.multipath.paths.push_back({"edge-a", "joined", "active", 1});
+    source.multipath.intent.latency = 3;
+    source.multipath.intent.bandwidth = 7;
+    source.multipath.intent.unknown = 5;
+    source.multipath.intent.intent_flip_count = 0;
+    source.multipath.intent.credit_fallback_count = 11;
+
+    runtime::RuntimeSnapshot decoded;
+    BOOST_REQUIRE(runtime::ParseRuntimeSnapshot(
+        runtime::SerializeRuntimeSnapshot(source), decoded));
+    BOOST_TEST(decoded.multipath.intent.latency == 3u);
+    BOOST_TEST(decoded.multipath.intent.bandwidth == 7u);
+    BOOST_TEST(decoded.multipath.intent.unknown == 5u);
+    BOOST_TEST(decoded.multipath.intent.intent_flip_count == 0u);
+    BOOST_TEST(decoded.multipath.intent.credit_fallback_count == 11u);
+}
+
 BOOST_AUTO_TEST_CASE(multipath_snapshot_json_rejects_unbounded_or_endpoint_path_ids) {
     const std::string prefix =
         "{\"schema_version\":1,\"generation\":1,\"monotonic_ms\":1,\"phase\":\"idle\","

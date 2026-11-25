@@ -1,6 +1,6 @@
 # 多路复用
 
-`mux` 只控制单个隧道会话内的逻辑流调度与缓冲。它不配置多路径入口；多路径请看客户端的 [`client.multipath`](client_CN.md#multipath) 和服务端的 [`server.multipath`](server_CN.md#multipath)。连接数由客户端参数 [`--tun-mux`](../CLI_REFERENCE_CN.md) 设置，默认为 `0`（关闭）；JSON 中没有 MUX 连接数字段。
+`mux` 只控制单个隧道会话内的逻辑流调度与缓冲。它不配置多路径入口；多路径请看客户端的 [`client.multipath`](client_CN.md#multipath) 和服务端的 [`server.multipath`](server_CN.md#multipath)。单路径的连接数由客户端参数 [`--tun-mux`](../CLI_REFERENCE_CN.md) 设置，默认为 `0`（关闭）；启用多路径后，客户端根据路径槽位数和 `client.multipath.max_connections` 确定 carrier 数量。
 
 以下 JSON 只展示字段结构，不是可直接启动的配置。示例值不代表省略字段时的行为。
 
@@ -15,8 +15,17 @@
     "inactive": { "timeout": 60 },
     "keep-alived": [0, 0],
     "congestions": 134217728,
+    "intent": {
+      "enabled": false,
+      "mode": "auto",
+      "window_ms": 250,
+      "min_samples": 16384,
+      "hysteresis": 20,
+      "hold_ms": 5000,
+      "rules": []
+    },
     "flow": {
-      "reorder": { "bytes": 8388608, "timeout": 400 },
+      "reorder": { "bytes": 67108864, "timeout": 400 },
       "session_reorder": { "bytes": 33554432 },
       "max_open": 4096,
       "unknown_cid": { "max": 64 }
@@ -74,9 +83,21 @@
 
 拥塞窗口预算；`0` 表示不限制，小于 1 MiB 的正数或负数回退为默认值。
 
+### `intent`
+
+**类型：**object · **省略时：**关闭
+
+已有多路径部署要启用双向意图调度，在客户端和服务端的 `mux` 对象中均加入 `"intent": { "enabled": true }`。默认 `auto` 模式可以仅依靠流量行为分类，端口规则可选。首次配置多路径时，两端还要启用各自的 multipath 配置，并使用相同的传输认证活跃密钥。三路径验收使用 `path1` 作为低延迟链路、`path2` 作为备用带宽链路、`path3` 作为首选带宽链路，双端设置 `tcp.turbo: true` 以启用 TCP_NODELAY。
+
+分类结果有 `unknown`、`latency`、`bandwidth` 三种状态。规则优先使用目标端口，未命中规则时根据早期流量的大小、速率和双向突发特征做有界启发式判断。启用后会在握手中请求 `flow_v2`，分类只在双方协商成功时参与跨 carrier 分流，旧式 `compat` 序列空间继续使用原有调度。
+
+`mode` 支持 `auto`、`rules`、`behavior`。`window_ms` 是行为采样窗口，`min_samples` 是进入行为判断前需要观察的字节数，`hysteresis` 是分类置信度迟滞百分比。`rules` 按顺序匹配，每项格式为 `{ "intent": "latency|bandwidth", "ports": [443, 8443] }`。一旦判定为 `latency` 或 `bandwidth`，该分类在连接关闭前保持固定。`unknown` 流的小帧优先走低延迟路径，其余使用共享调度池。
+
+首选组的发送 credit 全部耗尽时，调度器尝试次选组中的健康 carrier。在三个及以上 carrier 的拓扑中，带宽调度按路径 ID 查找首选组 `path3` 和次选组 `path2`。启用前应核对客户端 `multipath.paths[].id`。自定义 ID 的部署若两组均匹配不到，带宽帧可能持续排队。`hold_ms` 控制带宽首选路径劣化后重新尝试的间隔。双端运行时状态在 `multipath.intent` 下报告三类累计连接数、`intent_flip_count` 和 `credit_fallback_count`。
+
 ### `flow.reorder.bytes`
 
-**类型：**int · **省略时：**`8388608`
+**类型：**int · **省略时：**`67108864`
 
 每连接重排缓冲软上限：超过后暂停读取送来该帧的链路（反压），超过 2 倍才重置该连接。
 

@@ -19,6 +19,29 @@
 namespace ppp {
     namespace app {
         namespace server {
+            namespace {
+                std::string CarrierPathId(const ppp::string& carrier_id) noexcept {
+                    const std::string value(carrier_id.begin(), carrier_id.end());
+                    constexpr std::string_view binary_prefix = "carrier/b1/";
+                    constexpr std::string_view plain_prefix = "carrier/";
+                    std::string_view rest(value);
+                    if (rest.rfind(binary_prefix, 0) == 0) {
+                        rest.remove_prefix(binary_prefix.size());
+                    }
+                    elif(rest.rfind(plain_prefix, 0) == 0) {
+                        rest.remove_prefix(plain_prefix.size());
+                    }
+                    else {
+                        return {};
+                    }
+                    const std::size_t separator = rest.find('/');
+                    if (separator == std::string_view::npos || separator == 0 || separator > 64) {
+                        return {};
+                    }
+                    return std::string(rest.substr(0, separator));
+                }
+            }
+
             /**
              * @brief Constructs a server-side session transport wrapper.
              * @param switcher Parent switcher that owns connection registration.
@@ -273,7 +296,8 @@ namespace ppp {
                                 return exchanger->DoMuxON(connection->GetTransmission(), vlan, seq, ack, y_null);
                             };
                         auto transport = ppp::app::mux::MakeMuxTransport(
-                            connection, [self]() noexcept { self->Dispose(); });
+                            connection, [self]() noexcept { self->Dispose(); },
+                            CarrierPathId(multipath_carrier_id_));
                         if (mux->add_linklayer(transport, linklayer, handling)) {
                             return true;
                         }

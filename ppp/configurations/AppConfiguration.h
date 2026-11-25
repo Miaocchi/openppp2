@@ -188,6 +188,19 @@ namespace ppp {
                     ppp::string                                             set_mode;       ///< Transient `--mux-mode-set` request; pushes a mode change to the peer once at startup.
                 }                                                           debug;          ///< Debug-only remote control of the peer's scheduler mode.
                 struct {
+                    struct Rule final {
+                        ppp::string                                             intent;         ///< `latency`, `bandwidth`, or `unknown`.
+                        ppp::vector<int>                                         ports;          ///< Destination TCP ports matched by this rule.
+                    };
+                    bool                                                        enabled;        ///< Enable per-flow TCP intent classification and path selection.
+                    ppp::string                                                 mode;           ///< `auto`, `rules`, or `behavior`.
+                    int                                                         window_ms;      ///< Behavior observation window in milliseconds.
+                    int                                                         min_samples;    ///< Minimum payload bytes observed before behavior classification.
+                    int                                                         hysteresis;     ///< Confidence margin required for a class transition, in percentage points.
+                    int                                                         hold_ms;        ///< Minimum class hold time in milliseconds.
+                    ppp::vector<Rule>                                           rules;          ///< Ordered destination-port rules.
+                }                                                           intent;         ///< Optional TCP intent classifier configuration.
+                struct {
                     bool                                                    enabled;        ///< QUIC-style reliability sub-protocol (ACK + fast retransmit + PTO); negotiated, falls back when the peer lacks it.
                     struct {
                         int                                                 bytes;          ///< Session-wide retransmit send window in unacked bytes (throughput <= window / RTT); strictly > 0.
