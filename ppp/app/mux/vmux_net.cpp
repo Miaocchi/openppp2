@@ -4385,8 +4385,9 @@ namespace vmux {
         }
 
         for (auto& [cid, opening] : intent_opening_frames_) {
+            const auto opening_carrier_id = opening.carrier_id;
             const auto original = std::find_if(rx_links_.begin(), rx_links_.end(), [&](const auto& link) {
-                return is_linklayer_active(link) && link->id_ == opening.carrier_id;
+                return is_linklayer_active(link) && link->id_ == opening_carrier_id;
             });
             if (original != rx_links_.end() &&
                 !(*original)->intent_path_probe_.TimedOut(now, (*original)->last_delivery_ack_ms_)) continue;
