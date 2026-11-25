@@ -27,7 +27,7 @@ JSON 必须是标准 JSON（不能有注释、不能有尾逗号）。
 | `websocket` | ✔ | — | 只用于服务端监听；客户端的 WS 路径写在 `client.server` URL 里 |
 | `ip` `cdn` `server` | ✔ | 部分 | 客户端配置里写 `server.ipv4-pool` 表示主动请求地址分配 |
 | `client` `dns` `routing` `geo-rules` `virr` `vbgp` | — | ✔ | |
-| `p2p` | ✔ | ✔ | |
+| `p2p` | ✔ | ✔ | [P2P 对端直连](configuration/p2p_CN.md) |
 | `transport-auth` | ✔ | ✔ | 开关分别是 `server.transport-auth.enabled` / `client.transport-auth.enabled` |
 
 ## 3. 顶层字段
@@ -59,6 +59,7 @@ JSON 必须是标准 JSON（不能有注释、不能有尾逗号）。
 | <a id="13-clientrouting--分流规则旧版策略"></a>`client.routing` | [旧版分流](configuration/routing_CN.md#clientrouting) |
 | <a id="14-clientpolicy--新版策略v2"></a>`client.policy` | [新版策略](configuration/routing_CN.md#clientpolicy) |
 | <a id="15-旧版客户端-dns-与规则字段dns--routing--geo-rules"></a>`dns`、`routing`、`geo-rules` | [旧版 DNS 与规则字段](configuration/routing_CN.md#旧版-dns-与规则字段) |
-| <a id="16-其他块"></a>`p2p`、`vmem`、`virr`、`vbgp`、`telemetry` | [高级设置](configuration/advanced_CN.md) |
+| `p2p` | [P2P 对端直连](configuration/p2p_CN.md) |
+| <a id="16-其他块"></a>`vmem`、`virr`、`vbgp`、`telemetry` | [缓冲区、规则更新与遥测](configuration/advanced_CN.md) |
 | <a id="17-服务器地址clientserver格式"></a>`client.server` | [服务器地址格式](configuration/client_CN.md#服务器地址) |
 | <a id="xtcp-运行时调优"></a>XTCP | [XTCP 运行时调优](configuration/transport_CN.md#xtcp-运行时调优) |
