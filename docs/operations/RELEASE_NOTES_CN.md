@@ -1,13 +1,18 @@
-# OpenPPP2 v2.1.10.0
+# OpenPPP2 v2.1.10.1
 
 > Status: Release preparation
 > Type: Release notes
 > Last verified: 2026-11-22
 > Parent index: [运维](README_CN.md) · English: [Release notes](RELEASE_NOTES.md)
 
-以下内容描述当前 main 修订版计划发布的 `v2.1.10.0`。精确的标签、必需
+以下内容描述当前 main 修订版计划发布的 `v2.1.10.1`。精确的标签、必需
 CI、打包制品、校验和及发布状态，以 GitHub release 工作流的结果为准。
 
+## 小版本修复
+
+- 加固多路径选路、可靠性 ACK/重传记账、整帧准入、pacing 状态和传输写入记账。
+- 增加调度器、重传、接收语义、pacing、SIMD 尾部和集成遥测回归覆盖。
+- 隔离三路径上下行实验达到约 89.4% 的合计业务利用率。多路径仍默认关闭，持续 95% 验收目标尚未完成。
 ## 重点变化
 
 ### 多路径仍为实验性功能
